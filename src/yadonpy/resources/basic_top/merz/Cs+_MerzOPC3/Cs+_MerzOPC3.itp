@@ -1,0 +1,12 @@
+; Created by AuToFF
+
+[ atomtypes ]
+; type                mass       charge   ptype     sigma (nm)    epsilon (kJ/mol)
+Cs 55 132.910000 1.000000 A 3.5012319623-01 1.4963237108E+00
+[ moleculetype ]
+; Name          nrexcl
+Cs+_MerzOPC3 3
+
+[ atoms ]
+;  Index    type       residue  resCsme    atom      cgnr     charge       mass
+     1    Cs              1        Cs      Cs01      1      1.000000    132.910000

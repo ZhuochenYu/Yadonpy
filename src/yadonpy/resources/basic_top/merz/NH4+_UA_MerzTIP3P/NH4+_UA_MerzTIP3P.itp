@@ -1,0 +1,12 @@
+; Created by AuToFF
+
+[ atomtypes ]
+; type                mass       charge   ptype     sigma (nm)    epsilon (kJ/mol)
+Am 95 18.040000 1.000000 A 3.169817639E-01 8.212522142E-01
+[ moleculetype ]
+; Name          nrexcl
+NH4+_UA_MerzTIP3P 3
+
+[ atoms ]
+;  Index    type       residue  resAmme    atom      cgnr     charge       mass
+     1    Am              1        Am      Am01      1      1.000000    18.040000

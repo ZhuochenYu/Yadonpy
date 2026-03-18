@@ -1,0 +1,12 @@
+; Created by AuToFF
+
+[ atomtypes ]
+; type                mass       charge   ptype     sigma (nm)    epsilon (kJ/mol)
+Na 11 22.990000 1.000000 A 2.6174604339E-01 1.2602877440E-01
+[ moleculetype ]
+; name          nrexcl
+Na+_MerzOPC3 3
+
+[ atoms ]
+;  Index    type       residue  resname    atom      cgnr     charge       mass
+     1    Na              1        Na      Na01      1      1.000000    22.990000

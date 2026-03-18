@@ -1,0 +1,1023 @@
+"""YadonPy is an automated, SMILES-driven workflow developed by yuzc for property calculations of
+polymer/solvent/salt blend systems using GROMACS-based molecular dynamics.
+
+Its software design is inspired by RadonPy (an automated workflow for polymer bulk-property simulations
+developed by a Japanese research group) and by yuzc's in-house yzc-gmx-gen toolkit. To the best of our
+knowledge, this project does not raise copyright issues.
+"""
+
+#  Copyright (c) 2026.
+#  This file is an extension module for YadonPy to support OPLS-AA atom typing
+#  using embedded SMARTS rules (derived from a moltemplate/STaGE rule table).
+
+# ******************************************************************************
+# ff.oplsaa module
+# ******************************************************************************
+
+import os
+from rdkit import Chem
+from ..core import utils
+from .gaff import GAFF
+from . import ff_class
+from ..core import utils as core_utils
+
+
+# Embedded SMARTS typing rules
+# Each rule assigns:
+#   - element: element symbol (e.g., "C", "H", "O", "Cl")
+#   - btype:   OPLS bond_type used by bonded parameters in ffoplsaa (e.g., "CT","CA","HC")
+#   - opls:    OPLS nonbonded type name (e.g., "opls_135") used in [atomtypes] section
+#   - smarts:  RDKit SMARTS pattern; the FIRST atom in the pattern is the atom to be typed
+#   - charge:  optional charge value (used when charge='opls' in ff_assign)
+#   - desc:    human-readable description
+
+RULES = [
+    {"element": "C", "btype": "CT", "opls": "opls_135", "smarts": "[$([CH3D4][C])]", "charge": -0.18, "desc": "Alkane CH3-"},
+    {"element": "C", "btype": "CT", "opls": "opls_136", "smarts": "[$([CH2D4]([C])[C])]", "charge": -0.12, "desc": "Alkane -CH2-"},
+    {"element": "C", "btype": "CT", "opls": "opls_137", "smarts": "[$([CH1D4]([C])([C])[C])]", "charge": -0.06, "desc": "Alkane >CH-"},
+    {"element": "C", "btype": "CT", "opls": "opls_138", "smarts": "[CH4D4]", "charge": -0.24, "desc": "Methane CH4"},
+    {"element": "C", "btype": "CT", "opls": "opls_139", "smarts": "[$([CH0D4]([C])([C])([C])[C])]", "charge": 0.0, "desc": "Alkane >C<"},
+    {"element": "H", "btype": "HC", "opls": "opls_140", "smarts": "[$([#1][CH4])]", "charge": 0.06, "desc": "Alkane H-C"},
+    {"element": "H", "btype": "HC", "opls": "opls_140", "smarts": "[$([#1][CD4;!$([C][CD2,O,N][#6]);!$([C][F,Cl,Br,I])])]", "charge": 0.06, "desc": "Alkane H-C"},
+    {"element": "C", "btype": "CM", "opls": "opls_141", "smarts": "[$([CH0D3]([#6])([#6])=[#6])]", "charge": 0.0, "desc": "Alkene R2-C="},
+    {"element": "C", "btype": "CM", "opls": "opls_142", "smarts": "[$([CH1D3]([#6])=[#6])]", "charge": -0.115, "desc": "Alkene RH-C="},
+    {"element": "C", "btype": "CM", "opls": "opls_143", "smarts": "[$([CH2D3]=[#6])]", "charge": -0.23, "desc": "Alkene H2-C="},
+    {"element": "H", "btype": "HC", "opls": "opls_144", "smarts": "[$([#1][CD3])]", "charge": 0.115, "desc": "Alkene H-C="},
+    {"element": "C", "btype": "CA", "opls": "opls_145", "smarts": "[$([c]([c])[c])]", "charge": -0.115, "desc": "Aromatic C"},
+    {"element": "C", "btype": "C!", "opls": "opls_145B", "smarts": "[$([c](c)(c)-[c](c)c)]", "charge": 0.0, "desc": "Biphenyl C1"},
+    {"element": "H", "btype": "HA", "opls": "opls_146", "smarts": "[$([#1][c]([c])[c])]", "charge": 0.115, "desc": "Aromatic H-C"},
+    {"element": "C", "btype": "CA", "opls": "opls_147", "smarts": "[$([c](c)(c)(c))]", "charge": 0.0, "desc": "Naphthalene Fusion C"},
+    {"element": "C", "btype": "CT", "opls": "opls_148", "smarts": "[$([CH3][c])]", "charge": -0.065, "desc": "Ethyl Benzene CH3-"},
+    {"element": "C", "btype": "CT", "opls": "opls_149", "smarts": "[$([CH2D4][c])]", "charge": -0.005, "desc": "Ethyl Benzene -CH2-"},
+    {"element": "C", "btype": "C=", "opls": "opls_150", "smarts": "[$([CH1](=C)-[CH1]=C)]", "charge": -0.115, "desc": "Diene =CH-CH="},
+    {"element": "Cl", "btype": "Cl", "opls": "opls_151", "smarts": "[$([Cl][CD4])]", "charge": -0.2, "desc": "Alkyl Chloride C-Cl"},
+    {"element": "C", "btype": "CT", "opls": "opls_152", "smarts": "[$([CH2D4]([!Cl])[Cl])]", "charge": -0.006, "desc": "Alkyl Chloride RCH2-Cl"},
+    {"element": "H", "btype": "HC", "opls": "opls_153", "smarts": "[$([#1][#6D4][Cl])]", "charge": 0.103, "desc": "Alkyl Chloride H-C-Cl"},
+    {"element": "C", "btype": "CT", "opls": "opls_xxx", "smarts": "[$([CH1D4]([!Cl])([!Cl])[Cl])]", "charge": 0.097, "desc": "Alkyl Chloride R2CH-Cl"},
+    {"element": "C", "btype": "CT", "opls": "opls_xxx", "smarts": "[$([CH0D4]([!Cl])([!Cl])([!Cl])[Cl])]", "charge": 0.2, "desc": "Alkyl Chloride R3C-Cl"},
+    {"element": "Br", "btype": "Br", "opls": "opls_xxx", "smarts": "[$([Br][CD4])]", "charge": -0.2, "desc": "Alkyl Bromide C-Cl"},
+    {"element": "C", "btype": "CT", "opls": "opls_xxx", "smarts": "[$([CH2D4]([!Br])[Br])]", "charge": -0.006, "desc": "Alkyl Bromide RCH2-Br"},
+    {"element": "H", "btype": "HC", "opls": "opls_xxx", "smarts": "[$([#1][#6D4][Br])]", "charge": 0.103, "desc": "Alkyl Bromide H-C-Br"},
+    {"element": "C", "btype": "CT", "opls": "opls_xxx", "smarts": "[$([CH1D4]([!Br])([!Br])[Br])]", "charge": 0.097, "desc": "Alkyl Bromide R2CH-Br"},
+    {"element": "C", "btype": "CT", "opls": "opls_xxx", "smarts": "[$([CH0D4]([!Br])([!Br])([!Br])[Br])]", "charge": 0.2, "desc": "Alkyl Bromide R3C-Br"},
+    {"element": "I", "btype": "I", "opls": "opls_xxx", "smarts": "[$([I][CD4])]", "charge": -0.13, "desc": "Alkyl Iodide C-I"},
+    {"element": "C", "btype": "CT", "opls": "opls_xxx", "smarts": "[$([CH2D4]([!I])[I])]", "charge": -0.07, "desc": "Alkyl Iodide RCH2-I"},
+    {"element": "H", "btype": "HC", "opls": "opls_xxx", "smarts": "[$([#1][#6D4][I])]", "charge": 0.1, "desc": "Alkyl Iodide H-C-I"},
+    {"element": "C", "btype": "CT", "opls": "opls_xxx", "smarts": "[$([CH1D4]([!I])([!I])[I])]", "charge": 0.03, "desc": "Alkyl Iodide R2CH-I"},
+    {"element": "C", "btype": "CT", "opls": "opls_xxx", "smarts": "[$([CH0D4]([!I])([!I])([!I])[I])]", "charge": 0.13, "desc": "Alkyl Bromide R3C-I"},
+    {"element": "O", "btype": "OH", "opls": "opls_154", "smarts": "[$([OH][#6])]", "charge": -0.683, "desc": "Alcohol -OH"},
+    {"element": "H", "btype": "HO", "opls": "opls_155", "smarts": "[$([#1][O][#6])]", "charge": 0.418, "desc": "Alcohol -OH"},
+    {"element": "H", "btype": "HC", "opls": "opls_156", "smarts": "[$([#1][CH3][OH])]", "charge": 0.04, "desc": "Methanol CH3-"},
+    {"element": "C", "btype": "CT", "opls": "opls_157", "smarts": "[$([C;H2,H3][OH])]", "charge": 0.145, "desc": "Alcohol CH3OH & RCH2OH"},
+    {"element": "C", "btype": "CT", "opls": "opls_158", "smarts": "[$([CH1][OH])]", "charge": 0.205, "desc": "Alcohol R2CHOH"},
+    {"element": "C", "btype": "CT", "opls": "opls_159", "smarts": "[$([CH0][OH])]", "charge": 0.265, "desc": "Alcohol R3COH"},
+    {"element": "C", "btype": "CT", "opls": "opls_160", "smarts": "[$([CH2]([OH])[C](F)(F)(F))]", "charge": 0.1263, "desc": "Trifluoroethanol -CH2-"},
+    {"element": "C", "btype": "CT", "opls": "opls_161", "smarts": "[$([C](F)(F)(F)[CH2]([OH]))]", "charge": 0.5323, "desc": "Trifluoroethanol CF3-"},
+    {"element": "O", "btype": "OH", "opls": "opls_162", "smarts": "[$([OH][CH2][C](F)(F)(F))]", "charge": -0.6351, "desc": "Trifluoroethanol -OH"},
+    {"element": "H", "btype": "HO", "opls": "opls_163", "smarts": "[$([#1][O][CH2][C](F)(F)(F))]", "charge": 0.4286, "desc": "Trifluoroethanol -OH"},
+    {"element": "F", "btype": "F", "opls": "opls_164", "smarts": "[$([F][C](F)(F)[CH2][OH])]", "charge": -0.2057, "desc": "Trifluoroethanol F"},
+    {"element": "H", "btype": "HC", "opls": "opls_165", "smarts": "[$([#1][CH2]([OH])[C](F)(F)(F))]", "charge": 0.0825, "desc": "Trifluoroethanol -CH2-"},
+    {"element": "C", "btype": "CA", "opls": "opls_166", "smarts": "[$([c]([OH]))]", "charge": 0.15, "desc": "Phenol C-OH"},
+    {"element": "O", "btype": "OH", "opls": "opls_167", "smarts": "[$([OH][c])]", "charge": -0.585, "desc": "Phenol -OH"},
+    {"element": "H", "btype": "HO", "opls": "opls_168", "smarts": "[$([#1][O][c])]", "charge": 0.435, "desc": "Phenol -OH"},
+    {"element": "O", "btype": "OH", "opls": "opls_169", "smarts": "[$([OH][C][C][OH])]", "charge": -0.7, "desc": "Diol -OH"},
+    {"element": "H", "btype": "HO", "opls": "opls_170", "smarts": "[$([#1][O][C][C][OH])]", "charge": 0.435, "desc": "Diol -OH"},
+    {"element": "O", "btype": "OH", "opls": "opls_171", "smarts": "[$([OH][#6][#6]([OH])[#6][OH])]", "charge": -0.73, "desc": "Triol -OH"},
+    {"element": "O", "btype": "OH", "opls": "opls_171", "smarts": "[$([OH][#6]([#6][OH])[#6][OH])]", "charge": -0.73, "desc": "Triol -OH"},
+    {"element": "H", "btype": "HO", "opls": "opls_172", "smarts": "[$([#1][O][#6][#6]([OH])[#6][OH])]", "charge": 0.465, "desc": "Triol -OH"},
+    {"element": "H", "btype": "HO", "opls": "opls_172", "smarts": "[$([#1][O][#6]([#6][OH])[#6][OH])]", "charge": 0.465, "desc": "Triol -OH"},
+    {"element": "C", "btype": "CT", "opls": "opls_173", "smarts": "[$([CH2D4]([OH])[#6]([OH])[#6][OH])]", "charge": 0.145, "desc": "Diol & Triol -CH2OH"},
+    {"element": "C", "btype": "CT", "opls": "opls_173", "smarts": "[$([CH2D4]([OH])[#6][OH])]", "charge": 0.145, "desc": "\"Diol & Triol -CH2OH\" [--AHS]"},
+    {"element": "C", "btype": "CT", "opls": "opls_174", "smarts": "[$([CH1D4]([OH])[#6]([OH])[#6][OH])]", "charge": 0.205, "desc": "Diol & Triol -CHROH"},
+    {"element": "C", "btype": "CT", "opls": "opls_174", "smarts": "[$([CH1D4]([OH])([#6][OH])[#6][OH])]", "charge": 0.205, "desc": "Diol & Triol -CHROH"},
+    {"element": "C", "btype": "CT", "opls": "opls_174", "smarts": "[$([CH1D4]([OH])[#6][OH])]", "charge": 0.205, "desc": "\"Diol & Triol -CHROH\" [--AHS]"},
+    {"element": "C", "btype": "CT", "opls": "opls_175", "smarts": "[$([CH0D4]([OH])[#6]([OH])[#6][OH])]", "charge": 0.265, "desc": "Diol & Triol -CR2OH"},
+    {"element": "C", "btype": "CT", "opls": "opls_175", "smarts": "[$([CH0D4]([OH])([#6][OH])[#6][OH])]", "charge": 0.265, "desc": "Diol & Triol -CR2OH"},
+    {"element": "C", "btype": "CT", "opls": "opls_175", "smarts": "[$([CH0D4]([OH])[#6][OH])]", "charge": 0.265, "desc": "\"Diol & Triol -CR2OH\" [--AHS]"},
+    {"element": "C", "btype": "CT", "opls": "opls_176", "smarts": "[$([#1][CD4]([OH])[#6]([OH])[#6][OH])]", "charge": 0.06, "desc": "Diol & Triol H-COH"},
+    {"element": "C", "btype": "CT", "opls": "opls_176", "smarts": "[$([#1][CD4]([OH])([#6][OH])[#6][OH])]", "charge": 0.06, "desc": "Diol & Triol H-COH"},
+    {"element": "C", "btype": "CT", "opls": "opls_176", "smarts": "[$([#1][CD4]([OH])[#6][OH])]", "charge": 0.06, "desc": "\"Diol & Triol H-COH\" [--AHS]"},
+    {"element": "O", "btype": "O", "opls": "opls_xxx", "smarts": "[$([O]([c;r6])[c;r6])]", "charge": -0.17, "desc": "\"Diphenyl Ether\" [--AHS]"},
+    {"element": "C", "btype": "C=", "opls": "opls_178", "smarts": "[$([CH0](=C)-[CH0]=C)]", "charge": 0.0, "desc": "Diene =CR-CR="},
+    {"element": "O", "btype": "OS", "opls": "opls_179", "smarts": "[$([#8](c)[CD4])]", "charge": -0.285, "desc": "\"Anisole -OCH3\" [mod --AHS]"},
+    {"element": "O", "btype": "OS", "opls": "opls_180", "smarts": "[$([O]([C][*;!$([#7,#8])])[C][*;!$([#7,#8])])]", "charge": -0.4, "desc": "\"Dialkyl Ether -O-\" [mod -AHS]"},
+    {"element": "C", "btype": "CT", "opls": "opls_181", "smarts": "[$([CH3D4][O][#6][*;!$([#7,#8])])]", "charge": 0.11, "desc": "Methyl Ether CH3OR"},
+    {"element": "C", "btype": "CT", "opls": "opls_182", "smarts": "[$([CH2D4]([*;!$([#7,#8])])[O][#6][*;!$([#7,#8])])]", "charge": 0.14, "desc": "Ethyl Ether -CH2OR"},
+    {"element": "C", "btype": "CT", "opls": "opls_183", "smarts": "[$([CH1D4]([*;!$([#7,#8])])[O][#6][*;!$([#7,#8])])]", "charge": 0.17, "desc": "Isopropyl Ether >CHOR"},
+    {"element": "C", "btype": "CT", "opls": "opls_184", "smarts": "[$([CH0D4]([*;!$([#7,#8])])[O][#6][*;!$([#7,#8])])]", "charge": 0.2, "desc": "t-Butyl Ether COR"},
+    {"element": "H", "btype": "HC", "opls": "opls_185", "smarts": "[$([#1][#6]([*;!$([#7,#8])])[O][#6][*;!$([#7,#8])])]", "charge": 0.03, "desc": "Alkyl Ether H-COR"},
+    {"element": "O", "btype": "OS", "opls": "opls_186", "smarts": "[$([O](C)[#6][O][#6])]", "charge": -0.4, "desc": "Acetal RO-CR2OX"},
+    {"element": "O", "btype": "OH", "opls": "opls_187", "smarts": "[$([OH][C][O][#6])]", "charge": -0.7, "desc": "Hemiacetal -OH"},
+    {"element": "H", "btype": "HO", "opls": "opls_188", "smarts": "[$([#1][O][C][O][#6])]", "charge": 0.435, "desc": "Hemiacetal -OH"},
+    {"element": "C", "btype": "CO", "opls": "opls_189", "smarts": "[$([CH2D4]([O][#6])[O][#6])]", "charge": 0.2, "desc": "Acetal RO-CH2-OR"},
+    {"element": "H", "btype": "HC", "opls": "opls_190", "smarts": "[$([#1][CH2D4]([O][#6])[O][#6])]", "charge": 0.1, "desc": "Acetal RO-CH2-OR"},
+    {"element": "C", "btype": "CO", "opls": "opls_191", "smarts": "[$([CH2D4]([OH])[O][#6])]", "charge": 0.265, "desc": "Hemiacetal RO-CH2-OH"},
+    {"element": "H", "btype": "HC", "opls": "opls_192", "smarts": "[$([#1][CH2D4]([OH])[O][#6])]", "charge": 0.1, "desc": "Hemiacetal RO-CH2-OH"},
+    {"element": "C", "btype": "CO", "opls": "opls_193", "smarts": "[$([CH1D4]([O][#6])[O][#6])]", "charge": 0.3, "desc": "Acetal RO-CHR-OR"},
+    {"element": "H", "btype": "HC", "opls": "opls_194", "smarts": "[$([#1][CH1D4]([O][#6])[O][#6])]", "charge": 0.1, "desc": "Acetal RO-CHR-OR"},
+    {"element": "C", "btype": "CO", "opls": "opls_195", "smarts": "[$([CH1D4]([OH])[O][#6])]", "charge": 0.365, "desc": "Hemiacetal RO-CHR-OH"},
+    {"element": "H", "btype": "HC", "opls": "opls_196", "smarts": "[$([#1][CH1D4]([OH])[O][#6])]", "charge": 0.1, "desc": "Hemiacetal RO-CHR-OH"},
+    {"element": "C", "btype": "CO", "opls": "opls_197", "smarts": "[$([CH0D4]([O][#6])[O][#6])]", "charge": 0.4, "desc": "Acetal RO-CR2-OR"},
+    {"element": "C", "btype": "CO", "opls": "opls_198", "smarts": "[$([CH0D4]([OH])[O][#6])]", "charge": 0.465, "desc": "Hemiacetal RO-CR2-OH"},
+    {"element": "C", "btype": "CA", "opls": "opls_199", "smarts": "[$([c][O][#6])]", "charge": 0.085, "desc": "\"Anisole C-OCH3\" [mod AHS]"},
+    {"element": "S", "btype": "SH", "opls": "opls_200", "smarts": "[#16D2H1]", "charge": -0.335, "desc": "Thiol -SH"},
+    {"element": "S", "btype": "SH", "opls": "opls_201", "smarts": "[#16D2H2]", "charge": -0.47, "desc": "Hydrogen Sulfide H2S"},
+    {"element": "S", "btype": "S", "opls": "opls_202", "smarts": "[$([#16H0]~[#6])]", "charge": -0.435, "desc": "Sulfide -S-"},
+    {"element": "S", "btype": "S", "opls": "opls_203", "smarts": "[$([#16D2H0][#16D2H0])]", "charge": -0.2175, "desc": "Disulfide -S-S-"},
+    {"element": "H", "btype": "HS", "opls": "opls_204", "smarts": "[$([#1][SD2H1])]", "charge": 0.155, "desc": "Thiol -SH"},
+    {"element": "H", "btype": "HS", "opls": "opls_205", "smarts": "[$([#1][SD2H2])]", "charge": 0.235, "desc": "Hydrogen Sulfide H2S"},
+    {"element": "C", "btype": "CT", "opls": "opls_206", "smarts": "[$([CH2][#16H1])]", "charge": 0.06, "desc": "Thiol -CH2-SH"},
+    {"element": "C", "btype": "CT", "opls": "opls_207", "smarts": "[$([CH1][#16H1])]", "charge": 0.12, "desc": "Thiol >CH-SH"},
+    {"element": "C", "btype": "CT", "opls": "opls_208", "smarts": "[$([CH0][#16H1])]", "charge": 0.18, "desc": "Thiol C-SH"},
+    {"element": "C", "btype": "CT", "opls": "opls_209", "smarts": "[$([CH3][#16D2H0])]", "charge": 0.0375, "desc": "Methyl Sulfide CH3-SR"},
+    {"element": "C", "btype": "CT", "opls": "opls_210", "smarts": "[$([CH2][#16D2H0])]", "charge": 0.0975, "desc": "Sulfide RCH2-SR"},
+    {"element": "C", "btype": "CT", "opls": "opls_211", "smarts": "[$([CH1][#16D2H0])]", "charge": 0.1575, "desc": "Sulfide R2CH-SR"},
+    {"element": "C", "btype": "CT", "opls": "opls_212", "smarts": "[$([CH0][#16D2H0])]", "charge": 0.2175, "desc": "Sulfide R3C-SR"},
+    {"element": "C", "btype": "CT", "opls": "opls_213", "smarts": "[$([CH3][#16D2H0][#16D2H0])]", "charge": 0.0375, "desc": "Disulfide CH3-S-SR"},
+    {"element": "C", "btype": "CT", "opls": "opls_214", "smarts": "[$([CH2][#16D2H0][#16D2H0])]", "charge": 0.0975, "desc": "Disulfide RCH2-S-SR"},
+    {"element": "C", "btype": "CT", "opls": "opls_215", "smarts": "[$([CH1][#16D2H0][#16D2H0])]", "charge": 0.1575, "desc": "Disulfide R2CH-S-SR"},
+    {"element": "C", "btype": "CT", "opls": "opls_216", "smarts": "[$([CH0][#16D2H0][#16D2H0])]", "charge": 0.2175, "desc": "Disulfide R3C-S-SR"},
+    {"element": "C", "btype": "CT", "opls": "opls_217", "smarts": "[$([CH3][SH1])]", "charge": 0.0, "desc": "Methanethiol CH3-SH"},
+    {"element": "C", "btype": "CT", "opls": "opls_218", "smarts": "[$([CH2](c)[OH])]", "charge": 0.2, "desc": "Benzyl Alcohol -CH2OH"},
+    {"element": "C", "btype": "CT", "opls": "opls_219", "smarts": "[$([CH1](c)[OH])]", "charge": 0.26, "desc": "Benzyl Alcohol -CHROH"},
+    {"element": "C", "btype": "CT", "opls": "opls_220", "smarts": "[$([CH0](c)[OH])]", "charge": 0.32, "desc": "Benzyl Alcohol -CR2OH"},
+    {"element": "C", "btype": "CA", "opls": "opls_221", "smarts": "[$([c][CH2][OH])]", "charge": -0.055, "desc": "Benzyl Alcohol/Nitrile"},
+    {"element": "S", "btype": "S", "opls": "opls_222", "smarts": "[$([SD2]([c])[CH3])]", "charge": -0.32, "desc": "Thioanisole -SCH3"},
+    {"element": "C", "btype": "CT", "opls": "opls_223", "smarts": "[$([CH2D4][NH2])]", "charge": 0.08, "desc": "RCH2-NH2 & GLY CA"},
+    {"element": "C", "btype": "CT", "opls": "opls_224", "smarts": "[$([CH1D4][NH2])]", "charge": 0.14, "desc": "RCHR-NH2 & ALA CA"},
+    {"element": "C", "btype": "CT", "opls": "opls_225", "smarts": "[$([CH0D4][NH2])]", "charge": 0.2, "desc": "R3C-NH2 & AIB CA"},
+    {"element": "Cl", "btype": "Cl", "opls": "opls_226", "smarts": "[$([Cl][CD3])]", "charge": -0.12, "desc": "Chloroalkene Cl-CH="},
+    {"element": "C", "btype": "CM", "opls": "opls_227", "smarts": "[$([CD3][F,Cl,Br,I])]", "charge": 0.005, "desc": "Chloroalkene Cl-CH="},
+    {"element": "C", "btype": "CA", "opls": "opls_228", "smarts": "[$([c][SD2][CH3])]", "charge": 0.1025, "desc": "Thioanisole C-SCH3"},
+    {"element": "C", "btype": "CT", "opls": "opls_229", "smarts": "[$([CH1D4]([N][C]=[O]))]", "charge": 0.14, "desc": "Amide -NH-CHR2"},
+    {"element": "C", "btype": "CT", "opls": "opls_230", "smarts": "[$([CH0D4]([N][C]=[O]))]", "charge": 0.2, "desc": "Amide -NH-CR3"},
+    {"element": "C", "btype": "C", "opls": "opls_231", "smarts": "[$([C]([c])([c])=[O])]", "charge": 0.7, "desc": "Benzophenone C=O"},
+    {"element": "C", "btype": "C_2", "opls": "opls_232", "smarts": "[$([CH1]([c])=[O])]", "charge": 0.565, "desc": "Benzaldehyde C=O"},
+    {"element": "C", "btype": "C_2", "opls": "opls_233", "smarts": "[$([C]([c])([CH3])=[O])]", "charge": 0.585, "desc": "Acetophenone C=O"},
+    {"element": "C", "btype": "C", "opls": "opls_234", "smarts": "[$([C]([c])([NH2D3])=[O])]", "charge": 0.615, "desc": "Benzamide C=O"},
+    {"element": "C", "btype": "C", "opls": "opls_235", "smarts": "[$([CD3](=O)[ND3])]", "charge": 0.5, "desc": "Amide C=O"},
+    {"element": "O", "btype": "O", "opls": "opls_236", "smarts": "[$([O]=[CD3][ND3])]", "charge": -0.5, "desc": "Amide C=O"},
+    {"element": "N", "btype": "N", "opls": "opls_237", "smarts": "[$([ND3H2][CD3]=[O])]", "charge": -0.76, "desc": "Amide -CO-NH2"},
+    {"element": "N", "btype": "N", "opls": "opls_238", "smarts": "[$([ND3H1][CD3]=[O])]", "charge": -0.5, "desc": "Amide -CO-NHR"},
+    {"element": "N", "btype": "N", "opls": "opls_239", "smarts": "[$([ND3H0][CD3]=[O])]", "charge": -0.14, "desc": "Amide -CO-NR2"},
+    {"element": "H", "btype": "H", "opls": "opls_240", "smarts": "[$([#1][ND3H2][CD3]=[O])]", "charge": 0.38, "desc": "Amide -CO-NH2"},
+    {"element": "H", "btype": "H", "opls": "opls_241", "smarts": "[$([#1][ND3H1][CD3]=[O])]", "charge": 0.3, "desc": "Amide -CO-NHR"},
+    {"element": "C", "btype": "CT", "opls": "opls_242", "smarts": "[$([CH3D4][NH1D3][CD3]=[O])]", "charge": 0.02, "desc": "Amide -NH-CH3"},
+    {"element": "C", "btype": "CT", "opls": "opls_243", "smarts": "[$([CH3D4][NH0D3][CD3]=[O])]", "charge": -0.11, "desc": "Amide -NR-CH3"},
+    {"element": "C", "btype": "CT", "opls": "opls_244", "smarts": "[$([CH2D4][NH1D3][CD3]=[O])]", "charge": 0.08, "desc": "Amide -NH-CH2R"},
+    {"element": "C", "btype": "CT_3", "opls": "opls_245", "smarts": "[$([CH2D4][NH0D3][CD3]=[O])]", "charge": -0.05, "desc": "Amide -NR-CH2R & PRO CD"},
+    {"element": "C", "btype": "CT_2", "opls": "opls_246", "smarts": "[$([CH1D4][NH0D3][CD3]=[O])]", "charge": 0.01, "desc": "Amide -NR-CHR2 & PRO CA"},
+    {"element": "C", "btype": "C", "opls": "opls_247", "smarts": "[$([CD3](=O)([NH2D3])[NH2D3])]", "charge": 0.142, "desc": "Urea C=O"},
+    {"element": "O", "btype": "O", "opls": "opls_248", "smarts": "[$([O]=[CD3]([NH2D3])[NH2D3])]", "charge": -0.39, "desc": "Urea C=O"},
+    {"element": "N", "btype": "N", "opls": "opls_249", "smarts": "[$([NH2D3][CD3]([NH2D3])=[O])]", "charge": -0.542, "desc": "Urea -NH2"},
+    {"element": "H", "btype": "H", "opls": "opls_250", "smarts": "[$([#1][NH2D3][CD3]([NH2D3])=[O])]", "charge": 0.333, "desc": "Urea -NH2"},
+    {"element": "N", "btype": "N", "opls": "opls_251", "smarts": "[$([ND3]([CD3]=[O])[CD3]=[O])]", "charge": -0.49, "desc": "Imide -NH-"},
+    {"element": "C", "btype": "C", "opls": "opls_252", "smarts": "[$([CD3](=[O])[ND3][CD3]=[O])]", "charge": 0.42, "desc": "Imide C=O"},
+    {"element": "O", "btype": "O", "opls": "opls_253", "smarts": "[$([O]=[CD3][ND3][CD3]=[O])]", "charge": -0.42, "desc": "Imide C=O"},
+    {"element": "H", "btype": "H", "opls": "opls_254", "smarts": "[$([#1][ND3]([CD3]=[O])[CD3]=[O])]", "charge": 0.37, "desc": "Imide -NH-"},
+    {"element": "H", "btype": "HC", "opls": "opls_255", "smarts": "[$([#1][CD3](=[O])[ND3][CD3]=[O])]", "charge": 0.06, "desc": "Formimide H-C=O"},
+    {"element": "C", "btype": "CT", "opls": "opls_256", "smarts": "[$([CH3D4][CD3](=[O])[ND3][CD3]=[O])]", "charge": -0.12, "desc": "Imide CH3-CONHCO-"},
+    {"element": "C", "btype": "CT", "opls": "opls_257", "smarts": "[$([CH2D4][CD3](=[O])[ND3][CD3]=[O])]", "charge": -0.06, "desc": "Imide -CH2-CONHCO-"},
+    {"element": "C", "btype": "CT", "opls": "opls_258", "smarts": "[$([CH1D4][CD3](=[O])[ND3][CD3]=[O])]", "charge": 0.0, "desc": "Imide >CH-CONHCO-"},
+    {"element": "C", "btype": "CT", "opls": "opls_259", "smarts": "[$([CH0D4][CD3](=[O])[ND3][CD3]=[O])]", "charge": 0.06, "desc": "Imide C-CONHCO-"},
+    {"element": "C", "btype": "CA", "opls": "opls_260", "smarts": "[$([c][CD2]#[ND1])]", "charge": 0.035, "desc": "Benzonitrile C-CN"},
+    {"element": "C", "btype": "CZ", "opls": "opls_261", "smarts": "[$([CD2](c)#[ND1])]", "charge": 0.395, "desc": "Benzonitrile -CN"},
+    {"element": "N", "btype": "NZ", "opls": "opls_262", "smarts": "[$([ND1]#[CD2][c])]", "charge": -0.43, "desc": "Benzonitrile -CN"},
+    {"element": "C", "btype": "CA", "opls": "opls_263", "smarts": "[$([c][Cl])]", "charge": 0.18, "desc": "Chlorobenzene C-Cl"},
+    {"element": "Cl", "btype": "Cl", "opls": "opls_264", "smarts": "[$([Cl][c])]", "charge": -0.18, "desc": "Chlorobenzene C-Cl"},
+    {"element": "N", "btype": "N", "opls": "opls_265", "smarts": "[$([NH1D3](c)[CD3]=[O])]", "charge": -0.385, "desc": "N-Phenylacetamide N"},
+    {"element": "C", "btype": "CA", "opls": "opls_266", "smarts": "[$([c][NH1D3][CD3]=[O])]", "charge": 0.085, "desc": "N-Phenylacetamide N-CA"},
+    {"element": "C", "btype": "C", "opls": "opls_267", "smarts": "[$([CD3](=O)[OH])]", "charge": 0.52, "desc": "Carboxylic Acid -COOH"},
+    {"element": "O", "btype": "OH", "opls": "opls_268", "smarts": "[$([OH][CD3]=[O])]", "charge": -0.53, "desc": "Carboxylic Acid -OH"},
+    {"element": "O", "btype": "O_3", "opls": "opls_269", "smarts": "[$([O]=[CD3][OH])]", "charge": -0.44, "desc": "Carboxylic Acid C=O"},
+    {"element": "H", "btype": "HO", "opls": "opls_270", "smarts": "[$([#1][O][CD3]=[O])]", "charge": 0.45, "desc": "Carboxylic Acid -COOH"},
+    {"element": "C", "btype": "C_3", "opls": "opls_271", "smarts": "[$([#6](~[#8D1])~[#8D1])]", "charge": 0.7, "desc": "Carboxylate COO-"},
+    {"element": "O", "btype": "O2", "opls": "opls_272", "smarts": "[$([#8D1]~[#6]~[#8D1])]", "charge": -0.8, "desc": "Carboxylate COO-"},
+    {"element": "C", "btype": "CT", "opls": "opls_273", "smarts": "[$([CH3D4][#6D3](~[#8D1])~[#8D1])]", "charge": -0.28, "desc": "Carboxylate CH3-COO-"},
+    {"element": "C", "btype": "CT", "opls": "opls_274", "smarts": "[$([CH2D4][#6D3](~[#8D1])~[#8D1])]", "charge": -0.22, "desc": "Carboxylate RCH2-COO-"},
+    {"element": "C", "btype": "CT", "opls": "opls_275", "smarts": "[$([CH1D4][#6D3](~[#8D1])~[#8D1])]", "charge": -0.16, "desc": "Carboxylate R2CH-COO-"},
+    {"element": "C", "btype": "CT", "opls": "opls_276", "smarts": "[$([CH0D4][#6D3](~[#8D1])~[#8D1])]", "charge": -0.1, "desc": "Carboxylate R3C-COO-"},
+    {"element": "C", "btype": "C_2", "opls": "opls_277", "smarts": "[$([CH1]([#6])=[O])]", "charge": 0.45, "desc": "Aldehyde/Acyl Halide C=O"},
+    {"element": "O", "btype": "O_2", "opls": "opls_278", "smarts": "[$([O]=[CH1][#6])]", "charge": -0.45, "desc": "Aldehyde/Acyl Halide C=O"},
+    {"element": "H", "btype": "HC", "opls": "opls_279", "smarts": "[$([#1][CH1]([#6])=[O])]", "charge": 0.0, "desc": "Aldehyde/Formamide H-C=O"},
+    {"element": "H", "btype": "HC", "opls": "opls_279", "smarts": "[$([#1][CH1]([#7])=[O])]", "charge": 0.0, "desc": "Aldehyde/Formamide H-C=O"},
+    {"element": "C", "btype": "C_2", "opls": "opls_280", "smarts": "[$([CH0D3]([#6])([#6])=[O])]", "charge": 0.47, "desc": "Ketone C=O"},
+    {"element": "O", "btype": "O_2", "opls": "opls_281", "smarts": "[$([O]=[CH0D3]([#6])[#6])]", "charge": -0.47, "desc": "Ketone C=O"},
+    {"element": "H", "btype": "HC", "opls": "opls_282", "smarts": "[$([#1][CD4][CH0D3](=[O])[#6])]", "charge": 0.06, "desc": "Acyl H-C-COX"},
+    {"element": "H", "btype": "HC", "opls": "opls_282", "smarts": "[$([#1][CD4][CH1D3](=[O]))]", "charge": 0.06, "desc": "Acyl H-C-COX"},
+    {"element": "N", "btype": "N3", "opls": "opls_286", "smarts": "[$([#7H4D4])]", "charge": -0.4, "desc": "Ammonium NH4+"},
+    {"element": "N", "btype": "N3", "opls": "opls_287", "smarts": "[$([#7H3D4])]", "charge": -0.3, "desc": "Ammonium RNH3+"},
+    {"element": "N", "btype": "N3", "opls": "opls_288", "smarts": "[$([#7H0D4])]", "charge": 0.0, "desc": "Ammonium R4N+"},
+    {"element": "H", "btype": "H3", "opls": "opls_289", "smarts": "[$([#1][#7H4D4])]", "charge": 0.35, "desc": "Ammonium NH4+"},
+    {"element": "H", "btype": "H3", "opls": "opls_290", "smarts": "[$([#1][#7H3D4])]", "charge": 0.33, "desc": "Ammonium RNH3+"},
+    {"element": "C", "btype": "CT", "opls": "opls_291", "smarts": "[$([CH3D4][#7H3D4])]", "charge": 0.13, "desc": "Ammonium CH3-NH3+"},
+    {"element": "C", "btype": "CT", "opls": "opls_292", "smarts": "[$([CH2D4][#7H3D4])]", "charge": 0.19, "desc": "\"CH2NH3+/N-Term GLY CA\" ?"},
+    {"element": "C", "btype": "CT_2", "opls": "opls_292B", "smarts": "[$([CH2D4]([CD3]=[O])[#7H3D4])]", "charge": 0.19, "desc": "\"CH2NH3+/N-Term GLY CA\" ?"},
+    {"element": "C", "btype": "CT", "opls": "opls_297", "smarts": "[$([CH3D4][#7H2D4])]", "charge": 0.11, "desc": "Ammonium CH3-NH2R+"},
+    {"element": "C", "btype": "CT_2", "opls": "opls_298", "smarts": "[$([CH2D4]([#7D4])[#6D3]([#8D1])[#8D1])]", "charge": 0.09, "desc": "GLY Zwitterion CA"},
+    {"element": "C", "btype": "CT_2", "opls": "opls_299", "smarts": "[$([CH1D4]([CH3D4])([#7D4])[#6D3]([#8D1])[#8D1])]", "charge": 0.15, "desc": "ALA Zwitterion CA"},
+    {"element": "N", "btype": "N2", "opls": "opls_300", "smarts": "[$([#7H2D3]~[#6H0D3](~[#7D3])~[#7D3])]", "charge": -0.8, "desc": "Guanidinium -NH2"},
+    {"element": "H", "btype": "H3", "opls": "opls_301", "smarts": "[$([#1][#7H2D3]~[#6H0D3](~[#7D3])~[#7D3])]", "charge": 0.46, "desc": "Guanidinium -NH2"},
+    {"element": "C", "btype": "CA", "opls": "opls_302", "smarts": "[$([#6H0D3](~[#7D3])(~[#7D3])~[#7D3])]", "charge": 0.64, "desc": "Guanidinium C+"},
+    {"element": "N", "btype": "N2", "opls": "opls_303", "smarts": "[$([#7H1D3]~[#6H0D3](~[#7D3])~[#7D3])]", "charge": -0.7, "desc": "Guanidinium -NHR"},
+    {"element": "H", "btype": "H3", "opls": "opls_304", "smarts": "[$([#1][#7H1D3]~[#6H0D3](~[#7D3])~[#7D3])]", "charge": 0.44, "desc": "Guanidinium -NHR"},
+    {"element": "C", "btype": "CT", "opls": "opls_305", "smarts": "[$([CH3D4][#7H1D3]~[#6H0D3](~[#7D3])~[#7D3])]", "charge": 0.2, "desc": "Me Guanidinium CH3-"},
+    {"element": "C", "btype": "CT", "opls": "opls_306", "smarts": "[$([CH3D4][CH2D4][#7H1D3]~[#6H0D3](~[#7D3])~[#7D3])]", "charge": -0.11, "desc": "Et Guanidinium CH3-"},
+    {"element": "C", "btype": "CT", "opls": "opls_307", "smarts": "[$([CH2D4][#7H1D3]~[#6H0D3](~[#7D3])~[#7D3])]", "charge": 0.19, "desc": "Et Guan -CH2- & ARG CD"},
+    {"element": "C", "btype": "CT", "opls": "opls_308", "smarts": "[$([CH2D4]([CH2D4][CH1D4])[CH2D4][#7H1D3]~[#6H0D3](~[#7D3])~[#7D3])]", "charge": -0.05, "desc": "Pr Guan-CH2-ARGCG"},
+    {"element": "N", "btype": "N3", "opls": "opls_309", "smarts": "[$([#7H2D4])]", "charge": -0.2, "desc": "Ammonium R2NH2+"},
+    {"element": "H", "btype": "H3", "opls": "opls_310", "smarts": "[$([#1][#7H2D4])]", "charge": 0.31, "desc": "Ammonium R2NH2+"},
+    {"element": "N", "btype": "NC", "opls": "opls_311", "smarts": "[$([n]([c]([NH2D3])[c])[c]([NH2D3])[c])]", "charge": -0.46, "desc": "Diaminopyridine N1"},
+    {"element": "N", "btype": "NC", "opls": "opls_311", "smarts": "[$([#7]=[#6])]", "charge": -0.46, "desc": "\"Diaminopyridine N1\" ?"},
+    {"element": "N", "btype": "NC", "opls": "opls_311", "smarts": "[$([n][n])]", "charge": -0.46, "desc": "\"Diaminopyridine N1\" ?"},
+    {"element": "C", "btype": "CA", "opls": "opls_312", "smarts": "[$([c]([n][c]([NH2D3])[c])([NH2D3])[c])]", "charge": 0.36, "desc": "Diaminopyridine C2"},
+    {"element": "N", "btype": "N2", "opls": "opls_313", "smarts": "[$([NH2D3][c][n][c][NH2D3])]", "charge": -0.85, "desc": "Diaminopyridine -NH2"},
+    {"element": "H", "btype": "H", "opls": "opls_314", "smarts": "[$([#1][NH2D3][c][n][c][NH2D3])]", "charge": 0.37, "desc": "Diaminopyridine -NH2"},
+    {"element": "C", "btype": "CA", "opls": "opls_315", "smarts": "[$([c](c)[c]([NH2D3])[n][c][NH2D3])]", "charge": -0.15, "desc": "Diaminopyridine C3"},
+    {"element": "H", "btype": "HA", "opls": "opls_316", "smarts": "[$([#1][c](c)[c]([NH2D3])[n][c][NH2D3])]", "charge": 0.1, "desc": "Diaminopyridine H3"},
+    {"element": "C", "btype": "CA", "opls": "opls_317", "smarts": "[$([c]([c][c]([NH2D3]))[c][c]([NH2D3])[n])]", "charge": -0.04, "desc": "Diaminopyridine C4"},
+    {"element": "H", "btype": "HA", "opls": "opls_318", "smarts": "[$([#1][c]([c][c]([NH2D3]))[c][c]([NH2D3])[n])]", "charge": 0.1, "desc": "Diaminopyridine H4"},
+    {"element": "N", "btype": "NA", "opls": "opls_319", "smarts": "[$([#7H1D3]([#6D3])[#6D3](=O)[#7D3][#6D3]=[O])]", "charge": -0.6, "desc": "Uracil & Thymine N1"},
+    {"element": "N", "btype": "N*", "opls": "opls_319B", "smarts": "[$([#7H0D3]([#6D3])[#6D3](=O)[#7D3][#6D3]=[O])]", "charge": -0.6, "desc": "\"Uracil & Thymine N1\" ?"},
+    {"element": "C", "btype": "C", "opls": "opls_320", "smarts": "[$([#6D3](=O)([#7D3][#6D3]=[O])[#7D3])]", "charge": 0.5, "desc": "Uracil & Thymine C2"},
+    {"element": "N", "btype": "NA", "opls": "opls_321", "smarts": "[$([#7H1D3]([#6D3]=[O])[#6D3](=O)[#7D3][#6D3])]", "charge": -0.51, "desc": "Uracil & Thymine N3"},
+    {"element": "C", "btype": "C", "opls": "opls_322", "smarts": "[$([#6D3](=O)([#6D3][#6D3])[#7D3][#6D3](=O)[#7D3])]", "charge": 0.45, "desc": "Uracil & Thymine C4"},
+    {"element": "C", "btype": "CM", "opls": "opls_323", "smarts": "[$([#6D3]([#6H1D3])[#6D3](=O)[#7D3][#6D3](=O)[#7D3])]", "charge": -0.07, "desc": "Uracil & Thymine C5"},
+    {"element": "C", "btype": "CM", "opls": "opls_324", "smarts": "[$([#6H1D3]([#6D3][#6D3]=[O])[#7D3][#6D3](=O)[#7D3])]", "charge": 0.08, "desc": "Uracil & Thymine C6"},
+    {"element": "H", "btype": "H", "opls": "opls_325", "smarts": "[$([#1][#7H1D3]([#6D3])[#6D3](=O)[#7D3][#6D3]=[O])]", "charge": 0.41, "desc": "Uracil & Thymine HN1"},
+    {"element": "O", "btype": "O", "opls": "opls_326", "smarts": "[$([O]=[#6D3]([#7D3][#6D3])[#7D3][#6D3]=[O])]", "charge": -0.4, "desc": "Uracil & Thymine O2"},
+    {"element": "H", "btype": "H", "opls": "opls_327", "smarts": "[$([#1][#7H1D3]([#6D3]=[O])[#6D3](=O)[#7D3][#6D3])]", "charge": 0.36, "desc": "Uracil & Thymine HN3"},
+    {"element": "O", "btype": "O", "opls": "opls_328", "smarts": "[$([O]=[#6D3]([#6D3])[#7D3][#6D3](=O)[#7D3])]", "charge": -0.42, "desc": "Uracil & Thymine O4"},
+    {"element": "H", "btype": "HC", "opls": "opls_329", "smarts": "[$([#1][#6H1D3]([#6D3])[#6D3](=O)[#7D3][#6D3](=O)[#7D3])]", "charge": 0.1, "desc": "Uracil & Thymine HC5"},
+    {"element": "H", "btype": "HC", "opls": "opls_330", "smarts": "[$([#1][#6H1D3]([#6D3][#6D3]=[O])[#7D3][#6D3](=O)[#7D3])]", "charge": 0.1, "desc": "Uracil & Thymine HC6"},
+    {"element": "C", "btype": "CT", "opls": "opls_331", "smarts": "[$([#6D4][#6D3]([#6D3])[#6D3](=O)[#7D3][#6D3](=O)[#7D3])]", "charge": -0.14, "desc": "Thymine CH3-"},
+    {"element": "H", "btype": "HC", "opls": "opls_332", "smarts": "[$([#1][#6D4][#6D3]([#6D3])[#6D3](=O)[#7D3][#6D3](=O)[#7D3])]", "charge": 0.08, "desc": "Thymine CH3-"},
+    {"element": "N", "btype": "NA", "opls": "opls_333", "smarts": "[$([#7H1D3]1[#6D3](=O)[#7D2][#6D3]([NH2D3])[#6D3][#6D3]1)]", "charge": -0.56, "desc": "Cytosine N1"},
+    {"element": "N", "btype": "N*", "opls": "opls_333B", "smarts": "[$([#7H0D3]1[#6D3](=O)[#7D2][#6D3]([NH2D3])[#6D3][#6D3]1)]", "charge": -0.56, "desc": "\"Cytosine N1\" ?"},
+    {"element": "C", "btype": "C", "opls": "opls_334", "smarts": "[$([#6D3]1(=O)[#7D2][#6D3]([NH2D3])[#6D3][#6D3][#7D3]1)]", "charge": 0.55, "desc": "Cytosine C2"},
+    {"element": "N", "btype": "NC", "opls": "opls_335", "smarts": "[$([#7D2]1[#6D3](=O)[#7D3][#6D3][#6D3][#6D3]1[NH2D3])]", "charge": -0.54, "desc": "Cytosine N3"},
+    {"element": "C", "btype": "CA", "opls": "opls_336", "smarts": "[$([#6D3]1([NH2D3])[#6D3][#6D3][#7D3][#6D3](=O)[#7D2]1)]", "charge": 0.46, "desc": "Cytosine C4"},
+    {"element": "C", "btype": "CM", "opls": "opls_337", "smarts": "[$([#6D3]1[#6D3]([NH2D3])[#7D2][#6D3](=O)[#7D3][#6D3]1)]", "charge": -0.06, "desc": "Cytosine C5"},
+    {"element": "C", "btype": "CM", "opls": "opls_338", "smarts": "[$([#6D3]1[#6D3][#6D3]([NH2D3])[#7D2][#6D3](=O)[#7D3]1)]", "charge": 0.1, "desc": "Cytosine C6"},
+    {"element": "H", "btype": "H", "opls": "opls_339", "smarts": "[$([#1][#7H1D3]1[#6D3](=O)[#7D2][#6D3]([NH2D3])[#6D3][#6D3]1)]", "charge": 0.38, "desc": "Cytosine HN1"},
+    {"element": "O", "btype": "O", "opls": "opls_340", "smarts": "[$([O]=[#6D3]1[#7D2][#6D3]([NH2D3])[#6D3][#6D3][#7D3]1)]", "charge": -0.48, "desc": "Cytosine O2"},
+    {"element": "N", "btype": "N2", "opls": "opls_341", "smarts": "[$([NH2D3][#6D3]1[#6D3][#6D3][#7D3][#6D3](=O)[#7D2]1)]", "charge": -0.79, "desc": "Cytosine NH2-"},
+    {"element": "H", "btype": "H", "opls": "opls_342", "smarts": "[$([#1][NH2D3][#6D3]1[#6D3][#6D3][#7D3][#6D3](=O)[#7D2]1)]", "charge": 0.385, "desc": "Cytosine NH2- (N3)"},
+    {"element": "H", "btype": "H", "opls": "opls_343", "smarts": "[$([#1][NH2D3][#6D3]1[#6D3][#6D3][#7D3][#6D3](=O)[#7D2]1)]", "charge": 0.355, "desc": "Cytosine NH2- (C5)"},
+    {"element": "H", "btype": "HC", "opls": "opls_344", "smarts": "[$([#1][#6D3]1[#6D3]([NH2D3])[#7D2][#6D3](=O)[#7D3][#6D3]1)]", "charge": 0.1, "desc": "Cytosine HC5"},
+    {"element": "H", "btype": "H4", "opls": "opls_345", "smarts": "[$([#1][#6D3]1[#6D3][#6D3]([NH2D3])[#7D2][#6D3](=O)[#7D3]1)]", "charge": 0.1, "desc": "Cytosine HC6"},
+    {"element": "N", "btype": "NC", "opls": "opls_346", "smarts": "[$([#7]1[#6][#7][#6]2[#6]([#7][#6][#7]2)[#6]1([NH2D3]))]", "charge": -0.53, "desc": "Adenine N1"},
+    {"element": "C", "btype": "CQ", "opls": "opls_347", "smarts": "[$([#6]1[#7][#6]2[#6]([#7][#6][#7]2)[#6]([NH2D3])[#7]1)]", "charge": 0.22, "desc": "Adenine C2"},
+    {"element": "N", "btype": "NC", "opls": "opls_348", "smarts": "[$([#7]1[#6]2[#6]([#7][#6][#7]2)[#6]([NH2D3])[#7][#6]1)]", "charge": -0.55, "desc": "Adenine N3"},
+    {"element": "C", "btype": "CB", "opls": "opls_349", "smarts": "[$([#6]1([#7][#6][#7]2)[#6]2[#6]([NH2D3])[#7][#6][#7]1)]", "charge": 0.38, "desc": "Adenine C4"},
+    {"element": "C", "btype": "CB", "opls": "opls_350", "smarts": "[$([#6]1([#7][#6][#7]2)[#6]2[#7][#6][#7][#6]1([NH2D3]))]", "charge": 0.15, "desc": "Adenine C5"},
+    {"element": "C", "btype": "CA", "opls": "opls_351", "smarts": "[$([#6]1([NH2D3])[#7][#6][#7][#6]2[#6]1([#7][#6][#7]2))]", "charge": 0.44, "desc": "Adenine C6"},
+    {"element": "N", "btype": "NB", "opls": "opls_352", "smarts": "[$([#7]1[#6][#7][#6]2[#6]1[#6][#7][#6][#7]2)]", "charge": -0.49, "desc": "Adenine & Guanine N7"},
+    {"element": "C", "btype": "CK", "opls": "opls_353", "smarts": "[$([#6]1[#7][#6]2[#7][#6][#7][#6][#6]2[#7]1)]", "charge": 0.2, "desc": "Adenine & Guanine C8"},
+    {"element": "N", "btype": "NA", "opls": "opls_354", "smarts": "[$([#7D3]1[#6]2[#7][#6][#7][#6][#6]2[#7][#6]1)]", "charge": -0.5, "desc": "Adenine & Guanine N9"},
+    {"element": "N", "btype": "N*", "opls": "opls_354B", "smarts": "[$([#7D2D3]1[#6]2[#7][#6][#7][#6][#6]2[#7][#6]1)]", "charge": -0.5, "desc": "\"Adenine & Guanine N9\" ?"},
+    {"element": "H", "btype": "H5", "opls": "opls_355", "smarts": "[$([#1][#6]1[#7][#6]2[#6]([#7][#6][#7]2)[#6]([NH2D3])[#7]1)]", "charge": 0.2, "desc": "Adenine HC2"},
+    {"element": "N", "btype": "N2", "opls": "opls_356", "smarts": "[$([NH2D3][#6]1[#7][#6][#7][#6]2[#6]1([#7][#6][#7]2))]", "charge": -0.81, "desc": "Adenine NH2-"},
+    {"element": "H", "btype": "H", "opls": "opls_357", "smarts": "[$([#1][NH2D3][#6]1[#7][#6][#7][#6]2[#6]1([#7][#6][#7]2))]", "charge": 0.385, "desc": "Adenine NH2- (N1)"},
+    {"element": "H", "btype": "H", "opls": "opls_358", "smarts": "[$([#1][NH2D3][#6]1[#7][#6][#7][#6]2[#6]1([#7][#6][#7]2))]", "charge": 0.355, "desc": "Adenine NH2- (C5)"},
+    {"element": "H", "btype": "H5", "opls": "opls_359", "smarts": "[$([#1][#6]1[#7][#6]2[#7][#6][#7][#6][#6]2[#7]1)]", "charge": 0.2, "desc": "Adenine & Guanine HC8"},
+    {"element": "H", "btype": "H", "opls": "opls_360", "smarts": "[$([#1][#7D3]1[#6]2[#7][#6][#7][#6][#6]2[#7][#6]1)]", "charge": 0.35, "desc": "Adenine & Guanine HN9"},
+    {"element": "N", "btype": "NA", "opls": "opls_361", "smarts": "[$([#7H1]1[#6](=[#8])[#6]([#7H0][#6][#7H1]2)[#6]2[#7H0][#6]1[NH2D3])]", "charge": -0.56, "desc": "Guanine N1"},
+    {"element": "C", "btype": "CA", "opls": "opls_362", "smarts": "[$([#6]1([NH2D3])[#7H1][#6](=[#8])[#6]([#7H0][#6][#7H1]2)[#6]2[#7H0]1)]", "charge": 0.46, "desc": "Guanine C2"},
+    {"element": "N", "btype": "NC", "opls": "opls_363", "smarts": "[$([#7H0]1[#6]([#7H1][#6][#7H0]2)[#6]2[#6](=[#8])[#7H1][#6]1[NH2D3])]", "charge": -0.51, "desc": "Guanine N3"},
+    {"element": "C", "btype": "CB", "opls": "opls_364", "smarts": "[$([#6]1([#7H1][#6][#7H0]2)[#6]2[#6](=[#8])[#7H1][#6]([NH2D3])[#7H0]1)]", "charge": 0.34, "desc": "Guanine C4"},
+    {"element": "C", "btype": "CB", "opls": "opls_365", "smarts": "[$([#6]1([#7H0][#6][#7H1]2)[#6]2[#7H0][#6]([NH2D3])[#7H1][#6]1(=[#8]))]", "charge": 0.12, "desc": "Guanine C5"},
+    {"element": "C", "btype": "C", "opls": "opls_366", "smarts": "[$([#6]1(=[#8])[#6]([#7H0][#6][#7H1]2)[#6]2[#7H0][#6]([NH2D3])[#7H1]1)]", "charge": 0.52, "desc": "Guanine C6"},
+    {"element": "H", "btype": "H", "opls": "opls_367", "smarts": "[$([#1][#7H1]1[#6](=[#8])[#6]([#7H0][#6][#7H1]2)[#6]2[#7H0][#6]1[NH2D3])]", "charge": 0.38, "desc": "Guanine HN1"},
+    {"element": "N", "btype": "N2", "opls": "opls_368", "smarts": "[$([NH2D3][#6]1[#7H1][#6](=[#8])[#6]([#7H0][#6][#7H1]2)[#6]2[#7H0]1)]", "charge": -0.8, "desc": "Guanine NH2-"},
+    {"element": "H", "btype": "H", "opls": "opls_369", "smarts": "[$([#1][NH2D3][#6]1[#7H1][#6](=[#8])[#6]([#7H0][#6][#7H1]2)[#6]2[#7H0]1)]", "charge": 0.4, "desc": "Guanine NH2-"},
+    {"element": "O", "btype": "O", "opls": "opls_370", "smarts": "[$([#8]=[#6]1[#6]([#7H0][#6][#7H1]2)[#6]2[#7H0][#6]([NH2D3])[#7H1]1)]", "charge": -0.51, "desc": "Guanine O6"},
+    {"element": "C", "btype": "CT", "opls": "opls_371", "smarts": "[$([CD4][nD3]1c2ncncc2nc1)]", "charge": -0.01, "desc": "9-Me A & 9-Me-G CH3-"},
+    {"element": "H", "btype": "HC", "opls": "opls_372", "smarts": "[$([#1][CD4][nD3]1c2ncncc2nc1)]", "charge": 0.12, "desc": "9-Me-A & 9-Me-G CH3-"},
+    {"element": "C", "btype": "CT", "opls": "opls_373", "smarts": "[$([CD4][#7D3]([#6D3])[#6D3](=O)[#7D3][#6D3]=[O])]", "charge": -0.01, "desc": "1-Me-U & 1-Me-T CH3-"},
+    {"element": "H", "btype": "HC", "opls": "opls_374", "smarts": "[$([#1][CD4][#7D3]([#6D3])[#6D3](=O)[#7D3][#6D3]=[O])]", "charge": 0.14, "desc": "1-Me-U & 1-Me-T CH3-"},
+    {"element": "C", "btype": "CT", "opls": "opls_375", "smarts": "[$([CD4][#7D3]([#6D3])[#6D3](=O)[#7D2][#6D3][NH2D3])]", "charge": -0.01, "desc": "1-Me-Cytosine CH3-"},
+    {"element": "H", "btype": "HC", "opls": "opls_376", "smarts": "[$([#1][CD4][#7D3]([#6D3])[#6D3](=O)[#7D2][#6D3][NH2D3])]", "charge": 0.13, "desc": "1-Me-Cytosine CH3-"},
+    {"element": "N", "btype": "NA", "opls": "opls_377", "smarts": "[$([#7H1D3]1[#6D3](=O)[#7H1D3][#6D3]([NH2D3])[#6D3][#6D3]1)]", "charge": -0.64, "desc": "CytosineH+ N1"},
+    {"element": "N", "btype": "N*", "opls": "opls_377B", "smarts": "[$([#7H0D3]1[#6D3](=O)[#7H1D3][#6D3]([NH2D3])[#6D3][#6D3]1)]", "charge": -0.64, "desc": "CytosineH+ N1"},
+    {"element": "C", "btype": "C", "opls": "opls_378", "smarts": "[$([#6D3]1(=O)[#7D3][#6D3]([NH2D3])[#6D3][#6D3][#7D3]1)]", "charge": 0.65, "desc": "CytosineH+ C2"},
+    {"element": "N", "btype": "NA", "opls": "opls_379", "smarts": "[$([#7D3]1[#6D3](=O)[#7D3][#6D3][#6D3][#6D3]1[NH2D3])]", "charge": -0.74, "desc": "CytosineH+ N3"},
+    {"element": "C", "btype": "CA", "opls": "opls_380", "smarts": "[$([#6D3]1([NH2D3])[#6D3][#6D3][#7D3][#6D3](=O)[#7D3]1)]", "charge": 0.66, "desc": "CytosineH+ C4"},
+    {"element": "C", "btype": "CM", "opls": "opls_381", "smarts": "[$([#6D3]1[#6D3]([NH2D3])[#7D3][#6D3](=O)[#7D3][#6D3]1)]", "charge": -0.06, "desc": "CytosineH+ C5"},
+    {"element": "C", "btype": "CM", "opls": "opls_382", "smarts": "[$([#6D3]1[#6D3][#6D3]([NH2D3])[#7D3][#6D3](=O)[#7D3]1)]", "charge": 0.1, "desc": "CytosineH+ C6"},
+    {"element": "H", "btype": "H", "opls": "opls_383", "smarts": "[$([#1][#7H1D3]1[#6D3](=O)[#7H1D3][#6D3]([NH2D3])[#6D3][#6D3]1)]", "charge": 0.49, "desc": "CytosineH+ HN1"},
+    {"element": "O", "btype": "O", "opls": "opls_384", "smarts": "[$([O]=[#6D3]1[#7D3][#6D3]([NH2D3])[#6D3][#6D3][#7D3]1)]", "charge": -0.3, "desc": "CytosineH+ O2"},
+    {"element": "H", "btype": "H", "opls": "opls_385", "smarts": "[$([#1][#7D3]1[#6D3](=O)[#7D3][#6D3][#6D3][#6D3]1[NH2D3])]", "charge": 0.48, "desc": "CytosineH+ HN3"},
+    {"element": "N", "btype": "N2", "opls": "opls_386", "smarts": "[$([NH2D3][#6D3]1[#6D3][#6D3][#7D3][#6D3](=O)[#7D3]1)]", "charge": -0.81, "desc": "CytosineH+ NH2-"},
+    {"element": "H", "btype": "H", "opls": "opls_387", "smarts": "[$([#1][NH2D3][#6D3]1[#6D3][#6D3][#7D3][#6D3](=O)[#7D3]1)]", "charge": 0.46, "desc": "CytosineH+ NH2- (N3)"},
+    {"element": "H", "btype": "H", "opls": "opls_388", "smarts": "[$([#1][NH2D3][#6D3]1[#6D3][#6D3][#7D3][#6D3](=O)[#7D3]1)]", "charge": 0.43, "desc": "CytosineH+ NH2- (C5)"},
+    {"element": "H", "btype": "HA", "opls": "opls_389", "smarts": "[$([#1][#6D3]1[#6D3]([NH2D3])[#7D3][#6D3](=O)[#7D3][#6D3]1)]", "charge": 0.14, "desc": "CytosineH+ HC5"},
+    {"element": "H", "btype": "H4", "opls": "opls_390", "smarts": "[$([#1][#6D3]1[#6D3][#6D3]([NH2D3])[#7D3][#6D3](=O)[#7D3]1)]", "charge": 0.14, "desc": "CytosineH+ HC6"},
+    {"element": "C", "btype": "CT", "opls": "opls_391", "smarts": "[$([CD4][#7H0D3]1[#6D3](=O)[#7H1D3][#6D3]([NH2D3])[#6D3][#6D3]1)]", "charge": 0.01, "desc": "1-Me-CytosineH+ CH3-"},
+    {"element": "H", "btype": "HC", "opls": "opls_392", "smarts": "[$([#1][CD4][#7H0D3]1[#6D3](=O)[#7H1D3][#6D3]([NH2D3])[#6D3][#6D3]1)]", "charge": 0.16, "desc": "1-Me-CytosineH+ CH3-"},
+    {"element": "F", "btype": "F-", "opls": "opls_400", "smarts": "[F-]", "charge": -1.0, "desc": "Fluoride Ion F-"},
+    {"element": "Cl", "btype": "Cl-", "opls": "opls_401", "smarts": "[Cl-]", "charge": -1.0, "desc": "Chloride Ion Cl-"},
+    {"element": "Br", "btype": "Br-", "opls": "opls_402", "smarts": "[Br-]", "charge": -1.0, "desc": "Bromide Ion Br-"},
+    {"element": "I", "btype": "I-", "opls": "opls_403", "smarts": "[I-]", "charge": -1.0, "desc": "Iodide Ion I-"},
+    {"element": "Li", "btype": "Li+", "opls": "opls_404", "smarts": "[Li+]", "charge": 1.0, "desc": "Lithium Ion Li+"},
+    {"element": "Na", "btype": "Na+", "opls": "opls_405", "smarts": "[Na+]", "charge": 1.0, "desc": "Sodium Ion Na+"},
+    {"element": "K", "btype": "K+", "opls": "opls_408", "smarts": "[K+]", "charge": 1.0, "desc": "Potassium Ion K+"},
+    {"element": "Rb", "btype": "Rb+", "opls": "opls_409", "smarts": "[Rb+]", "charge": 1.0, "desc": "Rubidium Ion Rb+"},
+    {"element": "Cs", "btype": "Cs+", "opls": "opls_410", "smarts": "[Cs+]", "charge": 1.0, "desc": "Cesium Ion Cs+"},
+    {"element": "Mg", "btype": "Mg2+", "opls": "opls_411", "smarts": "[Mg+2]", "charge": 2.0, "desc": "Magnesium Ion Mg+2"},
+    {"element": "Ca", "btype": "Ca2+", "opls": "opls_412", "smarts": "[Ca+2]", "charge": 2.0, "desc": "Calcium Ion Ca+2"},
+    {"element": "Sr", "btype": "Sr2+", "opls": "opls_413", "smarts": "[Sr+2]", "charge": 2.0, "desc": "Strontium Ion Sr+2"},
+    {"element": "Ba", "btype": "Ba2+", "opls": "opls_414", "smarts": "[Ba+2]", "charge": 2.0, "desc": "Barium Ion Ba+2"},
+    {"element": "C", "btype": "C3", "opls": "opls_415", "smarts": "[$([CH3D4][S-])]", "charge": -0.4, "desc": "Methyl Thiolate CH3S-"},
+    {"element": "H", "btype": "HC", "opls": "opls_416", "smarts": "[$([#1][CH3D4][S-])]", "charge": 0.1, "desc": "Methyl Thiolate CH3S-"},
+    {"element": "S", "btype": "SH", "opls": "opls_417", "smarts": "[$([S-][CH3D4])]", "charge": -0.9, "desc": "Methyl Thiolate CH3S-"},
+    {"element": "C", "btype": "C3", "opls": "opls_418", "smarts": "[$([CH3D4][O-])]", "charge": -0.2, "desc": "Methoxide CH3O-"},
+    {"element": "H", "btype": "HC", "opls": "opls_419", "smarts": "[$([#1][CH3D4][O-])]", "charge": 0.06, "desc": "Methoxide CH3O-"},
+    {"element": "O", "btype": "OH", "opls": "opls_420", "smarts": "[$([O-][CH3D4])]", "charge": -0.98, "desc": "\"Methoxide CH3O-\" *** mod AHS"},
+    {"element": "C", "btype": "CT", "opls": "opls_421", "smarts": "[$([CH2D3][CH0D2][ND1])]", "charge": -1.07, "desc": "Nitrile Anion CNCH2-"},
+    {"element": "H", "btype": "HC", "opls": "opls_422", "smarts": "[$([#1][CH2D3][CH0D2][ND1])]", "charge": 0.19, "desc": "Nitrile Anion CNCH2-"},
+    {"element": "C", "btype": "CZ", "opls": "opls_423", "smarts": "[$([CH0D2]([CH2D3])[ND1])]", "charge": 0.51, "desc": "Nitrile Anion CNCH2-"},
+    {"element": "N", "btype": "NZ", "opls": "opls_424", "smarts": "[$([ND1][CH0D2][CH2D3])]", "charge": -0.82, "desc": "Nitrile Anion CNCH2-"},
+    {"element": "C", "btype": "C3", "opls": "opls_425", "smarts": "[$([CH3D3][NH1D2])]", "charge": -0.3, "desc": "Me Amine Anion CH3NH-"},
+    {"element": "H", "btype": "HC", "opls": "opls_426", "smarts": "[$([#1][CH3D3][NH1D2])]", "charge": 0.07, "desc": "Me Amine Anion CH3NH-"},
+    {"element": "N", "btype": "N3", "opls": "opls_427", "smarts": "[$([NH1D2][CH3D3])]", "charge": -1.31, "desc": "Me Amine Anion CH3NH-"},
+    {"element": "H", "btype": "H", "opls": "opls_428", "smarts": "[$([#1][NH1D2][CH3D3])]", "charge": 0.4, "desc": "Methyl Amine Anion"},
+    {"element": "C", "btype": "C3", "opls": "opls_429", "smarts": "[$([CH2D3-])]", "charge": -0.4, "desc": "Ethyl Anion CH3-CH2-"},
+    {"element": "H", "btype": "HC", "opls": "opls_430", "smarts": "[$([#1][CH2D3-])]", "charge": 0.08, "desc": "Ethyl Anion CH3-CH2-"},
+    {"element": "C", "btype": "CT", "opls": "opls_431", "smarts": "[$([CH3D4][CH2D3-])]", "charge": 0.0, "desc": "Ethyl Anion CH3-CH2-"},
+    {"element": "H", "btype": "HC", "opls": "opls_432", "smarts": "[$([#1][CH3D4][CH2D3-])]", "charge": 0.07, "desc": "Ethyl Anion CH3-CH2-"},
+    {"element": "O", "btype": "OH", "opls": "opls_434", "smarts": "[$([OH1D1-])]", "charge": -1.3, "desc": "Hydroxide Ion OH-"},
+    {"element": "H", "btype": "HO", "opls": "opls_435", "smarts": "[$([#1][OH1D1-])]", "charge": 0.3, "desc": "Hydroxide Ion OH-"},
+    {"element": "P", "btype": "P", "opls": "opls_440", "smarts": "[$([PD4]([OD2])([OD2])(=[O,S])-[O,S])]", "charge": 1.62, "desc": "DiMe Phosphate P"},
+    {"element": "O", "btype": "O2", "opls": "opls_441", "smarts": "[$([O]=[PD4]([OD2])([OD2])-[O,S])]", "charge": -0.92, "desc": "DiMe Phosphate O=P-O"},
+    {"element": "O", "btype": "OS", "opls": "opls_442", "smarts": "[$([O]([#6])[PD4]([OD2])(=[O,S])-[O,S])]", "charge": -0.6, "desc": "DiMe Phosphate CH3-O"},
+    {"element": "C", "btype": "CT", "opls": "opls_443", "smarts": "[$([#6][O][PD4]([OD2])(=[O,S])-[O,S])]", "charge": 0.3, "desc": "DiMe Phosphate CH3-O"},
+    {"element": "H", "btype": "HC", "opls": "opls_444", "smarts": "[$([#1][#6][O][PD4]([OD2])(=[O,S])-[O,S])]", "charge": -0.03, "desc": "DiMe Phosphate CH3-O"},
+    {"element": "P", "btype": "P", "opls": "opls_445", "smarts": "[$([PD4]([OD2])(=[O,S])(-[O,S])-[O,S])]", "charge": 1.92, "desc": "Me Phosphate P"},
+    {"element": "O", "btype": "O2", "opls": "opls_446", "smarts": "[$([O]=[PD4]([OD2])(-[O,S])-[O,S])]", "charge": -1.12, "desc": "Me Phosphate O=PO2"},
+    {"element": "O", "btype": "OS", "opls": "opls_447", "smarts": "[$([O]([#6])[PD4](=[O,S])(-[O,S])-[O,S])]", "charge": -0.7, "desc": "Me Phosphate CH3-O"},
+    {"element": "C", "btype": "CT", "opls": "opls_448", "smarts": "[$([#6][O][PD4](=[O,S])(-[O,S])-[O,S])]", "charge": 0.44, "desc": "Me Phosphate CH3-O"},
+    {"element": "H", "btype": "HC", "opls": "opls_449", "smarts": "[$([#1][#6][O][PD4](=[O,S])(-[O,S])-[O,S])]", "charge": -0.1, "desc": "Me Phosphate CH3-O"},
+    {"element": "P", "btype": "P", "opls": "opls_450", "smarts": "[$([PD4]([#6])(=[O,S])(-[O,S])[OD2])]", "charge": 1.62, "desc": "Me MePhosphonate P"},
+    {"element": "O", "btype": "O2", "opls": "opls_451", "smarts": "[$([O]=[PD4]([#6])(-[O,S])[OD2])]", "charge": -0.97, "desc": "Me MePhosphonate O=P-O"},
+    {"element": "O", "btype": "OS", "opls": "opls_452", "smarts": "[$([O]([#6])[PD4]([#6])(=[O,S])-[O,S])]", "charge": -0.63, "desc": "Me MePhosphonate CH3-O"},
+    {"element": "C", "btype": "CT", "opls": "opls_453", "smarts": "[$([#6][O][PD4]([#6])(=[O,S])-[O,S])]", "charge": 0.28, "desc": "Me MePhosphonate CH3-O"},
+    {"element": "H", "btype": "HC", "opls": "opls_454", "smarts": "[$([#1][#6][O][PD4]([#6])(=[O,S])-[O,S])]", "charge": -0.02, "desc": "Me MePhosphonate CH3-O"},
+    {"element": "C", "btype": "CT", "opls": "opls_455", "smarts": "[$([#6][PD4](=[O,S])(-[O,S])[OD2])]", "charge": -0.51, "desc": "Me MePhosphonate CH3-P"},
+    {"element": "H", "btype": "HC", "opls": "opls_456", "smarts": "[$([#1][#6][PD4](=[O,S])(-[O,S])[OD2])]", "charge": 0.08, "desc": "Me MePhosphonate CH3-P"},
+    {"element": "C", "btype": "CA", "opls": "opls_457", "smarts": "[$([c][#6][O][PD4](=[O,S])[OD2])]", "charge": -0.14, "desc": "Bz MePhosphonate Cipso"},
+    {"element": "C", "btype": "CT", "opls": "opls_458", "smarts": "[$([#6](c)[O][PD4](=[O,S])[OD2])]", "charge": 0.32, "desc": "Bz MePhosphonate CH3-O"},
+    {"element": "H", "btype": "HC", "opls": "opls_459", "smarts": "[$([#1][#6](c)[O][PD4](=[O,S])[OD2])]", "charge": 0.02, "desc": "Bz MePhosphonate CH3-O"},
+    {"element": "C", "btype": "CA", "opls": "opls_460", "smarts": "[$([c][#6][PD4](=[O,S])(O)[OD2])]", "charge": -0.04, "desc": "Me BzPhosphonate Cipso"},
+    {"element": "C", "btype": "CT", "opls": "opls_461", "smarts": "[$([#6](c)[PD4](=[O,S])(O)[OD2])]", "charge": -0.47, "desc": "Me BzPhosphonate CH3-P"},
+    {"element": "H", "btype": "HC", "opls": "opls_462", "smarts": "[$([#1][#6](c)[PD4](=[O,S])(O)[OD2])]", "charge": 0.12, "desc": "Me BzPhosphonate CH3-P"},
+    {"element": "C", "btype": "CA", "opls": "opls_463", "smarts": "[$([c][#8][PD4](=[O,S])([OD1])[OD1])]", "charge": 0.14, "desc": "Ph Phosphate Cipso"},
+    {"element": "C", "btype": "C_2", "opls": "opls_465", "smarts": "[$([#6D3](=[O,S])[O][#6])]", "charge": 0.51, "desc": "Ester -COOR"},
+    {"element": "O", "btype": "O_2", "opls": "opls_466", "smarts": "[$([O]=[#6D3][O][#6])]", "charge": -0.43, "desc": "Ester C=O"},
+    {"element": "O", "btype": "OS", "opls": "opls_467", "smarts": "[$([O]([#6])[#6D3]=[O,S])]", "charge": -0.33, "desc": "Ester CO-O-R"},
+    {"element": "C", "btype": "CT", "opls": "opls_468", "smarts": "[$([CH3][O][CD3]=[O,S])]", "charge": 0.16, "desc": "Methyl Ester -OCH3"},
+    {"element": "H", "btype": "HC", "opls": "opls_469", "smarts": "[$([#1][CD4][O][CD3]=[O,S])]", "charge": 0.03, "desc": "Ester -OCH<"},
+    {"element": "C", "btype": "C", "opls": "opls_470", "smarts": "[$([CD3]([c])(=[O,S])[O])]", "charge": 0.635, "desc": "Benzoic Acid -COOH"},
+    {"element": "C", "btype": "C", "opls": "opls_471", "smarts": "[$([CD3]([c])(=[O,S])[O][CD4])]", "charge": 0.625, "desc": "Aryl Ester -COOR"},
+    {"element": "C", "btype": "CA", "opls": "opls_472", "smarts": "[$([c][O][CD3]=[O,S])]", "charge": 0.135, "desc": "Phenyl Ester Cipso"},
+    {"element": "O", "btype": "OS", "opls": "opls_473", "smarts": "[$([O]([c])[CD3]=[O,S])]", "charge": -0.215, "desc": "Phenyl Ester -OPh"},
+    {"element": "S", "btype": "SY", "opls": "opls_474", "smarts": "[$([SH0D3](=O))]", "charge": 1.48, "desc": "Sulfonamide -SO2N<"},
+    {"element": "S", "btype": "SY", "opls": "opls_474", "smarts": "[$([SH0D4](=O)(=O)[N,O])]", "charge": 1.48, "desc": "Sulfonamide -SO2N<"},
+    {"element": "O", "btype": "OY", "opls": "opls_475", "smarts": "[$([O]=[SH0D4](=O)[N,O])]", "charge": -0.68, "desc": "Sulfonamide -SO2N<"},
+    {"element": "C", "btype": "CT", "opls": "opls_476", "smarts": "[$([CH3D4][SH0D4](=O)(=O)[N,O])]", "charge": -0.54, "desc": "Sulfonamide CH3-S"},
+    {"element": "H", "btype": "HC", "opls": "opls_477", "smarts": "[$([#1][CH3D4][SH0D4](=O)(=O)[N,O])]", "charge": 0.18, "desc": "Sulfonamide CH3-S"},
+    {"element": "N", "btype": "N", "opls": "opls_478", "smarts": "[$([NH2D3][SH0D4](=O)=[O])]", "charge": -1.0, "desc": "Sulfonamide -SO2NH2"},
+    {"element": "H", "btype": "H", "opls": "opls_479", "smarts": "[$([#1][NH2D3][SH0D4](=O)=[O])]", "charge": 0.44, "desc": "Sulfonamide -SO2NH2"},
+    {"element": "N", "btype": "N", "opls": "opls_480", "smarts": "[$([NH1D3][SH0D4](=O)=[O])]", "charge": -0.8, "desc": "Sulfonamide -SO2NHR"},
+    {"element": "H", "btype": "H", "opls": "opls_481", "smarts": "[$([#1][NH1D3][SH0D4](=O)=[O])]", "charge": 0.41, "desc": "Sulfonamide -SO2NHR"},
+    {"element": "C", "btype": "CT", "opls": "opls_482", "smarts": "[$([CH3D4][ND3][SH0D4](=O)=[O])]", "charge": 0.18, "desc": "N-Me Sulfonamide CH3-"},
+    {"element": "H", "btype": "HC", "opls": "opls_483", "smarts": "[$([#1][CH3D4][ND3][SH0D4](=O)=[O])]", "charge": 0.03, "desc": "N-Me Sulfonamide CH3-"},
+    {"element": "C", "btype": "CT", "opls": "opls_484", "smarts": "[$([CH2D4][ND3][SH0D4](=O)=[O])]", "charge": 0.39, "desc": "Sulfonamide N-CH2-R"},
+    {"element": "H", "btype": "HC", "opls": "opls_485", "smarts": "[$([#1][CH2D4][ND3][SH0D4](=O)=[O])]", "charge": -0.06, "desc": "Sulfonamide N-CH2-R"},
+    {"element": "C", "btype": "CT", "opls": "opls_486", "smarts": "[$([CH3D4][CD4][ND3][SH0D4](=O)=[O])]", "charge": -0.18, "desc": "N-Et Sulfonamide CH3-"},
+    {"element": "H", "btype": "HC", "opls": "opls_487", "smarts": "[$([#1][CH3D4][CD4][ND3][SH0D4](=O)=[O])]", "charge": 0.06, "desc": "N-Et Sulfonamide CH3-"},
+    {"element": "C", "btype": "CA", "opls": "opls_488", "smarts": "[$([c][SH0D4](=O)(=O)[N,O])]", "charge": 0.0, "desc": "Aryl Sulfonamide C-SO2N"},
+    {"element": "C", "btype": "CT", "opls": "opls_490", "smarts": "[$([CH2D4]([#6])[O][CD3]=[O])]", "charge": 0.19, "desc": "Et Ester -OCH2R"},
+    {"element": "C", "btype": "CT", "opls": "opls_491", "smarts": "[$([CH1D4]([#6])([#6])[O][CD3]=[O])]", "charge": 0.22, "desc": "i-Pr Ester -OCHR2"},
+    {"element": "C", "btype": "CT", "opls": "opls_492", "smarts": "[$([CH0D4]([#6])([#6])([#6])[O][CD3]=[O])]", "charge": 0.25, "desc": "t-Bu Ester -OCR3"},
+    {"element": "S", "btype": "SY2", "opls": "opls_493", "smarts": "[$([SD4](=O)=[O])]", "charge": 1.374, "desc": "Sulfone R-SO2-R"},
+    {"element": "O", "btype": "OY", "opls": "opls_494", "smarts": "[$([O]=[SD4]=[O])]", "charge": -0.687, "desc": "Sulfone R-SO2-R"},
+    {"element": "O", "btype": "OY", "opls": "opls_497", "smarts": "[$([O]=[SD3])]", "charge": -0.42, "desc": "Sulfoxide R-SO-R"},
+    {"element": "C", "btype": "CT", "opls": "opls_498", "smarts": "[$([CH3D4][SD3]=[O])]", "charge": -0.035, "desc": "Sulfoxide CH3-SO-R"},
+    {"element": "C", "btype": "CT", "opls": "opls_499", "smarts": "[$([CH2D4][SD3]=[O])]", "charge": 0.025, "desc": "Sulfoxide -CH2-SO-R"},
+    {"element": "C", "btype": "C*", "opls": "opls_500", "smarts": "[$([c]1([CH2D4])cnc2c1cccc2)]", "charge": 0.075, "desc": "TRP CG"},
+    {"element": "C", "btype": "CB", "opls": "opls_501", "smarts": "[$([c]1nc2c(c1[CH2D4])cccc2)]", "charge": -0.055, "desc": "TRP CD"},
+    {"element": "C", "btype": "CN", "opls": "opls_502", "smarts": "[$([c]1(ncc2([CH2D4]))c2cccc1)]", "charge": 0.13, "desc": "TRP CE"},
+    {"element": "N", "btype": "NA", "opls": "opls_503", "smarts": "[$([nD3]1c2c(c([CH2D4])c1)cccc2)]", "charge": -0.57, "desc": "\"TRP NE, HID ND & HIE NE\" only hits TRP--AHS"},
+    {"element": "H", "btype": "H", "opls": "opls_504", "smarts": "[$([#1][nD3]1c2c(c([CH2D4])c1)cccc2)]", "charge": 0.42, "desc": "\"TRP HNE & HID/HIE HN\" only hits TRPH+ --AHS"},
+    {"element": "C", "btype": "CT", "opls": "opls_505", "smarts": "[$([CH2D4]([CH1D4][NH2D3])c1ncnc1)]", "charge": -0.005, "desc": "HIS CB"},
+    {"element": "C", "btype": "CR", "opls": "opls_506", "smarts": "[$([c]1[nD3]cc[nD2]1)]", "charge": 0.295, "desc": "HID & HIE CE1"},
+    {"element": "C", "btype": "CV", "opls": "opls_507", "smarts": "[$([c]1[nD2]c[nD3]c1)]", "charge": -0.015, "desc": "HID CD2 & HIE CG"},
+    {"element": "C", "btype": "CW", "opls": "opls_508", "smarts": "[$([c]1[nD3]c[nD2]c1)]", "charge": 0.015, "desc": "HID CG & HIE CD2"},
+    {"element": "C", "btype": "CR", "opls": "opls_509", "smarts": "[$([c]1[nD3]cc[nD3]1)]", "charge": 0.385, "desc": "HIP CE1"},
+    {"element": "C", "btype": "CX", "opls": "opls_510", "smarts": "[$([c]1[nD3]c[nD3]c1)]", "charge": 0.215, "desc": "HIP CG & CD2"},
+    {"element": "N", "btype": "NB", "opls": "opls_511", "smarts": "[$([nD2]1c[nD3]cc1)]", "charge": -0.49, "desc": "HID NE & HIE ND"},
+    {"element": "N", "btype": "NA", "opls": "opls_512", "smarts": "[$([nD3]1c[nD3]cc1)]", "charge": -0.54, "desc": "HIP ND & NE"},
+    {"element": "H", "btype": "H", "opls": "opls_513", "smarts": "[$([#1][nD3]1c[nD3]cc1)]", "charge": 0.46, "desc": "HIP HND & HNE"},
+    {"element": "C", "btype": "CW", "opls": "opls_514", "smarts": "[$([c]1(cccc2)c2ncc1[CH2D4])]", "charge": -0.115, "desc": "TRP CD1"},
+    {"element": "C", "btype": "CT", "opls": "opls_515", "smarts": "[$([CH1D4][c])]", "charge": 0.055, "desc": "i-Pr Benzene -CHMe2"},
+    {"element": "C", "btype": "CT", "opls": "opls_516", "smarts": "[$([CH0D4][c])]", "charge": 0.115, "desc": "t-Bu Benzene -CMe3"},
+    {"element": "C", "btype": "CM", "opls": "opls_517", "smarts": "[$([CH1D3](=[CD3])[O][CD4])]", "charge": -0.03, "desc": "Vinyl Ether =CH-OR"},
+    {"element": "C", "btype": "CM", "opls": "opls_518", "smarts": "[$([CH0D3](=[CD3])[O][CD4])]", "charge": 0.085, "desc": "Vinyl Ether =CR-OR"},
+    {"element": "N", "btype": "NC", "opls": "opls_520", "smarts": "[$([nD2]1ccccc1)]", "charge": -0.678, "desc": "Pyridine N"},
+    {"element": "C", "btype": "CA", "opls": "opls_521", "smarts": "[$([c]1cccc[nD2]1)]", "charge": 0.473, "desc": "Pyridine C1"},
+    {"element": "C", "btype": "CA", "opls": "opls_522", "smarts": "[$([c]1ccc[nD2]c1)]", "charge": -0.447, "desc": "Pyridine C2"},
+    {"element": "C", "btype": "CA", "opls": "opls_523", "smarts": "[$([c]1cc[nD2]cc1)]", "charge": 0.227, "desc": "Pyridine C3"},
+    {"element": "H", "btype": "HA", "opls": "opls_524", "smarts": "[$([#1]c1cccc[nD2]1)]", "charge": 0.012, "desc": "Pyridine H1"},
+    {"element": "H", "btype": "HA", "opls": "opls_525", "smarts": "[$([#1]c1ccc[nD2]c1)]", "charge": 0.155, "desc": "Pyridine H2"},
+    {"element": "H", "btype": "HA", "opls": "opls_526", "smarts": "[$([#1]c1cc[nD2]cc1)]", "charge": 0.065, "desc": "Pyridine H3"},
+    {"element": "N", "btype": "NC", "opls": "opls_527", "smarts": "[$([nD2]1cc[nD2]cc1)]", "charge": -0.468, "desc": "Pyrazine N"},
+    {"element": "C", "btype": "CA", "opls": "opls_528", "smarts": "[$([c]1[nD2]cc[nD2]c1)]", "charge": 0.192, "desc": "Pyrazine CH"},
+    {"element": "H", "btype": "HA", "opls": "opls_529", "smarts": "[$([#1]c1[nD2]cc[nD2]c1)]", "charge": 0.042, "desc": "Pyrazine CH"},
+    {"element": "N", "btype": "NC", "opls": "opls_530", "smarts": "[$([nD2]1c[nD2]ccc1)]", "charge": -0.839, "desc": "Pyrimidine N"},
+    {"element": "C", "btype": "CQ", "opls": "opls_531", "smarts": "[$([c]1[nD2]ccc[nD2]1)]", "charge": 0.874, "desc": "Pyrimidine C2"},
+    {"element": "C", "btype": "CA", "opls": "opls_532", "smarts": "[$([c]1cc[nD2]c[nD2]1)]", "charge": 0.653, "desc": "Pyrimidine C4"},
+    {"element": "C", "btype": "CA", "opls": "opls_533", "smarts": "[$([c]1c[nD2]c[nD2]c1)]", "charge": -0.689, "desc": "Pyrimidine C5"},
+    {"element": "H", "btype": "HA", "opls": "opls_534", "smarts": "[$([#1]c1[nD2]ccc[nD2]1)]", "charge": -0.032, "desc": "Pyrimidine HC2"},
+    {"element": "H", "btype": "HA", "opls": "opls_535", "smarts": "[$([#1]c1cc[nD2]c[nD2]1)]", "charge": 0.011, "desc": "Pyrimidine HC4"},
+    {"element": "H", "btype": "HA", "opls": "opls_536", "smarts": "[$([#1]c1c[nD2]c[nD2]c1)]", "charge": 0.197, "desc": "Pyrimidine HC5"},
+    {"element": "N", "btype": "NC", "opls": "opls_537", "smarts": "[$([nD2]1[nD2]cccc1)]", "charge": -0.331, "desc": "Pyridazine N"},
+    {"element": "C", "btype": "CA", "opls": "opls_538", "smarts": "[$([c]1[nD2][nD2]ccc1)]", "charge": 0.378, "desc": "Pyridazine C3"},
+    {"element": "C", "btype": "CA", "opls": "opls_539", "smarts": "[$([c]1c[nD2][nD2]cc1)]", "charge": -0.16, "desc": "Pyridazine C4"},
+    {"element": "H", "btype": "HA", "opls": "opls_540", "smarts": "[$([#1][c]1[nD2][nD2]ccc1)]", "charge": -0.009, "desc": "Pyridazine HC3"},
+    {"element": "H", "btype": "HA", "opls": "opls_541", "smarts": "[$([#1][c]1c[nD2][nD2]cc1)]", "charge": 0.122, "desc": "Pyridazine HC4"},
+    {"element": "N", "btype": "NA", "opls": "opls_542", "smarts": "[$([nD3]1cccc1)]", "charge": -0.239, "desc": "Pyrrole N"},
+    {"element": "C", "btype": "CW", "opls": "opls_543", "smarts": "[$([c]1ccc[nD3]1)]", "charge": -0.163, "desc": "Pyrrole C2"},
+    {"element": "C", "btype": "CS", "opls": "opls_544", "smarts": "[$([c]1cc[nD3]c1)]", "charge": -0.149, "desc": "Pyrrole C3"},
+    {"element": "H", "btype": "H", "opls": "opls_545", "smarts": "[$([#1][nD3]1cccc1)]", "charge": 0.317, "desc": "Pyrrole HN"},
+    {"element": "H", "btype": "HA", "opls": "opls_546", "smarts": "[$([#1][c]1ccc[nD3]1)]", "charge": 0.155, "desc": "Pyrrole HC2"},
+    {"element": "H", "btype": "HA", "opls": "opls_547", "smarts": "[$([#1][c]1cc[nD3]c1)]", "charge": 0.118, "desc": "Pyrrole HC3"},
+    {"element": "N", "btype": "NA", "opls": "opls_548", "smarts": "[$([nD3]1[nD2]ccc1)]", "charge": -0.059, "desc": "Pyrazole N1"},
+    {"element": "N", "btype": "NB", "opls": "opls_549", "smarts": "[$([nD2]1ccc[nD3]1)]", "charge": -0.491, "desc": "Pyrazole N2"},
+    {"element": "C", "btype": "CU", "opls": "opls_550", "smarts": "[$([c]1cc[nD3][nD2]1)]", "charge": 0.246, "desc": "Pyrazole C3"},
+    {"element": "C", "btype": "CA", "opls": "opls_551", "smarts": "[$([c]1c[nD3][nD2]c1)]", "charge": -0.32, "desc": "Pyrazole C4"},
+    {"element": "C", "btype": "CW", "opls": "opls_552", "smarts": "[$([c]1[nD3][nD2]cc1)]", "charge": -0.034, "desc": "Pyrazole C5"},
+    {"element": "H", "btype": "H", "opls": "opls_553", "smarts": "[$([#1][nD3]1[nD2]ccc1)]", "charge": 0.301, "desc": "Pyrazole HN1"},
+    {"element": "H", "btype": "HA", "opls": "opls_554", "smarts": "[$([#1][c]1cc[nD3][nD2]1)]", "charge": 0.072, "desc": "Pyrazole HC3"},
+    {"element": "H", "btype": "HA", "opls": "opls_555", "smarts": "[$([#1][c]1c[nD3][nD2]c1)]", "charge": 0.15, "desc": "Pyrazole HC4"},
+    {"element": "H", "btype": "HA", "opls": "opls_556", "smarts": "[$([#1][c]1[nD3][nD2]cc1)]", "charge": 0.135, "desc": "Pyrazole HC5"},
+    {"element": "N", "btype": "NA", "opls": "opls_557", "smarts": "[$([nD3]1c[nD2]cc1)]", "charge": -0.257, "desc": "Imidazole N1"},
+    {"element": "C", "btype": "CR", "opls": "opls_558", "smarts": "[$([c]1[nD2]cc[nD3]1)]", "charge": 0.275, "desc": "Imidazole C2"},
+    {"element": "N", "btype": "NB", "opls": "opls_559", "smarts": "[$([nD2]1cc[nD3]c1)]", "charge": -0.563, "desc": "Imidazole N3"},
+    {"element": "C", "btype": "CV", "opls": "opls_560", "smarts": "[$([c]1c[nD3]c[nD2]1)]", "charge": 0.185, "desc": "Imidazole C4"},
+    {"element": "C", "btype": "CW", "opls": "opls_561", "smarts": "[$([c]1[nD3]c[nD2]c1)]", "charge": -0.286, "desc": "Imidazole C5"},
+    {"element": "H", "btype": "H", "opls": "opls_562", "smarts": "[$([#1][nD3]1c[nD2]cc1)]", "charge": 0.306, "desc": "Imidazole HN1"},
+    {"element": "H", "btype": "HA", "opls": "opls_563", "smarts": "[$([#1][c]1[nD2]cc[nD3]1)]", "charge": 0.078, "desc": "Imidazole HC2"},
+    {"element": "H", "btype": "HA", "opls": "opls_564", "smarts": "[$([#1][c]1c[nD3]c[nD2]1)]", "charge": 0.075, "desc": "Imidazole HC4"},
+    {"element": "H", "btype": "HA", "opls": "opls_565", "smarts": "[$([#1][c]1[nD3]c[nD2]c1)]", "charge": 0.187, "desc": "Imidazole HC5"},
+    {"element": "O", "btype": "OS", "opls": "opls_566", "smarts": "[$([o]1cccc1)]", "charge": -0.19, "desc": "Furan O"},
+    {"element": "C", "btype": "CW", "opls": "opls_567", "smarts": "[$([c]1ccc[o,s]1)]", "charge": -0.019, "desc": "Furan C2"},
+    {"element": "C", "btype": "CS", "opls": "opls_568", "smarts": "[$([c]1cc[o,s]c1)]", "charge": -0.154, "desc": "Furan C3"},
+    {"element": "H", "btype": "HA", "opls": "opls_569", "smarts": "[$([#1][c]1ccc[o,s]1)]", "charge": 0.142, "desc": "Furan HC2"},
+    {"element": "H", "btype": "HA", "opls": "opls_570", "smarts": "[$([#1][c]1cc[o,s]c1)]", "charge": 0.126, "desc": "Furan HC3"},
+    {"element": "O", "btype": "OS", "opls": "opls_571", "smarts": "[$([o,s]1cncc1)]", "charge": -0.257, "desc": "Oxazole O"},
+    {"element": "C", "btype": "CR", "opls": "opls_572", "smarts": "[$([c]1ncc[o,s]1)]", "charge": 0.511, "desc": "Oxazole C2"},
+    {"element": "N", "btype": "NB", "opls": "opls_573", "smarts": "[$([n]1cc[o,s]c1)]", "charge": -0.59, "desc": "Oxazole N"},
+    {"element": "C", "btype": "CV", "opls": "opls_574", "smarts": "[$([c]1c[o,s]cn1)]", "charge": 0.169, "desc": "Oxazole C4"},
+    {"element": "C", "btype": "CW", "opls": "opls_575", "smarts": "[$([c]1[o,s]cnc1)]", "charge": -0.148, "desc": "Oxazole C5"},
+    {"element": "H", "btype": "HA", "opls": "opls_576", "smarts": "[$([#1]c1ncc[o,s]1)]", "charge": 0.043, "desc": "Oxazole HC2"},
+    {"element": "H", "btype": "HA", "opls": "opls_577", "smarts": "[$([#1]c1c[o,s]cn1)]", "charge": 0.091, "desc": "Oxazole HC4"},
+    {"element": "H", "btype": "HA", "opls": "opls_578", "smarts": "[$([#1]c1[o,s]cnc1)]", "charge": 0.181, "desc": "Oxazole HC5"},
+    {"element": "O", "btype": "OS", "opls": "opls_579", "smarts": "[$([o,s]1nccc1)]", "charge": -0.122, "desc": "Isoxazole O"},
+    {"element": "N", "btype": "NB", "opls": "opls_580", "smarts": "[$([n]1ccc[o,s]1)]", "charge": -0.413, "desc": "Isoxazole N"},
+    {"element": "C", "btype": "CU", "opls": "opls_581", "smarts": "[$([c]1cc[o,s]n1)]", "charge": 0.405, "desc": "Isoxazole C3"},
+    {"element": "C", "btype": "CA", "opls": "opls_582", "smarts": "[$([c]1c[o,s]nc1)]", "charge": -0.455, "desc": "Isoxazole C4"},
+    {"element": "C", "btype": "CW", "opls": "opls_583", "smarts": "[$([c]1[o,s]ncc1)]", "charge": 0.25, "desc": "Isoxazole C5"},
+    {"element": "H", "btype": "HA", "opls": "opls_584", "smarts": "[$([#1]c1cc[o,s]n1)]", "charge": 0.053, "desc": "Isoxazole HC3"},
+    {"element": "H", "btype": "HA", "opls": "opls_585", "smarts": "[$([#1]c1c[o,s]nc1)]", "charge": 0.184, "desc": "Isoxazole HC4"},
+    {"element": "H", "btype": "HA", "opls": "opls_586", "smarts": "[$([#1]c1[o,s]ncc1)]", "charge": 0.098, "desc": "Isoxazole HC5"},
+    {"element": "N", "btype": "NA", "opls": "opls_587", "smarts": "[$([#7]1[#6][#6][#6]2[#6]1[#6][#6][#6][#6]2)]", "charge": -0.5, "desc": "Indole N1"},
+    {"element": "C", "btype": "CW", "opls": "opls_588", "smarts": "[$([#6]1[#6][#6]2[#6][#6][#6][#6][#6]2[#7]1)]", "charge": 0.001, "desc": "Indole C2"},
+    {"element": "C", "btype": "CS", "opls": "opls_589", "smarts": "[$([#6]1[#6]2[#6][#6][#6][#6][#6]2[#7][#6]1)]", "charge": -0.39, "desc": "Indole C3"},
+    {"element": "C", "btype": "CA", "opls": "opls_590", "smarts": "[$([#6]1[#6][#6][#6][#6]2[#6]1[#6][#6][#7]2)]", "charge": -0.27, "desc": "Indole C4"},
+    {"element": "C", "btype": "CA", "opls": "opls_591", "smarts": "[$([#6]1[#6][#6][#6]2[#7][#6][#6][#6]2[#6]1)]", "charge": -0.127, "desc": "Indole C5"},
+    {"element": "C", "btype": "CA", "opls": "opls_592", "smarts": "[$([#6]1[#6][#6]2[#7][#6][#6][#6]2[#6][#6]1)]", "charge": -0.108, "desc": "Indole C6"},
+    {"element": "C", "btype": "CA", "opls": "opls_593", "smarts": "[$([#6]1[#6]2[#7][#6][#6][#6]2[#6][#6][#6]1)]", "charge": -0.258, "desc": "Indole C7"},
+    {"element": "C", "btype": "CN", "opls": "opls_594", "smarts": "[$([#6]1([#6]2[#6][#6][#6][#6]1)[#7][#6][#6]2)]", "charge": 0.22, "desc": "Indole C8"},
+    {"element": "C", "btype": "CB", "opls": "opls_595", "smarts": "[$([#6]1([#6]2[#6][#6][#6][#6]1)[#6][#6][#7]2)]", "charge": 0.225, "desc": "Indole C9"},
+    {"element": "H", "btype": "H", "opls": "opls_596", "smarts": "[$([#1][#7]1[#6][#6][#6]2[#6]1[#6][#6][#6][#6]2)]", "charge": 0.376, "desc": "Indole HN1"},
+    {"element": "H", "btype": "HA", "opls": "opls_597", "smarts": "[$([#1][#6]1[#6][#6]2[#6][#6][#6][#6][#6]2[#7]1)]", "charge": 0.147, "desc": "Indole HC2"},
+    {"element": "H", "btype": "HA", "opls": "opls_598", "smarts": "[$([#1][#6]1[#6]2[#6][#6][#6][#6][#6]2[#7][#6]1)]", "charge": 0.172, "desc": "Indole HC3"},
+    {"element": "H", "btype": "HA", "opls": "opls_599", "smarts": "[$([#1][#6]1[#6][#6][#6][#6]2[#6]1[#6][#6][#7]2)]", "charge": 0.155, "desc": "Indole HC4"},
+    {"element": "H", "btype": "HA", "opls": "opls_600", "smarts": "[$([#1][#6]1[#6][#6][#6]2[#7][#6][#6][#6]2[#6]1)]", "charge": 0.107, "desc": "Indole HC5"},
+    {"element": "H", "btype": "HA", "opls": "opls_601", "smarts": "[$([#1][#6]1[#6][#6]2[#7][#6][#6][#6]2[#6][#6]1)]", "charge": 0.11, "desc": "Indole HC6"},
+    {"element": "H", "btype": "HA", "opls": "opls_602", "smarts": "[$([#1][#6]1[#6]2[#7][#6][#6][#6]2[#6][#6][#6]1)]", "charge": 0.14, "desc": "Indole HC7"},
+    {"element": "N", "btype": "NC", "opls": "opls_603", "smarts": "[$([n]1cccc2c1cccc2)]", "charge": -0.694, "desc": "Quinoline N1"},
+    {"element": "C", "btype": "CA", "opls": "opls_604", "smarts": "[$([c]1ccc2ccccc2n1)]", "charge": 0.425, "desc": "Quinoline C2"},
+    {"element": "C", "btype": "CA", "opls": "opls_605", "smarts": "[$([c]1cc2ccccc2nc1)]", "charge": -0.359, "desc": "Quinoline C3"},
+    {"element": "C", "btype": "CA", "opls": "opls_606", "smarts": "[$([c]1c2ccccc2ncc1)]", "charge": -0.008, "desc": "Quinoline C4"},
+    {"element": "C", "btype": "CA", "opls": "opls_607", "smarts": "[$([c]1cccc2c1cccn2)]", "charge": -0.197, "desc": "Quinoline C5"},
+    {"element": "C", "btype": "CA", "opls": "opls_608", "smarts": "[$([c]1ccc2ncccc2c1)]", "charge": -0.112, "desc": "Quinoline C6"},
+    {"element": "C", "btype": "CA", "opls": "opls_609", "smarts": "[$([c]1cc2ncccc2cc1)]", "charge": -0.07, "desc": "Quinoline C7"},
+    {"element": "C", "btype": "CA", "opls": "opls_610", "smarts": "[$([c]1c2ncccc2ccc1)]", "charge": -0.307, "desc": "Quinoline C8"},
+    {"element": "C", "btype": "CA", "opls": "opls_611", "smarts": "[$([c]1(c2cccc1)nccc2)]", "charge": 0.563, "desc": "Quinoline C9"},
+    {"element": "C", "btype": "CA", "opls": "opls_612", "smarts": "[$([c]1(c2cccc1)cccn2)]", "charge": -0.051, "desc": "Quinoline C10"},
+    {"element": "H", "btype": "HA", "opls": "opls_613", "smarts": "[$([#1]c1ccc2ccccc2n1)]", "charge": 0.028, "desc": "Quinoline HC2"},
+    {"element": "H", "btype": "HA", "opls": "opls_614", "smarts": "[$([#1]c1cc2ccccc2nc1)]", "charge": 0.146, "desc": "Quinoline HC3"},
+    {"element": "H", "btype": "HA", "opls": "opls_615", "smarts": "[$([#1]c1c2ccccc2ncc1)]", "charge": 0.119, "desc": "Quinoline HC4"},
+    {"element": "H", "btype": "HA", "opls": "opls_616", "smarts": "[$([#1]c1cccc2c1cccn2)]", "charge": 0.133, "desc": "Quinoline HC5"},
+    {"element": "H", "btype": "HA", "opls": "opls_617", "smarts": "[$([#1]c1ccc2ncccc2c1)]", "charge": 0.113, "desc": "Quinoline HC6"},
+    {"element": "H", "btype": "HA", "opls": "opls_618", "smarts": "[$([#1]c1cc2ncccc2cc1)]", "charge": 0.114, "desc": "Quinoline HC7"},
+    {"element": "H", "btype": "HA", "opls": "opls_619", "smarts": "[$([#1]c1c2ncccc2ccc1)]", "charge": 0.157, "desc": "Quinoline HC8"},
+    {"element": "N", "btype": "NC", "opls": "opls_620", "smarts": "[$([n]1cnc2c(c1)ncn2)]", "charge": -0.76, "desc": "Purine N1"},
+    {"element": "C", "btype": "CQ", "opls": "opls_621", "smarts": "[$([c]1nc2c(cn1)ncn2)]", "charge": 0.679, "desc": "Purine C2"},
+    {"element": "N", "btype": "NC", "opls": "opls_622", "smarts": "[$([n]1c2c(cnc1)ncn2)]", "charge": -0.788, "desc": "Purine N3"},
+    {"element": "C", "btype": "CB", "opls": "opls_623", "smarts": "[$([c]1(c2ncn1)ncnc2)]", "charge": 0.736, "desc": "Purine C4"},
+    {"element": "C", "btype": "CB", "opls": "opls_624", "smarts": "[$([c]1(c2ncn1)cncn2)]", "charge": 0.038, "desc": "Purine C5"},
+    {"element": "C", "btype": "CA", "opls": "opls_625", "smarts": "[$([c]1ncnc2c1ncn2)]", "charge": 0.343, "desc": "Purine C6"},
+    {"element": "N", "btype": "NB", "opls": "opls_626", "smarts": "[$([n]1cnc2c1cncn2)]", "charge": -0.642, "desc": "Purine N7"},
+    {"element": "C", "btype": "CK", "opls": "opls_627", "smarts": "[$([c]1nc2c(n1)cncn2)]", "charge": 0.452, "desc": "Purine C8"},
+    {"element": "N", "btype": "NA", "opls": "opls_628", "smarts": "[$([n]1c2c(nc1)cncn2)]", "charge": -0.682, "desc": "Purine N9"},
+    {"element": "H", "btype": "HA", "opls": "opls_629", "smarts": "[$([#1][c]1nc2c(cn1)ncn2)]", "charge": 0.024, "desc": "Purine HC2"},
+    {"element": "H", "btype": "HA", "opls": "opls_630", "smarts": "[$([#1][c]1ncnc2c1ncn2)]", "charge": 0.101, "desc": "Purine HC6"},
+    {"element": "H", "btype": "HA", "opls": "opls_631", "smarts": "[$([#1][c]1nc2c(n1)cncn2)]", "charge": 0.086, "desc": "Purine HC8"},
+    {"element": "H", "btype": "H", "opls": "opls_632", "smarts": "[$([#1][n]1c2c(nc1)cncn2)]", "charge": 0.413, "desc": "Purine HN9"},
+    {"element": "S", "btype": "S", "opls": "opls_633", "smarts": "[$([s]1cncc1)]", "charge": -0.03, "desc": "Thiazole S"},
+    {"element": "S", "btype": "S", "opls": "opls_633", "smarts": "[$([s]1cccc1)]", "charge": -0.03, "desc": "Thiazole S"},
+    {"element": "C", "btype": "CR", "opls": "opls_634", "smarts": "[$([c]1nccs1)]", "charge": 0.242, "desc": "Thiazole C2"},
+    {"element": "N", "btype": "NB", "opls": "opls_635", "smarts": "[$([n]1ccsc1)]", "charge": -0.515, "desc": "Thiazole N"},
+    {"element": "C", "btype": "CV", "opls": "opls_636", "smarts": "[$([c]1cscn1)]", "charge": 0.228, "desc": "Thiazole C4"},
+    {"element": "C", "btype": "CW", "opls": "opls_637", "smarts": "[$([c]1scnc1)]", "charge": -0.299, "desc": "Thiazole C5"},
+    {"element": "H", "btype": "HA", "opls": "opls_638", "smarts": "[$([#1][c]1nccs1)]", "charge": 0.101, "desc": "Thiazole HC2"},
+    {"element": "H", "btype": "HA", "opls": "opls_639", "smarts": "[$([#1][c]1cscn1)]", "charge": 0.068, "desc": "Thiazole HC4"},
+    {"element": "H", "btype": "HA", "opls": "opls_640", "smarts": "[$([#1][c]1scnc1)]", "charge": 0.205, "desc": "Thiazole HC5"},
+    {"element": "N", "btype": "NC", "opls": "opls_641", "smarts": "[$([n]1cncnc1)]", "charge": -0.951, "desc": "1,3,5-Triazine N"},
+    {"element": "C", "btype": "CQ", "opls": "opls_642", "smarts": "[$([c]1ncncn1)]", "charge": 0.965, "desc": "1,3,5-Triazine CH"},
+    {"element": "H", "btype": "HA", "opls": "opls_643", "smarts": "[$([#1][c]1ncncn1)]", "charge": -0.014, "desc": "1,3,5-Triazine CH"},
+    {"element": "C", "btype": "CA", "opls": "opls_644", "smarts": "[$([c]1([OH])ccc2c(c1)ccn2)]", "charge": 0.13, "desc": "Serotonin C5-OH"},
+    {"element": "C", "btype": "CT", "opls": "opls_645", "smarts": "[$([CH2D4]c1cnc2c1cc([OH])cc2)]", "charge": 0.052, "desc": "Serotonin CH2 on C3"},
+    {"element": "N", "btype": "NC", "opls": "opls_646", "smarts": "[$([nR1]1[cR2]2[cR2]([cR1][cR1][cR2][cR2]2)[cR1][cR1][cR1]1)]", "charge": -0.599, "desc": "1,10-Phenanthroline N"},
+    {"element": "C", "btype": "CA", "opls": "opls_647", "smarts": "[$([cR1]1[nR1][cR2]2[cR2]([cR1][cR1][cR2][cR2]2)[cR1][cR1]1)]", "charge": 0.392, "desc": "1,10-Phenanthroline C2"},
+    {"element": "C", "btype": "CA", "opls": "opls_648", "smarts": "[$([cR1]1[cR1][nR1][cR2]2[cR2]([cR1][cR1][cR2][cR2]2)[cR1]1)]", "charge": -0.348, "desc": "1,10-Phenanthroline C3"},
+    {"element": "C", "btype": "CA", "opls": "opls_649", "smarts": "[$([cR1]1[cR1][cR1][nR1][cR2]2[cR2]1[cR1][cR1][cR2][cR2]2)]", "charge": 0.02, "desc": "1,10-Phenanthroline C4"},
+    {"element": "C", "btype": "CA", "opls": "opls_650", "smarts": "[$([cR2]1([cR1][cR1][cR1][nR1]2)[cR2]2[cR2][cR2][cR1][cR1]1)]", "charge": -0.042, "desc": "1,10-Phenanthroline C12"},
+    {"element": "C", "btype": "CA", "opls": "opls_651", "smarts": "[$([cR2]1([nR1][cR1][cR1][cR1]2)[cR2]2[cR1][cR1][cR2][cR2]1)]", "charge": 0.347, "desc": "1,10-Phenanthroline C11"},
+    {"element": "C", "btype": "CA", "opls": "opls_652", "smarts": "[$([cR1]([cR1][cR2]1)[cR2]2[cR1][cR1][cR1][nR1][cR2]2[cR2]1)]", "charge": -0.196, "desc": "1,10-Phenanthroline C5"},
+    {"element": "H", "btype": "HA", "opls": "opls_653", "smarts": "[$([#1][cR1]1[nR1][cR2]2[cR2]([cR1][cR1][cR2][cR2]2)[cR1][cR1]1)]", "charge": 0.032, "desc": "1,10-Phenanthroline HC2"},
+    {"element": "H", "btype": "HA", "opls": "opls_654", "smarts": "[$([#1][cR1]1[cR1][nR1][cR2]2[cR2]([cR1][cR1][cR2][cR2]2)[cR1]1)]", "charge": 0.146, "desc": "1,10-Phenanthroline HC3"},
+    {"element": "H", "btype": "HA", "opls": "opls_655", "smarts": "[$([#1][cR1]1[cR1][cR1][nR1][cR2]2[cR2]1[cR1][cR1][cR2][cR2]2)]", "charge": 0.108, "desc": "1,10-Phenanthroline HC4"},
+    {"element": "H", "btype": "HA", "opls": "opls_656", "smarts": "[$([#1][cR1]([cR1][cR2]1)[cR2]2[cR1][cR1][cR1][nR1][cR2]2[cR2]1)]", "charge": 0.14, "desc": "1,10-Phenanthroline HC5"},
+    {"element": "C", "btype": "CT", "opls": "opls_670", "smarts": "[$([CH3D4][cr6]([cr6])[nr6])]", "charge": -0.168, "desc": "2-Me Pyridine CH3"},
+    {"element": "C", "btype": "CT", "opls": "opls_671", "smarts": "[$([CH2D4][cr6]([cr6])[nr6])]", "charge": -0.108, "desc": "2-Et Pyridine CH2"},
+    {"element": "C", "btype": "CT", "opls": "opls_672", "smarts": "[$([CH3D4][cr6]([cr6])[cr6][nr6])]", "charge": -0.189, "desc": "3-Me Pyridazine CH3"},
+    {"element": "C", "btype": "CT", "opls": "opls_673", "smarts": "[$([CH2D4][cr6]([cr6])[cr6][nr6])]", "charge": -0.129, "desc": "3-Et Pyridazine CH2"},
+    {"element": "C", "btype": "CT", "opls": "opls_674", "smarts": "[$([CH3D4][cr6]([cr6])[cr6][cr6][nr6])]", "charge": -0.169, "desc": "4-Me Pyrimidine CH3"},
+    {"element": "C", "btype": "CT", "opls": "opls_675", "smarts": "[$([CH2D4][cr6]([cr6])[cr6][cr6][nr6])]", "charge": -0.109, "desc": "4-Et Pyrimidine CH2"},
+    {"element": "C", "btype": "CT", "opls": "opls_676", "smarts": "[$([CH3D4][cr6]([cr6][nr6])[nr6])]", "charge": -0.138, "desc": "2-Me Pyrazine CH3"},
+    {"element": "C", "btype": "CT", "opls": "opls_677", "smarts": "[$([CH2D4][cr6]([cr6][nr6])[nr6])]", "charge": -0.078, "desc": "2-Et Pyrazine CH2"},
+    {"element": "C", "btype": "CT", "opls": "opls_678", "smarts": "[$([CH3D4][cr5]([cr5])[nr5])]", "charge": -0.025, "desc": "2-Me Pyrrole CH3"},
+    {"element": "C", "btype": "CT", "opls": "opls_679", "smarts": "[$([CH2D4][cr5]([cr5])[nr5])]", "charge": 0.035, "desc": "2-Et Pyrrole CH2"},
+    {"element": "C", "btype": "CT", "opls": "opls_680", "smarts": "[$([CH3D4][cr5]([cr5])[or5])]", "charge": -0.038, "desc": "2-Me Furan CH3"},
+    {"element": "C", "btype": "CT", "opls": "opls_681", "smarts": "[$([CH2D4][cr5]([cr5])[or5])]", "charge": 0.022, "desc": "2-Et Furan CH2"},
+    {"element": "C", "btype": "C+", "opls": "opls_700", "smarts": "[$([CH0+]([CH3D4])([CH3D4])[CH3D4])]", "charge": 0.619, "desc": "t-Butyl Cation C+"},
+    {"element": "C", "btype": "CT", "opls": "opls_701", "smarts": "[$([CH3D4][CH0+]([CH3D4])[CH3D4])]", "charge": -0.395, "desc": "t-Butyl Cation CH3-"},
+    {"element": "H", "btype": "HC", "opls": "opls_702", "smarts": "[$([#1][CH3D4][CH0+]([CH3D4])[CH3D4])]", "charge": 0.174, "desc": "t-Butyl Cation CH3-"},
+    {"element": "C", "btype": "CY", "opls": "opls_711", "smarts": "[$([CH2D4]1[CD4][CD4]1)]", "charge": -0.12, "desc": "Cyclopropane -CH2-"},
+    {"element": "C", "btype": "CY", "opls": "opls_712", "smarts": "[$([CH1D4]1[CD4][CD4]1)]", "charge": -0.06, "desc": "Cyclopropane -CHR-"},
+    {"element": "C", "btype": "CY", "opls": "opls_713", "smarts": "[$([CH0D4]1[CD4][CD4]1)]", "charge": 0.0, "desc": "Cyclopropane -CR2-"},
+    {"element": "C", "btype": "CA", "opls": "opls_714", "smarts": "[$([c]1cccc1)]", "charge": -0.23, "desc": "Cyclopentadienyl Anion"},
+    {"element": "H", "btype": "HA", "opls": "opls_715", "smarts": "[$([#1][c]1cccc1)]", "charge": 0.03, "desc": "Cyclopentadienyl Anion"},
+    {"element": "C", "btype": "CA", "opls": "opls_718", "smarts": "[$([c][F])]", "charge": 0.22, "desc": "Fluorobenzene CF"},
+    {"element": "F", "btype": "F", "opls": "opls_719", "smarts": "[$([F][c])]", "charge": -0.22, "desc": "Fluorobenzene CF"},
+    {"element": "C", "btype": "CA", "opls": "opls_720", "smarts": "[$([c](F)[c](F)[c](F)[c](F)[c](F)[c](F))]", "charge": 0.13, "desc": "Hexafluorobenzene CF"},
+    {"element": "F", "btype": "F", "opls": "opls_721", "smarts": "[$([F][c][c](F)[c](F)[c](F)[c](F)[c](F))]", "charge": -0.13, "desc": "Hexafluorobenzene CF"},
+    {"element": "C", "btype": "CA", "opls": "opls_724", "smarts": "[$([c][CD4](F)(F)[F])]", "charge": 0.15, "desc": "TrifluoroMeBenzene C-CF3"},
+    {"element": "C", "btype": "CT", "opls": "opls_725", "smarts": "[$([CD4](c)(F)(F)[F])]", "charge": 0.45, "desc": "TrifluoroMeBenzene CF3-"},
+    {"element": "F", "btype": "F", "opls": "opls_726", "smarts": "[$([F][CD4](c)(F)[F])]", "charge": -0.2, "desc": "TrifluoroMeBenzene CF3-"},
+    {"element": "C", "btype": "CA", "opls": "opls_727", "smarts": "[$([c](F)[c](F))]", "charge": 0.2, "desc": "Difluorobenzene CF"},
+    {"element": "C", "btype": "CA", "opls": "opls_727", "smarts": "[$([c](F)[c][c](F))]", "charge": 0.2, "desc": "Difluorobenzene CF"},
+    {"element": "C", "btype": "CA", "opls": "opls_727", "smarts": "[$([c](F)[c][c][c](F))]", "charge": 0.2, "desc": "Difluorobenzene CF"},
+    {"element": "F", "btype": "F", "opls": "opls_728", "smarts": "[$([F][c][c][F])]", "charge": -0.2, "desc": "Difluorobenzene CF"},
+    {"element": "F", "btype": "F", "opls": "opls_728", "smarts": "[$([F][c][c][c][F])]", "charge": -0.2, "desc": "Difluorobenzene CF"},
+    {"element": "F", "btype": "F", "opls": "opls_728", "smarts": "[$([F][c][c][c][c][F])]", "charge": -0.2, "desc": "Difluorobenzene CF"},
+    {"element": "C", "btype": "CA", "opls": "opls_729", "smarts": "[$([c][Br])]", "charge": 0.2, "desc": "Bromobenzene CBr"},
+    {"element": "Br", "btype": "Br", "opls": "opls_730", "smarts": "[$([Br][#6])]", "charge": -0.2, "desc": "Bromobenzene CBr"},
+    {"element": "C", "btype": "CA", "opls": "opls_731", "smarts": "[$([c][I])]", "charge": 0.1, "desc": "Iodobenzene CI"},
+    {"element": "I", "btype": "I", "opls": "opls_732", "smarts": "[$([I][#6])]", "charge": -0.1, "desc": "Iodobenzene CI"},
+    {"element": "C", "btype": "CY", "opls": "opls_733", "smarts": "[$([CH1D4r3](c)[CD4r3][CD4r3])]", "charge": 0.055, "desc": "cProp/cBut Benzene C-Ar"},
+    {"element": "S", "btype": "SH", "opls": "opls_734", "smarts": "[$([SH1D2][c])]", "charge": -0.22, "desc": "Thiophenol SH"},
+    {"element": "C", "btype": "CA", "opls": "opls_735", "smarts": "[$([c][SH1D2])]", "charge": 0.065, "desc": "Thiophenol C-SH"},
+    {"element": "C", "btype": "CA", "opls": "opls_736", "smarts": "[$([c][c][c][c][#6D3](~[#7H2D3])~[#7H2D3])]", "charge": 0.013, "desc": "Benzamidine CG"},
+    {"element": "C", "btype": "CA", "opls": "opls_737", "smarts": "[$([c][c][c][#6D3](~[#7H2D3])~[#7H2D3])]", "charge": -0.106, "desc": "Benzamidine CD"},
+    {"element": "C", "btype": "CA", "opls": "opls_738", "smarts": "[$([c][c][#6D3](~[#7H2D3])~[#7H2D3])]", "charge": -0.09, "desc": "Benzamidine CE"},
+    {"element": "C", "btype": "CA", "opls": "opls_739", "smarts": "[$([c][#6D3](~[#7H2D3])~[#7H2D3])]", "charge": -0.119, "desc": "Benzamidine CZ"},
+    {"element": "H", "btype": "HA", "opls": "opls_740", "smarts": "[$([#1][c][c][c][#6D3](~[#7H2D3])~[#7H2D3])]", "charge": 0.141, "desc": "Benzamidine HCD"},
+    {"element": "H", "btype": "HA", "opls": "opls_741", "smarts": "[$([#1][c][c][#6D3](~[#7H2D3])~[#7H2D3])]", "charge": 0.129, "desc": "Benzamidine HCE"},
+    {"element": "C", "btype": "CA", "opls": "opls_742", "smarts": "[$([#6D3](~[#7H2D3])~[#7H2D3])]", "charge": 0.827, "desc": "Benzamidine C+"},
+    {"element": "N", "btype": "N2", "opls": "opls_743", "smarts": "[$([#7H2D3]~[#6D3](c)~[#7H2D3])]", "charge": -0.885, "desc": "Benzamidine -NH2"},
+    {"element": "H", "btype": "H", "opls": "opls_744", "smarts": "[$([#1][#7H2D3]~[#6D3](~[#7H2D3])[c])]", "charge": 0.426, "desc": "Benzamidine H1-N"},
+    {"element": "H", "btype": "H", "opls": "opls_745", "smarts": "[$([#1][#7H2D3]~[#6D3](~[#7H2D3])[c])]", "charge": 0.465, "desc": "Benzamidine H2-N"},
+    {"element": "H", "btype": "HA", "opls": "opls_746", "smarts": "[$([#1][c][c][c][c][#6D3](~[#7H2D3])~[#7H2D3])]", "charge": 0.119, "desc": "Benzamidine HCG"},
+    {"element": "C", "btype": "CT", "opls": "opls_747", "smarts": "[$([CH3D4][#7D2][#6D4]([#7D3])[#7D3])]", "charge": -0.02, "desc": "Neutral MeGdn CH3-"},
+    {"element": "C", "btype": "CT", "opls": "opls_748", "smarts": "[$([CH2D4][#7H1D3][#6D3]([#7H2D3])[#7H1D2])]", "charge": 0.04, "desc": "Neutral ARG CD"},
+    {"element": "N", "btype": "NY", "opls": "opls_749", "smarts": "[$([#7H1D3][#6D3]([#7H2D3])[#7H1D2])]", "charge": -0.62, "desc": "Neutral ARG NE"},
+    {"element": "N", "btype": "NZ", "opls": "opls_750", "smarts": "[$([#7H1D2][#6D3]([#7H2D3])[#7H1D3])]", "charge": -0.785, "desc": "Neutral ARG N1 (HN=C)"},
+    {"element": "N", "btype": "NY", "opls": "opls_751", "smarts": "[$([#7H2D3][#6D3]([#7H1D2])[#7H1D3])]", "charge": -0.785, "desc": "Neutral ARG N2 (H2N-C)"},
+    {"element": "C", "btype": "CA", "opls": "opls_752", "smarts": "[$([#6D3]([#7H1D2])([#7H2D3])[#7H1D3])]", "charge": 0.55, "desc": "Neutral ARG CZ (>C=)"},
+    {"element": "N", "btype": "NZ", "opls": "opls_753", "smarts": "[$([ND1]#[CD2])]", "charge": -0.56, "desc": "Alkyl Nitrile -CN"},
+    {"element": "C", "btype": "CZ", "opls": "opls_754", "smarts": "[$([CD2]#[ND1])]", "charge": 0.46, "desc": "Alkyl Nitrile -CN"},
+    {"element": "C", "btype": "CT", "opls": "opls_755", "smarts": "[$([CH3D4][CD2]#[ND1])]", "charge": -0.08, "desc": "Acetonitrile CH3-CN"},
+    {"element": "C", "btype": "CT", "opls": "opls_756", "smarts": "[$([CH2D4][CD2]#[ND1])]", "charge": -0.02, "desc": "Alkyl Nitrile RCH2-CN"},
+    {"element": "C", "btype": "CT", "opls": "opls_757", "smarts": "[$([CH1D4][CD2]#[ND1])]", "charge": 0.04, "desc": "Alkyl Nitrile R2CH-CN"},
+    {"element": "C", "btype": "CT", "opls": "opls_758", "smarts": "[$([CH0D4][CD2]#[ND1])]", "charge": 0.1, "desc": "Alkyl Nitrile R3C-CN"},
+    {"element": "H", "btype": "HC", "opls": "opls_759", "smarts": "[$([#1][CD4][CD2]#[ND1])]", "charge": 0.06, "desc": "Alkyl Nitrile H-C-CN"},
+    {"element": "N", "btype": "NO", "opls": "opls_760", "smarts": "[$([#7D3]([!c])(~[#8])~[#8])]", "charge": 0.54, "desc": "Nitroalkane -NO2"},
+    {"element": "O", "btype": "ON", "opls": "opls_761", "smarts": "[$([#8D1]~[#7D3]~[#8D1])]", "charge": -0.37, "desc": "Nitroalkane -NO2"},
+    {"element": "C", "btype": "CT", "opls": "opls_762", "smarts": "[$([CH3D4][#7D3](~[#8])~[#8])]", "charge": 0.02, "desc": "Nitromethane CH3-NO2"},
+    {"element": "H", "btype": "HC", "opls": "opls_763", "smarts": "[$([#1][CD4][#7D3](~[#8])~[#8])]", "charge": 0.06, "desc": "Nitroalkane H-C-NO2"},
+    {"element": "C", "btype": "CT", "opls": "opls_764", "smarts": "[$([CH2D4][#7D3](~[#8])~[#8])]", "charge": 0.08, "desc": "Nitroalkane RCH2-NO2"},
+    {"element": "C", "btype": "CT", "opls": "opls_765", "smarts": "[$([CH1D4][#7D3](~[#8])~[#8])]", "charge": 0.14, "desc": "Nitroalkane R2CH-NO2"},
+    {"element": "C", "btype": "CT", "opls": "opls_766", "smarts": "[$([CH0D4][#7D3](~[#8])~[#8])]", "charge": 0.2, "desc": "Nitroalkane R3C-NO2"},
+    {"element": "N", "btype": "NO", "opls": "opls_767", "smarts": "[$([#7D3](c)(~[#8D1])~[#8D1])]", "charge": 0.65, "desc": "Nitrobenzene -NO2"},
+    {"element": "C", "btype": "CA", "opls": "opls_768", "smarts": "[$([c][#7D3](~[#8])~[#8])]", "charge": 0.09, "desc": "Nitrobenzene C-NO2"},
+    {"element": "O", "btype": "O", "opls": "opls_771", "smarts": "[$([O]=[CD3]1[O][CD4][CD4][O]1)]", "charge": -0.5, "desc": "Propylene Carbonate C=O"},
+    {"element": "C", "btype": "C", "opls": "opls_772", "smarts": "[$([CD3]1(=[O])[O][CD4][CD4][O]1)]", "charge": 0.86, "desc": "Propylene Carbonate C=O"},
+    {"element": "O", "btype": "OS", "opls": "opls_773", "smarts": "[$([O]1[CD3](=[O])[O][CD4][CD4]1)]", "charge": -0.45, "desc": "Propylene Carbonate C-O"},
+    {"element": "C", "btype": "CT", "opls": "opls_774", "smarts": "[$([CH2D4]1[O][CD3](=[O])[O][CD4]1)]", "charge": 0.21, "desc": "Propylene Carbonate CH2"},
+    {"element": "C", "btype": "CT", "opls": "opls_775", "smarts": "[$([CH1D4]1[O][CD3](=[O])[O][CD4]1)]", "charge": 0.16, "desc": "Propylene Carbonate CH"},
+    {"element": "C", "btype": "CT", "opls": "opls_776", "smarts": "[$([CH3D4][CH1D4]1[O][CD3](=[O])[O][CD4]1)]", "charge": -0.1, "desc": "Propylene Carbonate CH3"},
+    {"element": "H", "btype": "HC", "opls": "opls_777", "smarts": "[$([#1][CH2D4]1[O][CD3](=[O])[O][CD4]1)]", "charge": 0.03, "desc": "Propylene Carbonate CH2"},
+    {"element": "H", "btype": "HC", "opls": "opls_778", "smarts": "[$([#1][CH1D4]1[O][CD3](=[O])[O][CD4]1)]", "charge": 0.03, "desc": "Propylene Carbonate CH"},
+    {"element": "H", "btype": "HC", "opls": "opls_779", "smarts": "[$([#1][CH3D4][CH1D4]1[O][CD3](=[O])[O][CD4]1)]", "charge": 0.06, "desc": "Propylene Carbonate CH3"},
+    {"element": "P", "btype": "P+", "opls": "opls_781", "smarts": "[PD4+]", "charge": 0.9684, "desc": "Phosphonium R4P+"},
+    {"element": "C", "btype": "CT", "opls": "opls_782", "smarts": "[$([CH3D4][PD4+])]", "charge": -0.5081, "desc": "Phosphonium CH3-PR3+"},
+    {"element": "C", "btype": "CT", "opls": "opls_783", "smarts": "[$([CH2D4][PD4+])]", "charge": -0.008, "desc": "Phosphonium RCH2-PR3+"},
+    {"element": "H", "btype": "HC", "opls": "opls_784", "smarts": "[$([#1][CH3D4][PD4+])]", "charge": 0.172, "desc": "Phosphonium CH3-PR3+"},
+    {"element": "P", "btype": "P", "opls": "opls_785", "smarts": "[$([P-](F)(F)(F)(F)(F)F)]", "charge": 1.34, "desc": "Hexafluorophosphate Ion"},
+    {"element": "F", "btype": "F", "opls": "opls_786", "smarts": "[$([F][P-](F)(F)(F)(F)F)]", "charge": -0.39, "desc": "Hexafluorophosphate Ion"},
+    {"element": "N", "btype": "N", "opls": "opls_787", "smarts": "[$([ND3](~[#8D1])(~[#8D1])~[#8D1])]", "charge": 0.794, "desc": "Nitrate Ion NO3-"},
+    {"element": "O", "btype": "O", "opls": "opls_788", "smarts": "[$([#8D1]~[ND3](~[#8D1])~[#8D1])]", "charge": -0.598, "desc": "Nitrate Ion NO3-"},
+    {"element": "N", "btype": "NT", "opls": "opls_900", "smarts": "[$([NH2D3][!#8,!$([#6]=[#8])])]", "charge": -0.9, "desc": "Amine RNH2"},
+    {"element": "N", "btype": "NT", "opls": "opls_901", "smarts": "[$([NH1D3]([!#8,!$([#6]=[#8])])[!#8,!$([#6]=[#8])])]", "charge": -0.78, "desc": "Amine R2NH"},
+    {"element": "N", "btype": "NT", "opls": "opls_902", "smarts": "[$([NH0D3]([!#8,!$([#6]=[#8])])([!#8,!$([#6]=[#8])])[!#8,!$([#6]=[#8])])]", "charge": -0.63, "desc": "Amine R3N"},
+    {"element": "C", "btype": "CT", "opls": "opls_903", "smarts": "[$([CH3D4][NH2D3])]", "charge": 0.0, "desc": "Amine CH3-NH2"},
+    {"element": "C", "btype": "CT", "opls": "opls_904", "smarts": "[$([CH3D4][NH1D3][!#8,!$([#6]=[#8])])]", "charge": 0.02, "desc": "Amine CH3-NHR"},
+    {"element": "C", "btype": "CT", "opls": "opls_905", "smarts": "[$([CH3D4][NH0D3]([!#8,!$([#6]=[#8])])[!#8,!$([#6]=[#8])])]", "charge": 0.03, "desc": "Amine CH3-NR2"},
+    {"element": "C", "btype": "CT", "opls": "opls_906", "smarts": "[$([CH2D4]([!#8])[NH2D3])]", "charge": 0.06, "desc": "Amine RCH2-NH2"},
+    {"element": "C", "btype": "CT_2", "opls": "opls_906B", "smarts": "[$([CH2D4]([NH2D3])[CD3](~[#8D1])~[#8D1])]", "charge": 0.06, "desc": "Amine RCH2-NH2"},
+    {"element": "C", "btype": "CT", "opls": "opls_907", "smarts": "[$([CH2D4]([!#8])[NH1D3])]", "charge": 0.08, "desc": "Amine RCH2-NHR"},
+    {"element": "C", "btype": "CT", "opls": "opls_908", "smarts": "[$([CH2D4]([!#8])[NH0D3])]", "charge": 0.09, "desc": "Amine RCH2-NR2"},
+    {"element": "H", "btype": "H", "opls": "opls_909", "smarts": "[$([#1][NH2D3])]", "charge": 0.36, "desc": "Amine RNH2"},
+    {"element": "H", "btype": "H", "opls": "opls_910", "smarts": "[$([#1][NH1D3])]", "charge": 0.38, "desc": "Amine R2NH"},
+    {"element": "H", "btype": "HC", "opls": "opls_911", "smarts": "[$([#1][CD4][ND3])]", "charge": 0.06, "desc": "Amine H-C-N"},
+    {"element": "C", "btype": "CT", "opls": "opls_912", "smarts": "[$([CH1D4]([CD4])([CD4])[NH2D3])]", "charge": 0.12, "desc": "Amine R2CH-NH2"},
+    {"element": "C", "btype": "CT_2", "opls": "opls_912B", "smarts": "[$([CH1D4]([CD4])([NH2D3])[CD3](~[#8D1])~[#8D1])]", "charge": 0.12, "desc": "Amine R2CH-NH2"},
+    {"element": "C", "btype": "CT", "opls": "opls_913", "smarts": "[$([CH0D4]([CD4])([CD4])([CD4])[NH2D3])]", "charge": 0.18, "desc": "Amine R3C-NH2"},
+    {"element": "C", "btype": "CT", "opls": "opls_914", "smarts": "[$([CH1D4]([CD4])([CD4])[NH1D3])]", "charge": 0.14, "desc": "Amine R2CH-NHR"},
+    {"element": "C", "btype": "CT", "opls": "opls_915", "smarts": "[$([CH1D4]([CD4])([CD4])[NH0D3])]", "charge": 0.15, "desc": "Amine R2CH-NR2"},
+    {"element": "C", "btype": "CA", "opls": "opls_916", "smarts": "[$([c][NH2D3])]", "charge": 0.18, "desc": "Aniline C-NH2"},
+    {"element": "C", "btype": "CA", "opls": "opls_917", "smarts": "[$([c][NH1D3][CD4])]", "charge": 0.2, "desc": "N-Me Aniline C-NHR"},
+    {"element": "C", "btype": "CA", "opls": "opls_918", "smarts": "[$([c][NH0D3]([CD4])[CD4])]", "charge": 0.21, "desc": "\"N-DiMe Aniline C-NR2\" [mod AHS]"},
+    {"element": "C", "btype": "CZ", "opls": "opls_925", "smarts": "[$([CH1D2]#[CD2])]", "charge": -0.21, "desc": "Alkyne HCC-"},
+    {"element": "H", "btype": "HC", "opls": "opls_926", "smarts": "[$([#1][CH1D2]#[CD2])]", "charge": 0.2, "desc": "Alkyne HCC-"},
+    {"element": "C", "btype": "CZ", "opls": "opls_927", "smarts": "[$([CD2](#[CH1D2])[CD4;H2,H3])]", "charge": 0.01, "desc": "Alkyne RCCH R w/ 2/3 H"},
+    {"element": "C", "btype": "CZ", "opls": "opls_928", "smarts": "[$([CD2](#[CH1D2])[CH1D4])]", "charge": 0.01, "desc": "Alkyne RCCH R w/ 1 H"},
+    {"element": "C", "btype": "CZ", "opls": "opls_929", "smarts": "[$([CD2](#[CH1D2])[CH0D4,c])]", "charge": 0.01, "desc": "Alkyne RCCH R w/ O H/Ph"},
+    {"element": "H", "btype": "HC", "opls": "opls_930", "smarts": "[$([#1][CD4][CD2]#[CH1D2])]", "charge": 0.06, "desc": "Alkyne H-C-CC-"},
+    {"element": "C", "btype": "CZ", "opls": "opls_931", "smarts": "[$([CD2H0]#[CD2H0])]", "charge": 0.0, "desc": "Alkyne RCCR"},
+    {"element": "N", "btype": "N3", "opls": "opls_940", "smarts": "[$([#7H1D4])]", "charge": -0.1, "desc": "Ammonium R3NH+"},
+    {"element": "H", "btype": "H3", "opls": "opls_941", "smarts": "[$([#1][#7H1D4])]", "charge": 0.29, "desc": "Ammonium R3NH+"},
+    {"element": "C", "btype": "CT", "opls": "opls_942", "smarts": "[$([CH3D4][#7H1D4])]", "charge": 0.09, "desc": "Ammonium CH3-NHR2+"},
+    {"element": "C", "btype": "CT", "opls": "opls_943", "smarts": "[$([CH2D4][#7H1D4])]", "charge": 0.15, "desc": "Ammonium RCH2-NHR2+"},
+    {"element": "C", "btype": "CT", "opls": "opls_944", "smarts": "[$([CH1D4][#7H1D4])]", "charge": 0.21, "desc": "Ammonium R2CH-NHR2+"},
+    {"element": "C", "btype": "CT", "opls": "opls_945", "smarts": "[$([CH0D4][#7H1D4])]", "charge": 0.27, "desc": "Ammonium R3C-NHR2+"},
+    {"element": "F", "btype": "F", "opls": "opls_956", "smarts": "[$([F][CD4]([!F])([!F])[!F])]", "charge": -0.22, "desc": "Alkyl Fluoride C-F"},
+    {"element": "C", "btype": "CT", "opls": "opls_957", "smarts": "[$([CH2D4]([F])[!F])]", "charge": 0.02, "desc": "Alkyl Fluoride RCH2-F"},
+    {"element": "H", "btype": "HC", "opls": "opls_958", "smarts": "[$([#1][CD4]([F])([!F])[!F])]", "charge": 0.1, "desc": "Alkyl Fluoride H-C-F"},
+    {"element": "C", "btype": "CT", "opls": "opls_959", "smarts": "[$([CH1D4]([F])([!F])[!F])]", "charge": 0.12, "desc": "Alkyl Fluoride R2CH-F"},
+    {"element": "C", "btype": "CT", "opls": "opls_960", "smarts": "[$([CH0D4]([F])([!F])([!F])([!F]))]", "charge": 0.22, "desc": "Alkyl Fluoride R3C-F"},
+    {"element": "C", "btype": "CT", "opls": "opls_964", "smarts": "[$([CH0D4](F)(F)(F)F)]", "charge": 0.48, "desc": "Tetrafluoromethane CF4"},
+    {"element": "F", "btype": "F", "opls": "opls_965", "smarts": "[$([F][CH0]([F])([F])[F])]", "charge": -0.12, "desc": "Perfluoroalkane C-F"}
+]
+
+
+# Lazy-compiled RDKit SMARTS queries (compiled on first use)
+_COMPILED = None
+
+def _get_compiled_rules():
+    global _COMPILED
+    if _COMPILED is not None:
+        return _COMPILED
+
+    compiled = []
+    for r in RULES:
+        q = Chem.MolFromSmarts(r["smarts"])
+        if q is None:
+            raise ValueError(f"Invalid SMARTS in embedded OPLS-AA rules: {r['smarts']}")
+        compiled.append((r, q))
+    _COMPILED = compiled
+    return _COMPILED
+
+
+class OPLSAA(GAFF):
+    """
+    ff.oplsaa.OPLSAA
+
+    OPLS-AA force field assignment for RDKit Mol.
+    - Nonbonded parameters are taken from ff_dat/oplsaa.json [atomtypes] (keyed by 'opls_###')
+    - Bonded parameters (bond/angle/dihedral) are taken from ff_dat/oplsaa.json [bondtypes]/[angletypes]/[dihedraltypes]
+      and are keyed by OPLS 'bond_type' labels (CT, CA, HC, ...).
+
+    Atom typing is done via embedded SMARTS rules (no external .txt dependency).
+    """
+
+    def __init__(self, db_file=None):
+        if db_file is None:
+            db_file = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'ff_dat', 'oplsaa.json')
+        super().__init__(db_file)
+        self.name = 'oplsaa'
+
+        # OPLS 1-4 scaling: Coulomb 0.5, LJ 0.5 (typical OPLS-AA convention)
+        self.param.c_c12 = 0.0
+        self.param.c_c13 = 0.0
+        self.param.c_c14 = 0.5
+        self.param.lj_c12 = 0.0
+        self.param.lj_c13 = 0.0
+        self.param.lj_c14 = 0.5
+
+        # Styles
+        self.pair_style = 'lj'
+        self.bond_style = 'harmonic'
+        self.angle_style = 'harmonic'
+        self.dihedral_style = 'fourier'
+        self.improper_style = 'cvff'
+
+    def ff_assign(self, mol, charge=None, retryMDL=True, useMDL=True):
+        """
+        OPLSAA.ff_assign
+
+        Args:
+            mol: RDKit Mol
+
+        Optional:
+            charge:
+                - None: do not assign charges
+                - 'opls': assign charges from embedded SMARTS rule table (type charges)
+                - other: delegate to calc.assign_charges (same as GAFF)
+            retryMDL/useMDL: same behavior as GAFF
+        """
+        from ..core import calc
+
+        if useMDL:
+            Chem.rdmolops.Kekulize(mol, clearAromaticFlags=True)
+            Chem.rdmolops.SetAromaticity(mol, model=Chem.rdmolops.AromaticityModel.AROMATICITY_MDL)
+
+        mol.SetProp('ff_name', str(self.name))
+        mol.SetProp('ff_class', str(self.ff_class))
+
+        result = self.assign_ptypes(mol, charge=charge)
+        if result: result = self.assign_btypes(mol)
+        if result: result = self.assign_atypes(mol)
+        if result: result = self.assign_dtypes(mol)
+        if result: result = self.assign_itypes(mol)
+
+        # If charge is not 'opls', use YadonPy's generic charge assignment
+        if result and charge is not None and charge != 'opls':
+            result = calc.assign_charges(mol, charge=charge)
+
+        if not result and retryMDL and not useMDL:
+            utils.radon_print('Retry to assign with MDL aromaticity model', level=1)
+            Chem.rdmolops.Kekulize(mol, clearAromaticFlags=True)
+            Chem.rdmolops.SetAromaticity(mol, model=Chem.rdmolops.AromaticityModel.AROMATICITY_MDL)
+
+            result = self.assign_ptypes(mol, charge=charge)
+            if result: result = self.assign_btypes(mol)
+            if result: result = self.assign_atypes(mol)
+            if result: result = self.assign_dtypes(mol)
+            if result: result = self.assign_itypes(mol)
+            if result and charge is not None and charge != 'opls':
+                result = calc.assign_charges(mol, charge=charge)
+            if result: utils.radon_print('Success to assign with MDL aromaticity model', level=1)
+
+        return result
+
+    @staticmethod
+    def _has_implicit_h(mol):
+        # Many SMARTS rules use degree (D4) semantics that require explicit hydrogens.
+        # If the molecule has implicit H, those rules will silently fail and typing will be wrong.
+        for a in mol.GetAtoms():
+            if a.GetSymbol() != 'H' and a.GetNumImplicitHs() > 0:
+                return True
+        return False
+
+    def assign_ptypes(self, mol, charge=None):
+        """
+        Assign particle types (nonbonded) using SMARTS rules.
+
+        Sets per-atom:
+          - ff_type   : 'opls_###' (used for LJ params)
+          - ff_btype  : bond_type label (CT/CA/HC/...) used for bonded lookups
+          - ff_sigma/ff_epsilon : from oplsaa.json particle_types
+          - AtomicCharge (if charge='opls')
+        """
+        mol.SetProp('pair_style', self.pair_style)
+
+        if self._has_implicit_h(mol):
+            utils.radon_print(
+                'OPLS-AA SMARTS typing requires explicit hydrogens (Chem.AddHs). '
+                'Found implicit H on at least one heavy atom. Aborting typing.',
+                level=3
+            )
+            return False
+
+        compiled = _get_compiled_rules()
+
+        # assignment tables (later rules overwrite earlier ones)
+        chosen = {}  # atom_idx -> rule dict
+
+        for rule, q in compiled:
+            matches = mol.GetSubstructMatches(q, uniquify=True)
+            if not matches:
+                continue
+            for m in matches:
+                if not m:
+                    continue
+                idx = m[0]
+                a = mol.GetAtomWithIdx(idx)
+                if a.GetSymbol() != rule["element"]:
+                    continue
+                chosen[idx] = rule
+
+        # Check coverage
+        ok = True
+        for a in mol.GetAtoms():
+            idx = a.GetIdx()
+            if idx not in chosen:
+                utils.radon_print(f'OPLS-AA typing failed: atom {idx} ({a.GetSymbol()}) did not match any SMARTS rule.', level=2)
+                ok = False
+
+        if not ok:
+            return False
+
+        # Apply assignment
+        for a in mol.GetAtoms():
+            idx = a.GetIdx()
+            rule = chosen[idx]
+            opls_type = rule["opls"]
+            btype = rule["btype"]
+
+            # store bond_type separately for bonded lookup
+            a.SetProp('ff_btype', btype)
+
+            # use GAFF's set_ptype to set ff_type + LJ params from json
+            if opls_type not in self.param.pt:
+                utils.radon_print(f'OPLS-AA typing failed: nonbonded type {opls_type} not found in oplsaa.json', level=3)
+                return False
+
+            self.set_ptype(a, opls_type)
+
+            # Optional: assign type charge from rule table
+            if charge == 'opls':
+                q = rule.get("charge", None)
+                if q is None:
+                    q = 0.0
+                a.SetDoubleProp('AtomicCharge', float(q))
+
+        return True
+
+    # ----------------------------
+    # Bonded assignments (use ff_btype)
+    # ----------------------------
+
+    def assign_btypes(self, mol):
+        mol.SetProp('bond_style', self.bond_style)
+        result = True
+
+        for b in mol.GetBonds():
+            a1 = b.GetBeginAtom()
+            a2 = b.GetEndAtom()
+            if not a1.HasProp('ff_btype') or not a2.HasProp('ff_btype'):
+                utils.radon_print('ff_btype missing on atoms. Did you run assign_ptypes first?', level=3)
+                return False
+
+            t1 = a1.GetProp('ff_btype')
+            t2 = a2.GetProp('ff_btype')
+            key = f'{t1},{t2}'
+            if not self.set_btype(b, key):
+                key2 = f'{t2},{t1}'
+                if not self.set_btype(b, key2):
+                    utils.radon_print(f'Cannot assign bond parameters for {t1},{t2}', level=2)
+                    result = False
+        return result
+
+    def set_btype(self, b, bt):
+        if bt not in self.param.bt:
+            return False
+        b.SetProp('ff_type', self.param.bt[bt].tag)
+        b.SetDoubleProp('ff_k', self.param.bt[bt].k)
+        b.SetDoubleProp('ff_r0', self.param.bt[bt].r0)
+        return True
+
+    def assign_atypes(self, mol):
+        mol.SetProp('angle_style', self.angle_style)
+        setattr(mol, 'angles', {})
+
+        # enumerate angles i-j-k where j is center
+        result = True
+        for j in mol.GetAtoms():
+            if not j.HasProp('ff_btype'):
+                utils.radon_print('ff_btype missing on atoms. Did you run assign_ptypes first?', level=3)
+                return False
+            nbrs = [n for n in j.GetNeighbors()]
+            if len(nbrs) < 2:
+                continue
+            for a_idx in range(len(nbrs)):
+                for c_idx in range(a_idx+1, len(nbrs)):
+                    i = nbrs[a_idx]
+                    k = nbrs[c_idx]
+                    t1 = i.GetProp('ff_btype')
+                    t2 = j.GetProp('ff_btype')
+                    t3 = k.GetProp('ff_btype')
+                    key = f'{t1},{t2},{t3}'
+                    if not self.set_atype(mol, i.GetIdx(), j.GetIdx(), k.GetIdx(), key):
+                        key2 = f'{t3},{t2},{t1}'
+                        if not self.set_atype(mol, i.GetIdx(), j.GetIdx(), k.GetIdx(), key2):
+                            utils.radon_print(f'Cannot assign angle parameters for {t1},{t2},{t3}', level=2)
+                            result = False
+        return result
+
+    def set_atype(self, mol, a, b, c, at):
+        if at not in self.param.at:
+            return False
+
+        angle = core_utils.Angle(
+            a=a, b=b, c=c,
+            ff=ff_class.Angle_harmonic(
+                ff_type=self.param.at[at].tag,
+                k=self.param.at[at].k,
+                theta0=self.param.at[at].theta0
+            )
+        )
+        key = f'{a},{b},{c}'
+        mol.angles[key] = angle
+        return True
+
+    def assign_dtypes(self, mol):
+        mol.SetProp('dihedral_style', self.dihedral_style)
+        setattr(mol, 'dihedrals', {})
+
+        result = True
+        # enumerate dihedrals i-j-k-l by traversing each bond j-k
+        for bond in mol.GetBonds():
+            j = bond.GetBeginAtom()
+            k = bond.GetEndAtom()
+            if not j.HasProp('ff_btype') or not k.HasProp('ff_btype'):
+                utils.radon_print('ff_btype missing on atoms. Did you run assign_ptypes first?', level=3)
+                return False
+
+            jn = [a for a in j.GetNeighbors() if a.GetIdx() != k.GetIdx()]
+            kn = [a for a in k.GetNeighbors() if a.GetIdx() != j.GetIdx()]
+            if not jn or not kn:
+                continue
+
+            for i in jn:
+                for l in kn:
+                    a = i.GetIdx(); b = j.GetIdx(); c = k.GetIdx(); d = l.GetIdx()
+                    key_idx = f'{a},{b},{c},{d}'
+                    if key_idx in mol.dihedrals:
+                        continue
+
+                    t1 = i.GetProp('ff_btype')
+                    t2 = j.GetProp('ff_btype')
+                    t3 = k.GetProp('ff_btype')
+                    t4 = l.GetProp('ff_btype')
+
+                    key = f'{t1},{t2},{t3},{t4}'
+                    if not self.set_dtype(mol, a, b, c, d, key):
+                        key2 = f'{t4},{t3},{t2},{t1}'
+                        if not self.set_dtype(mol, a, b, c, d, key2):
+                            # OPLS parameter coverage is large, but not perfect. We treat missing as error to avoid silent bad sims.
+                            utils.radon_print(f'Cannot assign dihedral parameters for {t1},{t2},{t3},{t4}', level=2)
+                            result = False
+        return result
+
+    def set_dtype(self, mol, a, b, c, d, dt):
+        if dt not in self.param.dt:
+            return False
+
+        p = self.param.dt[dt]
+        dih = core_utils.Dihedral(
+            a=a, b=b, c=c, d=d,
+            ff=ff_class.Dihedral_fourier(
+                ff_type=p.tag,
+                k=p.k,
+                d0=p.d,
+                m=p.m,
+                n=p.n
+            )
+        )
+        key = f'{a},{b},{c},{d}'
+        mol.dihedrals[key] = dih
+        return True
+
+    def assign_itypes(self, mol):
+        # OPLS-AA (as provided by GROMACS ffoplsaa) typically doesn't provide a full improper table for all use cases.
+        # We keep impropers empty to avoid adding incorrect constraints by default.
+        mol.SetProp('improper_style', self.improper_style)
+        setattr(mol, 'impropers', {})
+        return True

@@ -1,0 +1,67 @@
+; Created by Sobtop (http://sobereva.com/soft/sobtop) Version 1.0(dev2) on 2022-03-15
+
+[ atomtypes ]
+; name   at.num      mass       charge   ptype     sigma (nm)    epsilon (kJ/mol)
+f            9    18.998403    0.000000    A      3.118146E-01    2.552240E-01
+p5          15    30.973762    0.000000    A      3.741775E-01    8.368000E-01
+
+[ moleculetype ]
+; name          nrexcl
+PF6-       3
+
+[ atoms ]
+; Index   type   residue resname  atom     cgnr     charge       mass
+    1     f          1     PF6    F1         1   -0.4194263784   18.998403  ; Name: F1
+    2     f          1     PF6    F2         2   -0.4194263784   18.998403  ; Name: F2
+    3     f          1     PF6    F3         3   -0.4194263784   18.998403  ; Name: F3
+    4     f          1     PF6    F4         4   -0.4194263784   18.998403  ; Name: F4
+    5     f          1     PF6    F5         5   -0.4194263784   18.998403  ; Name: F5
+    6     f          1     PF6    F6         6   -0.4194263784   18.998403  ; Name: F6
+    7     p5         1     PF6    P7         7    1.5165582707   30.973762  ; Name: P7
+ 
+[ bonds ]
+; atom_i  atom_j  functype      r0 (nm)    k (kJ/mol/nm^2)
+    1       7         1        0.164607     2.304784E+05     ; F1-P7, DRIH method
+    2       7         1        0.164607     2.304784E+05     ; F2-P7, DRIH method
+    3       7         1        0.164607     2.304784E+05     ; F3-P7, DRIH method
+    4       7         1        0.164607     2.304784E+05     ; F4-P7, DRIH method
+    5       7         1        0.164607     2.304784E+05     ; F5-P7, DRIH method
+    6       7         1        0.164607     2.304784E+05     ; F6-P7, DRIH method
+ 
+[ angles ]
+; atom_i  atom_j  atom_k  functype    a0 (Deg.)  k (kJ/mol/rad^2)
+    1       7       2         1        90.000      5.242033E+02     ; F1-P7-F2, DRIH method
+    1       7       3         1        90.000      5.242033E+02     ; F1-P7-F3, DRIH method
+    1       7       4         1        90.000      5.391223E+02     ; F1-P7-F4, DRIH method
+    1       7       5         1       180.000      2.490480E+02     ; F1-P7-F5, DRIH method
+    1       7       6         1        90.000      5.391223E+02     ; F1-P7-F6, DRIH method
+    2       7       3         1        90.000      5.391223E+02     ; F2-P7-F3, DRIH method
+    2       7       4         1       180.000      2.490480E+02     ; F2-P7-F4, DRIH method
+    2       7       5         1        90.000      5.391223E+02     ; F2-P7-F5, DRIH method
+    2       7       6         1        90.000      5.242033E+02     ; F2-P7-F6, DRIH method
+    3       7       4         1        90.000      5.242033E+02     ; F3-P7-F4, DRIH method
+    3       7       5         1        90.000      5.391223E+02     ; F3-P7-F5, DRIH method
+    3       7       6         1       180.000      2.490480E+02     ; F3-P7-F6, DRIH method
+    4       7       5         1        90.000      5.242033E+02     ; F4-P7-F5, DRIH method
+    4       7       6         1        90.000      5.391223E+02     ; F4-P7-F6, DRIH method
+    5       7       6         1        90.000      5.242033E+02     ; F5-P7-F6, DRIH method
+
+[ angles ] ; bond-bond cross term
+; atom_i  atom_j  atom_k  functype   r0_ij (nm)  r0_jk (nm)   k (kJ/mol/nm^2)
+    1       7       2         3        0.164607    0.164607     1.996756E+04     ; F1-P7-F2
+    1       7       3         3        0.164607    0.164607     1.996756E+04     ; F1-P7-F3
+    1       7       4         3        0.164607    0.164607     1.996756E+04     ; F1-P7-F4
+    1       7       5         3        0.164607    0.164607    -5.413693E+02     ; F1-P7-F5
+    1       7       6         3        0.164607    0.164607     1.996756E+04     ; F1-P7-F6
+    2       7       3         3        0.164607    0.164607     1.996756E+04     ; F2-P7-F3
+    2       7       4         3        0.164607    0.164607    -5.413693E+02     ; F2-P7-F4
+    2       7       5         3        0.164607    0.164607     1.996756E+04     ; F2-P7-F5
+    2       7       6         3        0.164607    0.164607     1.996756E+04     ; F2-P7-F6
+    3       7       4         3        0.164607    0.164607     1.996756E+04     ; F3-P7-F4
+    3       7       5         3        0.164607    0.164607     1.996756E+04     ; F3-P7-F5
+    3       7       6         3        0.164607    0.164607    -5.413693E+02     ; F3-P7-F6
+    4       7       5         3        0.164607    0.164607     1.996756E+04     ; F4-P7-F5
+    4       7       6         3        0.164607    0.164607     1.996756E+04     ; F4-P7-F6
+    5       7       6         3        0.164607    0.164607     1.996756E+04     ; F5-P7-F6
+
+; No pairs need to generate
