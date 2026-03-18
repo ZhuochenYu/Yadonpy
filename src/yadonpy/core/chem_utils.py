@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 import re
+from itertools import permutations
 import numpy as np
 from rdkit import Chem
 from rdkit.Chem import AllChem
