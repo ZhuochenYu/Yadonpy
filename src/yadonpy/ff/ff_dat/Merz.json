@@ -1,0 +1,1114 @@
+{
+    "ff_name": "merz",
+    "ff_class": "1",
+    "pair_style": "lj",
+    "bond_style": "harmonic",
+    "angle_style": "harmonic",
+    "dihedral_style": "fourier",
+    "improper_style": "cvff",
+    "defaults": {
+        "nbfunc": 1,
+        "comb_rule": 2,
+        "gen_pairs": "yes",
+        "fudgeLJ": 0.5,
+        "fudgeQQ": 0.8333
+    },
+    "particle_types": [
+        {
+            "tag": "OW_opc",
+            "name": "OW_opc",
+            "elem": "OW",
+            "mass": 15.9994,
+            "epsilon": 0.89036,
+            "sigma": 0.316655,
+            "desc": "Merz/OPC3"
+        },
+        {
+            "tag": "HW_opc",
+            "name": "HW_opc",
+            "elem": "HW",
+            "mass": 1.008,
+            "epsilon": 0.0,
+            "sigma": 0.0,
+            "desc": "Merz/OPC3"
+        },
+        {
+            "tag": "MW",
+            "name": "MW",
+            "elem": "MW",
+            "mass": 0.0,
+            "epsilon": 0.0,
+            "sigma": 0.0,
+            "desc": "Merz/OPC3"
+        },
+        {
+            "tag": "OW_opc3",
+            "name": "OW_opc3",
+            "elem": "OW",
+            "mass": 15.9994,
+            "epsilon": 0.68369,
+            "sigma": 0.317427,
+            "desc": "Merz/OPC3"
+        },
+        {
+            "tag": "HW_opc3",
+            "name": "HW_opc3",
+            "elem": "HW",
+            "mass": 1.008,
+            "epsilon": 0.0,
+            "sigma": 0.0,
+            "desc": "Merz/OPC3"
+        },
+        {
+            "tag": "OW_ice",
+            "name": "OW_ice",
+            "elem": "OW",
+            "mass": 15.9994,
+            "epsilon": 0.88216,
+            "sigma": 0.3166800000000001,
+            "desc": "Merz/OPC3"
+        },
+        {
+            "tag": "HW_ice",
+            "name": "HW_ice",
+            "elem": "HW",
+            "mass": 1.008,
+            "epsilon": 0.0,
+            "sigma": 0.0,
+            "desc": "Merz/OPC3"
+        },
+        {
+            "tag": "C_HC",
+            "name": "C_HC",
+            "elem": "C",
+            "mass": 12.01,
+            "epsilon": 0.28,
+            "sigma": 0.35000000000000003,
+            "desc": "Merz/OPC3"
+        },
+        {
+            "tag": "H_HC",
+            "name": "H_HC",
+            "elem": "H",
+            "mass": 1.008,
+            "epsilon": 0.103,
+            "sigma": 0.24500000000000002,
+            "desc": "Merz/OPC3"
+        },
+        {
+            "tag": "Li",
+            "name": "Li",
+            "elem": "Li",
+            "mass": 6.94,
+            "epsilon": 0.013625196,
+            "sigma": 0.22628827441,
+            "desc": "Merz/OPC3"
+        },
+        {
+            "tag": "Na",
+            "name": "Na",
+            "elem": "Na",
+            "mass": 22.99,
+            "epsilon": 0.1260287744,
+            "sigma": 0.26174604339,
+            "desc": "Merz/OPC3"
+        },
+        {
+            "tag": "K",
+            "name": "K",
+            "elem": "K",
+            "mass": 39.1,
+            "epsilon": 0.58667223752,
+            "sigma": 0.30344010340000005,
+            "desc": "Merz/OPC3"
+        },
+        {
+            "tag": "Rb",
+            "name": "Rb",
+            "elem": "Rb",
+            "mass": 85.47,
+            "epsilon": 0.89173069,
+            "sigma": 0.32072353853,
+            "desc": "Merz/OPC3"
+        },
+        {
+            "tag": "Cs",
+            "name": "Cs",
+            "elem": "Cs",
+            "mass": 132.91,
+            "epsilon": 1.4963237108,
+            "sigma": 0.35012319623,
+            "desc": "Merz/OPC3"
+        },
+        {
+            "tag": "Tl",
+            "name": "Tl",
+            "elem": "Tl",
+            "mass": 204.38,
+            "epsilon": 0.52838869912,
+            "sigma": 0.29969832878,
+            "desc": "Merz/OPC3"
+        },
+        {
+            "tag": "Cu",
+            "name": "Cu",
+            "elem": "Cu",
+            "mass": 63.55,
+            "epsilon": 0.004698632,
+            "sigma": 0.2139938721,
+            "desc": "Merz/OPC3"
+        },
+        {
+            "tag": "Ag",
+            "name": "Ag",
+            "elem": "Ag",
+            "mass": 107.87,
+            "epsilon": 0.0318714108,
+            "sigma": 0.23786995774,
+            "desc": "Merz/OPC3"
+        },
+        {
+            "tag": "F",
+            "name": "F",
+            "elem": "F",
+            "mass": 19.0,
+            "epsilon": 0.9537620464,
+            "sigma": 0.32393077392,
+            "desc": "Merz/OPC3"
+        },
+        {
+            "tag": "Cl",
+            "name": "Cl",
+            "elem": "Cl",
+            "mass": 35.45,
+            "epsilon": 2.6872439565,
+            "sigma": 0.41088248881,
+            "desc": "Merz/OPC3"
+        },
+        {
+            "tag": "Br",
+            "name": "Br",
+            "elem": "Br",
+            "mass": 79.9,
+            "epsilon": 3.1829402603,
+            "sigma": 0.44562753881,
+            "desc": "Merz/OPC3"
+        },
+        {
+            "tag": "I",
+            "name": "I",
+            "elem": "I",
+            "mass": 126.9,
+            "epsilon": 3.6474360578000002,
+            "sigma": 0.49533968729,
+            "desc": "Merz/OPC3"
+        },
+        {
+            "tag": "Be2",
+            "name": "Be2",
+            "elem": "Be",
+            "mass": 9.012,
+            "epsilon": 8.53536e-06,
+            "sigma": 0.16659806029000002,
+            "desc": "Merz/OPC3"
+        },
+        {
+            "tag": "Cu2",
+            "name": "Cu2",
+            "elem": "Cu",
+            "mass": 63.55,
+            "epsilon": 0.00254399752,
+            "sigma": 0.20775758107,
+            "desc": "Merz/OPC3"
+        },
+        {
+            "tag": "Ni2",
+            "name": "Ni2",
+            "elem": "Ni",
+            "mass": 58.69,
+            "epsilon": 0.00321502744,
+            "sigma": 0.21007391774,
+            "desc": "Merz/OPC3"
+        },
+        {
+            "tag": "Pt2",
+            "name": "Pt2",
+            "elem": "Pt",
+            "mass": 195.1,
+            "epsilon": 0.00424537928,
+            "sigma": 0.21292479364000003,
+            "desc": "Merz/OPC3"
+        },
+        {
+            "tag": "Zn2",
+            "name": "Zn2",
+            "elem": "Zn",
+            "mass": 65.39,
+            "epsilon": 0.00462034936,
+            "sigma": 0.21381569235,
+            "desc": "Merz/OPC3"
+        },
+        {
+            "tag": "Co2",
+            "name": "Co2",
+            "elem": "Co",
+            "mass": 58.93,
+            "epsilon": 0.0078744972,
+            "sigma": 0.21969562389,
+            "desc": "Merz/OPC3"
+        },
+        {
+            "tag": "Pd2",
+            "name": "Pd2",
+            "elem": "Pd",
+            "mass": 106.4,
+            "epsilon": 0.00837582408,
+            "sigma": 0.22040834287,
+            "desc": "Merz/OPC3"
+        },
+        {
+            "tag": "Ag2",
+            "name": "Ag2",
+            "elem": "Ag",
+            "mass": 107.9,
+            "epsilon": 0.01655449808,
+            "sigma": 0.22878279082000003,
+            "desc": "Merz/OPC3"
+        },
+        {
+            "tag": "Cr2",
+            "name": "Cr2",
+            "elem": "Cr",
+            "mass": 52.0,
+            "epsilon": 0.01820190624,
+            "sigma": 0.23003004902,
+            "desc": "Merz/OPC3"
+        },
+        {
+            "tag": "Fe2",
+            "name": "Fe2",
+            "elem": "Fe",
+            "mass": 55.85,
+            "epsilon": 0.02051419384,
+            "sigma": 0.23163366672,
+            "desc": "Merz/OPC3"
+        },
+        {
+            "tag": "Mg2",
+            "name": "Mg2",
+            "elem": "Mg",
+            "mass": 24.31,
+            "epsilon": 0.02218415376,
+            "sigma": 0.23270274518000003,
+            "desc": "Merz/OPC3"
+        },
+        {
+            "tag": "V2",
+            "name": "V2",
+            "elem": "V",
+            "mass": 50.94,
+            "epsilon": 0.02335734736,
+            "sigma": 0.23341546415000003,
+            "desc": "Merz/OPC3"
+        },
+        {
+            "tag": "Mn2",
+            "name": "Mn2",
+            "elem": "Mn",
+            "mass": 54.94,
+            "epsilon": 0.03940482832,
+            "sigma": 0.24107719313000003,
+            "desc": "Merz/OPC3"
+        },
+        {
+            "tag": "Hg2",
+            "name": "Hg2",
+            "elem": "Hg",
+            "mass": 200.6,
+            "epsilon": 0.03940482832,
+            "sigma": 0.24107719313000003,
+            "desc": "Merz/OPC3"
+        },
+        {
+            "tag": "Cd2",
+            "name": "Cd2",
+            "elem": "Cd",
+            "mass": 112.4,
+            "epsilon": 0.04125499312,
+            "sigma": 0.2417899121,
+            "desc": "Merz/OPC3"
+        },
+        {
+            "tag": "Yb2",
+            "name": "Yb2",
+            "elem": "Yb",
+            "mass": 88.91,
+            "epsilon": 0.21192098072,
+            "sigma": 0.27332772673,
+            "desc": "Merz/OPC3"
+        },
+        {
+            "tag": "Ca2",
+            "name": "Ca2",
+            "elem": "Ca",
+            "mass": 40.08,
+            "epsilon": 0.223042764,
+            "sigma": 0.27457498493000004,
+            "desc": "Merz/OPC3"
+        },
+        {
+            "tag": "Sn2",
+            "name": "Sn2",
+            "elem": "Sn",
+            "mass": 118.7,
+            "epsilon": 0.2481507388,
+            "sigma": 0.27724768109,
+            "desc": "Merz/OPC3"
+        },
+        {
+            "tag": "Pb2",
+            "name": "Pb2",
+            "elem": "Pb",
+            "mass": 207.2,
+            "epsilon": 0.38412827024,
+            "sigma": 0.28936390365,
+            "desc": "Merz/OPC3"
+        },
+        {
+            "tag": "Eu2",
+            "name": "Eu2",
+            "elem": "Eu",
+            "mass": 167.26,
+            "epsilon": 0.4991058036,
+            "sigma": 0.2977383516,
+            "desc": "Merz/OPC3"
+        },
+        {
+            "tag": "Sr2",
+            "name": "Sr2",
+            "elem": "Sr",
+            "mass": 87.62,
+            "epsilon": 0.51497002536,
+            "sigma": 0.29880743006000005,
+            "desc": "Merz/OPC3"
+        },
+        {
+            "tag": "Sm2",
+            "name": "Sm2",
+            "elem": "Sm",
+            "mass": 150.36,
+            "epsilon": 0.53109386432,
+            "sigma": 0.29987650853,
+            "desc": "Merz/OPC3"
+        },
+        {
+            "tag": "Ba2",
+            "name": "Ba2",
+            "elem": "Ba",
+            "mass": 137.3,
+            "epsilon": 1.0313754556,
+            "sigma": 0.32785072828000006,
+            "desc": "Merz/OPC3"
+        },
+        {
+            "tag": "Ra2",
+            "name": "Ra2",
+            "elem": "Ra",
+            "mass": 226.03,
+            "epsilon": 1.0313754556,
+            "sigma": 0.32785072828000006,
+            "desc": "Merz/OPC3"
+        }
+    ],
+    "bond_types": [],
+    "angle_types": [],
+    "dihedral_types": [],
+    "improper_types": [],
+    "molecule_types": [
+        {
+            "name": "LI",
+            "nrexcl": 1,
+            "atoms": [
+                {
+                    "id": 1,
+                    "type": "Li",
+                    "charge": 1.0,
+                    "resnr": 1,
+                    "resname": "LI",
+                    "atomname": "LI",
+                    "cgnr": 1
+                }
+            ]
+        },
+        {
+            "name": "NA",
+            "nrexcl": 1,
+            "atoms": [
+                {
+                    "id": 1,
+                    "type": "Na",
+                    "charge": 1.0,
+                    "resnr": 1,
+                    "resname": "NA",
+                    "atomname": "NA",
+                    "cgnr": 1
+                }
+            ]
+        },
+        {
+            "name": "K",
+            "nrexcl": 1,
+            "atoms": [
+                {
+                    "id": 1,
+                    "type": "K",
+                    "charge": 1.0,
+                    "resnr": 1,
+                    "resname": "K",
+                    "atomname": "K",
+                    "cgnr": 1
+                }
+            ]
+        },
+        {
+            "name": "RB",
+            "nrexcl": 1,
+            "atoms": [
+                {
+                    "id": 1,
+                    "type": "Rb",
+                    "charge": 1.0,
+                    "resnr": 1,
+                    "resname": "RB",
+                    "atomname": "RB",
+                    "cgnr": 1
+                }
+            ]
+        },
+        {
+            "name": "CS",
+            "nrexcl": 1,
+            "atoms": [
+                {
+                    "id": 1,
+                    "type": "Cs",
+                    "charge": 1.0,
+                    "resnr": 1,
+                    "resname": "CS",
+                    "atomname": "CS",
+                    "cgnr": 1
+                }
+            ]
+        },
+        {
+            "name": "TL",
+            "nrexcl": 1,
+            "atoms": [
+                {
+                    "id": 1,
+                    "type": "Tl",
+                    "charge": 1.0,
+                    "resnr": 1,
+                    "resname": "TL",
+                    "atomname": "TL",
+                    "cgnr": 1
+                }
+            ]
+        },
+        {
+            "name": "CU",
+            "nrexcl": 1,
+            "atoms": [
+                {
+                    "id": 1,
+                    "type": "Cu",
+                    "charge": 1.0,
+                    "resnr": 1,
+                    "resname": "CU",
+                    "atomname": "CU",
+                    "cgnr": 1
+                }
+            ]
+        },
+        {
+            "name": "AG",
+            "nrexcl": 1,
+            "atoms": [
+                {
+                    "id": 1,
+                    "type": "Ag",
+                    "charge": 1.0,
+                    "resnr": 1,
+                    "resname": "AG",
+                    "atomname": "AG",
+                    "cgnr": 1
+                }
+            ]
+        },
+        {
+            "name": "F",
+            "nrexcl": 1,
+            "atoms": [
+                {
+                    "id": 1,
+                    "type": "F",
+                    "charge": -1.0,
+                    "resnr": 1,
+                    "resname": "F",
+                    "atomname": "F",
+                    "cgnr": 1
+                }
+            ]
+        },
+        {
+            "name": "CL",
+            "nrexcl": 1,
+            "atoms": [
+                {
+                    "id": 1,
+                    "type": "Cl",
+                    "charge": -1.0,
+                    "resnr": 1,
+                    "resname": "CL",
+                    "atomname": "CL",
+                    "cgnr": 1
+                }
+            ]
+        },
+        {
+            "name": "BR",
+            "nrexcl": 1,
+            "atoms": [
+                {
+                    "id": 1,
+                    "type": "Br",
+                    "charge": -1.0,
+                    "resnr": 1,
+                    "resname": "BR",
+                    "atomname": "BR",
+                    "cgnr": 1
+                }
+            ]
+        },
+        {
+            "name": "I",
+            "nrexcl": 1,
+            "atoms": [
+                {
+                    "id": 1,
+                    "type": "I",
+                    "charge": -1.0,
+                    "resnr": 1,
+                    "resname": "I",
+                    "atomname": "I",
+                    "cgnr": 1
+                }
+            ]
+        },
+        {
+            "name": "BE2",
+            "nrexcl": 1,
+            "atoms": [
+                {
+                    "id": 1,
+                    "type": "Be2",
+                    "charge": 2.0,
+                    "resnr": 1,
+                    "resname": "BE2",
+                    "atomname": "BE2",
+                    "cgnr": 1
+                }
+            ]
+        },
+        {
+            "name": "CU2",
+            "nrexcl": 1,
+            "atoms": [
+                {
+                    "id": 1,
+                    "type": "Cu2",
+                    "charge": 2.0,
+                    "resnr": 1,
+                    "resname": "CU2",
+                    "atomname": "CU2",
+                    "cgnr": 1
+                }
+            ]
+        },
+        {
+            "name": "NI2",
+            "nrexcl": 1,
+            "atoms": [
+                {
+                    "id": 1,
+                    "type": "Ni2",
+                    "charge": 2.0,
+                    "resnr": 1,
+                    "resname": "NI2",
+                    "atomname": "NI2",
+                    "cgnr": 1
+                }
+            ]
+        },
+        {
+            "name": "PT2",
+            "nrexcl": 1,
+            "atoms": [
+                {
+                    "id": 1,
+                    "type": "Pt2",
+                    "charge": 2.0,
+                    "resnr": 1,
+                    "resname": "PT2",
+                    "atomname": "PT2",
+                    "cgnr": 1
+                }
+            ]
+        },
+        {
+            "name": "ZN2",
+            "nrexcl": 1,
+            "atoms": [
+                {
+                    "id": 1,
+                    "type": "Zn2",
+                    "charge": 2.0,
+                    "resnr": 1,
+                    "resname": "ZN2",
+                    "atomname": "ZN2",
+                    "cgnr": 1
+                }
+            ]
+        },
+        {
+            "name": "CO2",
+            "nrexcl": 1,
+            "atoms": [
+                {
+                    "id": 1,
+                    "type": "Co2",
+                    "charge": 2.0,
+                    "resnr": 1,
+                    "resname": "CO2",
+                    "atomname": "CO2",
+                    "cgnr": 1
+                }
+            ]
+        },
+        {
+            "name": "PD2",
+            "nrexcl": 1,
+            "atoms": [
+                {
+                    "id": 1,
+                    "type": "Pd2",
+                    "charge": 2.0,
+                    "resnr": 1,
+                    "resname": "PD2",
+                    "atomname": "PD2",
+                    "cgnr": 1
+                }
+            ]
+        },
+        {
+            "name": "AG2",
+            "nrexcl": 1,
+            "atoms": [
+                {
+                    "id": 1,
+                    "type": "Ag2",
+                    "charge": 2.0,
+                    "resnr": 1,
+                    "resname": "AG2",
+                    "atomname": "AG2",
+                    "cgnr": 1
+                }
+            ]
+        },
+        {
+            "name": "CR2",
+            "nrexcl": 1,
+            "atoms": [
+                {
+                    "id": 1,
+                    "type": "Cr2",
+                    "charge": 2.0,
+                    "resnr": 1,
+                    "resname": "CR2",
+                    "atomname": "CR2",
+                    "cgnr": 1
+                }
+            ]
+        },
+        {
+            "name": "FE2",
+            "nrexcl": 1,
+            "atoms": [
+                {
+                    "id": 1,
+                    "type": "Fe2",
+                    "charge": 2.0,
+                    "resnr": 1,
+                    "resname": "FE2",
+                    "atomname": "FE2",
+                    "cgnr": 1
+                }
+            ]
+        },
+        {
+            "name": "MG2",
+            "nrexcl": 1,
+            "atoms": [
+                {
+                    "id": 1,
+                    "type": "Mg2",
+                    "charge": 2.0,
+                    "resnr": 1,
+                    "resname": "MG2",
+                    "atomname": "MG2",
+                    "cgnr": 1
+                }
+            ]
+        },
+        {
+            "name": "V2",
+            "nrexcl": 1,
+            "atoms": [
+                {
+                    "id": 1,
+                    "type": "V2",
+                    "charge": 2.0,
+                    "resnr": 1,
+                    "resname": "V2",
+                    "atomname": "V2",
+                    "cgnr": 1
+                }
+            ]
+        },
+        {
+            "name": "MN2",
+            "nrexcl": 1,
+            "atoms": [
+                {
+                    "id": 1,
+                    "type": "Mn2",
+                    "charge": 2.0,
+                    "resnr": 1,
+                    "resname": "MN2",
+                    "atomname": "MN2",
+                    "cgnr": 1
+                }
+            ]
+        },
+        {
+            "name": "HG2",
+            "nrexcl": 1,
+            "atoms": [
+                {
+                    "id": 1,
+                    "type": "Hg2",
+                    "charge": 2.0,
+                    "resnr": 1,
+                    "resname": "HG2",
+                    "atomname": "HG2",
+                    "cgnr": 1
+                }
+            ]
+        },
+        {
+            "name": "CD2",
+            "nrexcl": 1,
+            "atoms": [
+                {
+                    "id": 1,
+                    "type": "Cd2",
+                    "charge": 2.0,
+                    "resnr": 1,
+                    "resname": "CD2",
+                    "atomname": "CD2",
+                    "cgnr": 1
+                }
+            ]
+        },
+        {
+            "name": "YB2",
+            "nrexcl": 1,
+            "atoms": [
+                {
+                    "id": 1,
+                    "type": "Yb2",
+                    "charge": 2.0,
+                    "resnr": 1,
+                    "resname": "YB2",
+                    "atomname": "YB2",
+                    "cgnr": 1
+                }
+            ]
+        },
+        {
+            "name": "CA2",
+            "nrexcl": 1,
+            "atoms": [
+                {
+                    "id": 1,
+                    "type": "Ca2",
+                    "charge": 2.0,
+                    "resnr": 1,
+                    "resname": "CA2",
+                    "atomname": "CA2",
+                    "cgnr": 1
+                }
+            ]
+        },
+        {
+            "name": "SN2",
+            "nrexcl": 1,
+            "atoms": [
+                {
+                    "id": 1,
+                    "type": "Sn2",
+                    "charge": 2.0,
+                    "resnr": 1,
+                    "resname": "SN2",
+                    "atomname": "SN2",
+                    "cgnr": 1
+                }
+            ]
+        },
+        {
+            "name": "PB2",
+            "nrexcl": 1,
+            "atoms": [
+                {
+                    "id": 1,
+                    "type": "Pb2",
+                    "charge": 2.0,
+                    "resnr": 1,
+                    "resname": "PB2",
+                    "atomname": "PB2",
+                    "cgnr": 1
+                }
+            ]
+        },
+        {
+            "name": "EU2",
+            "nrexcl": 1,
+            "atoms": [
+                {
+                    "id": 1,
+                    "type": "Eu2",
+                    "charge": 2.0,
+                    "resnr": 1,
+                    "resname": "EU2",
+                    "atomname": "EU2",
+                    "cgnr": 1
+                }
+            ]
+        },
+        {
+            "name": "SR2",
+            "nrexcl": 1,
+            "atoms": [
+                {
+                    "id": 1,
+                    "type": "Sr2",
+                    "charge": 2.0,
+                    "resnr": 1,
+                    "resname": "SR2",
+                    "atomname": "SR2",
+                    "cgnr": 1
+                }
+            ]
+        },
+        {
+            "name": "SM2",
+            "nrexcl": 1,
+            "atoms": [
+                {
+                    "id": 1,
+                    "type": "Sm2",
+                    "charge": 2.0,
+                    "resnr": 1,
+                    "resname": "SM2",
+                    "atomname": "SM2",
+                    "cgnr": 1
+                }
+            ]
+        },
+        {
+            "name": "BA2",
+            "nrexcl": 1,
+            "atoms": [
+                {
+                    "id": 1,
+                    "type": "Ba2",
+                    "charge": 2.0,
+                    "resnr": 1,
+                    "resname": "BA2",
+                    "atomname": "BA2",
+                    "cgnr": 1
+                }
+            ]
+        },
+        {
+            "name": "RA2",
+            "nrexcl": 1,
+            "atoms": [
+                {
+                    "id": 1,
+                    "type": "Ra2",
+                    "charge": 2.0,
+                    "resnr": 1,
+                    "resname": "RA2",
+                    "atomname": "RA2",
+                    "cgnr": 1
+                }
+            ]
+        }
+    ],
+    "ion_alias": {
+        "LI": "LI",
+        "Li": "LI",
+        "Li+": "LI",
+        "NA": "NA",
+        "Na": "NA",
+        "Na+": "NA",
+        "K": "K",
+        "K+": "K",
+        "RB": "RB",
+        "Rb": "RB",
+        "Rb+": "RB",
+        "CS": "CS",
+        "Cs": "CS",
+        "Cs+": "CS",
+        "TL": "TL",
+        "Tl": "TL",
+        "Tl+": "TL",
+        "CU": "CU",
+        "Cu": "CU",
+        "Cu+": "CU",
+        "AG": "AG",
+        "Ag": "AG",
+        "Ag+": "AG",
+        "F": "F",
+        "F-": "F",
+        "CL": "CL",
+        "Cl": "CL",
+        "Cl-": "CL",
+        "BR": "BR",
+        "Br": "BR",
+        "Br-": "BR",
+        "I": "I",
+        "I-": "I",
+        "BE2": "BE2",
+        "Be2": "BE2",
+        "Be2+": "BE2",
+        "Be2++": "BE2",
+        "CU2": "CU2",
+        "Cu2": "CU2",
+        "Cu2+": "CU2",
+        "Cu2++": "CU2",
+        "NI2": "NI2",
+        "Ni2": "NI2",
+        "Ni2+": "NI2",
+        "Ni2++": "NI2",
+        "PT2": "PT2",
+        "Pt2": "PT2",
+        "Pt2+": "PT2",
+        "Pt2++": "PT2",
+        "ZN2": "ZN2",
+        "Zn2": "ZN2",
+        "Zn2+": "ZN2",
+        "Zn2++": "ZN2",
+        "CO2": "CO2",
+        "Co2": "CO2",
+        "Co2+": "CO2",
+        "Co2++": "CO2",
+        "PD2": "PD2",
+        "Pd2": "PD2",
+        "Pd2+": "PD2",
+        "Pd2++": "PD2",
+        "AG2": "AG2",
+        "Ag2": "AG2",
+        "Ag2+": "AG2",
+        "Ag2++": "AG2",
+        "CR2": "CR2",
+        "Cr2": "CR2",
+        "Cr2+": "CR2",
+        "Cr2++": "CR2",
+        "FE2": "FE2",
+        "Fe2": "FE2",
+        "Fe2+": "FE2",
+        "Fe2++": "FE2",
+        "MG2": "MG2",
+        "Mg2": "MG2",
+        "Mg2+": "MG2",
+        "Mg2++": "MG2",
+        "V2": "V2",
+        "V2+": "V2",
+        "V2++": "V2",
+        "MN2": "MN2",
+        "Mn2": "MN2",
+        "Mn2+": "MN2",
+        "Mn2++": "MN2",
+        "HG2": "HG2",
+        "Hg2": "HG2",
+        "Hg2+": "HG2",
+        "Hg2++": "HG2",
+        "CD2": "CD2",
+        "Cd2": "CD2",
+        "Cd2+": "CD2",
+        "Cd2++": "CD2",
+        "YB2": "YB2",
+        "Yb2": "YB2",
+        "Yb2+": "YB2",
+        "Yb2++": "YB2",
+        "CA2": "CA2",
+        "Ca2": "CA2",
+        "Ca2+": "CA2",
+        "Ca2++": "CA2",
+        "SN2": "SN2",
+        "Sn2": "SN2",
+        "Sn2+": "SN2",
+        "Sn2++": "SN2",
+        "PB2": "PB2",
+        "Pb2": "PB2",
+        "Pb2+": "PB2",
+        "Pb2++": "PB2",
+        "EU2": "EU2",
+        "Eu2": "EU2",
+        "Eu2+": "EU2",
+        "Eu2++": "EU2",
+        "SR2": "SR2",
+        "Sr2": "SR2",
+        "Sr2+": "SR2",
+        "Sr2++": "SR2",
+        "SM2": "SM2",
+        "Sm2": "SM2",
+        "Sm2+": "SM2",
+        "Sm2++": "SM2",
+        "BA2": "BA2",
+        "Ba2": "BA2",
+        "Ba2+": "BA2",
+        "Ba2++": "BA2",
+        "RA2": "RA2",
+        "Ra2": "RA2",
+        "Ra2+": "RA2",
+        "Ra2++": "RA2"
+    },
+    "units": "gromacs",
+    "unit_notes": {
+        "energy": "kJ/mol",
+        "length": "nm",
+        "bond_k": "kJ/mol/nm^2 (GROMACS funct=1, energy=0.5*k*(dr)^2)",
+        "angle_k": "kJ/mol/rad^2 (GROMACS funct=1, energy=0.5*k*(dtheta_rad)^2)",
+        "dihedral_k": "kJ/mol (GROMACS funct=1 periodic, k is amplitude)"
+    },
+    "gromacs_function_forms": {
+        "nonbonded": "LJ sigma/epsilon",
+        "bond_funct": 1,
+        "angle_funct": 1,
+        "dihedral_funct": 1,
+        "improper_funct": 2
+    }
+}

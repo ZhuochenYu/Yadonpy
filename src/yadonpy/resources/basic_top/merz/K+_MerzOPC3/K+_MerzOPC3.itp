@@ -1,0 +1,12 @@
+; Created by AuToFF
+
+[ atomtypes ]
+; type                mass       charge   ptype     sigma (nm)    epsilon (kJ/mol)
+K 19 39.100000 1.000000 A 3.0344010340-01 5.8667223752E-01
+[ moleculetype ]
+; name          nrexcl
+K+_MerzOPC3 3
+
+[ atoms ]
+;  Index    type       residue  resname    atom      cgnr     charge       mass
+     1    K              1        K      K01      1      1.000000    39.100000

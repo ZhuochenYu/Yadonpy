@@ -1,0 +1,25 @@
+@<TRIPOS>MOLECULE
+Gaussian/opt+freq/success/VC.out
+ 8 8 0 0 0
+SMALL
+MULLIKEN_CHARGES
+****
+Gaussian 16 # opt freq b3lyp/6-311g(d,p) em=gd3bj scale=0.9682
+@<TRIPOS>ATOM
+      1 O          -1.9741    0.0000   -0.0001 O.2     1  UNL1       -0.3034
+      2 C          -0.7897   -0.0000    0.0002 C.ar    1  UNL1        0.4783
+      3 O           0.0217    1.1082   -0.0000 O.2     1  UNL1       -0.2575
+      4 C           1.3308    0.6639   -0.0000 C.ar    1  UNL1        0.0279
+      5 C           1.3308   -0.6639   -0.0000 C.ar    1  UNL1        0.0279
+      6 O           0.0217   -1.1082   -0.0000 O.2     1  UNL1       -0.2575
+      7 H           2.1071    1.4067   -0.0001 H       1  UNL1        0.1422
+      8 H           2.1071   -1.4067   -0.0001 H       1  UNL1        0.1422
+@<TRIPOS>BOND
+     1     8     5    1
+     2     7     4    1
+     3     1     2    2
+     4     3     4   ar
+     5     3     2   ar
+     6     6     5   ar
+     7     6     2   ar
+     8     5     4   ar

@@ -1,0 +1,249 @@
+"""Resumable workflow state manager.
+
+Design goals:
+  - Make example scripts and user workflows restartable without re-running
+    expensive steps.
+  - Be conservative: only skip a step if all expected outputs exist.
+  - Avoid heavy dependencies.
+
+The manager records a small JSON state file under the workflow directory.
+Each step stores an input signature and a list of expected outputs. On rerun,
+if outputs exist and the signature matches, the step is skipped.
+
+This is *not* a job scheduler; it is a thin helper for sequential scripts.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import time
+import hashlib
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Callable, Dict, Iterable, Optional, Sequence, Union
+
+
+def _now_iso() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime())
+
+
+def _is_jsonable(x: Any) -> bool:
+    try:
+        json.dumps(x, ensure_ascii=False, sort_keys=True)
+        return True
+    except Exception:
+        return False
+
+
+def _normalize_inputs(inputs: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    if not inputs:
+        return {}
+    out: Dict[str, Any] = {}
+    for k, v in inputs.items():
+        if isinstance(v, Path):
+            out[k] = {"__path__": str(v)}
+        elif isinstance(v, (list, tuple)):
+            out[k] = [str(x) if isinstance(x, Path) else x for x in v]
+        elif _is_jsonable(v):
+            out[k] = v
+        else:
+            # best effort stringification (keeps state file readable)
+            out[k] = repr(v)
+    return out
+
+
+def file_signature(path: Path) -> Dict[str, Any]:
+    """Lightweight signature for a file: size + mtime.
+
+    We do not hash file content by default to keep this fast.
+    """
+    try:
+        st = path.stat()
+        return {"path": str(path), "size": int(st.st_size), "mtime": float(st.st_mtime)}
+    except FileNotFoundError:
+        return {"path": str(path), "missing": True}
+
+
+def dir_signature(path: Path, *, patterns: Sequence[str] = ("*",), max_files: int = 2000) -> Dict[str, Any]:
+    """Signature for a directory by sampling file stats.
+
+    This is intended for job folders (e.g. GROMACS stages). We cap the number of
+    files to avoid huge state.
+    """
+    if not path.exists():
+        return {"path": str(path), "missing": True}
+    files: list[Dict[str, Any]] = []
+    n = 0
+    for pat in patterns:
+        for p in sorted(path.glob(pat)):
+            if p.is_file():
+                files.append(file_signature(p))
+                n += 1
+                if n >= max_files:
+                    break
+        if n >= max_files:
+            break
+    return {"path": str(path), "files": files, "truncated": n >= max_files}
+
+
+def inputs_hash(inputs: Optional[Dict[str, Any]]) -> str:
+    """Stable hash for a dict of inputs (JSON serialized)."""
+    norm = _normalize_inputs(inputs)
+    blob = json.dumps(norm, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(blob).hexdigest()
+
+
+@dataclass(frozen=True)
+class StepSpec:
+    """Specification for a resumable step."""
+
+    name: str
+    outputs: Sequence[Path]
+    inputs: Optional[Dict[str, Any]] = None
+    description: str = ""
+
+
+class ResumeManager:
+    """Manage step-level resume for a workflow directory."""
+
+    def __init__(
+        self,
+        root: Union[Path, str],
+        *,
+        # Store resume state in a hidden subdir by default, to keep `work_dir/`
+        # clean and focused on scientific artifacts.
+        state_name: str = ".yadonpy/resume_state.json",
+        strict_inputs: bool = False,
+        env_disable: str = "YADONPY_NO_RESUME",
+        enabled: bool = True,
+    ):
+        self.root = Path(root).expanduser().resolve()
+        self.root.mkdir(parents=True, exist_ok=True)
+
+        # Backward compatible migration: if an old-style state file exists at
+        # the root, move it into the new hidden folder (best-effort).
+        desired = self.root / state_name
+        legacy = self.root / "resume_state.json"
+        if state_name != "resume_state.json" and (not desired.exists()) and legacy.exists():
+            try:
+                desired.parent.mkdir(parents=True, exist_ok=True)
+                os.replace(legacy, desired)
+            except Exception:
+                # If migration fails, keep using the legacy location.
+                desired = legacy
+
+        self.state_path = desired
+        self.state_path.parent.mkdir(parents=True, exist_ok=True)
+        self.strict_inputs = bool(strict_inputs)
+        self.env_disable = env_disable
+        # Global switch for resume logic. When disabled, steps are never skipped.
+        self.enabled = bool(enabled)
+        self._state: Dict[str, Any] = self._load_state()
+
+    def _load_state(self) -> Dict[str, Any]:
+        if self.state_path.exists():
+            try:
+                return json.loads(self.state_path.read_text(encoding="utf-8"))
+            except Exception:
+                # corrupted state -> keep a backup and start fresh
+                bak = self.state_path.with_suffix(self.state_path.suffix + ".bak")
+                try:
+                    bak.write_text(self.state_path.read_text(encoding="utf-8", errors="replace"), encoding="utf-8")
+                except Exception:
+                    pass
+        return {"schema_version": 1, "root": str(self.root), "steps": {}}
+
+    def _save_state(self) -> None:
+        self.state_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self.state_path.with_suffix(self.state_path.suffix + ".tmp")
+        tmp.write_text(json.dumps(self._state, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        os.replace(tmp, self.state_path)
+
+    def disable_resume(self) -> bool:
+        v = os.environ.get(self.env_disable)
+        return bool(v and v.strip() not in ("0", "false", "False", "no", "NO"))
+
+    @staticmethod
+    def _outputs_exist(outputs: Sequence[Path]) -> bool:
+        return all(Path(p).exists() for p in outputs)
+
+    def is_done(self, spec: StepSpec) -> bool:
+        outputs_ok = self._outputs_exist(spec.outputs)
+        if not outputs_ok:
+            return False
+        # If resume is disabled programmatically, treat as not done.
+        if not self.enabled:
+            return False
+        # If resume is disabled by env var, treat as not done.
+        if self.disable_resume():
+            return False
+        rec = self._state.get("steps", {}).get(spec.name)
+        if not rec:
+            # outputs exist but no record: accept as done unless strict_inputs.
+            return not self.strict_inputs
+        if rec.get("status") != "done":
+            return False
+        if self.strict_inputs:
+            want = inputs_hash(spec.inputs)
+            return rec.get("inputs_hash") == want
+        # Non-strict: only check outputs.
+        return True
+
+    def mark_done(self, spec: StepSpec, *, meta: Optional[Dict[str, Any]] = None) -> None:
+        self._state.setdefault("steps", {})
+        self._state["steps"][spec.name] = {
+            "status": "done",
+            "inputs_hash": inputs_hash(spec.inputs),
+            "outputs": [str(Path(p)) for p in spec.outputs],
+            "updated_at": _now_iso(),
+            "meta": meta or {},
+        }
+        self._save_state()
+
+    def mark_failed(self, spec: StepSpec, *, error: str, meta: Optional[Dict[str, Any]] = None) -> None:
+        self._state.setdefault("steps", {})
+        self._state["steps"][spec.name] = {
+            "status": "failed",
+            "inputs_hash": inputs_hash(spec.inputs),
+            "outputs": [str(Path(p)) for p in spec.outputs],
+            "updated_at": _now_iso(),
+            "error": str(error),
+            "meta": meta or {},
+        }
+        self._save_state()
+
+    def run(
+        self,
+        spec: StepSpec,
+        func: Callable[[], Any],
+        *,
+        meta: Optional[Dict[str, Any]] = None,
+        verbose: bool = True,
+    ) -> Any:
+        """Run a step if needed.
+
+        Returns the function return value if executed, or None if skipped.
+        """
+        if self.is_done(spec):
+            if verbose:
+                print(f"[SKIP] {spec.name} (already done)")
+            return None
+
+        if verbose:
+            print(f"[RUN ] {spec.name}")
+
+        try:
+            out = func()
+        except Exception as e:
+            self.mark_failed(spec, error=str(e), meta=meta)
+            raise
+
+        # Only mark done if outputs exist.
+        if not self._outputs_exist(spec.outputs):
+            err = f"Step '{spec.name}' finished but expected outputs are missing: {[str(p) for p in spec.outputs]}"
+            self.mark_failed(spec, error=err, meta=meta)
+            raise RuntimeError(err)
+
+        self.mark_done(spec, meta=meta)
+        return out

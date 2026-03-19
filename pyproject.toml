@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "yadonpy"
+version = "0.4.35"
+description = "SMILES-driven workflow toolkit using GROMACS"
+requires-python = ">=3.9"
+authors = [{name = "YZC"}]
+readme = "README.md"
+license = {text = "BSD-3-Clause"}
+
+dependencies = [
+  "numpy",
+  "pandas",
+  "matplotlib",
+  "scipy",
+  "rdkit>=2025.03.1",
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+yadonpy = [
+  "ff/ff_dat/*.json",
+  "resources/ff/*.json",
+  "resources/basic_top/**/*",
+]
