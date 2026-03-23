@@ -1,3 +1,9 @@
+## 0.8.59 (2026-03-24)
+
+- core/data_dir + diagnostics + tests/test_data_dir + packaging: teach `ensure_initialized()` to discover a user-supplied `yd_moldb.tar`, import only its `moldb/objects/...` content into the active data root, track the imported keys as managed bundle state, and replace only those managed records on later bundle updates; also ship the archive at the repository root beside `examples` and include it in the source package manifest;
+- core/poly + tests/test_workdir_and_molspec: add automatic large-system detection for `amorphous_cell()` once the target build exceeds `99,999` atoms, maintain an incremental spatial-hash packing state during placement, and use that fast local clash check instead of repeatedly scanning the entire cell for every trial placement;
+- tests/test_workdir_and_molspec: stabilize the MolSpec random-walk cache regression with an explicit RNG seed so release verification is deterministic across fresh worktrees.
+
 ## 0.8.58 (2026-03-23)
 
 - core/poly + tests/test_workdir_and_molspec: when random-walk polymerization creates a new bond, rebuild force-field labels from particle type upward before finalizing bonded terms so bridge oxygens do not keep stale monomer-era `oh` labels that later produce impossible `c3,oh,c3` angle warnings;

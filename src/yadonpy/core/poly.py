@@ -149,6 +149,124 @@ def _amorphous_pack_order(mols, n) -> tuple[int, ...]:
     return tuple(idx for _, idx in ranked)
 
 
+def _estimate_total_atoms(mols, n) -> int:
+    total = 0
+    for mol, count in zip(mols, n):
+        try:
+            total += int(mol.GetNumAtoms()) * int(count)
+        except Exception:
+            continue
+    return int(total)
+
+
+def _resolve_large_system_mode(mode, total_atoms: int) -> bool:
+    if isinstance(mode, str):
+        token = mode.strip().lower()
+        if token in ('', 'auto', 'default'):
+            return int(total_atoms) > 99999
+        if token in ('1', 'true', 'yes', 'on', 'large', 'enabled'):
+            return True
+        if token in ('0', 'false', 'no', 'off', 'disabled'):
+            return False
+    if mode is None:
+        return int(total_atoms) > 99999
+    return bool(mode)
+
+
+def _build_large_pack_state(cell, dist_min: float, *, enabled: bool) -> dict:
+    state = {
+        'enabled': bool(enabled),
+        'wrapped': np.empty((0, 3), dtype=float),
+        'cells': {},
+        'origin': None,
+        'lengths': None,
+        'nbins': None,
+        'grid': None,
+        'neighbor_offsets': ((0, 0, 0),),
+    }
+    if not enabled or cell is None or not hasattr(cell, 'cell'):
+        return state
+
+    lengths = np.array(
+        [
+            float(cell.cell.xhi) - float(cell.cell.xlo),
+            float(cell.cell.yhi) - float(cell.cell.ylo),
+            float(cell.cell.zhi) - float(cell.cell.zlo),
+        ],
+        dtype=float,
+    )
+    lengths = np.maximum(lengths, 1.0e-6)
+    grid = max(float(dist_min) * 1.25, 2.5)
+    nbins = np.maximum(np.floor(lengths / grid).astype(int), 1)
+    reach = max(int(np.ceil(float(dist_min) / grid)), 1)
+    state.update(
+        {
+            'origin': np.array([float(cell.cell.xlo), float(cell.cell.ylo), float(cell.cell.zlo)], dtype=float),
+            'lengths': lengths,
+            'nbins': nbins,
+            'grid': float(grid),
+            'neighbor_offsets': tuple(itertools.product(range(-reach, reach + 1), repeat=3)),
+        }
+    )
+
+    if cell.GetNumConformers() > 0 and cell.GetNumAtoms() > 0:
+        coord = np.array(cell.GetConformer(0).GetPositions(), dtype=float)
+        _append_large_pack_coords(state, coord, cell.cell)
+    return state
+
+
+def _grid_keys_for_coords(coord, state: dict):
+    frac = np.floor((coord - state['origin']) / state['grid']).astype(int)
+    return np.mod(frac, state['nbins'])
+
+
+def _append_large_pack_coords(state: dict, coord, cell_box) -> None:
+    if not state.get('enabled', False):
+        return
+    coord = np.asarray(coord, dtype=float)
+    if coord.size == 0:
+        return
+    wrapped = calc.wrap(coord, cell_box.xhi, cell_box.xlo, cell_box.yhi, cell_box.ylo, cell_box.zhi, cell_box.zlo)
+    start = int(len(state['wrapped']))
+    if start == 0:
+        state['wrapped'] = np.array(wrapped, dtype=float, copy=True)
+    else:
+        state['wrapped'] = np.vstack((state['wrapped'], wrapped))
+    keys = _grid_keys_for_coords(wrapped, state)
+    for local_idx, key in enumerate(keys):
+        bucket = tuple(int(v) for v in key.tolist())
+        state['cells'].setdefault(bucket, []).append(start + local_idx)
+
+
+def _large_pack_clash(state: dict, coord, dist_min: float, cell_box) -> bool:
+    if not state.get('enabled', False):
+        return False
+    if len(state['wrapped']) == 0:
+        return False
+    coord = np.asarray(coord, dtype=float)
+    if coord.size == 0:
+        return False
+
+    wrapped = calc.wrap(coord, cell_box.xhi, cell_box.xlo, cell_box.yhi, cell_box.ylo, cell_box.zhi, cell_box.zlo)
+    keys = _grid_keys_for_coords(wrapped, state)
+    lengths = state['lengths']
+    threshold_sq = float(dist_min) * float(dist_min)
+
+    for atom_idx, key in enumerate(keys):
+        base = np.asarray(key, dtype=int)
+        for off in state['neighbor_offsets']:
+            nb_key = tuple(int(v) for v in np.mod(base + np.asarray(off, dtype=int), state['nbins']).tolist())
+            idxs = state['cells'].get(nb_key)
+            if not idxs:
+                continue
+            diff = state['wrapped'][idxs] - wrapped[atom_idx]
+            diff -= np.round(diff / lengths) * lengths
+            dist_sq = np.einsum('ij,ij->i', diff, diff, optimize=True)
+            if np.any(dist_sq <= threshold_sq):
+                return True
+    return False
+
+
 def _cell_log_begin(func_name: str, *, restart: bool):
     dt1 = None
     if not restart:
@@ -258,7 +376,7 @@ def _cache_mol_smiles(mol):
 
 
 def _cell_cache_payload(kind: str, *, mols, n, cell, density, threshold, dec_rate, check_bond_ring_intersection, mp,
-        neutralize, neutralize_tol, charge_scale, charge_tolerance, ions):
+        neutralize, neutralize_tol, charge_scale, charge_tolerance, ions, large_system_mode):
     ion_payload = []
     if ions is not None:
         seq = ions if isinstance(ions, (list, tuple)) else [ions]
@@ -283,6 +401,7 @@ def _cell_cache_payload(kind: str, *, mols, n, cell, density, threshold, dec_rat
         charge_scale=charge_scale,
         charge_tolerance=float(charge_tolerance),
         ions=ion_payload,
+        large_system_mode=large_system_mode,
     )
 
 
@@ -2931,6 +3050,7 @@ def amorphous_cell(
         neutralize_tol=1e-4,
         charge_scale=None,
         charge_tolerance=1e-2,
+        large_system_mode='auto',
         work_dir=None,
         restart=None,
 ):
@@ -2974,6 +3094,7 @@ def amorphous_cell(
         charge_scale=charge_scale,
         charge_tolerance=charge_tolerance,
         ions=ions,
+        large_system_mode=large_system_mode,
     )
     if rst_flag:
         cached = _rw_load(work_dir, 'amorphous_cell', cache_payload)
@@ -3159,6 +3280,16 @@ def amorphous_cell(
         xhi, xlo, yhi, ylo, zhi, zlo = calc_cell_length([*mols_c, cell_c], [*n, 1], density=density)
         setattr(cell_c, 'cell', utils.Cell(xhi, xlo, yhi, ylo, zhi, zlo))
 
+    total_atoms_target = _estimate_total_atoms(mols_c, n)
+    large_pack_enabled = _resolve_large_system_mode(large_system_mode, total_atoms_target)
+    pack_state = _build_large_pack_state(cell_c, threshold, enabled=large_pack_enabled)
+    if large_pack_enabled:
+        utils.radon_print(
+            '[PACK] Large-system mode enabled automatically for amorphous_cell '
+            f'(target_atoms={total_atoms_target}, threshold={threshold:.3f} A).',
+            level=1,
+        )
+
     retry_flag = False
     pack_order = _amorphous_pack_order(mols_c, n)
     for order_idx, m in enumerate(pack_order):
@@ -3181,7 +3312,7 @@ def amorphous_cell(
 
                 if cell_c.GetNumConformers() == 0: break
 
-                check_3d = check_3d_structure_cell(cell_c, mol_coord_c, dist_min=threshold)
+                check_3d = check_3d_structure_cell(cell_c, mol_coord_c, dist_min=threshold, pack_state=pack_state)
                 if check_3d and check_bond_ring_intersection and has_ring:
                     check_3d, tri_coord_new, bond_coord_new = check_3d_bond_ring_intersection(cell_c, mon=mol, mon_coord=mol_coord_c,
                                                                     tri_coord=tri_coord, bond_coord=bond_coord, mp=mp)
@@ -3212,6 +3343,7 @@ def amorphous_cell(
                     cell_n+j,
                     Geom.Point3D(mol_coord_c[j, 0], mol_coord_c[j, 1], mol_coord_c[j, 2])
                 )
+            _append_large_pack_coords(pack_state, mol_coord_c, cell_c.cell)
             
         if retry_flag and retry > 0: break
 
@@ -3240,6 +3372,7 @@ def amorphous_cell(
                     neutralize_tol=neutralize_tol,
                     charge_scale=charge_scale,
                     charge_tolerance=charge_tolerance,
+                    large_system_mode=large_system_mode,
             )
 
     _cell_log_done('amorphous_cell', dt1, restart=rst_flag)
@@ -3313,6 +3446,8 @@ def amorphous_cell(
         payload = {
             'density_g_cm3': (float(density) if density is not None else None),
             'species': meta,
+            'pack_mode': ('large_system' if large_pack_enabled else 'default'),
+            'target_atoms': int(total_atoms_target),
         }
         if isinstance(_cs, dict):
             payload['charge_scale'] = _cs
@@ -3380,6 +3515,7 @@ def amorphous_mixture_cell(
         check_bond_ring_intersection=False,
         mp=0,
         charge_scale=None,
+        large_system_mode='auto',
         work_dir=None,
         restart=None,
 ):
@@ -3400,6 +3536,7 @@ def amorphous_mixture_cell(
             check_bond_ring_intersection=check_bond_ring_intersection,
             mp=mp,
             charge_scale=charge_scale,
+            large_system_mode=large_system_mode,
             work_dir=work_dir,
             restart=restart,
     )
@@ -4725,7 +4862,7 @@ def check_3d_structure_poly(poly, mon, poly_dmat=None, dist_min=1.0, ignore_rad=
     return check
 
 
-def check_3d_structure_cell(cell, mol_coord, dist_min=2.0):
+def check_3d_structure_cell(cell, mol_coord, dist_min=2.0, pack_state=None):
     """
     poly.check_3d_structure_cell
 
@@ -4759,8 +4896,11 @@ def check_3d_structure_cell(cell, mol_coord, dist_min=2.0):
 
     # Step 2. Proximity check between atoms in the cell (cell_coord) and in an addional molecule (mol_coord)
     if check:
-        cell_coord = np.array(cell.GetConformer(0).GetPositions())
-        check = check_3d_proximity(cell_coord, coord2=mol_coord, wrap=cell.cell, dist_min=dist_min)
+        if pack_state is not None and pack_state.get('enabled', False):
+            check = not _large_pack_clash(pack_state, mol_coord, dist_min, cell.cell)
+        else:
+            cell_coord = np.array(cell.GetConformer(0).GetPositions())
+            check = check_3d_proximity(cell_coord, coord2=mol_coord, wrap=cell.cell, dist_min=dist_min)
 
     return check
 

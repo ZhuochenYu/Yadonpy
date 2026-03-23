@@ -1,6 +1,6 @@
 # YadonPy
 
-Current release: **v0.8.58**
+Current release: **v0.8.59**
 
 YadonPy is a Python package for building polymer, solvent, salt, bulk, and interface workflows directly from SMILES or PSMILES. It is designed for script-driven molecular simulation studies where the user wants to keep the real workflow visible in code instead of hiding it behind a monolithic project file.
 
@@ -20,13 +20,15 @@ The package is built around two stable ideas:
 - **script first**: the study logic should remain understandable from the user script;
 - **MolDB first**: reusable expensive assets are molecular geometry, charge variants, and bonded-patch metadata, not old `.top/.gro/.itp` exports.
 
-## What changed in v0.8.58
+## What changed in v0.8.59
 
-This release fixes the CMC typing regression behind the repeated `Can not assign this angle c3,oh,c3` warnings seen in `eg12`.
+This release does two structural things for real workflows: it turns your `yd_moldb.tar` into a first-class auto-imported bundle, and it adds a large-system packing mode for six-figure atom counts.
 
-- `core/poly` now treats a newly formed polymerization bond as a signal that lower-level force-field labels may be stale. When random-walk growth or copolymerization creates a new bond, YadonPy now refreshes particle, bond, angle, dihedral, and improper types in order before returning the intermediate polymer.
-- This closes the real root cause of the warning: bridge oxygens inherited monomer-era `ff_type='oh'` labels through atom deletion and bond creation, so later angle assignment saw impossible local patterns such as `c3,oh,c3` even though the connectivity itself was valid.
-- A focused regression test now locks this down with a minimal `*OCC*` surrogate polymerization so future refactors cannot silently reintroduce stale bridge-oxygen typing.
+- `yd_moldb.tar` can now live at the repository root beside `examples`, or be pointed to explicitly with `YADONPY_MOLDB_ARCHIVE`. On `ensure_initialized()`, YadonPy discovers the bundle, imports only `moldb/objects/...`, and records the imported keys as managed bundle content.
+- Bundle updates now replace only previously managed bundle records. Unrelated user-created MolDB entries under the same data root are left untouched, so your package-shipped bundle can evolve without wiping personal additions.
+- `poly.amorphous_cell()` now auto-enables a large-system packing path when the target system exceeds `99,999` atoms. That path keeps an incremental spatial hash of packed atoms and uses local neighbor checks instead of re-scanning the whole cell for every placement attempt.
+- The fast path also tightens periodic clash detection at box boundaries, which matters more once the system is large enough that false accepts become expensive to clean up later.
+- The earlier bridge-oxygen typing fix for `eg12` remains in this release.
 
 ## Installation
 
@@ -154,7 +156,7 @@ What the interface examples now demonstrate:
 
 ## Documentation map
 
-- API reference: `docs/Yadonpy_API_v0.8.58.md`
+- API reference: `docs/Yadonpy_API_v0.8.59.md`
 - Manual: `docs/Yadonpy_manul.md`
 - User guide: `docs/Yaonpyd_user_guide.md`
 

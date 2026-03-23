@@ -15,7 +15,7 @@ import shutil
 import sys
 from typing import Any, Optional
 
-from .core.data_dir import get_data_root, DataLayout
+from .core.data_dir import get_data_root, DataLayout, find_bundle_archive
 
 
 @dataclass(frozen=True)
@@ -120,6 +120,8 @@ def doctor(*, print_report: bool = True) -> dict[str, Any]:
         "data_root": str(layout.root),
         "moldb_dir": str(layout.moldb_dir),
         "initialized": layout.marker.exists(),
+        "bundle_archive": (str(find_bundle_archive()) if find_bundle_archive() is not None else None),
+        "bundle_state": str(layout.bundle_state) if layout.bundle_state.exists() else None,
         "executables": {
             "gmx": shutil.which("gmx"),
             "gmx_mpi": shutil.which("gmx_mpi"),
@@ -146,6 +148,8 @@ def doctor(*, print_report: bool = True) -> dict[str, Any]:
         print(f"  data_root: {checks['data_root']}", flush=True)
         print(f"  moldb_dir: {checks['moldb_dir']}", flush=True)
         print(f"  initialized: {checks['initialized']}", flush=True)
+        print(f"  bundle_archive: {checks['bundle_archive'] if checks['bundle_archive'] else 'NOT FOUND'}", flush=True)
+        print(f"  bundle_state: {checks['bundle_state'] if checks['bundle_state'] else 'NOT FOUND'}", flush=True)
         print("  executables:", flush=True)
         for k, v in checks["executables"].items():
             print(f"    {k}: {v if v else 'NOT FOUND'}", flush=True)

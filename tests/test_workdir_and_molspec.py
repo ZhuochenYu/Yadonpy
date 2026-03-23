@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 import numpy as np
 from rdkit import Chem
+from rdkit import Geometry as Geom
 from rdkit.Chem import AllChem, Descriptors
 
 from yadonpy.core import as_rdkit_mol, molecular_weight, workdir, utils, poly
@@ -139,6 +140,33 @@ def test_random_walk_polymerization_reuses_current_poly_dmat_between_steps(monke
     #   2 monomer template dmat + inverted monomer dmat
     #   2 accepted-step post-materialization dmat updates
     assert calls['n'] == 5
+
+
+def test_large_system_mode_auto_enables_only_above_99999_atoms():
+    assert poly._resolve_large_system_mode('auto', 99999) is False
+    assert poly._resolve_large_system_mode('auto', 100000) is True
+    assert poly._resolve_large_system_mode(True, 10) is True
+    assert poly._resolve_large_system_mode(False, 500000) is False
+
+
+def test_large_pack_state_matches_direct_periodic_clash_check():
+    cell = Chem.MolFromSmiles('[Li+]')
+    assert cell is not None
+    conf = Chem.Conformer(cell.GetNumAtoms())
+    conf.SetAtomPosition(0, Geom.Point3D(0.2, 5.0, 5.0))
+    cell.AddConformer(conf)
+    setattr(cell, 'cell', utils.Cell(10.0, 0.0, 10.0, 0.0, 10.0, 0.0))
+
+    pack_state = poly._build_large_pack_state(cell, 1.0, enabled=True)
+    wrapped_clash_coord = np.array([[10.5, 5.0, 5.0]], dtype=float)
+    periodic_clash_coord = np.array([[9.5, 5.0, 5.0]], dtype=float)
+    far_coord = np.array([[7.0, 5.0, 5.0]], dtype=float)
+
+    assert poly.check_3d_structure_cell(cell, wrapped_clash_coord, dist_min=1.0) is False
+    assert poly.check_3d_structure_cell(cell, wrapped_clash_coord, dist_min=1.0, pack_state=pack_state) is False
+    assert poly.check_3d_structure_cell(cell, periodic_clash_coord, dist_min=1.0, pack_state=pack_state) is False
+    assert poly.check_3d_structure_cell(cell, far_coord, dist_min=1.0) is True
+    assert poly.check_3d_structure_cell(cell, far_coord, dist_min=1.0, pack_state=pack_state) is True
 
 
 def test_random_copolymerize_rw_refreshes_bridge_oxygen_types_after_new_bonds(capsys):
