@@ -1,3 +1,8 @@
+## 0.8.58 (2026-03-23)
+
+- core/poly + tests/test_workdir_and_molspec: when random-walk polymerization creates a new bond, rebuild force-field labels from particle type upward before finalizing bonded terms so bridge oxygens do not keep stale monomer-era `oh` labels that later produce impossible `c3,oh,c3` angle warnings;
+- docs/release metadata + maintenance principles: publish the bridge-oxygen typing fix as `0.8.58`, refresh package/docs version references, rename the versioned API document to `docs/Yadonpy_API_v0.8.58.md`, and repair the release-rule text that had been saved with broken encoding.
+
 ## 0.8.57 (2026-03-23)
 
 - gmx/workflows/eq + tests/gmx_workflows: detect overlap-tainted or non-finite energy-minimization logs, refuse to reuse invalid cached EM outputs during restart, and fail early with a packing-quality error instead of letting impossible coordinates leak into later NVT/NPT stages;

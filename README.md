@@ -1,6 +1,6 @@
 # YadonPy
 
-Current release: **v0.8.57**
+Current release: **v0.8.58**
 
 YadonPy is a Python package for building polymer, solvent, salt, bulk, and interface workflows directly from SMILES or PSMILES. It is designed for script-driven molecular simulation studies where the user wants to keep the real workflow visible in code instead of hiding it behind a monolithic project file.
 
@@ -20,13 +20,13 @@ The package is built around two stable ideas:
 - **script first**: the study logic should remain understandable from the user script;
 - **MolDB first**: reusable expensive assets are molecular geometry, charge variants, and bonded-patch metadata, not old `.top/.gro/.itp` exports.
 
-## What changed in v0.8.57
+## What changed in v0.8.58
 
-This release hardens the difficult `eg12` route at the two failure points shown by real runs: invalid packed bulk geometries that sneak through minimization, and GROMACS 2025 GPU runs that abort with CUDA internal errors before the stage has stabilized.
+This release fixes the CMC typing regression behind the repeated `Can not assign this angle c3,oh,c3` warnings seen in `eg12`.
 
-- `gmx/workflows/eq` now rejects non-finite or overlap-tainted minimization outputs instead of treating them as valid restart artifacts. If a cached EM stage contains `inf` forces or overlap warnings, the stage is rebuilt. If a fresh EM run still ends with non-finite forces, the workflow now stops with a clear packing-density diagnosis instead of marching into NVT.
-- `gmx/engine` now treats CUDA internal failures such as `cudaErrorInvalidValue` and `Freeing of the device buffer failed` as a stage-level GPU incompatibility and falls back to a clean CPU rerun for that stage instead of repeating the same broken GPU command.
-- Example 12 is rebuilt around a stricter polymer-first bulk strategy: the large CMC phase is packed as a free bulk with a lower starting density and a larger intermolecular clearance target before its equilibrated `XY` box is used to size the electrolyte. The probe/resized electrolyte route remains, but the polymer side is now the authoritative source of the interface footprint.
+- `core/poly` now treats a newly formed polymerization bond as a signal that lower-level force-field labels may be stale. When random-walk growth or copolymerization creates a new bond, YadonPy now refreshes particle, bond, angle, dihedral, and improper types in order before returning the intermediate polymer.
+- This closes the real root cause of the warning: bridge oxygens inherited monomer-era `ff_type='oh'` labels through atom deletion and bond creation, so later angle assignment saw impossible local patterns such as `c3,oh,c3` even though the connectivity itself was valid.
+- A focused regression test now locks this down with a minimal `*OCC*` surrogate polymerization so future refactors cannot silently reintroduce stale bridge-oxygen typing.
 
 ## Installation
 
@@ -154,7 +154,7 @@ What the interface examples now demonstrate:
 
 ## Documentation map
 
-- API reference: `docs/Yadonpy_API_v0.8.57.md`
+- API reference: `docs/Yadonpy_API_v0.8.58.md`
 - Manual: `docs/Yadonpy_manul.md`
 - User guide: `docs/Yaonpyd_user_guide.md`
 

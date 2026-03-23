@@ -141,6 +141,40 @@ def test_random_walk_polymerization_reuses_current_poly_dmat_between_steps(monke
     assert calls['n'] == 5
 
 
+def test_random_copolymerize_rw_refreshes_bridge_oxygen_types_after_new_bonds(capsys):
+    ff = GAFF2_mod()
+    monomer = ff.mol('*OCC*', require_ready=False, prefer_db=False)
+    monomer = ff.ff_assign(monomer, report=False)
+
+    assert monomer is not False
+    capsys.readouterr()
+
+    polymer = poly.random_copolymerize_rw(
+        [monomer],
+        3,
+        ratio=[1.0],
+        tacticity='atactic',
+        name='poly_acetal',
+        retry=1,
+        retry_step=20,
+        retry_opt_step=0,
+    )
+
+    captured = capsys.readouterr()
+    assert 'c3,oh,c3' not in captured.out
+    assert polymer is not None
+
+    bad_oxygens = []
+    for atom in polymer.GetAtoms():
+        if atom.GetSymbol() != 'O' or not atom.HasProp('ff_type'):
+            continue
+        heavy_neighbors = sum(1 for nb in atom.GetNeighbors() if nb.GetAtomicNum() > 1)
+        if heavy_neighbors >= 2 and atom.GetProp('ff_type') == 'oh':
+            bad_oxygens.append(atom.GetIdx())
+
+    assert bad_oxygens == []
+
+
 def test_resolved_molspec_is_accepted_by_poly_helpers(tmp_path: Path):
     ff = GAFF2_mod()
     spec = ff.mol('*CCO*', require_ready=False, prefer_db=False)
@@ -153,8 +187,14 @@ def test_resolved_molspec_is_accepted_by_poly_helpers(tmp_path: Path):
     assert int(dp) >= 1
 
     wd = workdir(tmp_path / 'rw', restart=True)
-    p1 = poly.polymerize_rw(spec, int(dp), tacticity='atactic', work_dir=wd, retry=1, retry_step=2, retry_opt_step=0)
-    p2 = poly.polymerize_rw(spec, int(dp), tacticity='atactic', work_dir=wd, retry=1, retry_step=2, retry_opt_step=0)
+    rng_state = np.random.get_state()
+    np.random.seed(7)
+    try:
+        p1 = poly.polymerize_rw(spec, int(dp), tacticity='atactic', work_dir=wd, retry=2, retry_step=4, retry_opt_step=0)
+        np.random.seed(7)
+        p2 = poly.polymerize_rw(spec, int(dp), tacticity='atactic', work_dir=wd, retry=2, retry_step=4, retry_opt_step=0)
+    finally:
+        np.random.set_state(rng_state)
 
     assert p1.GetNumAtoms() == p2.GetNumAtoms()
     cache_root = Path(wd) / '.yadonpy' / 'random_walk'

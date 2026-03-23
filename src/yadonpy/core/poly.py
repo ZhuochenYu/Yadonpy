@@ -787,12 +787,36 @@ def _rw_growth_clone_mol(mol):
     return clone
 
 
+def _has_marked_new_bond(mol):
+    if mol is None or not hasattr(mol, 'GetBonds'):
+        return False
+    for bond in mol.GetBonds():
+        try:
+            if bond.HasProp('new_bond') and bond.GetBoolProp('new_bond'):
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def _clear_new_bond_marks(mol):
+    if mol is None or not hasattr(mol, 'GetBonds'):
+        return
+    for bond in mol.GetBonds():
+        try:
+            if bond.HasProp('new_bond'):
+                bond.ClearProp('new_bond')
+        except Exception:
+            continue
+
+
 def _rw_finalize_bonded_terms(mol):
     if mol is None:
         return None
+    has_new_bond = _has_marked_new_bond(mol)
     has_angles = bool(getattr(mol, 'angles', {}) or {})
     has_dihedrals = bool(getattr(mol, 'dihedrals', {}) or {})
-    if has_angles and (mol.GetNumAtoms() < 4 or has_dihedrals):
+    if not has_new_bond and has_angles and (mol.GetNumAtoms() < 4 or has_dihedrals):
         return mol
     if not hasattr(mol, 'HasProp') or not mol.HasProp('ff_name'):
         return mol
@@ -803,6 +827,19 @@ def _rw_finalize_bonded_terms(mol):
         from ..api import get_ff
 
         ff_obj = get_ff(ff_name)
+        if has_new_bond:
+            if mol.GetNumAtoms() >= 1 and hasattr(ff_obj, 'assign_ptypes'):
+                ff_obj.assign_ptypes(mol)
+            if mol.GetNumAtoms() >= 2 and hasattr(ff_obj, 'assign_btypes'):
+                ff_obj.assign_btypes(mol)
+            if mol.GetNumAtoms() >= 3 and hasattr(ff_obj, 'assign_atypes'):
+                ff_obj.assign_atypes(mol)
+            if mol.GetNumAtoms() >= 4 and hasattr(ff_obj, 'assign_dtypes'):
+                ff_obj.assign_dtypes(mol)
+            if hasattr(ff_obj, 'assign_itypes'):
+                ff_obj.assign_itypes(mol)
+            _clear_new_bond_marks(mol)
+            return mol
         if mol.GetNumAtoms() >= 3 and not has_angles and hasattr(ff_obj, 'assign_atypes'):
             ff_obj.assign_atypes(mol)
         if mol.GetNumAtoms() >= 4 and not has_dihedrals and hasattr(ff_obj, 'assign_dtypes'):
@@ -6867,4 +6904,3 @@ def mol_from_amino_residues(residues):
     mol = block_copolymerize_mols(mols, 1, tacticity='isotactic')
     
     return mol
-
