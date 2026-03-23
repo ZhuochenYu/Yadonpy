@@ -11,10 +11,8 @@ from yadonpy.interface import (
     InterfaceBuilder,
     InterfaceDynamics,
     equilibrate_bulk_with_eq21,
-    fixed_xy_semiisotropic_npt_overrides,
     format_cell_charge_audit,
     make_orthorhombic_pack_cell,
-    plan_fixed_xy_direct_pack_box,
     plan_probe_polymer_matched_interface_preparation,
     plan_resized_polymer_matched_interface_from_probe,
     read_equilibrated_box_nm,
@@ -58,28 +56,29 @@ omp_psi4 = 12
 mem_mb = 20000
 
 # This example is intentionally larger than the neutral interface examples.
-# It targets a cluster-scale CMC phase first, then matches the electrolyte to
-# the equilibrated polymer XY footprint before assembling a vacuum-buffered
-# diffusion interface.
+# It builds a free bulk CMC phase first, learns the relaxed polymer XY footprint
+# from that bulk, then matches the electrolyte to the polymer XY footprint
+# before assembling a vacuum-buffered diffusion interface.
 n_CMC = 6
 dp = 150
-polymer_initial_pack_density_g_cm3 = 0.03
-polymer_initial_lateral_nm = 18.0
-polymer_initial_min_z_nm = 24.0
-cmc_flatten_npt_ns = 5.0
+polymer_initial_pack_density_g_cm3 = 0.015
+polymer_pack_retry = 80
+polymer_pack_retry_step = 6000
+polymer_pack_threshold_ang = 1.65
+polymer_pack_dec_rate = 0.75
 
 solvent_mass_ratio = (3.0, 2.0, 5.0)
 salt_molarity_M = 1.0
 min_salt_pairs = 20
 electrolyte_probe_density_g_cm3 = 1.00
-electrolyte_probe_volume_scale = 2.10
-electrolyte_probe_pack_density_g_cm3 = 0.55
-electrolyte_resized_pack_density_g_cm3 = 0.38
+electrolyte_probe_volume_scale = 2.30
+electrolyte_probe_pack_density_g_cm3 = 0.48
+electrolyte_resized_pack_density_g_cm3 = 0.32
 
-electrolyte_pack_retry = 40
-electrolyte_pack_retry_step = 2000
-electrolyte_pack_threshold_ang = 1.50
-electrolyte_pack_dec_rate = 0.70
+electrolyte_pack_retry = 60
+electrolyte_pack_retry_step = 2500
+electrolyte_pack_threshold_ang = 1.45
+electrolyte_pack_dec_rate = 0.75
 
 interface_gap_nm = 0.80
 interface_vacuum_nm = 14.0
@@ -209,24 +208,19 @@ if __name__ == "__main__":
     mw_Li = molecular_weight(Li, strict=True)
     mw_PF6 = molecular_weight(PF6, strict=True)
 
-    cmc_pack_plan = plan_fixed_xy_direct_pack_box(
-        reference_box_nm=(polymer_initial_lateral_nm, polymer_initial_lateral_nm, polymer_initial_min_z_nm),
-        target_counts=(n_CMC, n_Na),
-        mol_weights=(mw_CMC, mw_Na),
-        species_names=("CMC", "Na"),
-        initial_pack_density_g_cm3=polymer_initial_pack_density_g_cm3,
-        z_padding_factor=1.15,
-        minimum_z_nm=polymer_initial_min_z_nm,
-    )
     ac_CMC = poly.amorphous_cell(
         [CMC, Na],
         [n_CMC, n_Na],
-        cell=make_orthorhombic_pack_cell(cmc_pack_plan.initial_pack_box_nm),
-        density=None,
+        density=polymer_initial_pack_density_g_cm3,
+        retry=polymer_pack_retry,
+        retry_step=polymer_pack_retry_step,
+        threshold=polymer_pack_threshold_ang,
+        dec_rate=polymer_pack_dec_rate,
         charge_scale=[0.8, 0.8],
         neutralize=False,
         work_dir=ac_CMC_build_dir,
     )
+    print(format_cell_charge_audit("CMC packed cell", ac_CMC))
     equilibrate_bulk_with_eq21(
         label="CMC",
         ac=ac_CMC,
@@ -237,8 +231,6 @@ if __name__ == "__main__":
         omp=omp,
         gpu=gpu,
         gpu_id=gpu_id,
-        final_npt_ns=float(cmc_flatten_npt_ns),
-        final_npt_mdp_overrides=fixed_xy_semiisotropic_npt_overrides(pressure_bar=press),
     )
     cmc_box_nm = read_equilibrated_box_nm(work_dir=ac_CMC_dir)
 

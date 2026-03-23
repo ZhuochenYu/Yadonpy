@@ -1,4 +1,4 @@
-# YadonPy User Guide (v0.8.56)
+# YadonPy User Guide (v0.8.57)
 
 This guide is for users who want to run YadonPy productively without reading the whole implementation first.
 
@@ -6,7 +6,7 @@ Python requirement: Python 3.11+
 
 Related documents:
 
-- API reference: `docs/Yadonpy_API_v0.8.56.md`
+- API reference: `docs/Yadonpy_API_v0.8.57.md`
 - manual: `docs/Yadonpy_manul.md`
 
 ## 1. Start with the right mindset
@@ -198,7 +198,7 @@ Use route B when you want:
 
 Examples 11 and 12 are the main references for route B.
 
-## 10. New interface recipe helper in v0.8.54
+## 10. Interface recipe helper and current defaults
 
 The interface examples now use:
 
@@ -232,6 +232,8 @@ It now does this:
 8. run a staged diffusion protocol with gap hold, density relax, contact, release, exchange, and production.
 
 This is the main example to follow when interface robustness matters more than minimum system size.
+
+The current release also treats a non-finite EM result as a real build failure. If the first EQ21 stage reports overlapping atoms or infinite forces, do not keep rerunning the same structure. Rebuild from a looser initial pack.
 
 ## 12. Restart behavior
 
@@ -283,6 +285,10 @@ Split the problem:
 2. is the standalone electrolyte bulk reasonable;
 3. is the assembled interface geometry sensible before MD;
 4. is the early-stage protocol too aggressive.
+
+### 14.4 GROMACS GPU runtime errors
+
+Recent GROMACS GPU builds can fail on some nodes with internal CUDA errors before the stage is physically meaningful. The current release falls back to CPU kernels for that stage automatically, but that safeguard only helps after the input geometry is already valid. It does not repair a bad packed bulk.
 
 ## 15. Lightweight validation when GROMACS is unavailable
 

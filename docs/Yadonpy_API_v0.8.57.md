@@ -1,4 +1,4 @@
-# YadonPy API (v0.8.56)
+# YadonPy API (v0.8.57)
 
 This document describes the public, script-facing API for the current release. It focuses on entry points that users are expected to call directly from study scripts.
 
@@ -196,7 +196,7 @@ Use route A for a periodic interfacial workflow and route B for a vacuum-buffere
 - `InterfaceProtocol.route_b_wall(...)`
 - `InterfaceProtocol.route_b_wall_diffusion(...)`
 
-As of `v0.8.54`, the diffusion constructors also accept:
+The diffusion constructors currently also accept:
 
 - `pre_contact_dt_ps`
 - `freeze_cores_pre_contact`

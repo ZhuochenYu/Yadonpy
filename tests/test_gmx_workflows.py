@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from yadonpy.gmx.mdp_templates import MINIM_CG_MDP, MINIM_STEEP_MDP, MdpSpec, NVT_MDP, default_mdp_params
 from yadonpy.gmx.workflows.eq import EqStage, EquilibrationJob
 from yadonpy.interface import InterfaceProtocol
@@ -117,6 +119,30 @@ class FakeCutoffRunner(FakeRunner):
             encoding='utf-8',
         )
         (cwd / f'{deffnm}.cpt').write_text('fake cpt\n', encoding='utf-8')
+
+
+class FakeInvalidMinimRunner(FakeRunner):
+    def __init__(self):
+        super().__init__()
+        self.invalid_mdrun_calls = 0
+
+    def mdrun(self, *, deffnm: str, cwd: Path, **kwargs) -> None:
+        self.invalid_mdrun_calls += 1
+        cwd = Path(cwd)
+        (cwd / f'{deffnm}.gro').write_text('fake gro\n', encoding='utf-8')
+        (cwd / f'{deffnm}.cpt').write_text('fake cpt\n', encoding='utf-8')
+        (cwd / f'{deffnm}.log').write_text(
+            '\n'.join(
+                [
+                    'Steepest Descents:',
+                    'Energy minimization has stopped because the force on at least one atom is not finite.',
+                    'This usually means atoms are overlapping.',
+                    'Maximum force     =            inf',
+                    'Norm of force     =            inf',
+                ]
+            ) + '\n',
+            encoding='utf-8',
+        )
 
 
 def _write_diatomic_topology(root: Path) -> tuple[Path, Path]:
@@ -256,6 +282,61 @@ def test_equilibration_job_minim_bridge_lincs_failure_falls_back_cleanly(tmp_pat
     assert second_summary == summary_path
     assert runner.grompp_calls >= 3
     assert runner.mdrun_calls == 1
+
+
+def test_equilibration_job_rejects_nonfinite_minimization_results(tmp_path, monkeypatch):
+    import yadonpy.gmx.workflows.eq as eqmod
+
+    monkeypatch.setattr(eqmod, 'pbc_mol_fix_inplace', lambda *args, **kwargs: {'applied': False, 'error': None})
+    monkeypatch.setattr(eqmod, 'write_mol2_from_top_gro_parmed', lambda **kwargs: None)
+
+    gro = tmp_path / 'input.gro'
+    top = tmp_path / 'input.top'
+    gro.write_text('fake input gro\n', encoding='utf-8')
+    top.write_text('fake input top\n', encoding='utf-8')
+
+    params = default_mdp_params()
+    params.update({'nsteps': 1000, 'emtol': 1000.0, 'emstep': 0.001})
+    stage = EqStage(name='01_em', kind='minim', mdp=MdpSpec(MINIM_STEEP_MDP, params))
+    runner = FakeInvalidMinimRunner()
+    job = EquilibrationJob(gro=gro, top=top, out_dir=tmp_path / 'eq_job_invalid_minim', stages=[stage], runner=runner)
+
+    with pytest.raises(RuntimeError, match='Invalid energy minimization detected'):
+        job.run(restart=False)
+
+
+def test_equilibration_job_reruns_invalid_cached_minimization_outputs(tmp_path, monkeypatch):
+    import yadonpy.gmx.workflows.eq as eqmod
+
+    monkeypatch.setattr(eqmod, 'pbc_mol_fix_inplace', lambda *args, **kwargs: {'applied': False, 'error': None})
+    monkeypatch.setattr(eqmod, 'write_mol2_from_top_gro_parmed', lambda **kwargs: None)
+
+    gro = tmp_path / 'input.gro'
+    top = tmp_path / 'input.top'
+    gro.write_text('fake input gro\n', encoding='utf-8')
+    top.write_text('fake input top\n', encoding='utf-8')
+
+    params = default_mdp_params()
+    params.update({'nsteps': 1000, 'emtol': 1000.0, 'emstep': 0.001})
+    stage = EqStage(name='01_em', kind='minim', mdp=MdpSpec(MINIM_CG_MDP, params))
+    runner = FakeMinimRunner()
+    out_dir = tmp_path / 'eq_job_cached_invalid'
+    stage_dir = out_dir / '01_em'
+    stage_dir.mkdir(parents=True, exist_ok=True)
+    (stage_dir / 'md.gro').write_text('stale gro\n', encoding='utf-8')
+    (stage_dir / 'md.tpr').write_text('stale tpr\n', encoding='utf-8')
+    (stage_dir / 'summary.json').write_text('{"stale": true}\n', encoding='utf-8')
+    (stage_dir / 'md.log').write_text(
+        'Energy minimization has stopped because the force on at least one atom is not finite.\n',
+        encoding='utf-8',
+    )
+
+    job = EquilibrationJob(gro=gro, top=top, out_dir=out_dir, stages=[stage], runner=runner)
+    summary_path = job.run(restart=True)
+
+    assert summary_path.exists()
+    assert runner.grompp_calls >= 2
+    assert runner.em_commands
 
 
 def test_equilibration_job_unconstrained_minim_skips_hbond_bridge(tmp_path, monkeypatch):

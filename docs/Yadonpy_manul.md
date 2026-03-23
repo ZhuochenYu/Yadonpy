@@ -1,4 +1,4 @@
-# YadonPy Manual (v0.8.56)
+# YadonPy Manual (v0.8.57)
 
 YadonPy is a script-oriented molecular workflow package for polymer, solvent, salt, bulk, and interface studies. This manual explains how the package is organized, what the stable architectural rules are, and how the current release expects real workflows to be staged.
 
@@ -6,7 +6,7 @@ Python requirement: Python 3.11+
 
 Related documents:
 
-- API reference: `docs/Yadonpy_API_v0.8.56.md`
+- API reference: `docs/Yadonpy_API_v0.8.57.md`
 - user guide: `docs/Yaonpyd_user_guide.md`
 
 ## 1. Why this manual exists
@@ -252,7 +252,7 @@ For difficult systems the package prefers:
 
 ### 10.3 Route and protocol selection
 
-As of `v0.8.54`, `recommend_polymer_diffusion_interface_recipe(...)` centralizes the route and staged-protocol defaults for polymer/electrolyte diffusion studies.
+In the current release, `recommend_polymer_diffusion_interface_recipe(...)` centralizes the route and staged-protocol defaults for polymer/electrolyte diffusion studies.
 
 That helper is meant to answer one narrow question:
 
@@ -281,6 +281,8 @@ Its intended chain is:
 8. run staged diffusion dynamics with gradual release.
 
 The script remains explicit, but the route/protocol choice is now library-managed instead of being rebuilt by hand inside the example.
+
+The current release also enforces a stricter bulk-equilibration rule for difficult systems: an energy-minimization stage is not considered reusable if GROMACS reports overlapping atoms or non-finite forces. That behavior is intentional. An invalid EM output is a bad packed structure, not a successful restart checkpoint.
 
 ## 12. Output contracts that matter
 
@@ -326,4 +328,4 @@ YadonPy is easiest to maintain correctly when you keep asking:
 - which artifact is the source of truth;
 - which stage should absorb the complexity so user scripts can stay explicit but not messy.
 
-That is the reasoning behind the current `v0.8.54` layout.
+That is the reasoning behind the current `v0.8.57` layout.

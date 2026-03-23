@@ -154,6 +154,30 @@ class EquilibrationJob:
             },
         )
 
+    @staticmethod
+    def _detect_invalid_minimization(stage_dir: Path, *, deffnm: str = "md") -> str | None:
+        log_path = Path(stage_dir) / f"{deffnm}.log"
+        if not log_path.exists():
+            return None
+        try:
+            text = log_path.read_text(encoding="utf-8", errors="replace")
+        except Exception as exc:
+            return f"failed to read minimization log: {exc}"
+
+        for raw in text.lower().splitlines():
+            line = raw.strip()
+            if "force on at least one atom is not finite" in line:
+                return "GROMACS reported a non-finite force"
+            if "atoms are overlapping" in line:
+                return "GROMACS reported overlapping atoms"
+            if line.startswith("maximum force") and "inf" in line:
+                return "maximum force became infinite"
+            if line.startswith("norm of force") and "inf" in line:
+                return "force norm became infinite"
+            if line.startswith("potential energy") and "inf" in line:
+                return "potential energy became infinite"
+        return None
+
     def _section(self, title: str, detail: str | None = None) -> None:
         self._log('=' * 78)
         self._log(f"[SECTION] {title}")
@@ -437,16 +461,35 @@ class EquilibrationJob:
             # ----------------------
             # 1) Stage complete: keep outputs and move on.
             if rst_flag and out_gro.exists():
-                current_gro = out_gro
-                current_cpt = out_cpt if out_cpt.exists() else None
-                self._log(f"[SKIP] Existing stage output detected | gro={out_gro.name}")
-                _canonicalize_stage_gro(out_tpr=out_tpr, out_gro=out_gro, stage_dir=stage_dir)
-                # If summary exists, the postprocess was already done.
-                if stage_summary_path.exists():
-                    self._stage_done(idx, total_stages, st, t_stage, detail="reused existing outputs + summary")
-                    continue
-                # Otherwise, fall through to regenerate the summary only (no rerun).
-                stage_has_outputs = True
+                invalid_existing_minim = None
+                if st.kind in ("minim", "em"):
+                    invalid_existing_minim = self._detect_invalid_minimization(stage_dir, deffnm=deffnm)
+                if invalid_existing_minim is not None:
+                    self._log(
+                        f"[WARN] Existing minimization output for {st.name} is invalid "
+                        f"({invalid_existing_minim}). Re-running this stage."
+                    )
+                    for p in stage_dir.glob(f"{deffnm}.*"):
+                        try:
+                            p.unlink()
+                        except Exception:
+                            pass
+                    try:
+                        stage_summary_path.unlink()
+                    except Exception:
+                        pass
+                    stage_has_outputs = False
+                else:
+                    current_gro = out_gro
+                    current_cpt = out_cpt if out_cpt.exists() else None
+                    self._log(f"[SKIP] Existing stage output detected | gro={out_gro.name}")
+                    _canonicalize_stage_gro(out_tpr=out_tpr, out_gro=out_gro, stage_dir=stage_dir)
+                    # If summary exists, the postprocess was already done.
+                    if stage_summary_path.exists():
+                        self._stage_done(idx, total_stages, st, t_stage, detail="reused existing outputs + summary")
+                        continue
+                    # Otherwise, fall through to regenerate the summary only (no rerun).
+                    stage_has_outputs = True
 
             # 2) Stage interrupted but checkpoint exists: continue without re-running grompp.
             #    This is the standard GROMACS restart mode: mdrun -cpi md.cpt -append.
@@ -653,6 +696,16 @@ class EquilibrationJob:
                             )
                         else:
                             raise
+
+                    if st.kind in ("minim", "em"):
+                        invalid_minim = self._detect_invalid_minimization(stage_dir, deffnm=deffnm)
+                        if invalid_minim is not None:
+                            raise RuntimeError(
+                                f"Invalid energy minimization detected in stage {st.name}: {invalid_minim}. "
+                                f"See {stage_dir / f'{deffnm}.log'}. "
+                                "This usually means the packed structure still contains severe atom overlaps; "
+                                "increase the initial pack volume or lower the initial pack density before retrying."
+                            )
 
                     # Update pointers
                     current_gro = out_gro

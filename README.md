@@ -1,6 +1,6 @@
 # YadonPy
 
-Current release: **v0.8.56**
+Current release: **v0.8.57**
 
 YadonPy is a Python package for building polymer, solvent, salt, bulk, and interface workflows directly from SMILES or PSMILES. It is designed for script-driven molecular simulation studies where the user wants to keep the real workflow visible in code instead of hiding it behind a monolithic project file.
 
@@ -20,13 +20,13 @@ The package is built around two stable ideas:
 - **script first**: the study logic should remain understandable from the user script;
 - **MolDB first**: reusable expensive assets are molecular geometry, charge variants, and bonded-patch metadata, not old `.top/.gro/.itp` exports.
 
-## What changed in v0.8.56
+## What changed in v0.8.57
 
-This release shifts example naming back to the intended YadonPy style: ordinary scripts should rely on variable names by default instead of manually threading `name=` through every `ff.mol(...)` call.
+This release hardens the difficult `eg12` route at the two failure points shown by real runs: invalid packed bulk geometries that sneak through minimization, and GROMACS 2025 GPU runs that abort with CUDA internal errors before the stage has stabilized.
 
-- `GAFF`, `MERZ`, and `OPLSAA` force-field assignment now persist a stable molecule name automatically when a named Python variable is passed into `ff_assign(...)`, even if the molecule was created without an explicit `name=...`.
-- Examples 02, 05, 06, 09, 10, 11, and 12 now drop manual `name=` on `ff.mol(...)` and remove script-side `.SetProp(...)` naming noise. The examples keep the linear script style, but the naming logic now lives in the library where it belongs.
-- Release sanity checks now forbid reintroducing manual example naming through `ff.mol(..., name=...)` or `.SetProp("_Name", ...)` in shipped scripts.
+- `gmx/workflows/eq` now rejects non-finite or overlap-tainted minimization outputs instead of treating them as valid restart artifacts. If a cached EM stage contains `inf` forces or overlap warnings, the stage is rebuilt. If a fresh EM run still ends with non-finite forces, the workflow now stops with a clear packing-density diagnosis instead of marching into NVT.
+- `gmx/engine` now treats CUDA internal failures such as `cudaErrorInvalidValue` and `Freeing of the device buffer failed` as a stage-level GPU incompatibility and falls back to a clean CPU rerun for that stage instead of repeating the same broken GPU command.
+- Example 12 is rebuilt around a stricter polymer-first bulk strategy: the large CMC phase is packed as a free bulk with a lower starting density and a larger intermolecular clearance target before its equilibrated `XY` box is used to size the electrolyte. The probe/resized electrolyte route remains, but the polymer side is now the authoritative source of the interface footprint.
 
 ## Installation
 
@@ -131,7 +131,7 @@ For route selection:
 - `route_a`: fully periodic interface workflow;
 - `route_b`: vacuum-buffered, wall-ready interface workflow under `pbc = xy`.
 
-Examples 10 and 11 show the neutral polymer route-A and route-B variants. Example 12 uses the more conservative route-B diffusion path for the large CMC system.
+Examples 10 and 11 show the neutral polymer route-A and route-B variants. Example 12 uses the more conservative route-B diffusion path for the large CMC system and now starts from a lower-density free-bulk CMC pack before reading the polymer `XY` footprint.
 
 ## Examples
 
@@ -150,11 +150,11 @@ What the interface examples now demonstrate:
 
 - **Example 10**: periodic polymer/electrolyte diffusion interface with a linear script and library-selected staged protocol.
 - **Example 11**: vacuum-buffered route-B counterpart with the same linear script style.
-- **Example 12**: larger CMC interface study using `6` chains, `DP = 150`, polymer-first XY anchoring, probe electrolyte equilibration, resized final electrolyte rebuild, and staged diffusion release.
+- **Example 12**: larger CMC interface study using `6` chains, `DP = 150`, a low-density free-bulk CMC pack, polymer-first XY anchoring, probe electrolyte equilibration, resized final electrolyte rebuild, and staged diffusion release.
 
 ## Documentation map
 
-- API reference: `docs/Yadonpy_API_v0.8.56.md`
+- API reference: `docs/Yadonpy_API_v0.8.57.md`
 - Manual: `docs/Yadonpy_manul.md`
 - User guide: `docs/Yaonpyd_user_guide.md`
 

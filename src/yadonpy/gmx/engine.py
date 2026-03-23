@@ -535,9 +535,49 @@ class GromacsRunner:
                 "out of memory",
                 "cudaerrormemoryallocation",
                 "cudaerrorillegaladdress",
+                "cudaerrorinvalidvalue",
+                "freeing of the device buffer failed",
                 "gmx::internalerror",
             )
             return any(n in s for n in needles)
+
+        def _replace_kv(cmd: list[str], key: str, val: str) -> None:
+            if key in cmd:
+                j = cmd.index(key)
+                if j + 1 < len(cmd):
+                    cmd[j + 1] = val
+
+        def _drop_opt(cmd: list[str], key: str) -> None:
+            if key in cmd:
+                j = cmd.index(key)
+                if j + 1 < len(cmd) and not str(cmd[j + 1]).startswith("-"):
+                    del cmd[j : j + 2]
+                else:
+                    del cmd[j : j + 1]
+
+        def _fallback_to_cpu(reason: str) -> None:
+            nonlocal uses_gpu
+            self._log(reason)
+            for key in ("-nb", "-bonded", "-update", "-pme", "-pmefft"):
+                _replace_kv(args, key, "cpu")
+            _drop_opt(args, "-gpu_id")
+            _drop_opt(args, "-npme")
+            _drop_opt(args, "-cpi")
+            _drop_opt(args, "-append")
+            env_run["GMX_DISABLE_GPU_DETECTION"] = "1"
+            try:
+                deffnm_idx = args.index("-deffnm")
+                deffnm_prefix = str(args[deffnm_idx + 1]) if deffnm_idx + 1 < len(args) else "md"
+            except Exception:
+                deffnm_prefix = "md"
+            for suffix in (".log", ".xtc", ".trr", ".edr", ".cpt", "_prev.cpt"):
+                try:
+                    stale = Path(cwd) / f"{deffnm_prefix}{suffix}"
+                    if stale.exists():
+                        stale.unlink()
+                except Exception:
+                    pass
+            uses_gpu = False
 
         # Run with streaming output and limited captured tail.
         max_attempts = 3
@@ -580,12 +620,6 @@ class GromacsRunner:
                     "[WARN] Detected cuFFT-related failure with GPU PME/FFT. "
                     "Retrying with -pme cpu -pmefft cpu (keeping -nb/-bonded/-update on GPU)."
                 )
-                # Replace -pme/-pmefft values if present
-                def _replace_kv(cmd: list[str], key: str, val: str) -> None:
-                    if key in cmd:
-                        j = cmd.index(key)
-                        if j + 1 < len(cmd):
-                            cmd[j + 1] = val
                 _replace_kv(args, "-pme", "cpu")
                 _replace_kv(args, "-pmefft", "cpu")
                 continue
@@ -598,39 +632,20 @@ class GromacsRunner:
                     continue
             # If GPU was requested but is not usable, fall back to CPU once.
             if uses_gpu and _is_user_input_error(tail):
-                self._log(
+                _fallback_to_cpu(
                     "[WARN] GPU offload appears unsupported/misconfigured on this node. "
                     "Falling back to CPU kernels for this stage."
                 )
-
-                # Replace all offload targets to CPU
-                for key in ("-nb", "-bonded", "-update", "-pme", "-pmefft"):
-                    if key in args:
-                        j = args.index(key)
-                        if j + 1 < len(args):
-                            args[j + 1] = "cpu"
-
-                # Drop GPU-specific options that would error when no GPU is detected
-                def _drop_opt(cmd: list[str], key: str) -> None:
-                    if key in cmd:
-                        j = cmd.index(key)
-                        # remove key and its value (if any)
-                        if j + 1 < len(cmd) and not str(cmd[j + 1]).startswith("-"):
-                            del cmd[j : j + 2]
-                        else:
-                            del cmd[j : j + 1]
-
-                _drop_opt(args, "-gpu_id")
-                _drop_opt(args, "-npme")
-
-                # Ensure GROMACS does not try to initialize CUDA at all
-                env_run["GMX_DISABLE_GPU_DETECTION"] = "1"
-                uses_gpu = False
                 continue
 
-            # CUDA crash: retry a couple of times (transient), else raise.
+            # CUDA/internal GPU runtime failures tend to persist with the same
+            # offload layout on GROMACS 2025.x. Prefer a deterministic CPU
+            # fallback over blind same-command retries.
             if uses_gpu and _is_cuda_error(tail, rc):
-                # continue retry loop
+                _fallback_to_cpu(
+                    "[WARN] Detected CUDA/internal GPU runtime failure during mdrun. "
+                    "Falling back to CPU kernels for this stage."
+                )
                 continue
 
             # non-retryable error

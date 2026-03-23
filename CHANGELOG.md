@@ -1,3 +1,9 @@
+## 0.8.57 (2026-03-23)
+
+- gmx/workflows/eq + tests/gmx_workflows: detect overlap-tainted or non-finite energy-minimization logs, refuse to reuse invalid cached EM outputs during restart, and fail early with a packing-quality error instead of letting impossible coordinates leak into later NVT/NPT stages;
+- gmx/engine + tests/engine_runtime_guards: treat GROMACS 2025-class CUDA internal failures such as `cudaErrorInvalidValue` and `Freeing of the device buffer failed` as a deterministic GPU-offload failure mode, then fall back to a clean CPU-kernel rerun for the affected stage;
+- examples/12_cmcna_interface + docs/release metadata: retune Example 12 around a more conservative free-bulk CMC pack before polymer-footprint-matched electrolyte construction, then publish the workflow hardening as `0.8.57` with refreshed package/docs version references.
+
 ## 0.8.56 (2026-03-23)
 
 - ff/gaff + ff/merz + ff/oplsaa + tests/workdir_and_molspec: teach force-field assignment to persist variable-name-derived molecule names automatically when no explicit `name=` was provided, covering both MolSpec-backed `ff.mol(...)` handles and direct RDKit molecules passed into `ff_assign(...)`;
