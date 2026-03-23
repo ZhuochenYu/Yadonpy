@@ -9,8 +9,60 @@ knowledge, this project does not raise copyright issues.
 from __future__ import annotations
 
 import json
+import hashlib
 from pathlib import Path
 from typing import Any, Dict, Optional
+
+
+def _bonded_meta_from_mol(mol) -> Dict[str, Any]:
+    """Collect bonded-override metadata that should survive caching."""
+    meta: Dict[str, Any] = {}
+    try:
+        if hasattr(mol, 'HasProp'):
+            for key in (
+                '_yadonpy_bonded_signature',
+                '_yadonpy_bonded_requested',
+                '_yadonpy_bonded_method',
+                '_yadonpy_bonded_override',
+                '_yadonpy_bonded_explicit',
+                '_yadonpy_bonded_itp',
+                '_yadonpy_bonded_json',
+                '_yadonpy_mseminario_itp',
+                '_yadonpy_mseminario_json',
+            ):
+                if mol.HasProp(key):
+                    val = str(mol.GetProp(key)).strip()
+                    if val:
+                        meta[key] = val
+    except Exception:
+        pass
+    return meta
+
+
+def _reapply_bonded_patch_to_mol(mol) -> None:
+    """Best-effort reapplication of a bonded patch after angle/dihedral rebuilds."""
+    try:
+        if not hasattr(mol, 'HasProp'):
+            return
+        jp = None
+        if mol.HasProp('_yadonpy_bonded_json'):
+            jp = str(mol.GetProp('_yadonpy_bonded_json')).strip()
+        elif mol.HasProp('_yadonpy_mseminario_json'):
+            jp = str(mol.GetProp('_yadonpy_mseminario_json')).strip()
+        if not jp:
+            return
+        from pathlib import Path as _Path
+        _p = _Path(jp)
+        if not _p.is_file():
+            return
+        import json as _json
+        from ..sim.qm import apply_mseminario_params_to_mol as _apply
+        obj = _json.loads(_p.read_text(encoding='utf-8'))
+        if isinstance(obj, dict):
+            _apply(mol, obj, overwrite=True)
+    except Exception:
+        pass
+
 
 
 def _ensure_bonded_terms_for_export(mol, ff_name: str) -> None:
@@ -88,17 +140,45 @@ def write_molecule_artifacts(
 ) -> Path:
     """Write cached artifacts for a single molecule.
 
-    yadonpy's required behavior:
-      - If SMILES is present in the built-in/basic_top database, we *use it*.
-      - If absent, we perform FF assignment + charge assignment, and then
-        generate GROMACS-ready artifacts: .gro/.itp/.top.
+    Notes:
+      - This function writes *per-molecule* artifacts to a given directory.
+      - Higher-level caches (MolDB, molecule_cache) decide *when* to call this.
 
     Returns:
         out_dir
     """
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    # ------------------------------------------------------------------
+    # Charge fingerprinting (cache validation)
+    #
+    # Cached artifacts persist across runs. If a cached topology was
+    # generated when atomic charges were missing (e.g., a failed RESP step),
+    # it will silently be reused and propagate all-zero charges into the
+    # system. We store a compact charge signature in meta.json so that the
+    # cache layer can invalidate and regenerate artifacts when needed.
+    # ------------------------------------------------------------------
+    def _mol_charge_abs_and_sig(_mol) -> tuple[float, str]:
+        qs: list[float] = []
+        for a in _mol.GetAtoms():
+            q = 0.0
+            try:
+                if a.HasProp('AtomicCharge'):
+                    q = float(a.GetDoubleProp('AtomicCharge'))
+                elif a.HasProp('RESP'):
+                    q = float(a.GetDoubleProp('RESP'))
+                elif a.HasProp('_GasteigerCharge'):
+                    q = float(a.GetProp('_GasteigerCharge'))
+            except Exception:
+                q = 0.0
+            qs.append(round(float(q), 6))
+        abs_sum = float(sum(abs(x) for x in qs))
+        payload = ",".join(f"{x:.6f}" for x in qs).encode('utf-8')
+        sig = hashlib.sha1(payload).hexdigest()[:16]
+        return abs_sum, sig
+
     # Metadata
+    ch_abs, ch_sig = _mol_charge_abs_and_sig(mol)
     meta: Dict[str, Any] = {
         "smiles": smiles,
         "ff": ff_name,
@@ -107,7 +187,11 @@ def write_molecule_artifacts(
         "charge_scale": float(charge_scale),
         "mol_name": mol_name,
         "n_atoms": int(mol.GetNumAtoms()) if hasattr(mol, "GetNumAtoms") else None,
+        # Cache validation helpers
+        "charge_abs_sum": float(ch_abs),
+        "charge_signature": str(ch_sig),
     }
+    meta.update(_bonded_meta_from_mol(mol))
     (out_dir / "meta.json").write_text(json.dumps(meta, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
     # Tag the molecule with its artifact directory for downstream workflows (best effort)
@@ -119,7 +203,7 @@ def write_molecule_artifacts(
 
     # GROMACS artifacts (required for MD; do not silently ignore failures)
     # NOTE: `charge_scale` is a *simulation-level* choice and MUST NOT be baked into
-    # cached/basic-top artifacts. Charge scaling is applied when exporting a *system*
+    # cached per-molecule artifacts. Charge scaling is applied when exporting a *system*
     # (see io.gromacs_system.export_system_from_cell_meta).
     try:
         # Require a 3D conformer for .gro/.itp generation
@@ -139,6 +223,10 @@ def write_molecule_artifacts(
             corr = correct_total_charge(mol, target_q=total_charge)
             if corr is not None:
                 meta["charge_correction"] = corr
+                # Update charge fingerprint after correction
+                ch_abs2, ch_sig2 = _mol_charge_abs_and_sig(mol)
+                meta["charge_abs_sum"] = float(ch_abs2)
+                meta["charge_signature"] = str(ch_sig2)
                 (out_dir / "meta.json").write_text(
                     json.dumps(meta, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
                 )
@@ -147,6 +235,7 @@ def write_molecule_artifacts(
 
         # Ensure bonded terms exist (angles/dihedrals) before writing .itp
         _ensure_bonded_terms_for_export(mol, ff_name)
+        _reapply_bonded_patch_to_mol(mol)
 
         from .gromacs_molecule import write_gromacs_single_molecule_topology
 
@@ -177,15 +266,15 @@ def write_molecule_artifacts(
     # Charged MOL2 export (best effort)
     if write_mol2:
         try:
-            from .mol2 import write_mol2_from_rdkit
+            from .mol2 import write_mol2
 
             mol2_dir = (mol2_root if mol2_root is not None else (out_dir / "charged_mol2"))
             mol2_dir.mkdir(parents=True, exist_ok=True)
             # Always write the current (possibly scaled) charges
-            write_mol2_from_rdkit(mol=mol, out_mol2=mol2_dir / f"{mol_name}.mol2", mol_name=mol_name)
+            write_mol2(mol=mol, out_mol2=mol2_dir / f"{mol_name}.mol2", mol_name=mol_name)
             # If raw charges exist, also write a raw file for reference
             if any(a.HasProp("AtomicCharge_raw") or a.HasProp("RESP_raw") for a in mol.GetAtoms()):
-                write_mol2_from_rdkit(
+                write_mol2(
                     mol=mol,
                     out_mol2=mol2_dir / f"{mol_name}.raw.mol2",
                     mol_name=mol_name,

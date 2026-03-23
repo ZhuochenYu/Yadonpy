@@ -14,12 +14,15 @@ knowledge, this project does not raise copyright issues.
 # ff.oplsaa module
 # ******************************************************************************
 
-import os
 from rdkit import Chem
+from rdkit import Geometry as Geom
 from ..core import utils
+from ..core.resources import ff_data_path
 from .gaff import GAFF
 from . import ff_class
 from ..core import utils as core_utils
+from .report import print_ff_assignment_report
+
 
 
 # Embedded SMARTS typing rules
@@ -714,6 +717,42 @@ def _get_compiled_rules():
     return _COMPILED
 
 
+def _iter_unique_params(mapping):
+    """Yield unique force-field parameter objects from name->object mappings."""
+    seen = set()
+    for obj in mapping.values():
+        ident = getattr(obj, 'tag', None) or id(obj)
+        if ident in seen:
+            continue
+        seen.add(ident)
+        yield obj
+
+
+def _match_bonded_pattern(pattern_tokens, actual_tokens):
+    """
+    Score a bonded-parameter pattern against actual OPLS bonded tokens.
+
+    We treat the token ``X`` as a wildcard (used by some OPLS dihedral records).
+    Other tokens such as ``C*`` and ``N*`` are real OPLS bonded labels and are
+    matched literally.
+    """
+    if len(pattern_tokens) != len(actual_tokens):
+        return None
+
+    exact = 0
+    wildcards = 0
+    for pat, actual in zip(pattern_tokens, actual_tokens):
+        if pat == actual:
+            exact += 1
+            continue
+        if pat == 'X':
+            wildcards += 1
+            continue
+        return None
+
+    return (exact, -wildcards)
+
+
 class OPLSAA(GAFF):
     """
     ff.oplsaa.OPLSAA
@@ -728,7 +767,7 @@ class OPLSAA(GAFF):
 
     def __init__(self, db_file=None):
         if db_file is None:
-            db_file = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'ff_dat', 'oplsaa.json')
+            db_file = str(ff_data_path("ff_dat", "oplsaa.json"))
         super().__init__(db_file)
         self.name = 'oplsaa'
 
@@ -746,22 +785,144 @@ class OPLSAA(GAFF):
         self.angle_style = 'harmonic'
         self.dihedral_style = 'fourier'
         self.improper_style = 'cvff'
+        self._logged_special_overrides = set()
 
-    def ff_assign(self, mol, charge=None, retryMDL=True, useMDL=True):
+
+    def mol(
+        self,
+        smiles_or_psmiles: str,
+        *,
+        name: str | None = None,
+        basis_set: str | None = None,
+        method: str | None = None,
+        charge: str = "opls",
+        require_ready: bool = False,
+        prefer_db: bool = True,
+    ):
+        """Create a lightweight MolSpec handle for OPLS-AA workflows.
+
+        OPLS-AA differs from GAFF-style workflows in that it often uses built-in
+        type charges.  Therefore the default handle does **not** require a ready
+        MolDB entry and uses ``charge='opls'`` unless the caller explicitly asks
+        for an external charge model such as RESP.
+        """
+        s = str(smiles_or_psmiles).strip()
+        try:
+            m = Chem.MolFromSmiles(s)
+        except Exception:
+            m = None
+        if m is not None and int(m.GetNumAtoms()) == 1:
+            a = m.GetAtomWithIdx(0)
+            q = int(a.GetFormalCharge())
+            if q != 0:
+                rw = Chem.RWMol()
+                atom = Chem.Atom(a.GetSymbol())
+                atom.SetFormalCharge(q)
+                idx = rw.AddAtom(atom)
+                mol = rw.GetMol()
+                conf = Chem.Conformer(mol.GetNumAtoms())
+                conf.SetAtomPosition(idx, Geom.Point3D(0.0, 0.0, 0.0))
+                mol.AddConformer(conf, assignId=True)
+                if name:
+                    try:
+                        mol.SetProp('_Name', str(name))
+                    except Exception:
+                        pass
+                return mol
+
+        return self.mol_rdkit(
+            smiles_or_psmiles,
+            name=name,
+            prefer_db=prefer_db,
+            require_db=False,
+            require_ready=require_ready,
+            charge=charge,
+            basis_set=basis_set,
+            method=method,
+        )
+
+    @staticmethod
+    def _has_complete_atomic_charges(mol) -> bool:
+        try:
+            atoms = list(mol.GetAtoms())
+        except Exception:
+            return False
+        if not atoms:
+            return False
+        return all(a.HasProp('AtomicCharge') for a in atoms)
+
+    @staticmethod
+    def _normalize_charge_mode(charge):
+        if charge is None:
+            return None
+        token = str(charge).strip()
+        if not token:
+            return None
+        low = token.lower()
+        if low in ('keep', 'existing', 'preserve', 'external-existing'):
+            return None
+        if low == 'opls':
+            return 'opls'
+        return token
+
+    def _resolve_spec(self, mol):
+        """Resolve a MolSpec handle into an RDKit Mol, matching GAFF behavior."""
+        try:
+            from ..core.molspec import MolSpec
+            from ..core import naming
+        except Exception:
+            return mol
+
+        if isinstance(mol, MolSpec):
+            spec = mol
+            if not spec.name:
+                # Skip the current helper frame so user-script variable names win
+                # over internal aliases such as `spec`.
+                spec.name = naming.infer_var_name(mol, depth=3) or naming.infer_var_name(mol, depth=2) or None
+            resolved = self.mol_rdkit(
+                spec.smiles,
+                name=spec.name,
+                prefer_db=spec.prefer_db,
+                require_ready=spec.require_ready,
+                charge=spec.charge,
+                basis_set=spec.basis_set,
+                method=spec.method,
+            )
+            try:
+                spec.cache_resolved_mol(resolved)
+            except Exception:
+                pass
+            try:
+                naming.ensure_name(resolved, name=spec.name, depth=2, prefer_var=False)
+            except Exception:
+                pass
+            return resolved
+        return mol
+
+    def ff_assign(self, mol, charge=None, retryMDL=True, useMDL=True, report: bool = True):
         """
         OPLSAA.ff_assign
 
         Args:
-            mol: RDKit Mol
+            mol: RDKit Mol or MolSpec handle.
 
         Optional:
             charge:
-                - None: do not assign charges
-                - 'opls': assign charges from embedded SMARTS rule table (type charges)
+                - None / 'keep' / 'existing': preserve any pre-existing charges.
+                  If no complete charges are present, automatically fall back to
+                  built-in OPLS-AA type charges.
+                - 'opls': assign charges from the embedded OPLS-AA rule table.
                 - other: delegate to calc.assign_charges (same as GAFF)
             retryMDL/useMDL: same behavior as GAFF
         """
         from ..core import calc
+
+        mol = self._resolve_spec(mol)
+        effective_charge = self._normalize_charge_mode(charge)
+        fallback_to_opls = False
+        if effective_charge is None and not self._has_complete_atomic_charges(mol):
+            effective_charge = 'opls'
+            fallback_to_opls = True
 
         if useMDL:
             Chem.rdmolops.Kekulize(mol, clearAromaticFlags=True)
@@ -770,31 +931,48 @@ class OPLSAA(GAFF):
         mol.SetProp('ff_name', str(self.name))
         mol.SetProp('ff_class', str(self.ff_class))
 
-        result = self.assign_ptypes(mol, charge=charge)
-        if result: result = self.assign_btypes(mol)
-        if result: result = self.assign_atypes(mol)
-        if result: result = self.assign_dtypes(mol)
-        if result: result = self.assign_itypes(mol)
+        if fallback_to_opls:
+            utils.radon_print(
+                'No complete pre-existing atomic charges found; falling back to built-in OPLS-AA type charges.',
+                level=1,
+            )
 
-        # If charge is not 'opls', use YadonPy's generic charge assignment
-        if result and charge is not None and charge != 'opls':
-            result = calc.assign_charges(mol, charge=charge)
+        result = self.assign_ptypes(mol, charge=effective_charge)
+        if result:
+            result = self.assign_btypes(mol)
+        if result:
+            result = self.assign_atypes(mol)
+        if result:
+            result = self.assign_dtypes(mol)
+        if result:
+            result = self.assign_itypes(mol)
+
+        # If charge is not 'opls', use YadonPy's generic charge assignment.
+        if result and effective_charge is not None and effective_charge != 'opls':
+            result = calc.assign_charges(mol, charge=effective_charge)
 
         if not result and retryMDL and not useMDL:
             utils.radon_print('Retry to assign with MDL aromaticity model', level=1)
             Chem.rdmolops.Kekulize(mol, clearAromaticFlags=True)
             Chem.rdmolops.SetAromaticity(mol, model=Chem.rdmolops.AromaticityModel.AROMATICITY_MDL)
 
-            result = self.assign_ptypes(mol, charge=charge)
-            if result: result = self.assign_btypes(mol)
-            if result: result = self.assign_atypes(mol)
-            if result: result = self.assign_dtypes(mol)
-            if result: result = self.assign_itypes(mol)
-            if result and charge is not None and charge != 'opls':
-                result = calc.assign_charges(mol, charge=charge)
-            if result: utils.radon_print('Success to assign with MDL aromaticity model', level=1)
+            result = self.assign_ptypes(mol, charge=effective_charge)
+            if result:
+                result = self.assign_btypes(mol)
+            if result:
+                result = self.assign_atypes(mol)
+            if result:
+                result = self.assign_dtypes(mol)
+            if result:
+                result = self.assign_itypes(mol)
+            if result and effective_charge is not None and effective_charge != 'opls':
+                result = calc.assign_charges(mol, charge=effective_charge)
+            if result:
+                utils.radon_print('Success to assign with MDL aromaticity model', level=1)
 
-        return result
+        if result and report:
+            print_ff_assignment_report(mol, ff_obj=self)
+        return mol if result else False
 
     @staticmethod
     def _has_implicit_h(mol):
@@ -870,6 +1048,10 @@ class OPLSAA(GAFF):
                 return False
 
             self.set_ptype(a, opls_type)
+            try:
+                a.SetProp('ff_desc', str(rule.get('desc', '')))
+            except Exception:
+                pass
 
             # Optional: assign type charge from rule table
             if charge == 'opls':
@@ -884,6 +1066,122 @@ class OPLSAA(GAFF):
     # Bonded assignments (use ff_btype)
     # ----------------------------
 
+    def _clone_param(self, source, **overrides):
+        obj = self.Container()
+        for key, value in vars(source).items():
+            setattr(obj, key, value)
+        for key, value in overrides.items():
+            setattr(obj, key, value)
+        return obj
+
+    def _find_param(self, mapping, tokens):
+        """Find the best bonded parameter for a token tuple."""
+        key = ','.join(tokens)
+        if key in mapping:
+            return mapping[key], 'exact'
+
+        rkey = ','.join(reversed(tokens))
+        if rkey in mapping:
+            return mapping[rkey], 'reverse'
+
+        best_obj = None
+        best_score = None
+        for obj in _iter_unique_params(mapping):
+            names = []
+            for attr in ('tag', 'name', 'rname'):
+                value = getattr(obj, attr, None)
+                if value and value not in names:
+                    names.append(value)
+            for name in names:
+                score = _match_bonded_pattern(name.split(','), tokens)
+                if score is None:
+                    continue
+                if best_score is None or score > best_score:
+                    best_obj = obj
+                    best_score = score
+
+        if best_obj is not None:
+            return best_obj, 'wildcard'
+
+        return None, None
+
+    def _log_special_override(self, label, message):
+        if label in self._logged_special_overrides:
+            return
+        self._logged_special_overrides.add(label)
+        utils.radon_print(message, level=1)
+
+    def _special_angle_param(self, tokens):
+        # Cyclic carbonates (EC/PC) in the classic OPLS bonded tables are known
+        # to miss the OS-C-OS angle even though the dedicated nonbonded types
+        # exist (opls_771-779).  We keep the OPLS force constant from the nearest
+        # available carbonyl-carbon angle (O,C,OS) and use the published EC/PC
+        # equilibrium angle 110.6 degrees for the missing OS-C-OS term.
+        if tuple(tokens) != ('OS', 'C', 'OS'):
+            return None
+
+        base, _ = self._find_param(self.param.at, ('O', 'C', 'OS'))
+        if base is None:
+            return None
+
+        self._log_special_override(
+            'angle:OS,C,OS',
+            'Applying cyclic-carbonate OPLS-AA fallback for missing angle OS,C,OS '
+            '(theta0=110.6 deg; force constant copied from O,C,OS).'
+        )
+        return self._clone_param(
+            base,
+            tag='OS,C,OS',
+            name='OS,C,OS',
+            rname='OS,C,OS',
+            theta0=110.6,
+        )
+
+    def _special_dihedral_param(self, tokens):
+        # Cyclic carbonates (EC/PC) also miss the CT-OS-C-OS family in the
+        # bonded tables.  Reuse the nearest carbonyl analogue that is already in
+        # OPLS-AA: CT-OS-C-O (and its reverse orientation).
+        fallback_map = {
+            ('CT', 'OS', 'C', 'OS'): ('CT', 'OS', 'C', 'O'),
+            ('OS', 'C', 'OS', 'CT'): ('O', 'C', 'OS', 'CT'),
+        }
+        base_tokens = fallback_map.get(tuple(tokens))
+        if base_tokens is None:
+            return None
+
+        base, _ = self._find_param(self.param.dt, base_tokens)
+        if base is None:
+            return None
+
+        pretty = ','.join(tokens)
+        self._log_special_override(
+            f'dihedral:{pretty}',
+            'Applying cyclic-carbonate OPLS-AA fallback for missing dihedral '
+            f'{pretty} (copied from {",".join(base_tokens)}).'
+        )
+        return self._clone_param(
+            base,
+            tag=pretty,
+            name=pretty,
+            rname=','.join(reversed(tokens)),
+        )
+
+    def _lookup_bond_param(self, tokens):
+        param, _ = self._find_param(self.param.bt, tokens)
+        return param
+
+    def _lookup_angle_param(self, tokens):
+        param, _ = self._find_param(self.param.at, tokens)
+        if param is not None:
+            return param
+        return self._special_angle_param(tokens)
+
+    def _lookup_dihedral_param(self, tokens):
+        param, _ = self._find_param(self.param.dt, tokens)
+        if param is not None:
+            return param
+        return self._special_dihedral_param(tokens)
+
     def assign_btypes(self, mol):
         mol.SetProp('bond_style', self.bond_style)
         result = True
@@ -895,22 +1193,19 @@ class OPLSAA(GAFF):
                 utils.radon_print('ff_btype missing on atoms. Did you run assign_ptypes first?', level=3)
                 return False
 
-            t1 = a1.GetProp('ff_btype')
-            t2 = a2.GetProp('ff_btype')
-            key = f'{t1},{t2}'
-            if not self.set_btype(b, key):
-                key2 = f'{t2},{t1}'
-                if not self.set_btype(b, key2):
-                    utils.radon_print(f'Cannot assign bond parameters for {t1},{t2}', level=2)
-                    result = False
+            tokens = (a1.GetProp('ff_btype'), a2.GetProp('ff_btype'))
+            param = self._lookup_bond_param(tokens)
+            if param is None:
+                utils.radon_print(f'Cannot assign bond parameters for {tokens[0]},{tokens[1]}', level=2)
+                result = False
+                continue
+            self.set_btype(b, param)
         return result
 
-    def set_btype(self, b, bt):
-        if bt not in self.param.bt:
-            return False
-        b.SetProp('ff_type', self.param.bt[bt].tag)
-        b.SetDoubleProp('ff_k', self.param.bt[bt].k)
-        b.SetDoubleProp('ff_r0', self.param.bt[bt].r0)
+    def set_btype(self, b, param):
+        b.SetProp('ff_type', param.tag)
+        b.SetDoubleProp('ff_k', param.k)
+        b.SetDoubleProp('ff_r0', param.r0)
         return True
 
     def assign_atypes(self, mol):
@@ -930,27 +1225,22 @@ class OPLSAA(GAFF):
                 for c_idx in range(a_idx+1, len(nbrs)):
                     i = nbrs[a_idx]
                     k = nbrs[c_idx]
-                    t1 = i.GetProp('ff_btype')
-                    t2 = j.GetProp('ff_btype')
-                    t3 = k.GetProp('ff_btype')
-                    key = f'{t1},{t2},{t3}'
-                    if not self.set_atype(mol, i.GetIdx(), j.GetIdx(), k.GetIdx(), key):
-                        key2 = f'{t3},{t2},{t1}'
-                        if not self.set_atype(mol, i.GetIdx(), j.GetIdx(), k.GetIdx(), key2):
-                            utils.radon_print(f'Cannot assign angle parameters for {t1},{t2},{t3}', level=2)
-                            result = False
+                    tokens = (i.GetProp('ff_btype'), j.GetProp('ff_btype'), k.GetProp('ff_btype'))
+                    param = self._lookup_angle_param(tokens)
+                    if param is None:
+                        utils.radon_print(f'Cannot assign angle parameters for {tokens[0]},{tokens[1]},{tokens[2]}', level=2)
+                        result = False
+                        continue
+                    self.set_atype(mol, i.GetIdx(), j.GetIdx(), k.GetIdx(), param)
         return result
 
-    def set_atype(self, mol, a, b, c, at):
-        if at not in self.param.at:
-            return False
-
+    def set_atype(self, mol, a, b, c, param):
         angle = core_utils.Angle(
             a=a, b=b, c=c,
             ff=ff_class.Angle_harmonic(
-                ff_type=self.param.at[at].tag,
-                k=self.param.at[at].k,
-                theta0=self.param.at[at].theta0
+                ff_type=param.tag,
+                k=param.k,
+                theta0=param.theta0
             )
         )
         key = f'{a},{b},{c}'
@@ -982,33 +1272,32 @@ class OPLSAA(GAFF):
                     if key_idx in mol.dihedrals:
                         continue
 
-                    t1 = i.GetProp('ff_btype')
-                    t2 = j.GetProp('ff_btype')
-                    t3 = k.GetProp('ff_btype')
-                    t4 = l.GetProp('ff_btype')
-
-                    key = f'{t1},{t2},{t3},{t4}'
-                    if not self.set_dtype(mol, a, b, c, d, key):
-                        key2 = f'{t4},{t3},{t2},{t1}'
-                        if not self.set_dtype(mol, a, b, c, d, key2):
-                            # OPLS parameter coverage is large, but not perfect. We treat missing as error to avoid silent bad sims.
-                            utils.radon_print(f'Cannot assign dihedral parameters for {t1},{t2},{t3},{t4}', level=2)
-                            result = False
+                    tokens = (
+                        i.GetProp('ff_btype'),
+                        j.GetProp('ff_btype'),
+                        k.GetProp('ff_btype'),
+                        l.GetProp('ff_btype'),
+                    )
+                    param = self._lookup_dihedral_param(tokens)
+                    if param is None:
+                        utils.radon_print(
+                            f'Cannot assign dihedral parameters for {tokens[0]},{tokens[1]},{tokens[2]},{tokens[3]}',
+                            level=2,
+                        )
+                        result = False
+                        continue
+                    self.set_dtype(mol, a, b, c, d, param)
         return result
 
-    def set_dtype(self, mol, a, b, c, d, dt):
-        if dt not in self.param.dt:
-            return False
-
-        p = self.param.dt[dt]
+    def set_dtype(self, mol, a, b, c, d, param):
         dih = core_utils.Dihedral(
             a=a, b=b, c=c, d=d,
             ff=ff_class.Dihedral_fourier(
-                ff_type=p.tag,
-                k=p.k,
-                d0=p.d,
-                m=p.m,
-                n=p.n
+                ff_type=param.tag,
+                k=param.k,
+                d0=param.d,
+                m=param.m,
+                n=param.n
             )
         )
         key = f'{a},{b},{c},{d}'

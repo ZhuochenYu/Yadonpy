@@ -5,6 +5,7 @@ Its software design is inspired by RadonPy (an automated workflow for polymer bu
 developed by a Japanese research group) and by yuzc's in-house yzc-gmx-gen toolkit. To the best of our
 knowledge, this project does not raise copyright issues.
 """
+from __future__ import annotations
 
 #  Copyright (c) 2026. YadonPy developers. All rights reserved.
 #  Use of this source code is governed by a BSD-3-style
@@ -20,7 +21,10 @@ import json
 from itertools import permutations
 from rdkit import Chem
 from ..core import calc, utils
+from ..core.resources import ff_data_path
 from . import ff_class
+from .report import print_ff_assignment_report
+
 
 
 
@@ -42,7 +46,7 @@ class GAFF():
     """
     def __init__(self, db_file=None):
         if db_file is None:
-            db_file = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'ff_dat', 'gaff.json')
+            db_file = str(ff_data_path("ff_dat", "gaff.json"))
         self.param = self.load_ff_json(db_file)
         self.name = 'gaff'
         self.pair_style = 'lj'
@@ -74,7 +78,21 @@ class GAFF():
         }
 
 
-    def ff_assign(self, mol, charge=None, retryMDL=True, useMDL=True):
+    def ff_assign(
+        self,
+        mol,
+        charge=None,
+        retryMDL=True,
+        useMDL=True,
+        *,
+        bonded: str | None = None,
+        bonded_work_dir: str | os.PathLike | None = None,
+        bonded_omp_psi4: int = 16,
+        bonded_memory_mb: int = 16000,
+        total_charge=None,
+        total_multiplicity: int = 1,
+        report: bool = True,
+    ):
         """
         GAFF.ff_assign
 
@@ -92,6 +110,42 @@ class GAFF():
             True: Success assignment
             False: Failure assignment
         """
+
+        # Allow passing a lightweight MolSpec handle (v0.6.3+)
+        _spec_mode = False
+        try:
+            from ..core.molspec import MolSpec
+            from ..core import naming
+        except Exception:
+            MolSpec = None
+            naming = None
+
+        if MolSpec is not None and isinstance(mol, MolSpec):
+            _spec_mode = True
+            spec = mol
+            if not spec.name and naming is not None:
+                # Start the stack scan from the *caller* of ff_assign so we do
+                # not accidentally capture local helper aliases such as `spec`.
+                spec.name = naming.infer_var_name(mol, depth=3) or naming.infer_var_name(mol, depth=2) or None
+            mol = self.mol_rdkit(
+                spec.smiles,
+                name=spec.name,
+                prefer_db=spec.prefer_db,
+                require_ready=spec.require_ready,
+                charge=spec.charge,
+                basis_set=spec.basis_set,
+                method=spec.method,
+            )
+            # For downstream exports
+            try:
+                spec.cache_resolved_mol(mol)
+            except Exception:
+                pass
+            if naming is not None:
+                try:
+                    naming.ensure_name(mol, name=spec.name, depth=2, prefer_var=False)
+                except Exception:
+                    pass
 
         if useMDL:
             Chem.rdmolops.Kekulize(mol, clearAromaticFlags=True)
@@ -119,7 +173,144 @@ class GAFF():
             if result and charge is not None: result = calc.assign_charges(mol, charge=charge)
             if result: utils.radon_print('Success to assign with MDL aromaticity model', level=1)
 
-        return result
+        # ------------------------------------------------------------------
+        # Optional bonded-parameter override (DRIH / mseminario)
+        #
+        # Default: follow the force-field's bonded parameters (no patching).
+        # If bonded is explicitly provided, we mark the molecule and (best-effort)
+        # generate the bonded patch fragments for downstream topology writers.
+        # ------------------------------------------------------------------
+        if result and bonded is not None:
+            try:
+                from pathlib import Path
+                from ..core import naming
+                from ..sim import qm
+
+                b = str(bonded).strip().lower()
+                # aliases
+                if b in ("ms", "mseminario", "seminario"):
+                    b = "mseminario"
+                if b in ("drih", "drih-like", "dri"):
+                    b = "drih"
+
+                # Mark explicit override so exporters / caches know this was requested.
+                try:
+                    mol.SetProp("_yadonpy_bonded_override", "1")
+                    mol.SetProp("_yadonpy_bonded_explicit", "1")
+                    mol.SetProp("_yadonpy_bonded_requested", str(b))
+                    mol.SetProp("_yadonpy_bonded_signature", str(b))
+                except Exception:
+                    pass
+
+                # Resolve a stable work dir
+                mol_name = None
+                try:
+                    mol_name = naming.get_name(mol)
+                except Exception:
+                    pass
+                if not mol_name:
+                    mol_name = "mol"
+
+                if bonded_work_dir is None:
+                    bonded_work_dir = (Path.cwd() / ".yadonpy_cache" / "bonded" / str(mol_name)).resolve()
+                bdir = Path(bonded_work_dir).expanduser().resolve()
+
+                # If patch already exists, just record the method and continue.
+                try:
+                    if b == "drih" and mol.HasProp("_yadonpy_bonded_itp"):
+                        mol.SetProp("_yadonpy_bonded_method", "DRIH")
+                        b = "done"
+                    if b == "mseminario" and mol.HasProp("_yadonpy_mseminario_itp"):
+                        mol.SetProp("_yadonpy_bonded_method", "mseminario")
+                        b = "done"
+                except Exception:
+                    pass
+
+                # Ensure 3D coords for geometry-driven / Hessian-driven methods
+                if b in ("drih", "mseminario"):
+                    try:
+                        smiles_hint = None
+                        if mol.HasProp("_YADONPY_CANONICAL"):
+                            smiles_hint = mol.GetProp("_YADONPY_CANONICAL")
+                        utils.ensure_3d_coords(mol, smiles_hint=smiles_hint, engine="openbabel")
+                    except Exception:
+                        pass
+
+                if b == "drih":
+                    # Geometry-driven stiffening for AX4/AX6 polyhedral ions
+                    qm.bond_angle_params_drih(
+                        mol,
+                        work_dir=str(bdir),
+                        log_name=str(mol_name),
+                        smiles_hint=(mol.GetProp("_YADONPY_CANONICAL") if mol.HasProp("_YADONPY_CANONICAL") else None),
+                    )
+                    try:
+                        mol.SetProp("_yadonpy_bonded_method", "DRIH")
+                    except Exception:
+                        pass
+                elif b == "mseminario":
+                    # Hessian-derived bond/angle harmonics
+                    # Use formal charge inference unless user explicitly provides total_charge.
+                    if total_charge is None:
+                        try:
+                            total_charge = int(sum(int(a.GetFormalCharge()) for a in mol.GetAtoms()))
+                        except Exception:
+                            total_charge = 0
+
+                    qm.bond_angle_params_mseminario(
+                        mol,
+                        confId=0,
+                        opt=False,
+                        work_dir=str(bdir),
+                        log_name=str(mol_name),
+                        qm_solver="psi4",
+                        opt_method="wb97m-d3bj",
+                        opt_basis="6-31G(d,p)",
+                        hess_method="wb97m-d3bj",
+                        hess_basis=None,
+                        total_charge=int(total_charge),
+                        total_multiplicity=int(total_multiplicity),
+                        psi4_omp=int(bonded_omp_psi4),
+                        memory=int(bonded_memory_mb),
+                    )
+                    try:
+                        mol.SetProp("_yadonpy_bonded_method", "mseminario")
+                    except Exception:
+                        pass
+                elif b != "done":
+                    raise ValueError(f"Unknown bonded override: {bonded!r} (supported: 'DRIH', 'mseminario')")
+
+                # Final verification: explicit bonded overrides must leave behind
+                # a real fragment that downstream exporters can consume.
+                try:
+                    from pathlib import Path as _Path
+                    _frag = None
+                    if str(bonded).strip().lower() in ("ms", "mseminario", "seminario"):
+                        if mol.HasProp("_yadonpy_mseminario_itp"):
+                            _frag = _Path(str(mol.GetProp("_yadonpy_mseminario_itp")).strip())
+                        if _frag is not None and _frag.is_file():
+                            mol.SetProp("_yadonpy_bonded_itp", str(_frag.resolve()))
+                            mol.SetProp("_yadonpy_bonded_method", "mseminario")
+                            mol.SetProp("_yadonpy_bonded_signature", "mseminario")
+                    else:
+                        if mol.HasProp("_yadonpy_bonded_itp"):
+                            _frag = _Path(str(mol.GetProp("_yadonpy_bonded_itp")).strip())
+                        if _frag is not None and _frag.is_file():
+                            mol.SetProp("_yadonpy_bonded_method", "DRIH")
+                            mol.SetProp("_yadonpy_bonded_signature", "drih")
+                    if _frag is None or (not _frag.is_file()):
+                        raise RuntimeError("explicit bonded override did not produce a bonded fragment")
+                except Exception as e:
+                    raise RuntimeError(f"bonded={bonded!r} requested but fragment verification failed: {e}") from e
+            except Exception as e:
+                # If the user explicitly requested bonded params, fail loudly.
+                raise RuntimeError(f"bonded={bonded!r} requested but failed: {e}") from e
+
+        if _spec_mode:
+            return mol if result else False
+        if result and report:
+            print_ff_assignment_report(mol, ff_obj=self)
+        return mol if result else False
 
 
     def assign_ptypes(self, mol):
@@ -245,7 +436,6 @@ class GAFF():
             elif hyb == 'SP2':
                 p_idx = p.GetIdx()
                 carbonyl = False
-                cs = False
                 conj = 0
                 for pb in p.GetNeighbors():
                     if pb.GetSymbol() == 'O':
@@ -387,8 +577,13 @@ class GAFF():
         # Assignment routine of O
         ######################################
         elif p.GetSymbol() == 'O':
+            heavy_neighbor_count = sum(1 for nb in p.GetNeighbors() if nb.GetAtomicNum() > 1)
             if p.GetTotalDegree() == 1:
                 self.set_ptype(p, 'o')
+            elif heavy_neighbor_count >= 2:
+                # Bridge/ether oxygens should remain `os` even if an
+                # unsanitized intermediate still reports a residual H count.
+                self.set_ptype(p, 'os')
             elif p.GetTotalNumHs(includeNeighbors=True) == 2:
                 self.set_ptype(p, 'ow')
             elif p.GetTotalNumHs(includeNeighbors=True) == 1:
@@ -1286,10 +1481,40 @@ class GAFF():
 
 
     # ---------------------------------------------------------------------
-    # Shared molecule database helpers (geometry + charges only)
+    # MolDB-backed handle API (v0.6.3+)
+    # ---------------------------------------------------------------------
+    def mol(
+        self,
+        smiles_or_psmiles: str,
+        *,
+        name: str | None = None,
+        basis_set: str | None = None,
+        method: str | None = None,
+        charge: str = "RESP",
+        require_ready: bool = True,
+        prefer_db: bool = True,
+    ):
+        """Create a lightweight MolSpec handle.
+
+        The handle is resolved into an RDKit Mol when you call ff_assign().
+        """
+        from ..core.molspec import MolSpec
+
+        return MolSpec(
+            smiles=str(smiles_or_psmiles).strip(),
+            name=(str(name).strip() if name else None),
+            charge=str(charge).strip() if charge else "RESP",
+            basis_set=(str(basis_set).strip() if basis_set else None),
+            method=(str(method).strip() if method else None),
+            require_ready=bool(require_ready),
+            prefer_db=bool(prefer_db),
+        )
+
+    # ---------------------------------------------------------------------
+    # Shared molecule database helpers (RDKit Mol; geometry + charges)
     # ---------------------------------------------------------------------
     @classmethod
-    def mol(
+    def mol_rdkit(
         cls,
         smiles_or_psmiles: str,
         *,
@@ -1297,6 +1522,10 @@ class GAFF():
         db_dir: str | os.PathLike | None = None,
         prefer_db: bool = True,
         require_db: bool = False,
+        require_ready: bool = False,
+        charge: str = "RESP",
+        basis_set: str | None = None,
+        method: str | None = None,
     ):
         """Create or load a molecule (RDKit Mol) from the shared MolDB.
 
@@ -1306,13 +1535,40 @@ class GAFF():
           - charges (RESP etc., if available)
 
         Force-field assignment is intentionally NOT stored here.
+
+        Args:
+            smiles_or_psmiles: SMILES (small molecule / ion) or PSMILES (polymer building block, contains '*').
+            name: Optional friendly name stored into the record and used for exports.
+            db_dir: Optional DB directory. If not set, uses the default MolDB (typically ~/.yadonpy/moldb).
+            prefer_db: If True and the record exists, load it; otherwise (re)build a fresh initial geometry.
+            require_db: If True, the entry must exist in DB (geometry required; charges may be missing).
+            require_ready: If True, the entry must exist and be marked ready (charges present)
+                for the requested (charge,basis_set,method) variant.
         """
         from pathlib import Path
         from ..moldb import MolDB
 
         db = MolDB(Path(db_dir) if db_dir is not None else None)
-        if require_db:
-            mol, rec = db.load_mol(smiles_or_psmiles, require_ready=False)
+        # Priority:
+        #   1) require_ready=True: must exist AND have charges (ready)
+        #   2) require_db=True   : must exist (charges optional)
+        #   3) otherwise         : build-or-load (charges optional)
+        if require_ready:
+            mol, rec = db.load_mol(
+                smiles_or_psmiles,
+                require_ready=True,
+                charge=charge,
+                basis_set=basis_set,
+                method=method,
+            )
+        elif require_db:
+            mol, rec = db.load_mol(
+                smiles_or_psmiles,
+                require_ready=False,
+                charge=charge,
+                basis_set=basis_set,
+                method=method,
+            )
         else:
             mol, rec = db.build_or_load(smiles_or_psmiles, name=name, prefer_db=prefer_db)
 
@@ -1337,16 +1593,19 @@ class GAFF():
         smiles_or_psmiles: str | None = None,
         name: str | None = None,
         db_dir: str | os.PathLike | None = None,
-        charge_method: str = "RESP",
+        charge: str = "RESP",
+        basis_set: str | None = None,
+        method: str | None = None,
     ):
         """Store current geometry + charges of an RDKit mol into shared MolDB."""
         from pathlib import Path
         from ..moldb import MolDB
-
         db = MolDB(Path(db_dir) if db_dir is not None else None)
         return db.update_from_mol(
             mol,
             smiles_or_psmiles=smiles_or_psmiles,
             name=name,
-            charge_method=charge_method,
+            charge=charge,
+            basis_set=basis_set,
+            method=method,
         )

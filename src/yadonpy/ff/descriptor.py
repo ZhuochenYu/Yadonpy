@@ -21,7 +21,7 @@ from matplotlib import pyplot as plt
 import multiprocessing as MP
 import concurrent.futures as confu
 from rdkit import Chem
-from ..core import poly, utils, const
+from ..core import poly, utils
 
 mic_avail = True
 try:
@@ -342,7 +342,6 @@ class FF_descriptor():
 
 
     def ff_kernel_mean(self, mols, ratio=None, nk=None, kernel=None, s=None, s_mass=None, mu=None, mu_mass=None, ignoreH=False):
-        setup_flag = False
         if kernel is None:
             kernel = self.Gaussian
 

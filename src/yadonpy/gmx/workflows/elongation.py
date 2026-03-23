@@ -12,13 +12,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Optional
 
-import numpy as np
+
+from ...runtime import resolve_restart
+from ...io.mol2 import write_mol2_from_top_gro_parmed
 
 from ..analysis.xvg import read_xvg
 from ..analysis.auto_plot import _as_path  # small helper
 from ..engine import GromacsRunner
 from ..mdp_templates import DEFORM_NVT_MDP, MdpSpec, default_mdp_params
-from ._util import RunResources, atomic_write_json, load_json, pbc_mol_fix_inplace, read_gro_box_nm, safe_mkdir
+from ._util import RunResources, atomic_write_json, pbc_mol_fix_inplace, read_gro_box_nm, safe_mkdir
 
 
 @dataclass(frozen=True)
@@ -66,10 +68,11 @@ class ElongationJob:
         self.resources = resources
         self.auto_plot = bool(auto_plot)
 
-    def run(self, *, restart: bool = True) -> Path:
+    def run(self, *, restart: Optional[bool] = None) -> Path:
         out = safe_mkdir(self.out_dir)
+        rst_flag = resolve_restart(restart)
         summary_path = out / "summary.json"
-        if restart and summary_path.exists() and (out / "md.edr").exists():
+        if rst_flag and summary_path.exists() and (out / "md.edr").exists():
             return summary_path
 
         # Compute deform rate in nm/ps based on initial box length
@@ -109,21 +112,14 @@ class ElongationJob:
 
         # PBC hygiene (best-effort): keep molecules contiguous for downstream tools.
         pbc_mol_fix_inplace(self.runner, tpr=tpr, traj_or_gro=out / "md.gro", cwd=out)
+        # Optional: export system-level MOL2 (best-effort).
+        mol2_path = write_mol2_from_top_gro_parmed(top_path=self.top, gro_path=out / "md.gro", out_mol2=out / "md.mol2", overwrite=True)
         if (out / "md.xtc").exists():
             pbc_mol_fix_inplace(self.runner, tpr=tpr, traj_or_gro=out / "md.xtc", cwd=out)
 
         # Extract box and pressure tensor
         edr = out / "md.edr"
         xvg = out / "stress_box.xvg"
-        terms = [
-            "Time",
-            "Box-X",
-            "Box-Y",
-            "Box-Z",
-            "Pres-XX",
-            "Pres-YY",
-            "Pres-ZZ",
-        ]
         # 'Time' is implicit x-axis, so do not request it.
         self.runner.energy_xvg(
             edr=edr,
@@ -190,6 +186,7 @@ class ElongationJob:
             "final_strain": self.final_strain,
             "files": {
                 "gro": str(out / "md.gro") if (out / "md.gro").exists() else None,
+                "mol2": str(mol2_path) if mol2_path else None,
                 "edr": str(edr) if edr.exists() else None,
                 "csv": str(csv),
                 "stress_strain_svg": stress_svg,

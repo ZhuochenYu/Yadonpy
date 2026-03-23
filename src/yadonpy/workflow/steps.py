@@ -19,15 +19,17 @@ from typing import Any, Optional, Sequence, Union, Literal
 from rdkit import Chem
 from rdkit import Geometry as Geom
 
-from ..api import ensure_basic_top
 from ..core import poly, utils
 from ..sim import qm
+from ..sim.analyzer import AnalyzeResult
 from ..sim.preset import eq
 from ..gmx.workflows._util import RunResources
 from ..gmx.workflows.quick import QuickRelaxJob
 from ..gmx.workflows.tg import TgJob
 from ..gmx.workflows.elongation import ElongationJob
 from .restart import Restart
+from ..runtime import resolve_restart
+from ..core.logging_utils import compact_path, format_elapsed
 
 
 def _as_path(p: Union[str, Path]) -> Path:
@@ -70,7 +72,7 @@ def resp_from_smiles(
     work_dir: Union[str, Path],
     log_name: str,
     set_resname: Optional[str] = None,
-    restart: bool = True,
+    restart: Optional[bool] = None,
     charge: str = "RESP",
     nconf: int = 1000,
     dft_nconf: int = 4,
@@ -95,7 +97,7 @@ def resp_from_smiles(
     """
 
     wd = _as_path(work_dir)
-    rst = Restart(wd, restart=bool(restart))
+    rst = Restart(wd, restart=restart)
 
     def _is_h_terminator(m: Chem.Mol, smi: str) -> bool:
         """Detect the special H-termination unit like "[H][*]" / "[*][H]".
@@ -400,53 +402,29 @@ def resp_from_smiles(
     )
 
 
-def ensure_basic_tops(
-    smiles: Sequence[str],
-    *,
-    ff_names: Sequence[str],
-    restart: bool = True,
-    work_dir: Union[str, Path] = ".",
-) -> None:
-    """Ensure built-in basic_top entries exist for a set of SMILES."""
-    wd = _as_path(work_dir)
-    rst = Restart(wd, restart=bool(restart))
-
-    out_marker = wd / "basic_top" / "done.marker"
-
-    def _run() -> None:
-        for smi, ff in zip(smiles, ff_names):
-            ensure_basic_top(smi, ff_name=str(ff))
-        out_marker.parent.mkdir(parents=True, exist_ok=True)
-        out_marker.write_text("ok\n", encoding="utf-8")
-
-    rst.step(
-        name="ensure_basic_tops",
-        outputs=[out_marker],
-        run=_run,
-        inputs={"smiles": list(map(str, smiles)), "ff_names": list(map(str, ff_names))},
-        description="Generate/find basic_top templates",
-        verbose=False,
-    )
-
-
 def build_copolymer(
     monomers: Sequence[Chem.Mol],
     *,
     ratio: Sequence[float],
     reac_ratio: Optional[Sequence[float]] = None,
     terminal: Optional[Chem.Mol] = None,
-    num_atoms: int = 1000,
+    num_atoms: Optional[int] = 1000,
+    target_mw: Optional[float] = None,
+    polymer_name: str = "POLY",
     tacticity: str = "atactic",
     ff_obj: Optional[Any] = None,
     work_dir: Union[str, Path],
-    restart: bool = True,
+    restart: Optional[bool] = None,
     out_name: str = "polymer.sdf",
     out_mol2_name: str = "polymer.mol2",
 ) -> Chem.Mol:
-    """Build a random copolymer chain and (optionally) assign FF parameters."""
+    """Build a random copolymer chain and (optionally) assign FF parameters.
+
+    Provide either ``num_atoms`` (default) or ``target_mw``.
+    """
 
     wd = _as_path(work_dir)
-    rst = Restart(wd, restart=bool(restart))
+    rst = Restart(wd, restart=restart)
 
     out_sdf = _stage_output_path(wd, out_name, "0_build")
     out_mol2 = _stage_output_path(wd, out_mol2_name, "0_build")
@@ -457,26 +435,40 @@ def build_copolymer(
             ff_obj.ff_assign(mol)
         # Best-effort: ensure a charged mol2 exists for the polymer chain
         try:
-            from ..io.mol2 import write_mol2_from_rdkit
+            from ..io.mol2 import write_mol2
             if not out_mol2.exists():
-                write_mol2_from_rdkit(mol=mol, out_mol2=out_mol2, mol_name='POLY')
+                write_mol2(mol=mol, out_mol2=out_mol2, mol_name=str(polymer_name))
         except Exception:
             pass
         return mol
 
     def _run() -> Chem.Mol:
+        import time as _time
+        _t0 = _time.perf_counter()
+        utils.radon_print("=" * 88, level=1)
+        utils.radon_print("[SECTION] Polymer build workflow", level=1)
+        utils.radon_print(f"[ITEM] out_sdf           : {compact_path(out_sdf)}", level=1)
         if terminal is None:
             raise ValueError("terminal must be provided for polymerization")
         rr = list(reac_ratio) if reac_ratio is not None else []
-        dp = poly.calc_n_from_num_atoms(list(monomers), int(num_atoms), ratio=list(ratio), terminal1=terminal)
+        if target_mw is not None:
+            dp = poly.calc_n_from_mol_weight(list(monomers), float(target_mw), ratio=list(ratio), terminal1=terminal)
+        elif num_atoms is not None:
+            dp = poly.calc_n_from_num_atoms(list(monomers), int(num_atoms), ratio=list(ratio), terminal1=terminal)
+        else:
+            raise ValueError('Either num_atoms or target_mw must be provided')
         copoly = poly.random_copolymerize_rw(
             list(monomers),
             dp,
             ratio=list(ratio),
             reac_ratio=rr,
             tacticity=str(tacticity),
+            name=str(polymer_name),
+            work_dir=wd / ".yadonpy_polymer_rw",
         )
-        copoly = poly.terminate_rw(copoly, terminal)
+        copoly = poly.terminate_rw(copoly, terminal, name=str(polymer_name), work_dir=wd / ".yadonpy_polymer_term")
+        utils.radon_print(f"[ITEM] polymer_name      : {polymer_name}", level=1)
+        utils.radon_print(f"[ITEM] degree_of_polymer : {dp}", level=1)
         if ff_obj is not None:
             ok = ff_obj.ff_assign(copoly)
             if not ok:
@@ -484,10 +476,12 @@ def build_copolymer(
         _write_sdf_one(copoly, out_sdf)
         # Also export a charged MOL2 for inspection/debugging
         try:
-            from ..io.mol2 import write_mol2_from_rdkit
-            write_mol2_from_rdkit(mol=copoly, out_mol2=out_mol2, mol_name='POLY')
+            from ..io.mol2 import write_mol2
+            write_mol2(mol=copoly, out_mol2=out_mol2, mol_name=str(polymer_name))
         except Exception:
             pass
+        utils.radon_print(f"[DONE] Polymer build workflow | elapsed={format_elapsed(_time.perf_counter() - _t0)} | outputs={compact_path(out_sdf)}", level=1)
+        utils.radon_print("=" * 88, level=1)
         return copoly
 
     return rst.step(
@@ -498,7 +492,9 @@ def build_copolymer(
         inputs={
             "ratio": list(map(float, ratio)),
             "reac_ratio": list(map(float, reac_ratio)) if reac_ratio is not None else [],
-            "num_atoms": int(num_atoms),
+            "num_atoms": int(num_atoms) if num_atoms is not None else None,
+            "target_mw": float(target_mw) if target_mw is not None else None,
+            "polymer_name": str(polymer_name),
             "tacticity": str(tacticity),
             "ff": ff_obj.__class__.__name__ if ff_obj is not None else None,
         },
@@ -517,7 +513,7 @@ def pack_amorphous_cell(
     neutralize: bool = True,
     neutralize_tol: float = 1e-4,
     work_dir: Union[str, Path],
-    restart: bool = True,
+    restart: Optional[bool] = None,
     out_name: str = "amorphous_cell.sdf",
 ) -> Chem.Mol:
     """Pack an amorphous cell (polymer + solvents + ions).
@@ -531,7 +527,7 @@ def pack_amorphous_cell(
     """
 
     wd = _as_path(work_dir)
-    rst = Restart(wd, restart=bool(restart))
+    rst = Restart(wd, restart=restart)
 
     out_sdf = _stage_output_path(wd, out_name, "0_build")
 
@@ -539,6 +535,13 @@ def pack_amorphous_cell(
         return _read_sdf_one(out_sdf)
 
     def _run() -> Chem.Mol:
+        import time as _time
+        _t0 = _time.perf_counter()
+        utils.radon_print("=" * 88, level=1)
+        utils.radon_print("[SECTION] Amorphous-cell packing workflow", level=1)
+        utils.radon_print(f"[ITEM] out_sdf           : {compact_path(out_sdf)}", level=1)
+        utils.radon_print(f"[ITEM] density_g_cm3     : {float(density_g_cm3):.4f}", level=1)
+        utils.radon_print(f"[ITEM] species_count     : {len(list(species))}", level=1)
         ac = poly.amorphous_cell(
             list(species),
             list(counts),
@@ -549,6 +552,8 @@ def pack_amorphous_cell(
             neutralize_tol=float(neutralize_tol),
         )
         _write_sdf_one(ac, out_sdf)
+        utils.radon_print(f"[DONE] Amorphous-cell packing workflow | elapsed={format_elapsed(_time.perf_counter() - _t0)} | output={compact_path(out_sdf)}", level=1)
+        utils.radon_print("=" * 88, level=1)
         return ac
 
     return rst.step(
@@ -583,13 +588,20 @@ def equilibrate_until_ok(
     max_additional: int = 4,
     charge_method: str = "RESP",
     ff_name: str = "gaff2_mod",
-    restart: bool = True,
+    restart: Optional[bool] = None,
     rdf_species: Optional[Sequence[Chem.Mol]] = None,
     rdf_center: Optional[Chem.Mol] = None,
 ) -> tuple[AnalyzeResult, bool]:
     """Run EQ21 and (optionally) additional rounds until equilibrium is reached."""
 
     wd = _as_path(work_dir)
+    rst_flag = resolve_restart(restart)
+    utils.radon_print("=" * 88, level=1)
+    utils.radon_print("[SECTION] Equilibration loop workflow", level=1)
+    utils.radon_print(f"[ITEM] work_dir          : {compact_path(wd)}", level=1)
+    utils.radon_print(f"[ITEM] restart           : {bool(rst_flag)}", level=1)
+    utils.radon_print(f"[ITEM] target_T_K        : {float(temp):.2f}", level=1)
+    utils.radon_print(f"[ITEM] target_P_bar      : {float(press):.3f}", level=1)
 
     eqmd = eq.EQ21step(ac, work_dir=wd, ff_name=str(ff_name), charge_method=str(charge_method))
     eqmd.exec(
@@ -600,11 +612,14 @@ def equilibrate_until_ok(
         gpu=int(gpu),
         gpu_id=int(gpu_id) if gpu_id is not None else None,
         sim_time=float(sim_time_ns),
-        restart=bool(restart),
+        restart=rst_flag,
     )
     analy = eqmd.analyze()
     analy.get_all_prop(temp=float(temp), press=float(press), save=True)
     ok = analy.check_eq()
+
+    # Make it obvious whether Additional rounds will run.
+    utils.radon_print(f"[EQ-LOOP] EQ21 convergence: {'PASS' if ok else 'FAIL'}", level=1 if ok else 2)
 
     if rdf_species is not None and rdf_center is not None:
         try:
@@ -615,6 +630,7 @@ def equilibrate_until_ok(
     for _i in range(int(max_additional)):
         if ok:
             break
+        utils.radon_print(f"[EQ-LOOP] Additional round {_i:02d}: starting (previous check=FAIL)", level=1)
         eqmd2 = eq.Additional(ac, work_dir=wd, ff_name=str(ff_name), charge_method=str(charge_method))
         eqmd2.exec(
             temp=float(temp),
@@ -624,17 +640,20 @@ def equilibrate_until_ok(
             gpu=int(gpu),
             gpu_id=int(gpu_id) if gpu_id is not None else None,
             sim_time=float(sim_time_ns),
-            restart=bool(restart),
+            restart=rst_flag,
         )
         analy = eqmd2.analyze()
         analy.get_all_prop(temp=float(temp), press=float(press), save=True)
         ok = analy.check_eq()
+        utils.radon_print(f"[EQ-LOOP] Additional round {_i:02d}: convergence: {'PASS' if ok else 'FAIL'}", level=1 if ok else 2)
         if rdf_species is not None and rdf_center is not None:
             try:
                 analy.rdf(list(rdf_species), center_mol=rdf_center)
             except Exception:
                 pass
 
+    utils.radon_print(f"[DONE] Equilibration loop workflow | converged={bool(ok)}", level=1 if ok else 2)
+    utils.radon_print("=" * 88, level=1)
     return analy, bool(ok)
 
 
@@ -650,7 +669,7 @@ def quick_relax_gmx(
     omp: int = 1,
     gpu: int = 1,
     gpu_id: Optional[int] = None,
-    restart: bool = True,
+    restart: Optional[bool] = None,
 ) -> Path:
     """Run a small NVT relaxation using GROMACS.
 
@@ -664,7 +683,7 @@ def quick_relax_gmx(
 
     out = _as_path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
-    rst = Restart(out, restart=bool(restart))
+    rst = Restart(out, restart=restart)
     summary = out / "summary.json"
 
     def _run() -> Path:
@@ -680,10 +699,10 @@ def quick_relax_gmx(
             out_dir=out,
             temperature_k=float(temperature_k),
             dt_ps=float(dt_ps),
-            nvt_ps=float(nvt_ps),
+            quick_md_ns=float(nvt_ps) / 1000.0,
             resources=res,
         )
-        job.run(restart=True)
+        job.run(restart=bool(rst.restart))
         return summary
 
     return rst.step(
@@ -717,14 +736,14 @@ def tg_scan_gmx(
     omp: int = 1,
     gpu: int = 1,
     gpu_id: Optional[int] = None,
-    restart: bool = True,
+    restart: Optional[bool] = None,
     auto_plot: bool = True,
 ) -> Path:
     """Run a Tg scan workflow using GROMACS."""
 
     out = _as_path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
-    rst = Restart(out, restart=bool(restart))
+    rst = Restart(out, restart=restart)
     summary = out / "summary.json"
     csv = out / "density_vs_T.csv"
 
@@ -748,7 +767,7 @@ def tg_scan_gmx(
             resources=res,
             auto_plot=bool(auto_plot),
         )
-        job.run(restart=True)
+        job.run(restart=bool(rst.restart))
         return summary
 
     return rst.step(
@@ -785,7 +804,7 @@ def elongation_gmx(
     omp: int = 1,
     gpu: int = 1,
     gpu_id: Optional[int] = None,
-    restart: bool = True,
+    restart: Optional[bool] = None,
     auto_plot: bool = True,
     direction: Literal["x", "y", "z"] = "x",
 ) -> Path:
@@ -793,7 +812,7 @@ def elongation_gmx(
 
     out = _as_path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
-    rst = Restart(out, restart=bool(restart))
+    rst = Restart(out, restart=restart)
     summary = out / "summary.json"
     csv = out / "stress_strain.csv"
 
@@ -817,7 +836,7 @@ def elongation_gmx(
             resources=res,
             auto_plot=bool(auto_plot),
         )
-        job.run(restart=True)
+        job.run(restart=bool(rst.restart))
         return summary
 
     return rst.step(
@@ -840,6 +859,5 @@ def elongation_gmx(
         description="GROMACS elongation",
         verbose=True,
     )
-
 
 

@@ -3,13 +3,13 @@
 from __future__ import annotations
 import os
 import json
-import numpy as np
-from pathlib import Path
 from rdkit import Chem
-from rdkit.Chem import AllChem
-from rdkit.Geometry import rdGeometry as Geom
+
+from .. import __version__ as __yadonpy_version__
+from ..ff import ff_class
 from .logging_utils import radon_print
-from .topology import copy_topology_attributes
+from .molops import set_mol_id
+from .topology import Angle, Cell, Dihedral, Improper
 
 def MolToPDBBlock(mol, confId=0):
     """
@@ -34,6 +34,9 @@ def MolToPDBBlock(mol, confId=0):
     ter = 0
     chainid_pre = 1
     chainid_pdb_pre = ''
+    resname = 'UNK'
+    resnum = 1
+    icode = ' '
 
     for i, atom in enumerate(mol.GetAtoms()):
         serial += 1

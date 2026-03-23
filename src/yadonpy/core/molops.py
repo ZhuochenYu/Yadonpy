@@ -1,7 +1,6 @@
 """RDKit molecule editing utilities used by builders and converters."""
 
 from __future__ import annotations
-from copy import deepcopy
 from itertools import permutations
 
 from rdkit import Chem
@@ -86,9 +85,121 @@ def remove_atom(mol, idx, angle_fix=False):
         RDkit Mol object
     """
 
-    angles_copy = {}
-    dihedrals_copy = {}
-    impropers_copy = {}
+    # NOTE (v0.5.1):
+    # Some RDKit builds can throw `RuntimeError: bad any_cast` inside
+    # `RWMol.RemoveAtom()` when the molecule carries certain computed/private
+    # properties. This became visible in polymerization workflows where
+    # monomers have gone through QM/charge assignment and then are repeatedly
+    # combined/edited.
+    #
+    # We therefore:
+    #   1) snapshot a *minimal safe* set of yadonpy-relevant atom properties
+    #      (charges, ff_type, linker flags, PDB residue info),
+    #   2) clear all atom properties before editing,
+    #   3) perform the atom removal,
+    #   4) restore the saved properties onto the surviving atoms.
+    #
+    # This also ensures partial charges are preserved across RemoveAtom.
+
+    # Properties we must preserve for downstream export/analysis.
+    _SAFE_FLOAT_PROPS = [
+        'AtomicCharge', 'AtomicCharge_raw',
+        'RESP', 'RESP_raw',
+        'ESP', 'MullikenCharge', 'LowdinCharge',
+        '_GasteigerCharge',
+    ]
+    _SAFE_STR_PROPS = [
+        'ff_type', 'ff_btype', 'ff_ptype',
+    ]
+    _SAFE_INT_PROPS = [
+        'mol_id',
+    ]
+    _SAFE_BOOL_PROPS = [
+        'head', 'tail', 'head_neighbor', 'tail_neighbor',
+    ]
+
+    def _snapshot_atom(atom: Chem.Atom) -> dict:
+        d: dict = {'float': {}, 'str': {}, 'int': {}, 'bool': {}, 'pdb': None}
+        # floats
+        for k in _SAFE_FLOAT_PROPS:
+            if not atom.HasProp(k):
+                continue
+            try:
+                d['float'][k] = float(atom.GetDoubleProp(k))
+            except Exception:
+                # stored as string
+                try:
+                    d['float'][k] = float(atom.GetProp(k))
+                except Exception:
+                    pass
+        # strings
+        for k in _SAFE_STR_PROPS:
+            if atom.HasProp(k):
+                try:
+                    d['str'][k] = str(atom.GetProp(k))
+                except Exception:
+                    pass
+        # ints
+        for k in _SAFE_INT_PROPS:
+            if atom.HasProp(k):
+                try:
+                    d['int'][k] = int(atom.GetIntProp(k))
+                except Exception:
+                    # stored as string
+                    try:
+                        d['int'][k] = int(atom.GetProp(k))
+                    except Exception:
+                        pass
+        # bools
+        for k in _SAFE_BOOL_PROPS:
+            if atom.HasProp(k):
+                try:
+                    d['bool'][k] = bool(atom.GetBoolProp(k))
+                except Exception:
+                    # stored as string
+                    try:
+                        v = str(atom.GetProp(k)).strip().lower()
+                        d['bool'][k] = v in ('1', 'true', 't', 'yes', 'y')
+                    except Exception:
+                        pass
+
+        # PDB residue info
+        ri = atom.GetPDBResidueInfo()
+        if ri is not None:
+            try:
+                d['pdb'] = {
+                    'name': ri.GetName(),
+                    'resName': ri.GetResidueName(),
+                    'resNum': int(ri.GetResidueNumber()),
+                    'chain': ri.GetChainId(),
+                    'insCode': ri.GetInsertionCode(),
+                    'isHet': bool(ri.GetIsHeteroAtom()),
+                    'occ': float(ri.GetOccupancy()),
+                    'temp': float(ri.GetTempFactor()),
+                    'serial': int(ri.GetSerialNumber()),
+                    'altLoc': ri.GetAltLoc(),
+                }
+            except Exception:
+                d['pdb'] = None
+        return d
+
+    # Snapshot properties (excluding the removed atom)
+    _saved: dict[int, dict] = {}
+    try:
+        for a in mol.GetAtoms():
+            i = a.GetIdx()
+            if i == idx:
+                continue
+            _saved[i] = _snapshot_atom(a)
+    except Exception:
+        _saved = {}
+
+    # Copy the extended topology attributes when requested.
+    # NOTE: These attributes are not RDKit-owned; they live as Python-side
+    # containers on the Mol object and are used when writing .itp files.
+    angles_copy: dict = {}
+    dihedrals_copy: dict = {}
+    impropers_copy: dict = {}
     cell_copy = mol.cell if hasattr(mol, 'cell') else None
 
     if angle_fix:
@@ -159,13 +270,90 @@ def remove_atom(mol, idx, angle_fix=False):
                                             ff=angle.ff
                                         )
 
+    # Edit on a RWMol with all atom properties cleared to avoid RDKit any_cast
+    # issues during atom deletion.
     rwmol = Chem.RWMol(mol)
-    for pb in mol.GetAtomWithIdx(idx).GetNeighbors():
-        rwmol.RemoveBond(idx, pb.GetIdx())
+    try:
+        for a in rwmol.GetAtoms():
+            # Clear all properties (string/int/double/bool/computed/private).
+            for k in list(a.GetPropNames(includePrivate=True, includeComputed=True)):
+                try:
+                    a.ClearProp(k)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    # Remove all bonds from the atom first (defensive for some RDKit builds).
+    for pb in list(rwmol.GetAtomWithIdx(idx).GetNeighbors()):
+        try:
+            rwmol.RemoveBond(idx, pb.GetIdx())
+        except Exception:
+            pass
 
     rwmol.RemoveAtom(idx)
 
     mol = rwmol.GetMol()
+
+    # Restore saved properties onto surviving atoms.
+    try:
+        for old_i, d in _saved.items():
+            new_i = old_i if old_i < idx else old_i - 1
+            if new_i < 0 or new_i >= mol.GetNumAtoms():
+                continue
+            a = mol.GetAtomWithIdx(new_i)
+            for k, v in d.get('str', {}).items():
+                try:
+                    a.SetProp(str(k), str(v))
+                except Exception:
+                    pass
+            for k, v in d.get('int', {}).items():
+                try:
+                    a.SetIntProp(str(k), int(v))
+                except Exception:
+                    pass
+            for k, v in d.get('bool', {}).items():
+                try:
+                    a.SetBoolProp(str(k), bool(v))
+                except Exception:
+                    pass
+            for k, v in d.get('float', {}).items():
+                try:
+                    a.SetDoubleProp(str(k), float(v))
+                except Exception:
+                    # last resort: store as string
+                    try:
+                        a.SetProp(str(k), str(v))
+                    except Exception:
+                        pass
+
+            pdb = d.get('pdb', None)
+            if pdb:
+                try:
+                    ri = Chem.AtomPDBResidueInfo(
+                        pdb.get('name', a.GetSymbol()),
+                        residueName=pdb.get('resName', 'RU0'),
+                        residueNumber=int(pdb.get('resNum', 1)),
+                        isHeteroAtom=bool(pdb.get('isHet', False)),
+                    )
+                    # optional fields
+                    try: ri.SetChainId(pdb.get('chain', ' '))
+                    except Exception: pass
+                    try: ri.SetInsertionCode(pdb.get('insCode', ' '))
+                    except Exception: pass
+                    try: ri.SetOccupancy(float(pdb.get('occ', 1.0)))
+                    except Exception: pass
+                    try: ri.SetTempFactor(float(pdb.get('temp', 0.0)))
+                    except Exception: pass
+                    try: ri.SetSerialNumber(int(pdb.get('serial', 0)))
+                    except Exception: pass
+                    try: ri.SetAltLoc(pdb.get('altLoc', ' '))
+                    except Exception: pass
+                    a.SetMonomerInfo(ri)
+                except Exception:
+                    pass
+    except Exception:
+        pass
     setattr(mol, 'angles', angles_copy)
     setattr(mol, 'dihedrals', dihedrals_copy)
     setattr(mol, 'impropers', impropers_copy)

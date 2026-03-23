@@ -8,12 +8,13 @@ knowledge, this project does not raise copyright issues.
 
 from __future__ import annotations
 
-import numpy as np
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
+from ...runtime import resolve_restart
+from ...io.mol2 import write_mol2_from_top_gro_parmed
 
-from ..analysis.plot import plot_xvg_svg, plot_xvg_split_svg
+from ..analysis.auto_plot import plot_thermo_stage
 from ..analysis.thermo import summarize_terms_xvg
 from ..engine import GromacsRunner
 from ..mdp_templates import (
@@ -50,6 +51,7 @@ class QuickRelaxJob:
         resources: RunResources = RunResources(),
         do_quick_md: bool = True,
         quick_md_ns: float = 0.05,
+        dt_ps: float = 0.002,
         temperature_k: float = 298.15,
         frac_last: float = 0.5,
     ):
@@ -60,14 +62,16 @@ class QuickRelaxJob:
         self.resources = resources
         self.do_quick_md = do_quick_md
         self.quick_md_ns = quick_md_ns
+        self.dt_ps = float(dt_ps)
         self.temperature_k = temperature_k
         self.frac_last = frac_last
 
-    def run(self, *, restart: bool = True) -> QuickRelaxResult:
+    def run(self, *, restart: Optional[bool] = None) -> QuickRelaxResult:
         out = safe_mkdir(self.out_dir)
+        rst_flag = resolve_restart(restart)
         summary_path = out / "summary.json"
 
-        if restart:
+        if rst_flag:
             existing = load_json(summary_path)
             if existing and (out / "quick.gro").exists():
                 return QuickRelaxResult(
@@ -80,6 +84,7 @@ class QuickRelaxJob:
                 )
 
         params = default_mdp_params()
+        params["dt"] = self.dt_ps
         # ---------- minim (robust: steep/none -> steep/h-bonds -> cg w/ fallback) ----------
         # Non-dynamical integrators should run on CPU (no GPU offload).
         # 1) steep (constraints=none)
@@ -198,12 +203,16 @@ class QuickRelaxJob:
             current_gro = out / "quick.gro"
             current_cpt = (out / "quick.cpt") if (out / "quick.cpt").exists() else None
 
+        # Optional: export a system-level MOL2 for quick visualization/interoperability (best-effort).
+        mol2_path = write_mol2_from_top_gro_parmed(top_path=self.top, gro_path=current_gro, out_mol2=current_gro.with_suffix(".mol2"), overwrite=True)
+
         # ---------- summary ----------
         summary: dict = {
             "job": "QuickRelaxJob",
             "out_dir": str(out),
             "outputs": {
                 "gro": str(current_gro),
+                "mol2": str(mol2_path) if mol2_path else None,
                 "cpt": str(current_cpt) if current_cpt else None,
                 "edr": str(out / ("quick.edr" if self.do_quick_md else "minim.edr"))
                 if (out / ("quick.edr" if self.do_quick_md else "minim.edr")).exists()
@@ -225,12 +234,11 @@ class QuickRelaxJob:
                 ).items()
             }
 
-            # Plots (SVG-first)
+            # Plots (SVG-first, annotated)
             try:
-                    plots_dir = out / "plots"
-                    plots_dir.mkdir(parents=True, exist_ok=True)
-                    plot_xvg_svg(xvg, out_svg=plots_dir / "thermo.svg", title="quick thermo")
-                    plot_xvg_split_svg(xvg, out_dir=plots_dir, title_prefix="quick")
+                plots_dir = out / "plots"
+                plots_dir.mkdir(parents=True, exist_ok=True)
+                summary.setdefault("plots", {}).update(plot_thermo_stage(xvg, out_dir=plots_dir, title_prefix="quick"))
             except Exception as _pe:
                 summary["thermo_plot_warning"] = str(_pe)
 

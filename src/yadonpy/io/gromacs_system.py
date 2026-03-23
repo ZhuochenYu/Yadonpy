@@ -11,9 +11,11 @@ from __future__ import annotations
 import json
 import math
 import random
+import re
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple, Union
+from typing import Any, Dict, List, Mapping, Optional, Tuple, Union
 
 import numpy as np
 
@@ -44,9 +46,201 @@ def _mol_signature(m: Chem.Mol) -> tuple[int, tuple[tuple[int, int], ...]]:
     c = Counter(nums)
     return (len(nums), tuple(sorted((int(k), int(v)) for k, v in c.items())))
 
-from ..ff.library import LibraryDB, canonicalize_smiles
-from ..api import ensure_basic_top, get_ff
+from ..api import get_ff
 from .artifacts import write_molecule_artifacts
+
+
+def _gro_wrap_index(value: int) -> int:
+    value = int(value)
+    if value < 0:
+        return -((-value) % 100000)
+    return value % 100000
+
+
+def _format_gro_atom_line(*, resnr: int, resname: str, atomname: str, atomnr: int, x: float, y: float, z: float) -> str:
+    return (
+        f"{_gro_wrap_index(resnr):5d}{str(resname)[:5]:<5}{str(atomname)[:5]:>5}{_gro_wrap_index(atomnr):5d}"
+        f"{float(x):8.3f}{float(y):8.3f}{float(z):8.3f}"
+    )
+
+
+def canonicalize_smiles(smiles_or_psmiles: str) -> str:
+    """Canonicalize SMILES; keep PSMILES (contains '*') as-is.
+
+    This helper replaces the removed basic_top/library canonicalizer.
+    """
+    s = str(smiles_or_psmiles or "").strip()
+    if not s:
+        return ""
+    if "*" in s:
+        return s
+    if Chem is None:
+        return s
+    try:
+        m = Chem.MolFromSmiles(s)
+        if m is None:
+            return s
+        return Chem.MolToSmiles(m, canonical=True)
+    except Exception:
+        return s
+
+
+def _fs_safe_mol_name(name: str) -> str:
+    """Convert a molecule name into a filesystem- and GROMACS-friendly token.
+
+    Requirements:
+      - Stable mapping from user-facing names/variable names to artifact filenames.
+      - Works for common ion labels like "Li+", "PF6-".
+      - Avoids non-ASCII / whitespace / path separators.
+
+    Notes:
+      - Python variable names (e.g., EC, polymer_A) are already safe, so this
+        mostly protects users who explicitly set custom names.
+    """
+    s = str(name or "").strip()
+    # Prevent path traversal and odd separators.
+    s = s.replace("/", "_").replace("\\", "_")
+    # Keep common safe characters. Replace everything else with "_".
+    s = re.sub(r"[^A-Za-z0-9._+\-]+", "_", s)
+    s = s.strip("_")
+    return s or "MOL"
+
+
+_TOPOLOGY_PARAMETER_SECTIONS = {
+    "defaults",
+    "atomtypes",
+    "bondtypes",
+    "constrainttypes",
+    "angletypes",
+    "dihedraltypes",
+    "impropertypes",
+    "improper_types",
+    "pairtypes",
+    "nonbond_params",
+    "cmaptypes",
+}
+
+
+def _topology_section_name(line: str) -> str | None:
+    stripped = str(line or "").strip().lower()
+    if not (stripped.startswith("[") and stripped.endswith("]")):
+        return None
+    return stripped.strip("[]").strip() or None
+
+
+def _split_itp_params_and_mol_text(itp_text: str) -> tuple[str, str]:
+    """Split an ITP into parameter text before the first [moleculetype] and the molecule block."""
+    lines = itp_text.splitlines()
+    mt_idx = None
+    for i, ln in enumerate(lines):
+        if _topology_section_name(ln) == "moleculetype":
+            mt_idx = i
+            break
+    if mt_idx is None:
+        return "", itp_text
+    params = "\n".join(lines[:mt_idx]).strip()
+    molblk = "\n".join(lines[mt_idx:]).strip()
+    return ((params + "\n") if params else ""), ((molblk + "\n") if molblk else "")
+
+
+def _iter_relevant_topology_directives(path: Path, *, seen: set[Path] | None = None):
+    visited = seen if seen is not None else set()
+    resolved = path.resolve()
+    if resolved in visited or not resolved.exists():
+        return
+    visited.add(resolved)
+
+    for raw in resolved.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = raw.strip()
+        if not line or line.startswith(";"):
+            continue
+        if line.lower().startswith("#include"):
+            try:
+                rel = line.split(None, 1)[1].strip().strip('"')
+            except Exception:
+                continue
+            inc = (resolved.parent / rel).resolve()
+            yield from _iter_relevant_topology_directives(inc, seen=visited)
+            continue
+        if line.startswith("#"):
+            continue
+        section = _topology_section_name(line)
+        if section in _TOPOLOGY_PARAMETER_SECTIONS or section in {"moleculetype", "system", "molecules"}:
+            yield section, resolved
+
+
+def _validate_topology_include_order(top_path: Path) -> list[str]:
+    stage_rank = {
+        "defaults": 0,
+        "atomtypes": 1,
+        "bondtypes": 1,
+        "constrainttypes": 1,
+        "angletypes": 1,
+        "dihedraltypes": 1,
+        "impropertypes": 1,
+        "improper_types": 1,
+        "pairtypes": 1,
+        "nonbond_params": 1,
+        "cmaptypes": 1,
+        "moleculetype": 2,
+        "system": 3,
+        "molecules": 4,
+    }
+    directives = list(_iter_relevant_topology_directives(top_path))
+    issues: list[str] = []
+    first_moleculetype_idx = next((i for i, (section, _) in enumerate(directives) if section == "moleculetype"), None)
+    if first_moleculetype_idx is not None:
+        has_defaults_before_moleculetype = any(
+            section == "defaults" for section, _ in directives[:first_moleculetype_idx]
+        )
+        if not has_defaults_before_moleculetype:
+            issues.append("missing [ defaults ] before first [ moleculetype ]")
+    highest_stage = -1
+    for idx, (section, src_path) in enumerate(directives):
+        rank = stage_rank.get(section)
+        if rank is None:
+            continue
+        if section == "defaults" and idx != 0:
+            prev_section, prev_src = directives[idx - 1]
+            issues.append(
+                f"[ defaults ] must be the first directive, but appears after [{prev_section}] in {src_path.name} (previous directive from {prev_src.name})"
+            )
+        if rank < highest_stage:
+            if section in _TOPOLOGY_PARAMETER_SECTIONS and highest_stage >= 2:
+                issues.append(f"parameter section [{section}] appears after [ moleculetype ] in {src_path.name}")
+            elif section == "moleculetype" and highest_stage >= 3:
+                issues.append(f"[ moleculetype ] appears after top-level system directives in {src_path.name}")
+            elif section == "system" and highest_stage >= 4:
+                issues.append(f"[ system ] appears after [ molecules ] in {src_path.name}")
+            else:
+                issues.append(f"directive order regressed at [{section}] in {src_path.name}")
+        highest_stage = max(highest_stage, rank)
+    return issues
+
+
+def validate_topology_include_order(top_path: Path | str) -> list[str]:
+    return _validate_topology_include_order(Path(top_path).expanduser().resolve())
+
+
+def validate_exported_system_dir(out_dir: Path | str) -> list[str]:
+    root = Path(out_dir).expanduser().resolve()
+    top_path = root / "system.top"
+    issues: list[str] = []
+    if not top_path.is_file():
+        return [f"missing topology file: {top_path}"]
+    issues.extend(validate_topology_include_order(top_path))
+    for line in top_path.read_text(encoding="utf-8", errors="replace").splitlines():
+        s = line.strip()
+        if not s.lower().startswith("#include"):
+            continue
+        try:
+            rel = s.split(None, 1)[1].strip().strip('"')
+        except Exception:
+            continue
+        inc = (top_path.parent / rel).resolve()
+        if not inc.exists():
+            issues.append(f"missing include file: {inc}")
+    return issues
 
 
 def _ensure_bonded_terms_from_types(mol, ff_name: str) -> None:
@@ -92,6 +286,32 @@ def _ensure_bonded_terms_from_types(mol, ff_name: str) -> None:
     except Exception:
         pass
 
+    _reapply_bonded_patch_to_mol(mol)
+
+
+def _reapply_bonded_patch_to_mol(mol) -> None:
+    """Best-effort reapply of bonded JSON patch after angle/dihedral rebuilds."""
+    try:
+        if not hasattr(mol, 'HasProp'):
+            return
+        jp = None
+        if mol.HasProp('_yadonpy_bonded_json'):
+            jp = str(mol.GetProp('_yadonpy_bonded_json')).strip()
+        elif mol.HasProp('_yadonpy_mseminario_json'):
+            jp = str(mol.GetProp('_yadonpy_mseminario_json')).strip()
+        if not jp:
+            return
+        from pathlib import Path as _Path
+        _p = _Path(jp)
+        if not _p.is_file():
+            return
+        import json as _json
+        from ..sim.qm import apply_mseminario_params_to_mol as _apply
+        obj = _json.loads(_p.read_text(encoding='utf-8'))
+        if isinstance(obj, dict):
+            _apply(mol, obj, overwrite=True)
+    except Exception:
+        pass
 
 @dataclass
 class SystemExportResult:
@@ -102,6 +322,42 @@ class SystemExportResult:
     system_meta: Path
     box_nm: float
     species: list[dict]
+
+
+@dataclass(frozen=True)
+class _GroSpeciesTemplate:
+    species: dict
+    name: str
+    gro_path: Path
+    atom_names: tuple[str, ...]
+    coords0: np.ndarray
+
+
+def _load_gro_species_templates(
+    species: list[dict],
+    mol_names: list[str],
+    mol_gro_paths: list[Path],
+) -> tuple[list[_GroSpeciesTemplate], int]:
+    templates: list[_GroSpeciesTemplate] = []
+    nat_total = 0
+    for sp, name, gro_path in zip(species, mol_names, mol_gro_paths):
+        atom_names, coords0 = _read_gro_single_molecule(gro_path)
+        tpl = _GroSpeciesTemplate(
+            species=sp,
+            name=str(name or ''),
+            gro_path=gro_path,
+            atom_names=tuple(atom_names),
+            coords0=np.asarray(coords0, dtype=float),
+        )
+        templates.append(tpl)
+        nat_total += int(sp.get('n', 0)) * len(tpl.atom_names)
+    return templates, nat_total
+
+
+def _flush_gro_lines(handle, line_buffer: list[str]) -> None:
+    if line_buffer:
+        handle.write(''.join(line_buffer))
+        line_buffer.clear()
 
 
 def _read_gro_single_molecule(gro_path: Path) -> Tuple[List[str], np.ndarray]:
@@ -181,6 +437,116 @@ def _scale_itp_charges(itp_text: str, scale: float) -> str:
     return "\n".join(out_lines) + ("\n" if itp_text.endswith("\n") else "")
 
 
+def _itp_total_charge(itp_text: str) -> float:
+    total = 0.0
+    in_atoms = False
+    for raw in itp_text.splitlines():
+        stripped = raw.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            sec = stripped.strip("[]").strip().lower()
+            in_atoms = (sec == "atoms")
+            continue
+        if not in_atoms or stripped == "" or stripped.startswith(";"):
+            continue
+        cols = raw.split(";", 1)[0].split()
+        if len(cols) < 7:
+            continue
+        try:
+            total += float(cols[6])
+        except Exception:
+            continue
+    return float(total)
+
+
+def _nudge_itp_first_atom_charge(itp_text: str, delta_q: float) -> str:
+    if abs(float(delta_q)) <= 1.0e-12:
+        return itp_text
+
+    out_lines: list[str] = []
+    in_atoms = False
+    updated = False
+    for raw in itp_text.splitlines():
+        stripped = raw.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            sec = stripped.strip("[]").strip().lower()
+            in_atoms = (sec == "atoms")
+            out_lines.append(raw)
+            continue
+        if not in_atoms or updated or stripped == "" or stripped.startswith(";"):
+            out_lines.append(raw)
+            continue
+        body, *comment = raw.split(";", 1)
+        cols = body.split()
+        if len(cols) >= 7:
+            try:
+                cols[6] = f"{float(cols[6]) + float(delta_q):.8f}"
+                new_body = "\t".join(cols)
+                if comment:
+                    out_lines.append(new_body + " ;" + comment[0])
+                else:
+                    out_lines.append(new_body)
+                updated = True
+                continue
+            except Exception:
+                pass
+        out_lines.append(raw)
+    if not updated:
+        raise ValueError("Failed to adjust the first [ atoms ] charge in the exported ITP")
+    return "\n".join(out_lines) + ("\n" if itp_text.endswith("\n") else "")
+
+
+def _neutralize_exported_system_charge(*, species: list[dict], mol_names: list[str], mol_itp_paths: list[Path], tol: float = 0.1) -> dict[str, Any] | None:
+    if not species or not mol_itp_paths:
+        return None
+
+    system_charge = 0.0
+    per_molecule_charge: dict[str, float] = {}
+    for sp, name, itp_path in zip(species, mol_names, mol_itp_paths):
+        charge = _itp_total_charge(itp_path.read_text(encoding="utf-8", errors="replace"))
+        per_molecule_charge[name] = float(charge)
+        system_charge += float(charge) * int(sp.get("n", 0))
+
+    if abs(float(system_charge)) <= 1.0e-12 or abs(float(system_charge)) > float(tol):
+        return None
+
+    target_idx = None
+    for idx, sp in enumerate(species):
+        if int(sp.get("n", 0)) > 0:
+            target_idx = idx
+            break
+    if target_idx is None:
+        return None
+
+    target_count = int(species[target_idx].get("n", 0))
+    if target_count <= 0:
+        return None
+
+    target_name = mol_names[target_idx]
+    target_itp = mol_itp_paths[target_idx]
+    delta_q = -float(system_charge) / float(target_count)
+    updated_text = _nudge_itp_first_atom_charge(
+        target_itp.read_text(encoding="utf-8", errors="replace"),
+        delta_q,
+    )
+    target_itp.write_text(updated_text, encoding="utf-8")
+
+    corrected_charge = _itp_total_charge(updated_text)
+    system_charge_after = 0.0
+    for idx, (sp, name) in enumerate(zip(species, mol_names)):
+        charge = corrected_charge if idx == target_idx else per_molecule_charge[name]
+        system_charge_after += float(charge) * int(sp.get("n", 0))
+
+    return {
+        "applied": True,
+        "tolerance": float(tol),
+        "system_charge_before": float(system_charge),
+        "system_charge_after": float(system_charge_after),
+        "target_moltype": target_name,
+        "target_count": int(target_count),
+        "delta_per_molecule": float(delta_q),
+    }
+
+
 def _random_rotation_matrix() -> np.ndarray:
     """Uniform random rotation matrix."""
     u1, u2, u3 = random.random(), random.random(), random.random()
@@ -205,6 +571,8 @@ def _estimate_box_nm(species: list[dict], density_g_cm3: float) -> float:
         # fallback: a conservative small box
         return 10.0
 
+    from ..core.molspec import molecular_weight
+
     na = 6.02214076e23
     total_mass_g = 0.0
     for sp in species:
@@ -215,8 +583,10 @@ def _estimate_box_nm(species: list[dict], density_g_cm3: float) -> float:
         try:
             mol = Chem.MolFromSmiles(smi)
             if mol is None:
+                mol = Chem.MolFromSmiles(smi, sanitize=False)
+            if mol is None:
                 continue
-            mw = float(Descriptors.MolWt(mol))
+            mw = float(molecular_weight(mol))
         except Exception:
             continue
         total_mass_g += (mw / na) * n
@@ -228,6 +598,25 @@ def _estimate_box_nm(species: list[dict], density_g_cm3: float) -> float:
     vol_nm3 = vol_cm3 * 1.0e21
     L_nm = vol_nm3 ** (1.0 / 3.0)
     return float(max(L_nm, 2.0))
+
+
+def _coerce_density_for_box_estimate(value: object) -> float:
+    """Return a safe density value for synthetic box estimation.
+
+    Explicit-cell builds may intentionally store `density_g_cm3 = None` because the
+    cell vectors are authoritative and no target packing density was used. The
+    exporter should accept that metadata and only fall back to a conservative box
+    estimate when it later needs to synthesize coordinates.
+    """
+    if value is None:
+        return 0.0
+    try:
+        density = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    if not math.isfinite(density):
+        return 0.0
+    return density
 
 
 def _formal_charge_from_smiles(smiles: str) -> int:
@@ -442,6 +831,10 @@ def export_system_from_cell_meta(
     # If None, we will read per-species scaling from the cell metadata.
     charge_scale: Optional[Any] = None,
     include_h_atomtypes: bool = False,
+    source_molecules_dir: Optional[Path] = None,
+    system_gro_template: Optional[Path] = None,
+    system_ndx_template: Optional[Path] = None,
+    write_system_mol2: bool = True,
 ) -> SystemExportResult:
     """Export a mixed system to GROMACS input files.
 
@@ -452,15 +845,25 @@ def export_system_from_cell_meta(
 
     We DO NOT rely on the RDKit atom ordering inside `cell_mol`. Instead, we:
       1) read yadonpy's composition metadata from `_yadonpy_cell_meta`
-      2) resolve each species by SMILES in the basic_top library (or generate)
+      2) resolve each species by SMILES via MolDB (geometry+charges) when needed
       3) pack a new system.gro by replicating each species' single-molecule gro
       4) write system.top with includes and [molecules]
       5) generate system.ndx for analysis
+
+        Internal fast path:
+            - `source_molecules_dir` can point at a previous export's `molecules/` tree.
+                When present, matching per-species artifacts are reused directly instead of
+                resolving molecules from MolDB/FF again.
+            - `system_gro_template` / `system_ndx_template` allow callers to reuse an
+                already-built box layout when only charge-scaled topology files differ.
     """
 
     out_dir.mkdir(parents=True, exist_ok=True)
     molecules_dir = out_dir / "molecules"
     molecules_dir.mkdir(parents=True, exist_ok=True)
+    source_molecules_dir = (Path(source_molecules_dir).expanduser().resolve() if source_molecules_dir is not None else None)
+    system_gro_template = (Path(system_gro_template).expanduser().resolve() if system_gro_template is not None else None)
+    system_ndx_template = (Path(system_ndx_template).expanduser().resolve() if system_ndx_template is not None else None)
 
     # Charged mol2 outputs (raw + scaled)
 
@@ -473,7 +876,7 @@ def export_system_from_cell_meta(
         raise ValueError("Cell is missing _yadonpy_cell_meta. Please build the system with poly.amorphous_cell().") from e
 
     species_in = meta.get("species") or []
-    density_g_cm3 = float(meta.get("density_g_cm3", 0.1))
+    density_g_cm3 = _coerce_density_for_box_estimate(meta.get("density_g_cm3", 0.1))
 
     # -------------------------------------------------
     # Determine charge scaling spec
@@ -521,8 +924,6 @@ def export_system_from_cell_meta(
         else:
             cspec = _normalize_charge_scale_spec(charge_scale)
 
-    db = LibraryDB()
-
     # Optionally leverage molecules embedded in the cell itself as artifacts, when they
     # already carry force-field typing (e.g., pre-parameterized polymer chains).
     frag_mols = None
@@ -541,10 +942,102 @@ def export_system_from_cell_meta(
         if not smiles or n <= 0:
             continue
 
+        species_ff_name = str(sp.get("ff_name") or ff_name).strip() or str(ff_name)
+
         natoms_meta = int(sp.get("natoms") or 0)
         formal_charge = _formal_charge_from_smiles(smiles)
         # Heuristic: very large, neutral species are typically polymer chains.
         kind = "polymer" if ("*" in smiles or natoms_meta >= 200) else _infer_species_kind(smiles, formal_charge)
+        mol_id = str(sp.get('name') or sp.get('resname') or f"M{i+1}")
+        mol_name = str(sp.get('name') or sp.get('resname') or mol_id)
+        mol_name_fs = _fs_safe_mol_name(mol_name)
+
+        def _copy_from_src_dir(src_dir: Path | None) -> bool:
+            if src_dir is None:
+                return False
+            try:
+                src_dir = Path(src_dir).expanduser().resolve()
+            except Exception:
+                return False
+            if not src_dir.exists():
+                return False
+
+            src_itp = next(iter(src_dir.glob("*.itp")), None)
+            src_gro = next(iter(src_dir.glob("*.gro")), None)
+            src_top = next(iter(src_dir.glob("*.top")), None)
+            if src_itp is None or src_gro is None:
+                return False
+
+            dst_itp = art_dir / f"{mol_name_fs}.itp"
+            itp_txt = src_itp.read_text(encoding="utf-8", errors="ignore")
+            dst_itp.write_text(_rewrite_itp_moltype_and_resname(itp_txt, mol_name_fs), encoding="utf-8")
+
+            dst_gro = art_dir / f"{mol_name_fs}.gro"
+            gro_txt = src_gro.read_text(encoding="utf-8", errors="ignore")
+            dst_gro.write_text(_rewrite_gro_resname(gro_txt, mol_name_fs), encoding="utf-8")
+
+            if src_top is not None:
+                dst_top = art_dir / f"{mol_name_fs}.top"
+                shutil.copy2(src_top, dst_top)
+
+            return bool(dst_itp.exists() and dst_gro.exists())
+
+        if source_molecules_dir is not None:
+            src_dir = source_molecules_dir / mol_name_fs
+            src_itp = (src_dir / f"{mol_name_fs}.itp")
+            src_gro = (src_dir / f"{mol_name_fs}.gro")
+            if (not src_itp.is_file()) or (not src_gro.is_file()):
+                src_itp = next(iter(sorted(src_dir.glob("*.itp"))), None)
+                src_gro = next(iter(sorted(src_dir.glob("*.gro"))), None)
+            if src_itp is not None and src_gro is not None and src_itp.is_file() and src_gro.is_file():
+                species.append(
+                    {
+                        **sp,
+                        "smiles": smiles,
+                        "n": n,
+                        "artifact_dir": str(src_dir),
+                        "mol_id": mol_id,
+                        "mol_name": mol_name,
+                        "moltype": mol_name_fs,
+                        "formal_charge": int(formal_charge),
+                        "kind": kind,
+                    }
+                )
+                continue
+
+        art_dir = (molecules_dir / mol_name_fs)
+        art_dir.mkdir(parents=True, exist_ok=True)
+
+        copied = False
+        src_meta_dir = str(sp.get('cached_artifact_dir') or '').strip()
+        if src_meta_dir:
+            copied = _copy_from_src_dir(Path(src_meta_dir))
+
+        if (not copied) and sp.get('cached_mol_id'):
+            try:
+                from .molecule_cache import _default_cache_root
+
+                ff_name_src = str(sp.get('ff_name') or species_ff_name).lower()
+                src_dir = (_default_cache_root() / ff_name_src / str(sp.get('cached_mol_id')).strip()).resolve()
+                copied = _copy_from_src_dir(src_dir)
+            except Exception:
+                copied = False
+
+        if copied:
+            species.append(
+                {
+                    **sp,
+                    "smiles": smiles,
+                    "n": n,
+                    "artifact_dir": str(art_dir),
+                    "mol_id": mol_id,
+                    "mol_name": mol_name,
+                    "moltype": mol_name_fs,
+                    "formal_charge": int(formal_charge),
+                    "kind": kind,
+                }
+            )
+            continue
 
         # Representative fragment molecule from the cell (if available), to preserve atom ordering
         # and reuse pre-typed FF information.
@@ -569,13 +1062,6 @@ def export_system_from_cell_meta(
                 rep_has_ff = False
 
         if rep_has_ff:
-            mol_id = str(sp.get('name') or sp.get('resname') or f"M{i+1}")
-            mol_name = str(sp.get('name') or sp.get('resname') or mol_id)
-            mol_name_fs = mol_name.replace('/', '_')
-
-            art_dir = (molecules_dir / mol_name_fs)
-            art_dir.mkdir(parents=True, exist_ok=True)
-
             # IMPORTANT: rep_mol comes from Chem.GetMolFrags(cell_mol, asMols=True),
             # which preserves RDKit props (ff_type, ff_r0, ff_k, ...) but drops Python-level
             # containers like mol.angles / mol.dihedrals. Rebuild them here so exported ITP
@@ -588,49 +1074,28 @@ def export_system_from_cell_meta(
             # Prefer cached per-molecule artifacts if available (robust for packed-cell exports).
             copied = False
             try:
-                from .molecule_cache import _default_cache_root
-                import shutil as _shutil
-
-                molid = None
-                try:
-                    a0 = rep_mol.GetAtomWithIdx(0)
-                    if a0.HasProp("_yadonpy_molid"):
-                        molid = str(a0.GetProp("_yadonpy_molid")).strip()
-                except Exception:
+                # Last resort: recover ids from representative fragment atom props.
+                if not copied:
                     molid = None
-
-                src_dir = None
-                if molid:
                     try:
-                        if hasattr(rep_mol, "HasProp") and rep_mol.HasProp("_yadonpy_artifact_dir"):
-                            src_dir = Path(rep_mol.GetProp("_yadonpy_artifact_dir")).expanduser().resolve()
+                        a0 = rep_mol.GetAtomWithIdx(0)
+                        if a0.HasProp("_yadonpy_molid"):
+                            molid = str(a0.GetProp("_yadonpy_molid")).strip()
                     except Exception:
-                        src_dir = None
-                    if src_dir is None:
-                        src_dir = (_default_cache_root() / str(ff_name).lower() / molid).resolve()
+                        molid = None
 
-                if src_dir is not None and src_dir.exists():
-                    # Copy a single representative of each artifact type, but rewrite the moltype/resname
-                    # to match the current species name (mol_name_fs). This avoids grompp errors like:
-                    #   No such moleculetype monomer_A
-                    src_itp = next(iter(src_dir.glob("*.itp")), None)
-                    src_gro = next(iter(src_dir.glob("*.gro")), None)
-                    src_top = next(iter(src_dir.glob("*.top")), None)
+                    src_dir = None
+                    if molid:
+                        try:
+                            if hasattr(rep_mol, "HasProp") and rep_mol.HasProp("_yadonpy_artifact_dir"):
+                                src_dir = Path(rep_mol.GetProp("_yadonpy_artifact_dir")).expanduser().resolve()
+                        except Exception:
+                            src_dir = None
+                        if src_dir is None:
+                            from .molecule_cache import _default_cache_root
 
-                    if src_itp is not None:
-                        dst_itp = art_dir / f"{mol_name_fs}.itp"
-                        itp_txt = src_itp.read_text(encoding="utf-8", errors="ignore")
-                        dst_itp.write_text(_rewrite_itp_moltype_and_resname(itp_txt, mol_name_fs), encoding="utf-8")
-                    if src_gro is not None:
-                        dst_gro = art_dir / f"{mol_name_fs}.gro"
-                        gro_txt = src_gro.read_text(encoding="utf-8", errors="ignore")
-                        dst_gro.write_text(_rewrite_gro_resname(gro_txt, mol_name_fs), encoding="utf-8")
-                    if src_top is not None:
-                        # Per-molecule .top is not included by system.top, but we keep it for completeness
-                        dst_top = art_dir / f"{mol_name_fs}.top"
-                        _shutil.copy2(src_top, dst_top)
-
-                    copied = bool((art_dir / f"{mol_name_fs}.itp").exists() and (art_dir / f"{mol_name_fs}.gro").exists())
+                            src_dir = (_default_cache_root() / str(ff_name).lower() / molid).resolve()
+                    copied = _copy_from_src_dir(src_dir)
 
             except Exception:
                 copied = False
@@ -640,10 +1105,13 @@ def export_system_from_cell_meta(
                     rep_mol,
                     art_dir,
                     smiles=smiles,
-                    ff_name=ff_name,
+                    ff_name=species_ff_name,
                     charge_method=charge_method,
                     total_charge=total_charge,
-                    mol_name=mol_name,
+                    # Use the filesystem-safe moltype for filenames and the
+                    # internal [ moleculetype ] name to keep GROMACS includes
+                    # consistent.
+                    mol_name=mol_name_fs,
                     write_mol2=False,
                 )
             species.append(
@@ -654,96 +1122,77 @@ def export_system_from_cell_meta(
                     "artifact_dir": str(art_dir),
                     "mol_id": mol_id,
                     "mol_name": mol_name,
-                    "moltype": mol_name.replace("/", "_"),
+                    "moltype": mol_name_fs,
                     "formal_charge": int(formal_charge),
                     "kind": kind,
                 }
-            )
+                )
             continue
 
-        # Otherwise, use (or generate) a cached single-molecule topology from the basic_top library
+        # Otherwise: resolve by SMILES via MolDB (geometry + charges), then write artifacts.
         try:
-            ent = ensure_basic_top(
-                smiles,
-                ff_name=ff_name,
-                charge_method=charge_method,
-                work_dir=out_dir,
-                total_charge=total_charge,
-            )
+            ff_obj = get_ff(species_ff_name)
+        except Exception:
+            ff_obj = None
+
+        try:
+            # Prefer MolDB for geometry + charges.
+            if ff_obj is not None and hasattr(ff_obj.__class__, "mol_rdkit"):
+                rep_mol = ff_obj.__class__.mol_rdkit(
+                    smiles,
+                    name=mol_name,
+                    prefer_db=True,
+                    require_db=True,
+                    require_ready=(str(charge_method).strip().upper() == "RESP"),
+                    charge=charge_method,
+                )
+            else:
+                from ..core import utils
+                rep_mol = utils.mol_from_smiles(smiles)
+
+            if ff_obj is not None:
+                bonded_req = None
+                try:
+                    if sp.get('bonded_requested'):
+                        bonded_req = str(sp.get('bonded_requested')).strip()
+                    elif bool(sp.get('bonded_explicit')) and sp.get('bonded_method'):
+                        bonded_req = str(sp.get('bonded_method')).strip()
+                except Exception:
+                    bonded_req = None
+                ok = bool(ff_obj.ff_assign(rep_mol, bonded=bonded_req) if bonded_req else ff_obj.ff_assign(rep_mol))
+                if not ok:
+                    raise RuntimeError("ff_assign failed")
         except Exception as e:
             raise RuntimeError(
-                f"Failed to prepare basic_top artifacts for species[{i}] smiles={smiles} ff={ff_name} charge={charge_method}. "
-                f"If this is a pre-parameterized polymer, make sure the input polymer molecule (passed into poly.amorphous_cell) "
-                f"already has ff_type/charges assigned so it can be exported from the cell."
+                f"Failed to resolve species[{i}] from MolDB. "
+                f"Please precompute it into MolDB first (see Examples 07/08). "
+                f"smiles={smiles} ff={species_ff_name} charge={charge_method}."
             ) from e
 
-        if ent is None:
-            raise RuntimeError(f"Failed to resolve artifacts for species[{i}] smiles={smiles}.")
+        write_molecule_artifacts(
+            rep_mol,
+            art_dir,
+            smiles=smiles,
+            ff_name=species_ff_name,
+            charge_method=charge_method,
+            total_charge=total_charge,
+            mol_name=mol_name_fs,
+            write_mol2=False,
+        )
 
-        art_dir = Path(ent["artifact_dir"]).resolve()
-
-        # --- Validate cached single-molecule topology contains angles/dihedrals when expected ---
-        # Some earlier versions could generate .itp missing [ angles ]/[ dihedrals ] (severe).
-        # If detected here, force-regenerate the basic_top entry and overwrite artifacts.
-        try:
-            itp_files = sorted(art_dir.glob("*.itp"))
-            itp_txt = itp_files[0].read_text(encoding="utf-8") if itp_files else ""
-            # Heuristic: molecules with >=3 atoms should have angles; >=4 atoms should have dihedrals.
-            # We only check presence of the blocks here (not counts).
-            # NOTE: Do NOT import rdkit.Chem here.
-            # If we import `Chem` inside this function, Python treats it as a local
-            # variable everywhere in this scope, which can cause
-            # `UnboundLocalError: local variable 'Chem' referenced before assignment`
-            # when we reference the module-level `Chem` imported at file import time.
-            nat_guess = 0
-            try:
-                if Chem is not None:
-                    m0 = Chem.MolFromSmiles(smiles)
-                    if m0 is not None:
-                        nat_guess = int(m0.GetNumAtoms())
-            except Exception:
-                nat_guess = 0
-
-            missing_angles = (nat_guess >= 3) and ("[ angles ]" not in itp_txt)
-            missing_dihedrals = (nat_guess >= 4) and ("[ dihedrals ]" not in itp_txt)
-
-            if missing_angles or missing_dihedrals:
-                from ..api import parameterize_smiles
-                from ..core import utils
-
-                utils.radon_print(
-                    f"[WARN] cached ITP missing bonded terms (angles={not missing_angles}, dihedrals={not missing_dihedrals}); regenerating basic_top for {smiles}",
-                    level=2,
-                )
-                _, ent2 = parameterize_smiles(
-                    smiles,
-                    ff_name=ff_name,
-                    charge_method=charge_method,
-                    work_dir=out_dir,
-                    auto_register_nonpolymer=True,
-                    use_basic_top_first=False,
-                    total_charge=total_charge,
-                )
-                if ent2 is not None:
-                    ent = ent2
-                    art_dir = Path(ent2["artifact_dir"]).resolve()
-        except Exception:
-            pass
-        mol_id = str(sp.get('name') or sp.get('resname') or ent.get("mol_id") or f"M{i+1}")
-        mol_name = str(sp.get('name') or sp.get('resname') or ent.get("name") or mol_id)
-        sp2 = {
-            **sp,
-            **ent,
-            "artifact_dir": str(art_dir),
-            "mol_id": mol_id,
-            "mol_name": mol_name,
-            "moltype": mol_name.replace("/", "_"),
-            "n": n,
-            "smiles": smiles,
-            "formal_charge": int(formal_charge),
-            "kind": kind,
-        }
-        species.append(sp2)
+        species.append(
+            {
+                **sp,
+                "artifact_dir": str(art_dir),
+                "mol_id": mol_id,
+                "mol_name": mol_name,
+                "moltype": mol_name_fs,
+                "n": n,
+                "smiles": smiles,
+                "formal_charge": int(formal_charge),
+                "kind": kind,
+            }
+        )
 
 
     if not species:
@@ -765,20 +1214,11 @@ def export_system_from_cell_meta(
     # and write them once into a combined ff_parameters.itp that is included before any molecule types.
     global_param_preamble: list[str] = []
     global_param_sections: dict[str, list[str]] = {}
-
-    def _split_itp_params_and_mol(itp_text: str) -> tuple[str, str]:
-        """Split an ITP into (params, mol) where params are any directives before first [ moleculetype ]."""
-        lines = itp_text.splitlines()
-        mt_idx = None
-        for i, ln in enumerate(lines):
-            if ln.strip().lower().startswith('[ moleculetype'):
-                mt_idx = i
-                break
-        if mt_idx is None:
-            return "", itp_text
-        params = "\n".join(lines[:mt_idx]).strip() + "\n"
-        molblk = "\n".join(lines[mt_idx:]).strip() + "\n"
-        return params, molblk
+    inherited_param_itp = None
+    if source_molecules_dir is not None:
+        candidate = source_molecules_dir.parent / "ff_parameters.itp"
+        if candidate.is_file():
+            inherited_param_itp = candidate
 
     def _accumulate_param_blocks(params_text: str) -> None:
         """Accumulate parameter sections from params_text into global_param_sections with de-dup."""
@@ -813,10 +1253,13 @@ def export_system_from_cell_meta(
             if current is not None:
                 global_param_sections.setdefault(current, []).append(line)
 
+    if inherited_param_itp is not None:
+        _accumulate_param_blocks(inherited_param_itp.read_text(encoding="utf-8", errors="replace"))
+
     for sp in species:
         art_dir = Path(sp["artifact_dir"])
         mol_name = str(sp.get("mol_name") or sp.get("mol_id") or "MOL")
-        mol_name_fs = mol_name.replace("/", "_")
+        mol_name_fs = _fs_safe_mol_name(mol_name)
         # Canonical moltype name used in system.top / system.ndx
         sp["moltype"] = mol_name_fs
         formal_charge = int(sp.get("formal_charge", 0))
@@ -839,22 +1282,38 @@ def export_system_from_cell_meta(
         if itp is None or gro is None:
             raise RuntimeError(f"Missing .itp or .gro in artifact_dir={art_dir}")
 
-        dst_itp = dst_dir / itp.name
-        dst_gro = dst_dir / gro.name
+        # Always write canonical filenames based on the resolved molecule name.
+        # This keeps exported artifacts consistent and avoids grompp errors when
+        # the cached library name differs from the desired species name.
+        dst_itp = dst_dir / f"{mol_name_fs}.itp"
+        dst_gro = dst_dir / f"{mol_name_fs}.gro"
         # Apply per-species simulation-level charge scaling when copying to the run directory.
         itp_text = itp.read_text(encoding="utf-8", errors="replace")
         itp_text = _scale_itp_charges(itp_text, scale=float(scale))
 
+        # Rewrite moltype + residue name to match `mol_name_fs`.
+        # (Important when cached entries use hashed IDs.)
+        itp_text = _rewrite_itp_moltype_and_resname(itp_text, mol_name_fs)
+
         # Extract any parameter blocks before [ moleculetype ] and accumulate them.
-        params_text, mol_text = _split_itp_params_and_mol(itp_text)
+        params_text, mol_text = _split_itp_params_and_mol_text(itp_text)
         _accumulate_param_blocks(params_text)
         # Write molecule part only (starts with [ moleculetype ]).
         dst_itp.write_text(mol_text, encoding="utf-8")
-        dst_gro.write_bytes(gro.read_bytes())
+
+        gro_txt = gro.read_text(encoding="utf-8", errors="replace")
+        dst_gro.write_text(_rewrite_gro_resname(gro_txt, mol_name_fs), encoding="utf-8")
+        sp["artifact_dir"] = str(dst_dir)
 
         mol_itp_paths.append(dst_itp)
         mol_gro_paths.append(dst_gro)
         mol_names.append(mol_name_fs)
+
+    charge_fix_info = _neutralize_exported_system_charge(
+        species=species,
+        mol_names=mol_names,
+        mol_itp_paths=mol_itp_paths,
+    )
 
     # ---------------
     # Build system.top
@@ -919,6 +1378,9 @@ def export_system_from_cell_meta(
     for sp, name in zip(species, mol_names):
         lines.append(f"{name:<16s} {int(sp['n'])}")
     system_top.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    topology_issues = _validate_topology_include_order(system_top)
+    if topology_issues:
+        raise RuntimeError(f"Invalid include order in generated topology {system_top}: {'; '.join(topology_issues)}")
 
     # ---------------
     # Write system.gro
@@ -931,156 +1393,191 @@ def export_system_from_cell_meta(
     # 3D coordinates.
     box_nm = _estimate_box_nm(species, density_g_cm3)
     system_gro = out_dir / "system.gro"
+    species_templates, nat_total = _load_gro_species_templates(species, mol_names, mol_gro_paths)
+    if system_gro_template is not None and system_gro_template.is_file():
+        shutil.copy2(system_gro_template, system_gro)
+    else:
+        atom_counter = 1
+        res_counter = 1
+        line_buffer: list[str] = []
+        flush_every = 8192
 
-    # Build gro lines from coordinates
-    all_atom_lines: list[str] = []
-    atom_counter = 1
-    res_counter = 1
+        def _mol_coords_from_rdkit(mol) -> Optional[np.ndarray]:
+            try:
+                conf = mol.GetConformer()
+                pts = conf.GetPositions()  # (N,3) float
+                arr = np.asarray(pts, dtype=float)
+                return arr
+            except Exception:
+                return None
 
-    def _mol_coords_from_rdkit(mol) -> Optional[np.ndarray]:
-        try:
-            conf = mol.GetConformer()
-            pts = conf.GetPositions()  # (N,3) float
-            arr = np.asarray(pts, dtype=float)
-            return arr
-        except Exception:
-            return None
+        def _buffer_line(handle, line: str) -> None:
+            line_buffer.append(line)
+            if len(line_buffer) >= flush_every:
+                _flush_gro_lines(handle, line_buffer)
 
-    used_cell_coords = False
-    # Attempt to use packed coordinates from the cell.
-    if Chem is not None:
-        try:
-            frags = list(Chem.GetMolFrags(cell_mol, asMols=True, sanitizeFrags=False))
-        except Exception:
-            frags = []
-        total_needed = int(sum(int(sp.get("n", 0)) for sp in species))
-        if frags and len(frags) >= total_needed:
-            # RDKit does not guarantee fragment ordering. Build buckets so we can
-            # match each packed fragment back to the requested species.
-            frags = frags[:total_needed]
-            frag_buckets: dict[tuple[int, tuple[tuple[int, int], ...]], list[Chem.Mol]] = {}
-            for m in frags:
-                frag_buckets.setdefault(_mol_signature(m), []).append(m)
+        header = "yadonpy system"
+        with system_gro.open("w", encoding="utf-8") as f:
+            f.write(header + "\n")
+            f.write(f"{nat_total}\n")
 
-            # Collect all coords to infer current unit and bounding box.
-            coords_all: list[np.ndarray] = []
-            for m in frags:
-                c = _mol_coords_from_rdkit(m)
-                if c is None:
-                    coords_all = []
-                    break
-                coords_all.append(c)
-
-            if coords_all:
-                big = np.vstack(coords_all)
-                # Heuristic unit detection: amorphous_cell uses Angstrom-like thresholds (e.g. 2.0)
-                # so coordinates are typically in Angstrom. Convert to nm for .gro.
-                max_abs = float(np.max(np.abs(big)))
-                to_nm = 0.1 if max_abs > 20.0 else 1.0
-                big_nm = big * to_nm
-                mn = big_nm.min(axis=0)
-                mx = big_nm.max(axis=0)
-                span = mx - mn
-                # Ensure non-zero span; add a small margin.
-                span_max = float(np.max(span)) if float(np.max(span)) > 1e-9 else 1.0
-                # Scale packed coords to match the density-derived cubic box.
-                scale = float(box_nm) / span_max
-
-                for sp, name, gro_path in zip(species, mol_names, mol_gro_paths):
-                    atom_names, _coords0 = _read_gro_single_molecule(gro_path)
-                    nat_expect = len(atom_names)
-                    # Determine signature from SMILES (preferred) to avoid relying on GRO parsing.
-                    sig = None
-                    try:
-                        smi = str(sp.get("smiles", "") or "")
-                        if smi:
-                            tmpl = Chem.MolFromSmiles(smi)
-                            if tmpl is not None:
-                                sig = _mol_signature(tmpl)
-                    except Exception:
-                        sig = None
-                    for _k in range(int(sp["n"])):
-                        m = None
-                        if sig is not None and sig in frag_buckets and frag_buckets[sig]:
-                            m = frag_buckets[sig].pop()
-                        else:
-                            # Fallback: match by atom count only.
-                            # Pick any fragment bucket with matching nat.
-                            for (nat, _sig2), lst in frag_buckets.items():
-                                if nat == nat_expect and lst:
-                                    m = lst.pop()
-                                    break
-                        if m is None:
-                            # Provide a helpful error with remaining bucket keys.
-                            remain = {k: len(v) for k, v in frag_buckets.items() if v}
-                            raise RuntimeError(
-                                f"Packed cell fragment matching failed for {name or 'mol'}: need nat={nat_expect}. Remaining buckets={remain}"
-                            )
+            used_cell_coords = False
+            # Attempt to use packed coordinates from the cell.
+            if Chem is not None:
+                try:
+                    frags = list(Chem.GetMolFrags(cell_mol, asMols=True, sanitizeFrags=False))
+                except Exception:
+                    frags = []
+                total_needed = int(sum(int(sp.get("n", 0)) for sp in species))
+                if frags and len(frags) >= total_needed:
+                    # RDKit does not guarantee fragment ordering. Build buckets so we can
+                    # match each packed fragment back to the requested species.
+                    frags = frags[:total_needed]
+                    frag_buckets: dict[tuple[int, tuple[tuple[int, int], ...]], list[tuple[Chem.Mol, np.ndarray]]] = {}
+                    big_min: Optional[np.ndarray] = None
+                    big_max: Optional[np.ndarray] = None
+                    max_abs = 0.0
+                    for m in frags:
                         c = _mol_coords_from_rdkit(m)
-                        if c is None or c.shape[0] != nat_expect:
-                            raise RuntimeError(
-                                f"Packed cell coordinates mismatch for {name}: got {None if c is None else c.shape[0]} atoms, expect {nat_expect}."
-                            )
-                        coords = (c * to_nm - mn) * scale
-                        coords = coords % box_nm
+                        if c is None:
+                            frag_buckets = {}
+                            break
+                        frag_buckets.setdefault(_mol_signature(m), []).append((m, c))
+                        cur_min = np.min(c, axis=0)
+                        cur_max = np.max(c, axis=0)
+                        max_abs = max(max_abs, float(np.max(np.abs(cur_min))), float(np.max(np.abs(cur_max))))
+                        if big_min is None:
+                            big_min = cur_min
+                            big_max = cur_max
+                        else:
+                            big_min = np.minimum(big_min, cur_min)
+                            big_max = np.maximum(big_max, cur_max)
+
+                    if frag_buckets and big_min is not None and big_max is not None:
+                        # Heuristic unit detection: amorphous_cell uses Angstrom-like thresholds (e.g. 2.0)
+                        # so coordinates are typically in Angstrom. Convert to nm for .gro.
+                        to_nm = 0.1 if max_abs > 20.0 else 1.0
+                        mn = big_min * to_nm
+                        mx = big_max * to_nm
+                        span = mx - mn
+                        span_max = float(np.max(span)) if float(np.max(span)) > 1e-9 else 1.0
+                        scale = float(box_nm) / span_max
+
+                        for tpl in species_templates:
+                            sp = tpl.species
+                            name = tpl.name
+                            nat_expect = len(tpl.atom_names)
+                            sig = None
+                            try:
+                                smi = str(sp.get("smiles", "") or "")
+                                if smi:
+                                    tmpl = Chem.MolFromSmiles(smi)
+                                    if tmpl is not None:
+                                        sig = _mol_signature(tmpl)
+                            except Exception:
+                                sig = None
+                            for _k in range(int(sp["n"])):
+                                frag_entry = None
+                                if sig is not None and sig in frag_buckets and frag_buckets[sig]:
+                                    frag_entry = frag_buckets[sig].pop()
+                                else:
+                                    for (nat, _sig2), lst in frag_buckets.items():
+                                        if nat == nat_expect and lst:
+                                            frag_entry = lst.pop()
+                                            break
+                                if frag_entry is None:
+                                    remain = {k: len(v) for k, v in frag_buckets.items() if v}
+                                    raise RuntimeError(
+                                        f"Packed cell fragment matching failed for {name or 'mol'}: need nat={nat_expect}. Remaining buckets={remain}"
+                                    )
+                                _m, c = frag_entry
+                                if c.shape[0] != nat_expect:
+                                    raise RuntimeError(
+                                        f"Packed cell coordinates mismatch for {name}: got {c.shape[0]} atoms, expect {nat_expect}."
+                                    )
+                                coords = (c * to_nm - mn) * scale
+                                coords = coords % box_nm
+                                resname = (name[:5] if name else "MOL")
+                                for a_name, (x, y, z) in zip(tpl.atom_names, coords):
+                                    _buffer_line(
+                                        f,
+                                        _format_gro_atom_line(resnr=res_counter, resname=resname, atomname=a_name, atomnr=atom_counter, x=x, y=y, z=z) + "\n",
+                                    )
+                                    atom_counter += 1
+                                res_counter += 1
+                        used_cell_coords = True
+
+            if not used_cell_coords:
+                placed_xyz: np.ndarray = np.zeros((0, 3), dtype=float)
+                min_dist_nm = 0.12
+                max_place_trials = 200
+
+                for tpl in species_templates:
+                    sp = tpl.species
+                    name = tpl.name
+                    atom_names = tpl.atom_names
+                    coords0 = tpl.coords0
+
+                    for _k in range(int(sp["n"])):
+                        coords = coords0 - coords0.mean(axis=0, keepdims=True)
+                        R = _random_rotation_matrix()
+                        coords = coords @ R.T
+
+                        ok = False
+                        for _t in range(max_place_trials):
+                            shift = np.array([random.random() * box_nm, random.random() * box_nm, random.random() * box_nm])
+                            coords_try = (coords + shift) % box_nm
+                            if placed_xyz.shape[0] == 0:
+                                ok = True
+                                coords = coords_try
+                                break
+                            d2 = ((placed_xyz[None, :, :] - coords_try[:, None, :]) ** 2).sum(axis=2)
+                            if float(np.sqrt(d2.min())) > min_dist_nm:
+                                ok = True
+                                coords = coords_try
+                                break
+                        if not ok:
+                            coords = (coords + np.array([random.random() * box_nm, random.random() * box_nm, random.random() * box_nm])) % box_nm
+
+                        placed_xyz = np.vstack([placed_xyz, coords])
                         resname = (name[:5] if name else "MOL")
                         for a_name, (x, y, z) in zip(atom_names, coords):
-                            all_atom_lines.append(
-                                f"{res_counter:5d}{resname:<5s}{a_name:>5s}{atom_counter:5d}{x:8.3f}{y:8.3f}{z:8.3f}"
+                            _buffer_line(
+                                f,
+                                _format_gro_atom_line(resnr=res_counter, resname=resname, atomname=a_name, atomnr=atom_counter, x=x, y=y, z=z) + "\n",
                             )
                             atom_counter += 1
                         res_counter += 1
-                used_cell_coords = True
 
-    if not used_cell_coords:
-        # Fallback: synthetic random packing (slow for huge systems, but keeps behavior
-        # defined when cell coordinates are unavailable).
-        placed_xyz: np.ndarray = np.zeros((0, 3), dtype=float)
-        min_dist_nm = 0.12  # soft overlap threshold
-        max_place_trials = 200
+            _flush_gro_lines(f, line_buffer)
+            f.write(f"{box_nm:10.5f}{box_nm:10.5f}{box_nm:10.5f}\n")
 
-        for sp, name, gro_path in zip(species, mol_names, mol_gro_paths):
-            atom_names, coords0 = _read_gro_single_molecule(gro_path)
+    # ---------------
+    # Best-effort: write a **system-level** MOL2 for the packed box (visualization/interoperability)
+    # ---------------
+    # Users often want a single MOL2 of the full simulation box right after the cell is built.
+    # We generate it from the exported GROMACS topology + coordinates using ParmEd.
+    # This does NOT affect downstream MD.
+    if write_system_mol2:
+        try:
+            from .mol2 import write_mol2_from_top_gro_parmed
+            from ..core.logging_utils import yadon_print
 
-            for _k in range(int(sp["n"])):
-                coords = coords0 - coords0.mean(axis=0, keepdims=True)
-                R = _random_rotation_matrix()
-                coords = coords @ R.T
-
-                ok = False
-                for _t in range(max_place_trials):
-                    shift = np.array([random.random() * box_nm, random.random() * box_nm, random.random() * box_nm])
-                    coords_try = (coords + shift) % box_nm
-                    if placed_xyz.shape[0] == 0:
-                        ok = True
-                        coords = coords_try
-                        break
-                    d2 = ((placed_xyz[None, :, :] - coords_try[:, None, :]) ** 2).sum(axis=2)
-                    if float(np.sqrt(d2.min())) > min_dist_nm:
-                        ok = True
-                        coords = coords_try
-                        break
-                if not ok:
-                    coords = (coords + np.array([random.random() * box_nm, random.random() * box_nm, random.random() * box_nm])) % box_nm
-
-                placed_xyz = np.vstack([placed_xyz, coords])
-
-                resname = (name[:5] if name else "MOL")
-                for a_name, (x, y, z) in zip(atom_names, coords):
-                    all_atom_lines.append(
-                        f"{res_counter:5d}{resname:<5s}{a_name:>5s}{atom_counter:5d}{x:8.3f}{y:8.3f}{z:8.3f}"
-                    )
-                    atom_counter += 1
-                res_counter += 1
-
-    header = "yadonpy system"
-    nat_total = len(all_atom_lines)
-    with system_gro.open("w", encoding="utf-8") as f:
-        f.write(header + "\n")
-        f.write(f"{nat_total}\n")
-        for l in all_atom_lines:
-            f.write(l + "\n")
-        f.write(f"{box_nm:10.5f}{box_nm:10.5f}{box_nm:10.5f}\n")
+            out_mol2 = write_mol2_from_top_gro_parmed(
+                top_path=system_top,
+                gro_path=system_gro,
+                out_mol2=(out_dir / "system.mol2"),
+                overwrite=True,
+            )
+            if out_mol2 is None:
+                yadon_print(
+                    f"Failed to write system.mol2 (best-effort). "
+                    f"Check ParmEd installation and whether system.top/system.gro are readable. out_dir={out_dir}",
+                    level=2,
+                )
+        except Exception:
+            # Keep export robust; MOL2 is optional.
+            pass
 
     # ---------------
     # Generate system.ndx
@@ -1088,15 +1585,21 @@ def export_system_from_cell_meta(
     from ..gmx.index import generate_system_ndx
 
     system_ndx = out_dir / "system.ndx"
-    generate_system_ndx(
-        top_path=system_top,
-        ndx_path=system_ndx,
-        include_h_atomtypes=include_h_atomtypes,
-    )
+    if system_ndx_template is not None and system_ndx_template.is_file():
+        shutil.copy2(system_ndx_template, system_ndx)
+    else:
+        generate_system_ndx(
+            top_path=system_top,
+            ndx_path=system_ndx,
+            include_h_atomtypes=include_h_atomtypes,
+        )
 
     # system meta (for robust SMILES<->moltype mapping in analysis)
     system_meta = out_dir / "system_meta.json"
-    system_meta.write_text(json.dumps({"species": species}, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    payload = {"species": species, "box_nm": float(box_nm)}
+    if charge_fix_info is not None:
+        payload["export_charge_correction"] = charge_fix_info
+    system_meta.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
     return SystemExportResult(
         system_gro=system_gro,

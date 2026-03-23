@@ -11,11 +11,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Sequence
+from ...runtime import resolve_restart
+from ...io.mol2 import write_mol2_from_top_gro_parmed
 
 import numpy as np
 
 from ..analysis.thermo import summarize_terms_xvg
-from ..analysis.xvg import read_xvg
 from ..analysis.auto_plot import plot_density_time, plot_tg_curve, plot_thermo_stage
 from ..engine import GromacsRunner
 from ..mdp_templates import NPT_MDP, MdpSpec, default_mdp_params
@@ -111,8 +112,9 @@ class TgJob:
         self.resources = resources
         self.auto_plot = bool(auto_plot)
 
-    def run(self, *, restart: bool = True) -> Path:
+    def run(self, *, restart: Optional[bool] = None) -> Path:
         out = safe_mkdir(self.out_dir)
+        rst_flag = resolve_restart(restart)
         summary_path = out / "summary.json"
         summary: dict = load_json(summary_path) or {
             "job": "TgJob",
@@ -139,7 +141,7 @@ class TgJob:
             deffnm = "md"
             stage_sum = d / "summary.json"
 
-            if restart and stage_sum.exists() and (d / f"{deffnm}.edr").exists():
+            if rst_flag and stage_sum.exists() and (d / f"{deffnm}.edr").exists():
                 rec = load_json(stage_sum) or {}
                 rho = rec.get("density", {}).get("mean")
                 if rho is not None:
@@ -180,6 +182,14 @@ class TgJob:
             current_gro = d / f"{deffnm}.gro"
             current_cpt = d / f"{deffnm}.cpt" if (d / f"{deffnm}.cpt").exists() else None
 
+            # Optional: export system-level MOL2 for this Tg point (best-effort).
+            mol2_path = write_mol2_from_top_gro_parmed(
+                top_path=self.top,
+                gro_path=current_gro,
+                out_mol2=d / f"{deffnm}.mol2",
+                overwrite=True,
+            )
+
             edr = d / f"{deffnm}.edr"
             xvg = d / "density.xvg"
             terms = ["Density", "Temperature", "Pressure", "Volume"]
@@ -197,6 +207,7 @@ class TgJob:
                 "dir": str(d),
                 "density": rho_stat.__dict__,
                 "thermo": {k: v.__dict__ for k, v in stats.items()},
+                "mol2": str(mol2_path) if mol2_path else None,
             }
 
             # --- auto plots (yzc-gmx-gen style)

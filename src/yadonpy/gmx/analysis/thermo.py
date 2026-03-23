@@ -131,6 +131,31 @@ def cp_molar_from_enthalpy(
     return var / (R_SI * float(temperature_k) ** 2)
 
 
+
+
+def cv_molar_from_total_energy(
+    total_energy_kj_mol: np.ndarray,
+    temperature_k: float,
+    *,
+    frac_last: float = 0.5,
+) -> float:
+    """Molar heat capacity Cv from total-energy fluctuations (best-effort).
+
+    Notes
+    -----
+    - `gmx energy` typically reports total energy-like terms in kJ/mol.
+    - The returned Cv is in J/(mol*K).
+    - This fluctuation route is exact in the canonical ensemble; for practical
+      NVT/NPT production runs we expose it as a convenient estimate.
+    """
+    e = _last_window(np.asarray(total_energy_kj_mol, dtype=float), frac_last) * 1000.0
+    if e.size == 0:
+        return float("nan")
+    var = float(np.mean(e**2) - np.mean(e) ** 2)
+    if temperature_k <= 0:
+        return float("nan")
+    return var / (R_SI * float(temperature_k) ** 2)
+
 def bulk_modulus_gpa_from_kappa_t(kappa_t_1_pa: float) -> float:
     """Bulk modulus K from isothermal compressibility kappa_T.
 

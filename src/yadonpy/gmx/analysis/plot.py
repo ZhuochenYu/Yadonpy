@@ -17,7 +17,7 @@ Notes
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Iterable, Optional, Sequence
+from typing import Optional, Sequence
 
 import matplotlib
 
@@ -42,6 +42,7 @@ def plot_xvg_svg(
     title: Optional[str] = None,
     xlabel: Optional[str] = None,
     ylabel: Optional[str] = None,
+    caption: Optional[str] = None,
     cols: Optional[Sequence[str]] = None,
     legend: bool = True,
     grid: bool = True,
@@ -54,6 +55,7 @@ def plot_xvg_svg(
         out_svg: output .svg path (default: alongside xvg, same stem)
         title: plot title (default: xvg stem)
         xlabel/ylabel: override axis labels; falls back to XVG metadata
+        caption: optional caption rendered at the bottom
         cols: list of data columns to plot (excluding 'x'); default: all
         legend: show legend if multiple series
         grid: show grid
@@ -92,7 +94,13 @@ def plot_xvg_svg(
         plt.grid(True)
     if legend and len(ycols) > 1:
         place_legend(plt.gca())
-    plt.tight_layout()
+    # Layout: reserve a small bottom margin for an optional caption
+    if caption:
+        fig = plt.gcf()
+        fig.text(0.5, 0.01, str(caption), ha='center', va='bottom', fontsize=8)
+        plt.tight_layout(rect=(0, 0.04, 1, 1))
+    else:
+        plt.tight_layout()
     plt.savefig(out_svg, format="svg")
     plt.close()
     return out_svg
@@ -154,6 +162,7 @@ def plot_xy_svg(
     title: str,
     xlabel: str,
     ylabel: str,
+    caption: Optional[str] = None,
     label: Optional[str] = None,
     grid: bool = True,
     fig_width: float = 8.0,
@@ -171,7 +180,12 @@ def plot_xy_svg(
         plt.grid(True)
     if label:
         place_legend(plt.gca())
-    plt.tight_layout()
+    if caption:
+        fig = plt.gcf()
+        fig.text(0.5, 0.01, str(caption), ha='center', va='bottom', fontsize=8)
+        plt.tight_layout(rect=(0, 0.04, 1, 1))
+    else:
+        plt.tight_layout()
     plt.savefig(out_svg, format="svg")
     plt.close()
     return out_svg

@@ -86,7 +86,7 @@ def generate_system_ndx(
                 current += 1
 
             # ion classification by net charge of the molecule type
-            # (based on ITP charges)
+            # (based on ITP charges). A moltype with |net_charge| < 0.1 is treated as neutral.
         # after instances
 
         groups.append((f"{molname}", mol_atoms))
@@ -96,7 +96,7 @@ def generate_system_ndx(
             groups.append((f"TYPE_{molname}_{atype}", idxs))
 
         q = mt.net_charge
-        if abs(q) > 1e-6:
+        if abs(q) >= 0.1:
             ions.extend(mol_atoms)
             if q > 0:
                 cations.extend(mol_atoms)

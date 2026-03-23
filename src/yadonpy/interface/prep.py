@@ -1,0 +1,676 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Sequence
+
+import math
+
+from rdkit import Chem
+
+from ..core import utils
+from ..io.gromacs_system import SystemExportResult, validate_exported_system_dir
+from ..sim.preset import eq
+from .bulk_resize import (
+    BulkEquilibriumProfile,
+    BulkRescalePlan,
+    DirectElectrolytePlan,
+    ElectrolyteAlignmentPlan,
+    FixedXYDirectPackPlan,
+    build_bulk_equilibrium_profile,
+    fixed_xy_semiisotropic_npt_overrides,
+    plan_direct_electrolyte_counts,
+    plan_fixed_xy_direct_pack_box,
+    plan_resized_electrolyte_counts,
+    recommend_electrolyte_alignment,
+)
+
+
+@dataclass(frozen=True)
+class FixedXYElectrolytePreparation:
+    reference_box_nm: tuple[float, float, float]
+    direct_plan: DirectElectrolytePlan
+    pack_plan: FixedXYDirectPackPlan
+    relax_mdp_overrides: dict[str, Any]
+    notes: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class PolymerAnchoredInterfacePreparation:
+    reference_box_nm: tuple[float, float, float]
+    interface_xy_nm: tuple[float, float]
+    polymer_target_box_nm: tuple[float, float, float]
+    electrolyte_target_box_nm: tuple[float, float, float]
+    electrolyte_alignment: ElectrolyteAlignmentPlan
+    notes: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class DirectPolymerMatchedInterfacePreparation:
+    reference_box_nm: tuple[float, float, float]
+    interface_plan: PolymerAnchoredInterfacePreparation
+    electrolyte_prep: FixedXYElectrolytePreparation
+    notes: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class ProbePolymerMatchedInterfacePreparation:
+    reference_box_nm: tuple[float, float, float]
+    interface_plan: PolymerAnchoredInterfacePreparation
+    probe_prep: "ProbeElectrolytePreparation"
+    notes: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class ResizedPolymerMatchedInterfacePreparation:
+    reference_box_nm: tuple[float, float, float]
+    interface_plan: PolymerAnchoredInterfacePreparation
+    resized_prep: "ResizedElectrolytePreparation"
+    notes: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class ProbeElectrolytePreparation:
+    reference_box_nm: tuple[float, float, float]
+    target_box_nm: tuple[float, float, float]
+    probe_box_nm: tuple[float, float, float]
+    direct_plan: DirectElectrolytePlan
+    pack_plan: FixedXYDirectPackPlan
+    build_density_g_cm3: float
+    notes: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class ResizedElectrolytePreparation:
+    reference_box_nm: tuple[float, float, float]
+    target_box_nm: tuple[float, float, float]
+    profile: BulkEquilibriumProfile
+    resize_plan: BulkRescalePlan
+    pack_plan: FixedXYDirectPackPlan
+    relax_mdp_overrides: dict[str, Any]
+    notes: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class BulkEq21Outcome:
+    final_cell: Any
+    system_export: SystemExportResult
+    raw_system_meta: Path
+
+
+def _derive_isotropic_probe_box(
+    *,
+    target_box_nm: tuple[float, float, float],
+    volume_scale: float,
+    minimum_box_nm: float,
+) -> tuple[float, float, float]:
+    target_box = tuple(float(x) for x in target_box_nm)
+    if len(target_box) != 3 or min(target_box) <= 0.0:
+        raise ValueError("target_box_nm must contain three positive lengths")
+    scale = float(volume_scale)
+    if scale < 1.0:
+        raise ValueError("probe_volume_scale must be >= 1.0")
+    minimum_edge = float(minimum_box_nm)
+    if minimum_edge <= 0.0:
+        raise ValueError("minimum_probe_box_nm must be positive")
+
+    target_volume = float(target_box[0] * target_box[1] * target_box[2])
+    edge_nm = max(minimum_edge, float((target_volume * scale) ** (1.0 / 3.0)))
+    return (edge_nm, edge_nm, edge_nm)
+
+
+def plan_probe_electrolyte_preparation(
+    *,
+    reference_box_nm: tuple[float, float, float],
+    target_box_nm: tuple[float, float, float],
+    target_density_g_cm3: float,
+    solvent_mol_weights: Sequence[float],
+    solvent_mass_ratio: Sequence[float],
+    salt_mol_weights: Sequence[float],
+    salt_molarity_M: float,
+    min_salt_pairs: int,
+    solvent_species_names: Sequence[str] | None = None,
+    salt_species_names: Sequence[str] | None = None,
+    min_solvent_counts: Sequence[int] | None = None,
+    probe_volume_scale: float = 1.75,
+    minimum_probe_box_nm: float | None = None,
+    initial_pack_density_g_cm3: float = 0.70,
+    z_padding_factor: float = 1.10,
+) -> ProbeElectrolytePreparation:
+    ref_box = tuple(float(x) for x in reference_box_nm)
+    target_box = tuple(float(x) for x in target_box_nm)
+    probe_box = _derive_isotropic_probe_box(
+        target_box_nm=target_box,
+        volume_scale=float(probe_volume_scale),
+        minimum_box_nm=float(minimum_probe_box_nm) if minimum_probe_box_nm is not None else max(target_box),
+    )
+    direct_plan = plan_direct_electrolyte_counts(
+        target_box_nm=probe_box,
+        target_density_g_cm3=float(target_density_g_cm3),
+        solvent_mol_weights=solvent_mol_weights,
+        solvent_mass_ratio=solvent_mass_ratio,
+        salt_mol_weights=salt_mol_weights,
+        salt_molarity_M=float(salt_molarity_M),
+        min_salt_pairs=int(min_salt_pairs),
+        solvent_species_names=solvent_species_names,
+        salt_species_names=salt_species_names,
+        min_solvent_counts=min_solvent_counts,
+    )
+    pack_plan = plan_fixed_xy_direct_pack_box(
+        reference_box_nm=probe_box,
+        target_counts=direct_plan.target_counts,
+        mol_weights=tuple(float(x) for x in solvent_mol_weights) + tuple(float(x) for x in salt_mol_weights),
+        species_names=direct_plan.species_names,
+        initial_pack_density_g_cm3=float(initial_pack_density_g_cm3),
+        z_padding_factor=float(z_padding_factor),
+        minimum_z_nm=float(probe_box[2]),
+    )
+    build_density = float(initial_pack_density_g_cm3)
+    notes = (
+        "build the electrolyte probe bulk in a density-driven isotropic pack instead of locking XY to the polymer footprint too early",
+        f"probe_box_nm={tuple(round(x, 4) for x in probe_box)} derived from target electrolyte box {tuple(round(x, 4) for x in target_box)} with probe_volume_scale={float(probe_volume_scale):.3f}",
+        f"the probe stage uses density={build_density:.4f} g/cm^3 for amorphous_cell so retry fallback can lower density and expand the whole box isotropically before the later polymer-footprint resize",
+        f"the probe stage uses the same chemistry targets but delays the polymer-footprint resize until after probe equilibration; reference polymer box remains {tuple(round(x, 4) for x in ref_box)}",
+    )
+    return ProbeElectrolytePreparation(
+        reference_box_nm=ref_box,
+        target_box_nm=target_box,
+        probe_box_nm=probe_box,
+        direct_plan=direct_plan,
+        pack_plan=pack_plan,
+        build_density_g_cm3=build_density,
+        notes=notes,
+    )
+
+
+def plan_resized_electrolyte_preparation_from_probe(
+    *,
+    reference_box_nm: tuple[float, float, float],
+    target_box_nm: tuple[float, float, float],
+    probe_work_dir,
+    probe_counts: Sequence[int],
+    mol_weights: Sequence[float],
+    species_names: Sequence[str],
+    solvent_indices: Sequence[int],
+    solvent_groups: Sequence[Sequence[int]] | None = None,
+    salt_pair_indices: Sequence[int] | None = None,
+    salt_pair_groups: Sequence[Sequence[int]] | None = None,
+    min_solvent_counts: Sequence[int] | None = None,
+    min_solvent_group_counts: Sequence[Sequence[int]] | None = None,
+    min_salt_pairs: int | Sequence[int] = 1,
+    initial_pack_density_g_cm3: float = 0.70,
+    z_padding_factor: float = 1.15,
+    minimum_pack_z_factor: float = 1.0,
+    minimum_pack_z_nm: float | None = None,
+    pressure_bar: float = 1.0,
+) -> ResizedElectrolytePreparation:
+    ref_box = tuple(float(x) for x in reference_box_nm)
+    target_box = tuple(float(x) for x in target_box_nm)
+    profile = build_bulk_equilibrium_profile(
+        counts=probe_counts,
+        mol_weights=mol_weights,
+        species_names=species_names,
+        work_dir=probe_work_dir,
+    )
+    resize_plan = plan_resized_electrolyte_counts(
+        profile=profile,
+        target_xy_nm=(float(target_box[0]), float(target_box[1])),
+        target_z_nm=float(target_box[2]),
+        solvent_indices=solvent_indices,
+        solvent_groups=solvent_groups,
+        salt_pair_indices=salt_pair_indices,
+        salt_pair_groups=salt_pair_groups,
+        min_solvent_counts=min_solvent_counts,
+        min_solvent_group_counts=min_solvent_group_counts,
+        min_salt_pairs=min_salt_pairs,
+    )
+    min_pack_z_nm = max(
+        float(target_box[2]) * float(minimum_pack_z_factor),
+        float(minimum_pack_z_nm) if minimum_pack_z_nm is not None else 0.0,
+    )
+    pack_plan = plan_fixed_xy_direct_pack_box(
+        reference_box_nm=(float(target_box[0]), float(target_box[1]), float(target_box[2])),
+        target_counts=resize_plan.target_counts,
+        mol_weights=mol_weights,
+        species_names=species_names,
+        initial_pack_density_g_cm3=float(initial_pack_density_g_cm3),
+        z_padding_factor=float(z_padding_factor),
+        minimum_z_nm=min_pack_z_nm,
+    )
+    note_list = [
+        "resized the electrolyte from the equilibrated probe bulk to the polymer-anchored target box instead of planning counts directly in the final fixed-XY box",
+        f"probe_density_g_cm3={profile.density_g_cm3:.4f} from probe box {tuple(round(x, 4) for x in profile.box_nm)} -> target_box_nm={tuple(round(x, 4) for x in target_box)}",
+        f"final fixed-XY pack uses initial_pack_density_g_cm3={float(initial_pack_density_g_cm3):.4f} with minimum initial Z={min_pack_z_nm:.4f} nm",
+    ]
+    if tuple(round(x, 6) for x in ref_box[:2]) != tuple(round(x, 6) for x in target_box[:2]):
+        note_list.append(
+            f"reference polymer XY={tuple(round(x, 4) for x in ref_box[:2])} while final electrolyte XY is locked to {tuple(round(x, 4) for x in target_box[:2])}"
+        )
+    return ResizedElectrolytePreparation(
+        reference_box_nm=ref_box,
+        target_box_nm=target_box,
+        profile=profile,
+        resize_plan=resize_plan,
+        pack_plan=pack_plan,
+        relax_mdp_overrides=fixed_xy_semiisotropic_npt_overrides(pressure_bar=float(pressure_bar)),
+        notes=tuple(note_list),
+    )
+
+
+def make_orthorhombic_pack_cell(box_nm: tuple[float, float, float]):
+    cell = Chem.Mol()
+    setattr(
+        cell,
+        "cell",
+        utils.Cell(
+            float(box_nm[0]),
+            0.0,
+            float(box_nm[1]),
+            0.0,
+            float(box_nm[2]),
+            0.0,
+        ),
+    )
+    return cell
+
+
+def plan_fixed_xy_direct_electrolyte_preparation(
+    *,
+    reference_box_nm: tuple[float, float, float],
+    target_box_nm: tuple[float, float, float] | None = None,
+    target_density_g_cm3: float,
+    solvent_mol_weights: Sequence[float],
+    solvent_mass_ratio: Sequence[float],
+    salt_mol_weights: Sequence[float],
+    salt_molarity_M: float,
+    min_salt_pairs: int,
+    solvent_species_names: Sequence[str] | None = None,
+    salt_species_names: Sequence[str] | None = None,
+    min_solvent_counts: Sequence[int] | None = None,
+    initial_pack_density_g_cm3: float = 0.85,
+    z_padding_factor: float = 1.05,
+    minimum_pack_z_factor: float = 1.0,
+    minimum_pack_z_nm: float | None = None,
+    pressure_bar: float = 1.0,
+) -> FixedXYElectrolytePreparation:
+    ref_box = tuple(float(x) for x in reference_box_nm)
+    target_box = tuple(float(x) for x in (target_box_nm or reference_box_nm))
+    min_pack_z_factor = float(minimum_pack_z_factor)
+    if min_pack_z_factor < 1.0:
+        raise ValueError("minimum_pack_z_factor must be >= 1.0")
+    min_pack_z_nm = max(
+        float(target_box[2]) * min_pack_z_factor,
+        float(minimum_pack_z_nm) if minimum_pack_z_nm is not None else 0.0,
+    )
+    direct_plan = plan_direct_electrolyte_counts(
+        target_box_nm=target_box,
+        target_density_g_cm3=float(target_density_g_cm3),
+        solvent_mol_weights=solvent_mol_weights,
+        solvent_mass_ratio=solvent_mass_ratio,
+        salt_mol_weights=salt_mol_weights,
+        salt_molarity_M=float(salt_molarity_M),
+        min_salt_pairs=int(min_salt_pairs),
+        solvent_species_names=solvent_species_names,
+        salt_species_names=salt_species_names,
+        min_solvent_counts=min_solvent_counts,
+    )
+    pack_plan = plan_fixed_xy_direct_pack_box(
+        reference_box_nm=(float(ref_box[0]), float(ref_box[1]), float(target_box[2])),
+        target_counts=direct_plan.target_counts,
+        mol_weights=tuple(float(x) for x in solvent_mol_weights) + tuple(float(x) for x in salt_mol_weights),
+        species_names=direct_plan.species_names,
+        initial_pack_density_g_cm3=float(initial_pack_density_g_cm3),
+        z_padding_factor=float(z_padding_factor),
+        minimum_z_nm=min_pack_z_nm,
+    )
+    note_list = [
+        "planned electrolyte counts against a compact polymer-anchored target box, then derived an XY-locked initial pack box for robust explicit-cell packing",
+        "use pack_plan.initial_pack_box_nm for the first amorphous_cell build and keep relax_mdp_overrides through standalone electrolyte relaxation",
+    ]
+    if min_pack_z_nm > float(target_box[2]) + 1.0e-12:
+        note_list.append(
+            f"forced the initial electrolyte pack box Z to be at least {min_pack_z_nm:.4f} nm before fixed-XY semiisotropic relaxation"
+        )
+    notes = tuple(note_list)
+    return FixedXYElectrolytePreparation(
+        reference_box_nm=ref_box,
+        direct_plan=direct_plan,
+        pack_plan=pack_plan,
+        relax_mdp_overrides=fixed_xy_semiisotropic_npt_overrides(pressure_bar=float(pressure_bar)),
+        notes=notes,
+    )
+
+
+def plan_direct_polymer_matched_interface_preparation(
+    *,
+    reference_box_nm: tuple[float, float, float],
+    bottom_thickness_nm: float,
+    top_thickness_nm: float,
+    gap_nm: float,
+    surface_shell_nm: float,
+    target_density_g_cm3: float,
+    solvent_mol_weights: Sequence[float],
+    solvent_mass_ratio: Sequence[float],
+    salt_mol_weights: Sequence[float],
+    salt_molarity_M: float,
+    min_salt_pairs: int,
+    solvent_species_names: Sequence[str] | None = None,
+    salt_species_names: Sequence[str] | None = None,
+    min_solvent_counts: Sequence[int] | None = None,
+    initial_pack_density_g_cm3: float = 0.85,
+    z_padding_factor: float = 1.05,
+    minimum_pack_z_factor: float = 1.0,
+    minimum_pack_z_nm: float | None = None,
+    pressure_bar: float = 1.0,
+    is_polyelectrolyte: bool = False,
+    minimum_margin_nm: float = 1.0,
+    fixed_xy_npt_ns: float | None = None,
+    polymer_margin_nm: float | None = None,
+) -> DirectPolymerMatchedInterfacePreparation:
+    ref_box = tuple(float(x) for x in reference_box_nm)
+    interface_plan = plan_polymer_anchored_interface_preparation(
+        reference_box_nm=ref_box,
+        bottom_thickness_nm=float(bottom_thickness_nm),
+        top_thickness_nm=float(top_thickness_nm),
+        gap_nm=float(gap_nm),
+        surface_shell_nm=float(surface_shell_nm),
+        is_polyelectrolyte=bool(is_polyelectrolyte),
+        minimum_margin_nm=float(minimum_margin_nm),
+        fixed_xy_npt_ns=fixed_xy_npt_ns,
+        polymer_margin_nm=polymer_margin_nm,
+    )
+    electrolyte_prep = plan_fixed_xy_direct_electrolyte_preparation(
+        reference_box_nm=ref_box,
+        target_box_nm=interface_plan.electrolyte_target_box_nm,
+        target_density_g_cm3=float(target_density_g_cm3),
+        solvent_mol_weights=solvent_mol_weights,
+        solvent_mass_ratio=solvent_mass_ratio,
+        salt_mol_weights=salt_mol_weights,
+        salt_molarity_M=float(salt_molarity_M),
+        min_salt_pairs=int(min_salt_pairs),
+        solvent_species_names=solvent_species_names,
+        salt_species_names=salt_species_names,
+        min_solvent_counts=min_solvent_counts,
+        initial_pack_density_g_cm3=float(initial_pack_density_g_cm3),
+        z_padding_factor=float(z_padding_factor),
+        minimum_pack_z_factor=float(minimum_pack_z_factor),
+        minimum_pack_z_nm=minimum_pack_z_nm,
+        pressure_bar=float(pressure_bar),
+    )
+    notes = (
+        "equilibrate the polymer bulk first, then lock the electrolyte XY box to the equilibrated polymer footprint",
+        "build the standalone electrolyte bulk against the compact top-side target box, relax it separately to density equilibrium, and only then assemble the interface with an explicit vacuum gap",
+    ) + tuple(interface_plan.notes) + tuple(electrolyte_prep.notes)
+    return DirectPolymerMatchedInterfacePreparation(
+        reference_box_nm=ref_box,
+        interface_plan=interface_plan,
+        electrolyte_prep=electrolyte_prep,
+        notes=notes,
+    )
+
+
+def plan_polymer_anchored_interface_preparation(
+    *,
+    reference_box_nm: tuple[float, float, float],
+    bottom_thickness_nm: float,
+    top_thickness_nm: float,
+    gap_nm: float,
+    surface_shell_nm: float,
+    is_polyelectrolyte: bool = False,
+    minimum_margin_nm: float = 1.0,
+    fixed_xy_npt_ns: float | None = None,
+    polymer_margin_nm: float | None = None,
+) -> PolymerAnchoredInterfacePreparation:
+    ref_box = tuple(float(x) for x in reference_box_nm)
+    if len(ref_box) != 3 or min(ref_box) <= 0.0:
+        raise ValueError("reference_box_nm must contain three positive lengths")
+    bottom_thickness = float(bottom_thickness_nm)
+    if bottom_thickness <= 0.0:
+        raise ValueError("bottom_thickness_nm must be positive")
+
+    alignment = recommend_electrolyte_alignment(
+        top_thickness_nm=float(top_thickness_nm),
+        gap_nm=float(gap_nm),
+        surface_shell_nm=float(surface_shell_nm),
+        is_polyelectrolyte=bool(is_polyelectrolyte),
+        minimum_margin_nm=float(minimum_margin_nm),
+        fixed_xy_npt_ns=fixed_xy_npt_ns,
+    )
+    common_xy = (float(ref_box[0]), float(ref_box[1]))
+    polymer_margin = float(alignment.target_z_margin_nm if polymer_margin_nm is None else polymer_margin_nm)
+    polymer_target_box = (common_xy[0], common_xy[1], float(bottom_thickness + polymer_margin))
+    electrolyte_target_box = (common_xy[0], common_xy[1], float(alignment.target_z_nm))
+    notes = (
+        "use the equilibrated polymer bulk XY lengths as the interface reference footprint",
+        "trim the polymer side by slab thickness during interface preparation and plan the electrolyte counts only against the compact top-side target box",
+        "keep the electrolyte XY locked to the polymer footprint during packing and relaxation so both sides converge to one shared lateral reference",
+    )
+    return PolymerAnchoredInterfacePreparation(
+        reference_box_nm=ref_box,
+        interface_xy_nm=common_xy,
+        polymer_target_box_nm=polymer_target_box,
+        electrolyte_target_box_nm=electrolyte_target_box,
+        electrolyte_alignment=alignment,
+        notes=notes,
+    )
+
+
+def plan_probe_polymer_matched_interface_preparation(
+    *,
+    reference_box_nm: tuple[float, float, float],
+    bottom_thickness_nm: float,
+    top_thickness_nm: float,
+    gap_nm: float,
+    surface_shell_nm: float,
+    target_density_g_cm3: float,
+    solvent_mol_weights: Sequence[float],
+    solvent_mass_ratio: Sequence[float],
+    salt_mol_weights: Sequence[float],
+    salt_molarity_M: float,
+    min_salt_pairs: int,
+    solvent_species_names: Sequence[str] | None = None,
+    salt_species_names: Sequence[str] | None = None,
+    min_solvent_counts: Sequence[int] | None = None,
+    probe_volume_scale: float = 1.75,
+    minimum_probe_box_nm: float | None = None,
+    initial_pack_density_g_cm3: float = 0.70,
+    z_padding_factor: float = 1.10,
+    is_polyelectrolyte: bool = False,
+    minimum_margin_nm: float = 1.0,
+    fixed_xy_npt_ns: float | None = None,
+    polymer_margin_nm: float | None = None,
+) -> ProbePolymerMatchedInterfacePreparation:
+    ref_box = tuple(float(x) for x in reference_box_nm)
+    interface_plan = plan_polymer_anchored_interface_preparation(
+        reference_box_nm=ref_box,
+        bottom_thickness_nm=float(bottom_thickness_nm),
+        top_thickness_nm=float(top_thickness_nm),
+        gap_nm=float(gap_nm),
+        surface_shell_nm=float(surface_shell_nm),
+        is_polyelectrolyte=bool(is_polyelectrolyte),
+        minimum_margin_nm=float(minimum_margin_nm),
+        fixed_xy_npt_ns=fixed_xy_npt_ns,
+        polymer_margin_nm=polymer_margin_nm,
+    )
+    probe_prep = plan_probe_electrolyte_preparation(
+        reference_box_nm=ref_box,
+        target_box_nm=interface_plan.electrolyte_target_box_nm,
+        target_density_g_cm3=float(target_density_g_cm3),
+        solvent_mol_weights=solvent_mol_weights,
+        solvent_mass_ratio=solvent_mass_ratio,
+        salt_mol_weights=salt_mol_weights,
+        salt_molarity_M=float(salt_molarity_M),
+        min_salt_pairs=int(min_salt_pairs),
+        solvent_species_names=solvent_species_names,
+        salt_species_names=salt_species_names,
+        min_solvent_counts=min_solvent_counts,
+        probe_volume_scale=float(probe_volume_scale),
+        minimum_probe_box_nm=minimum_probe_box_nm,
+        initial_pack_density_g_cm3=float(initial_pack_density_g_cm3),
+        z_padding_factor=float(z_padding_factor),
+    )
+    notes = (
+        "equilibrate the polymer bulk first, then build an isotropic electrolyte probe bulk before locking the final XY footprint",
+        "use the probe bulk only to learn a physically reasonable composition and density response before rebuilding the final electrolyte bulk against the polymer-matched interface box",
+    ) + tuple(interface_plan.notes) + tuple(probe_prep.notes)
+    return ProbePolymerMatchedInterfacePreparation(
+        reference_box_nm=ref_box,
+        interface_plan=interface_plan,
+        probe_prep=probe_prep,
+        notes=notes,
+    )
+
+
+def plan_resized_polymer_matched_interface_from_probe(
+    *,
+    reference_box_nm: tuple[float, float, float],
+    interface_plan: PolymerAnchoredInterfacePreparation,
+    probe_work_dir,
+    probe_counts: Sequence[int],
+    mol_weights: Sequence[float],
+    species_names: Sequence[str],
+    solvent_indices: Sequence[int],
+    solvent_groups: Sequence[Sequence[int]] | None = None,
+    salt_pair_indices: Sequence[int] | None = None,
+    salt_pair_groups: Sequence[Sequence[int]] | None = None,
+    min_solvent_counts: Sequence[int] | None = None,
+    min_solvent_group_counts: Sequence[Sequence[int]] | None = None,
+    min_salt_pairs: int | Sequence[int] = 1,
+    initial_pack_density_g_cm3: float = 0.70,
+    z_padding_factor: float = 1.15,
+    minimum_pack_z_factor: float = 1.0,
+    minimum_pack_z_nm: float | None = None,
+    pressure_bar: float = 1.0,
+) -> ResizedPolymerMatchedInterfacePreparation:
+    ref_box = tuple(float(x) for x in reference_box_nm)
+    resized_prep = plan_resized_electrolyte_preparation_from_probe(
+        reference_box_nm=ref_box,
+        target_box_nm=interface_plan.electrolyte_target_box_nm,
+        probe_work_dir=probe_work_dir,
+        probe_counts=probe_counts,
+        mol_weights=mol_weights,
+        species_names=species_names,
+        solvent_indices=solvent_indices,
+        solvent_groups=solvent_groups,
+        salt_pair_indices=salt_pair_indices,
+        salt_pair_groups=salt_pair_groups,
+        min_solvent_counts=min_solvent_counts,
+        min_solvent_group_counts=min_solvent_group_counts,
+        min_salt_pairs=min_salt_pairs,
+        initial_pack_density_g_cm3=float(initial_pack_density_g_cm3),
+        z_padding_factor=float(z_padding_factor),
+        minimum_pack_z_factor=float(minimum_pack_z_factor),
+        minimum_pack_z_nm=minimum_pack_z_nm,
+        pressure_bar=float(pressure_bar),
+    )
+    notes = (
+        "resize the final electrolyte composition only after the probe bulk has equilibrated, then rebuild the final electrolyte with polymer-matched XY and extra initial Z slack",
+    ) + tuple(interface_plan.notes) + tuple(resized_prep.notes)
+    return ResizedPolymerMatchedInterfacePreparation(
+        reference_box_nm=ref_box,
+        interface_plan=interface_plan,
+        resized_prep=resized_prep,
+        notes=notes,
+    )
+
+
+def equilibrate_bulk_with_eq21(
+    *,
+    label: str,
+    ac,
+    work_dir,
+    temp: float,
+    press: float,
+    mpi: int,
+    omp: int,
+    gpu: int,
+    gpu_id: int,
+    additional_loops: int = 4,
+    eq21_npt_mdp_overrides=None,
+    additional_mdp_overrides=None,
+    final_npt_ns: float = 0.0,
+    final_npt_mdp_overrides=None,
+) -> BulkEq21Outcome:
+    eqmd_job = eq.EQ21step(ac, work_dir=work_dir)
+    export = eqmd_job.ensure_system_exported()
+    export_issues = validate_exported_system_dir(export.system_top.parent)
+    raw_export_root = export.system_top.parent / "01_raw_non_scaled"
+    raw_export_issues = validate_exported_system_dir(raw_export_root)
+    if export_issues:
+        raise RuntimeError(f"{label} scaled export topology is invalid before EQ21: {'; '.join(export_issues)}")
+    if raw_export_issues:
+        raise RuntimeError(f"{label} raw export topology is invalid before EQ21: {'; '.join(raw_export_issues)}")
+
+    ac = eqmd_job.exec(
+        temp=temp,
+        press=press,
+        mpi=mpi,
+        omp=omp,
+        gpu=gpu,
+        gpu_id=gpu_id,
+        eq21_npt_mdp_overrides=eq21_npt_mdp_overrides,
+    )
+    analy = eqmd_job.analyze()
+    _ = analy.get_all_prop(temp=temp, press=press, save=True)
+    result = analy.check_eq()
+    for _ in range(int(additional_loops)):
+        if result:
+            break
+        add_job = eq.Additional(ac, work_dir=work_dir)
+        ac = add_job.exec(
+            temp=temp,
+            press=press,
+            mpi=mpi,
+            omp=omp,
+            gpu=gpu,
+            gpu_id=gpu_id,
+            mdp_overrides=additional_mdp_overrides,
+        )
+        analy = add_job.analyze()
+        _ = analy.get_all_prop(temp=temp, press=press, save=True)
+        result = analy.check_eq()
+
+    if float(final_npt_ns) > 0.0:
+        npt_job = eq.NPT(ac, work_dir=work_dir)
+        ac = npt_job.exec(
+            temp=temp,
+            press=press,
+            mpi=mpi,
+            omp=omp,
+            gpu=gpu,
+            gpu_id=gpu_id,
+            time=float(final_npt_ns),
+            mdp_overrides=final_npt_mdp_overrides,
+        )
+        try:
+            analy = npt_job.analyze()
+            _ = analy.get_all_prop(temp=temp, press=press, save=True)
+        except Exception:
+            pass
+
+    return BulkEq21Outcome(
+        final_cell=ac,
+        system_export=export,
+        raw_system_meta=raw_export_root / "system_meta.json",
+    )
+
+
+__all__ = [
+    "BulkEq21Outcome",
+    "DirectPolymerMatchedInterfacePreparation",
+    "FixedXYElectrolytePreparation",
+    "PolymerAnchoredInterfacePreparation",
+    "ProbePolymerMatchedInterfacePreparation",
+    "ProbeElectrolytePreparation",
+    "ResizedPolymerMatchedInterfacePreparation",
+    "ResizedElectrolytePreparation",
+    "equilibrate_bulk_with_eq21",
+    "make_orthorhombic_pack_cell",
+    "plan_direct_polymer_matched_interface_preparation",
+    "plan_fixed_xy_direct_electrolyte_preparation",
+    "plan_probe_polymer_matched_interface_preparation",
+    "plan_probe_electrolyte_preparation",
+    "plan_polymer_anchored_interface_preparation",
+    "plan_resized_polymer_matched_interface_from_probe",
+    "plan_resized_electrolyte_preparation_from_probe",
+]

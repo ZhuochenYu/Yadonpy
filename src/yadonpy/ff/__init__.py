@@ -18,9 +18,9 @@ from .oplsaa import OPLSAA
 
 # Added: Merz ion FF (OPC/OPC3 ion LJ parameters)
 from .merz import MERZ
+from .registry import available_forcefields, canonical_forcefield_name, create_forcefield
 
-# yadonpy additions
-from .library import LibraryDB
+ # (basic_top/library subsystem removed in v0.6.6; MolDB is the only cache.)
 
 
 def gaff2(*, variant: str = "mod", **kwargs):
@@ -44,6 +44,8 @@ __all__ = [
     "Dreiding",
     "OPLSAA",
     "MERZ",
-    "LibraryDB",
     "gaff2",
+    "available_forcefields",
+    "canonical_forcefield_name",
+    "create_forcefield",
 ]

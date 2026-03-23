@@ -14,8 +14,8 @@ knowledge, this project does not raise copyright issues.
 # ff.gaff2 module
 # ******************************************************************************
 
-import os
 from ..core import utils
+from ..core.resources import ff_data_path
 from .gaff import GAFF
 
 
@@ -38,7 +38,7 @@ class GAFF2(GAFF):
     """
     def __init__(self, db_file=None):
         if db_file is None:
-            db_file = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'ff_dat', 'gaff2.json')
+            db_file = str(ff_data_path("ff_dat", "gaff2.json"))
         super().__init__(db_file)
         # Guard: keep GAFF2 and GAFF2_mod distinct (GAFF2 must load gaff2 parameters)
         if type(self) is GAFF2 and getattr(self.param, 'ff_name', None) not in (None, 'gaff2'):
@@ -343,8 +343,13 @@ class GAFF2(GAFF):
         # Assignment routine of O
         ######################################
         elif p.GetSymbol() == 'O':
+            heavy_neighbor_count = sum(1 for nb in p.GetNeighbors() if nb.GetAtomicNum() > 1)
             if p.GetTotalDegree() == 1:
                 self.set_ptype(p, 'o')
+            elif heavy_neighbor_count >= 2:
+                # Bridge/ether oxygens should remain `os` even if an
+                # unsanitized intermediate still reports a residual H count.
+                self.set_ptype(p, 'os')
             elif p.GetTotalNumHs(includeNeighbors=True) == 2:
                 self.set_ptype(p, 'ow')
             elif p.GetTotalNumHs(includeNeighbors=True) == 1:

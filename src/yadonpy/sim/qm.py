@@ -5,6 +5,7 @@ Its software design is inspired by RadonPy (an automated workflow for polymer bu
 developed by a Japanese research group) and by yuzc's in-house yzc-gmx-gen toolkit. To the best of our
 knowledge, this project does not raise copyright issues.
 """
+from __future__ import annotations
 
 #  Copyright (c) 2026. YadonPy developers. All rights reserved.
 #  Use of this source code is governed by a BSD-3-style
@@ -20,13 +21,50 @@ import json
 import gc
 import re
 from pathlib import Path
-from typing import Optional, Dict, Any, List, Tuple
+from typing import Optional, Dict, Any, List
 from rdkit import Chem
 from rdkit import Geometry as Geom
 from ..core import utils, const, calc
+from ..core.logging_utils import format_elapsed as _fmt_elapsed
+from ..runtime import resolve_restart
 from .qm_wrapper import QMw
 from . import seminario
 
+
+def _qm_log(message: str, *, level: int = 1) -> None:
+    utils.yadon_print(f"[QM] {message}", level=level)
+
+
+def _qm_smiles(mol) -> str:
+    try:
+        if mol.HasProp('_yadonpy_input_smiles'):
+            return mol.GetProp('_yadonpy_input_smiles')
+        if mol.HasProp('_yadonpy_smiles'):
+            return mol.GetProp('_yadonpy_smiles')
+        return Chem.MolToSmiles(mol)
+    except Exception:
+        return '?'
+
+
+def _qm_begin(title: str, *, log_name: str, mol=None, detail: str | None = None) -> float:
+    import time as _time
+    _qm_log('=' * 88, level=1)
+    _qm_log(f"[SECTION] {title}", level=1)
+    _qm_log(f"[ITEM] purpose           : {log_name}", level=1)
+    if mol is not None:
+        _qm_log(f"[ITEM] smiles            : {_qm_smiles(mol)}", level=1)
+    if detail:
+        _qm_log(f"[NOTE] {detail}", level=1)
+    return _time.perf_counter()
+
+
+def _qm_done(title: str, t0: float, *, detail: str | None = None) -> None:
+    import time as _time
+    msg = f"[DONE] {title} | elapsed={_fmt_elapsed(_time.perf_counter() - float(t0))}"
+    if detail:
+        msg += f" | {detail}"
+    _qm_log(msg, level=1)
+    _qm_log('=' * 88, level=1)
 
 
 def _sanitize_dirname(name: str) -> str:
@@ -118,7 +156,17 @@ def _save_atomic_charges_json(mol, path, *, charge_label: str, log_name: str):
 
     # IMPORTANT: persist (m)Seminario patch metadata so that a resumed workflow
     # can still inject the QM-derived bond/angle params after ff_assign().
-    for k in ("_yadonpy_mseminario_itp", "_yadonpy_mseminario_json"):
+    for k in (
+        "_yadonpy_mseminario_itp",
+        "_yadonpy_mseminario_json",
+        "_yadonpy_bonded_itp",
+        "_yadonpy_bonded_json",
+        "_yadonpy_bonded_method",
+        "_yadonpy_bonded_override",
+        "_yadonpy_bonded_requested",
+        "_yadonpy_bonded_explicit",
+        "_yadonpy_bonded_signature",
+    ):
         try:
             if mol.HasProp(k):
                 v = str(mol.GetProp(k))
@@ -155,7 +203,17 @@ def load_atomic_charges_json(mol, path, *, strict: bool = True) -> bool:
         try:
             meta = obj.get('meta') if isinstance(obj, dict) else None
             if isinstance(meta, dict):
-                for k in ("_yadonpy_mseminario_itp", "_yadonpy_mseminario_json"):
+                for k in (
+                    "_yadonpy_mseminario_itp",
+                    "_yadonpy_mseminario_json",
+                    "_yadonpy_bonded_itp",
+                    "_yadonpy_bonded_json",
+                    "_yadonpy_bonded_method",
+                    "_yadonpy_bonded_override",
+                    "_yadonpy_bonded_requested",
+                    "_yadonpy_bonded_explicit",
+                    "_yadonpy_bonded_signature",
+                ):
                     v = meta.get(k)
                     if isinstance(v, str) and v.strip():
                         mol.SetProp(k, v.strip())
@@ -168,6 +226,110 @@ def load_atomic_charges_json(mol, path, *, strict: bool = True) -> bool:
         return True
     except Exception:
         return False
+
+def _read_sdf_one(path: Path):
+    """Read a single-molecule SDF file."""
+    sup = Chem.SDMolSupplier(str(path), removeHs=False)
+    if not sup or sup[0] is None:
+        raise ValueError(f"Cannot read molecule from SDF: {path}")
+    return sup[0]
+
+
+def _write_sdf_one(mol, path: Path) -> None:
+    """Write a single RDKit molecule to SDF."""
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    w = Chem.SDWriter(str(p))
+    w.write(mol)
+    w.close()
+
+
+def _copy_geometry_inplace(dst, src) -> None:
+    """Copy the first conformer from ``src`` onto ``dst`` in place."""
+    if int(dst.GetNumAtoms()) != int(src.GetNumAtoms()):
+        raise ValueError('Atom count mismatch while restoring geometry')
+    try:
+        dst.RemoveAllConformers()
+    except Exception:
+        try:
+            for cid in range(int(dst.GetNumConformers()) - 1, -1, -1):
+                dst.RemoveConformer(cid)
+        except Exception:
+            pass
+
+    conf_src = src.GetConformer(0)
+    conf = Chem.Conformer(int(src.GetNumAtoms()))
+    conf.Set3D(bool(conf_src.Is3D()))
+    pos = conf_src.GetPositions()
+    for i in range(int(src.GetNumAtoms())):
+        conf.SetAtomPosition(i, Geom.Point3D(float(pos[i, 0]), float(pos[i, 1]), float(pos[i, 2])))
+    dst.AddConformer(conf, assignId=True)
+
+
+def _load_energy_json(path: Path):
+    p = Path(path)
+    if not p.exists():
+        return None
+    try:
+        obj = json.loads(p.read_text(encoding='utf-8'))
+        return obj.get('energy')
+    except Exception:
+        return None
+
+
+def _save_energy_json(path: Path, energy, *, log_name: str) -> None:
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    obj = {
+        'log_name': str(log_name),
+        'energy': energy,
+    }
+    p.write_text(json.dumps(obj, indent=2, ensure_ascii=False) + '\n', encoding='utf-8')
+
+
+def _reattach_bonded_patch_metadata(mol, *, work_dir_root, log_name: str) -> bool:
+    """Best-effort restore of bonded patch metadata from the standard QM folder."""
+    try:
+        task_dir = Path(work_dir_root) / '01_qm' / '07_bonded_params' / str(log_name)
+    except Exception:
+        return False
+    if not task_dir.exists():
+        return False
+
+    method = None
+    itp_path = None
+    json_path = None
+    candidates = [
+        ('DRIH', task_dir / 'bonded_drih_patch.itp', task_dir / 'bonded_drih_params.json'),
+        ('mseminario', task_dir / 'bond_angle_params.itp', task_dir / 'bond_angle_params.json'),
+    ]
+    for meth, itp_cand, json_cand in candidates:
+        if itp_cand.exists() or json_cand.exists():
+            method = meth
+            itp_path = itp_cand if itp_cand.exists() else None
+            json_path = json_cand if json_cand.exists() else None
+            break
+
+    if method is None:
+        return False
+
+    try:
+        if itp_path is not None:
+            if method == 'mseminario':
+                mol.SetProp('_yadonpy_mseminario_itp', str(itp_path.resolve()))
+            mol.SetProp('_yadonpy_bonded_itp', str(itp_path.resolve()))
+        if json_path is not None:
+            if method == 'mseminario':
+                mol.SetProp('_yadonpy_mseminario_json', str(json_path.resolve()))
+            mol.SetProp('_yadonpy_bonded_json', str(json_path.resolve()))
+        mol.SetProp('_yadonpy_bonded_method', str(method))
+        mol.SetProp('_yadonpy_bonded_requested', str(method).lower())
+        mol.SetProp('_yadonpy_bonded_signature', str(method).lower())
+        mol.SetProp('_yadonpy_bonded_override', '1')
+        return True
+    except Exception:
+        return False
+
 
 def _set_total_charge_multiplicity(mol, total_charge, total_multiplicity, kwargs):
     """Populate kwargs for QMw with correct total charge/multiplicity.
@@ -188,6 +350,17 @@ def _set_total_charge_multiplicity(mol, total_charge, total_multiplicity, kwargs
     # Multiplicity
     if type(total_multiplicity) is int:
         kwargs['multiplicity'] = int(total_multiplicity)
+    elif total_multiplicity is None:
+        # Best-effort open-shell detection from SMILES/RDKit radical electrons.
+        # This is necessarily approximate; users can always override explicitly.
+        try:
+            n_rad = 0
+            for _a in mol.GetAtoms():
+                n_rad += int(_a.GetNumRadicalElectrons())
+            if n_rad > 0:
+                kwargs['multiplicity'] = int(n_rad + 1)
+        except Exception:
+            pass
 
     return kwargs
 
@@ -204,16 +377,19 @@ def assign_charges(
     log_name=None,
     qm_solver='psi4',
     # OPT level (geometry)
+    # NOTE: Psi4 method keyword must be something it actually provides.
+    # In Psi4 v1.10, plain "wb97m" is NOT available, while "wb97m-d3bj" is.
+    # We keep the working default and treat "wb97m" as an alias elsewhere.
     opt_method='wb97m-d3bj',
-    opt_basis='6-31G(d,p)',
-    opt_basis_gen={'Br': '6-31G(d,p)', 'I': 'lanl2dz'},
+    opt_basis='def2-SVP',
+    opt_basis_gen={'Br': 'def2-SVP', 'I': 'def2-SVP'},
     geom_iter=50,
     geom_conv='QCHEM',
     geom_algorithm='RFO',
     # RESP/ESP level (single point)
     charge_method='wb97m-d3bj',
     charge_basis='def2-TZVP',
-    charge_basis_gen={'Br': 'def2-TZVP', 'I': 'lanl2dz'},
+    charge_basis_gen={'Br': 'def2-TZVP', 'I': 'def2-TZVP'},
     # behavior toggles
     auto_level: bool = True,
     bonded_params: str = 'auto',
@@ -221,6 +397,7 @@ def assign_charges(
     total_multiplicity=None,
     symmetrize=True,
     symmetrize_geometry: bool = True,
+    restart: Optional[bool] = None,
     **kwargs,
 ):
     """
@@ -233,7 +410,7 @@ def assign_charges(
         mol: RDKit Mol object
 
     Optional args:
-        charge: Select charge type of gasteiger, RESP, ESP, Mulliken, Lowdin, or zero (str, default:RESP)
+        charge: Select charge type of gasteiger, RESP, ESP, Mulliken, Lowdin, zero, CM1A, <scale>*CM1A, CM5, or <scale>*CM5 (str, default:RESP)
         confID: Target conformer ID (int)
         opt: Do optimization (boolean)
         work_dir: Work directory path (str)
@@ -250,28 +427,48 @@ def assign_charges(
         boolean
     """
 
+    # ------------------------------------------------------------------
+    # Normalize "Default" placeholders.
+    #
+    # In higher-level workflows (e.g., MolDB template.csv) users may write
+    # method/basis_set as "Default". Psi4 does not recognize "default" as a
+    # real method name, so we map it back to YadonPy's built-in defaults.
+    # ------------------------------------------------------------------
+    def _is_default_token(x) -> bool:
+        try:
+            s = str(x).strip().lower()
+        except Exception:
+            return False
+        return s in ("default", "none", "nan", "null", "")
+
+    if _is_default_token(opt_method):
+        opt_method = 'wb97m-d3bj'
+    if _is_default_token(opt_basis):
+        opt_basis = 'def2-SVP'
+    if _is_default_token(charge_method):
+        charge_method = 'wb97m-d3bj'
+    if _is_default_token(charge_basis):
+        charge_basis = 'def2-TZVP'
+
     # If the caller didn't provide an explicit name, use (and persist) a stable
     # molecule name. If no name was set, we infer the caller's Python variable
     # name (e.g., solvent_A) best-effort.
     if log_name is None:
         try:
-            log_name = utils.ensure_name(mol, name=None, depth=1)
+            # Called from this wrapper; use depth=2 to inspect user-script frames.
+            log_name = utils.ensure_name(mol, name=None, depth=2, prefer_var=True)
         except Exception:
             log_name = None
     if not log_name:
         log_name = 'charge'
 
-    # Log the goal and SMILES for reproducibility
-    try:
-        if mol.HasProp('_yadonpy_input_smiles'):
-            _smi = mol.GetProp('_yadonpy_input_smiles')
-        elif mol.HasProp('_yadonpy_smiles'):
-            _smi = mol.GetProp('_yadonpy_smiles')
-        else:
-            _smi = Chem.MolToSmiles(mol)
-    except Exception:
-        _smi = '?'
-    utils.yadon_print(f"QM task: assign_charges (charge={charge}, opt={opt}) purpose={log_name} smiles={_smi}", level=1)
+    t_qm = _qm_begin(
+        "QM charge assignment",
+        log_name=str(log_name),
+        mol=mol,
+        detail=f"charge={charge} | opt={bool(opt)}",
+    )
+    _smi = _qm_smiles(mol)
 
     # ------------------------------------------------------------------
     # Work dir hygiene: keep work_dir clean by writing QM artifacts under
@@ -282,6 +479,26 @@ def assign_charges(
         work_dir_root, work_dir = _qm_task_dir(work_dir, log_name=str(log_name), task="charge")
         if tmp_dir is None:
             tmp_dir = work_dir
+
+    restart_flag = resolve_restart(restart)
+    charged_sdf = None
+    charges_json = None
+    cached_charge_hit = False
+    if work_dir_root is not None:
+        charged_sdf = Path(work_dir) / f"{log_name}.charged.sdf"
+        charges_json = Path(work_dir_root) / "01_qm" / "90_charged_mol2" / f"{log_name}.charges.json"
+        if restart_flag and charges_json.exists() and ((not bool(opt)) or charged_sdf.exists()):
+            try:
+                if charged_sdf.exists():
+                    cached = _read_sdf_one(charged_sdf)
+                    _copy_geometry_inplace(mol, cached)
+                if not load_atomic_charges_json(mol, charges_json, strict=True):
+                    raise RuntimeError(f"Failed to load cached charges from {charges_json}")
+                _reattach_bonded_patch_metadata(mol, work_dir_root=work_dir_root, log_name=str(log_name))
+                cached_charge_hit = True
+                _qm_log(f"[SKIP] Reused cached charges | file={charges_json.name}", level=1)
+            except Exception as e:
+                utils.yadon_print(f"QM restart warning: cached assign_charges restore failed for {log_name}: {e}; recomputing.", level=2)
 
     # ------------------------------------------------------------------
     # For small inorganic ions (PF6-, BF4-, ClO4-...) RDKit/MMFF can be
@@ -313,42 +530,42 @@ def assign_charges(
     is_inorganic = False
     is_poly_ion = False
     fc = 0
+    n_rad = 0
     try:
         is_inorganic = utils.is_inorganic_ion_like(mol, smiles_hint=smiles_hint)
         is_poly_ion = utils.is_inorganic_polyatomic_ion(mol, smiles_hint=smiles_hint)
         for a in mol.GetAtoms():
             fc += int(a.GetFormalCharge())
+            n_rad += int(a.GetNumRadicalElectrons())
     except Exception:
         pass
 
-    if auto_level and is_inorganic:
-        # Keep functional consistent across species (RadonPy-style).
-        # We only auto-adjust **basis sets** for numeric stability (diffuse functions).
+    # Auto-infer charge/multiplicity (best-effort) if not explicitly provided.
+    eff_charge = int(total_charge) if type(total_charge) is int else int(fc)
+    if (total_multiplicity is None) and (type(total_multiplicity) is not int):
+        if n_rad > 0:
+            total_multiplicity = int(n_rad + 1)
 
-        # Inorganic anions (PF6-, BF4-, ClO4-...): keep it SIMPLE and robust.
-        # User preference:
-        #   OPT: 6-31+G(d,p)
-        #   RESP(ESP) single point: 6-311+G(2d,p)
-        # Both include diffuse (+) and polarization; functional remains as provided.
-        if fc < 0:
-            if str(opt_basis).lower() in (
-                "6-31g(d,p)", "6-31g(d)", "6-31+g(d,p)", "def2-svp", "def2-svpd",
-                "ma-def2-svpd", "ma-def2-svp",
-            ):
-                opt_basis = "6-31+G(d,p)"
-            if str(charge_basis).lower() in (
-                "6-31g(d)", "def2-tzvp", "def2-tzvpd", "ma-def2-tzvppd", "ma-def2-tzvpd",
-                "6-311+g(2d,p)", "6-311+g(d,p)",
-            ):
-                charge_basis = "6-311+G(2d,p)"
-        else:
-            # Inorganic cations: keep moderate ESP basis
-            if str(charge_basis).lower() in ("6-31g(d)",):
-                charge_basis = "def2-TZVP"
+    # Default level policy (2026-03): switch diffuse basis for anions.
+    #   anions : OPT def2-SVPD ; ESP def2-TZVPD
+    #   others : OPT def2-SVP  ; ESP def2-TZVP
+    if auto_level and eff_charge < 0:
+        try:
+            if str(opt_basis).strip().lower() == 'def2-svp':
+                opt_basis = 'def2-SVPD'
+                opt_basis_gen = {'Br': 'def2-SVPD', 'I': 'def2-SVPD', **(opt_basis_gen or {})}
+        except Exception:
+            pass
+        try:
+            if str(charge_basis).strip().lower() == 'def2-tzvp':
+                charge_basis = 'def2-TZVPD'
+                charge_basis_gen = {'Br': 'def2-TZVPD', 'I': 'def2-TZVPD', **(charge_basis_gen or {})}
+        except Exception:
+            pass
 
     # Echo the chosen levels to screen
-    utils.yadon_print(
-        f"QM levels: OPT={str(opt_method)}/{str(opt_basis)} | RESP(ESP)={str(charge_method)}/{str(charge_basis)}",
+    _qm_log(
+        f"[ITEM] levels            : OPT={str(opt_method)}/{str(opt_basis)} | RESP(ESP)={str(charge_method)}/{str(charge_basis)}",
         level=1,
     )
 
@@ -393,17 +610,18 @@ def assign_charges(
             **kwargs,
         )
 
-    flag = _attempt_levels(opt_basis, charge_basis)
-    if (not flag) and auto_level and is_inorganic:
+    if cached_charge_hit:
+        flag = True
+    else:
+        flag = _attempt_levels(opt_basis, charge_basis)
+    if (not flag) and (not cached_charge_hit) and auto_level and is_inorganic:
         # Minimal, robust fallback ladder (avoid over-complicated basis shopping).
         # 1) Keep the functional, relax basis to commonly available sets.
         trials = [
-            ("6-31G(d,p)", "6-311+G(2d,p)"),
-            ("6-31+G(d,p)", "6-311+G(d,p)"),
-            ("6-31G(d,p)", "6-311+G(d,p)"),
-            ("def2-SVPD", "def2-TZVPPD"),
+            ("def2-SVP", "def2-TZVP"),
             ("def2-SVPD", "def2-TZVPD"),
-            ("def2-SVPD", "def2-TZVP"),
+            ("def2-SVPD", "def2-TZVPPD"),
+            ("def2-SVP", "def2-TZVPD"),
         ]
         for ob, cb in trials:
             utils.yadon_print(f"QM retry with basis: OPT={ob} | RESP(ESP)={cb}", level=2)
@@ -488,70 +706,94 @@ def assign_charges(
 
     if flag and work_dir_root is not None and is_poly_ion and (_bp in ('mseminario', 'drih')):
         try:
-            # Always re-symmetrize right before generating bonded params (best-effort).
-            if symmetrize_geometry:
-                try:
-                    if utils.is_high_symmetry_polyhedral_ion(mol, smiles_hint=smiles_hint):
-                        utils.symmetrize_polyhedral_ion_geometry(mol, confId=confId)
-                except Exception:
-                    pass
+            # Reuse an existing bonded patch during restart whenever possible.
+            existing_method = None
+            existing_itp = None
+            try:
+                if mol.HasProp('_yadonpy_bonded_method'):
+                    existing_method = str(mol.GetProp('_yadonpy_bonded_method')).strip().lower()
+                if mol.HasProp('_yadonpy_bonded_itp'):
+                    cand = Path(str(mol.GetProp('_yadonpy_bonded_itp')).strip())
+                    if cand.is_file():
+                        existing_itp = cand
+            except Exception:
+                existing_method = None
+                existing_itp = None
 
-            if _bp == 'drih':
-                utils.yadon_print(f"QM task: bonded_params (DRIH) purpose={log_name}", level=1)
-                res = bond_angle_params_drih(
-                    mol,
-                    confId=confId,
-                    work_dir=str(work_dir_root),
-                    log_name=str(log_name),
-                    smiles_hint=smiles_hint,
-                )
-                if res.get('itp'):
-                    try:
-                        mol.SetProp('_yadonpy_bonded_itp', str(res['itp']))
-                        mol.SetProp('_yadonpy_bonded_json', str(res.get('json', '')))
-                        mol.SetProp('_yadonpy_bonded_method', 'DRIH')
-                    except Exception:
-                        pass
+            want = 'drih' if _bp == 'drih' else 'mseminario'
+            if restart_flag and existing_itp is not None and existing_method == want:
+                _qm_log(f"[SKIP] Reused cached bonded params | method={want} | file={existing_itp.name}", level=1)
             else:
-                # For anionic polyions, use a stronger Hessian basis aligned with the RESP/ESP single-point
-                hess_method = str(charge_method) if fc < 0 else str(opt_method)
-                if fc < 0:
-                    hess_basis = str(charge_basis)
-                    hess_basis_gen = charge_basis_gen
-                else:
-                    hess_basis = str(opt_basis)
-                    hess_basis_gen = opt_basis_gen
-
-                utils.yadon_print(
-                    f"QM task: bonded_params (mseminario, bond+angle) purpose={log_name} opt={opt_method}/{opt_basis} hess={hess_method}/{hess_basis}",
-                    level=1,
-                )
-                res = bond_angle_params_mseminario(
-                    mol,
-                    confId=confId,
-                    opt=False,
-                    work_dir=str(work_dir_root),
-                    tmp_dir=tmp_dir,
-                    log_name=str(log_name),
-                    qm_solver=qm_solver,
-                    opt_method=str(opt_method),
-                    opt_basis=str(opt_basis),
-                    hess_method=hess_method,
-                    hess_basis=hess_basis,
-                    hess_basis_gen=hess_basis_gen,
-                    total_charge=total_charge,
-                    total_multiplicity=total_multiplicity,
-                )
-                if res.get('itp'):
+                # Always re-symmetrize right before generating bonded params (best-effort).
+                if symmetrize_geometry:
                     try:
-                        mol.SetProp('_yadonpy_mseminario_itp', str(res['itp']))
-                        mol.SetProp('_yadonpy_mseminario_json', str(res.get('json', '')))
-                        # also populate generic keys for downstream injection
-                        mol.SetProp('_yadonpy_bonded_itp', str(res['itp']))
-                        mol.SetProp('_yadonpy_bonded_json', str(res.get('json', '')))
-                        mol.SetProp('_yadonpy_bonded_method', 'mseminario')
+                        if utils.is_high_symmetry_polyhedral_ion(mol, smiles_hint=smiles_hint):
+                            utils.symmetrize_polyhedral_ion_geometry(mol, confId=confId)
                     except Exception:
                         pass
+
+                if _bp == 'drih':
+                    utils.yadon_print(f"QM task: bonded_params (DRIH) purpose={log_name}", level=1)
+                    res = bond_angle_params_drih(
+                        mol,
+                        confId=confId,
+                        work_dir=str(work_dir_root),
+                        log_name=str(log_name),
+                        smiles_hint=smiles_hint,
+                    )
+                    if res.get('itp'):
+                        try:
+                            mol.SetProp('_yadonpy_bonded_itp', str(res['itp']))
+                            mol.SetProp('_yadonpy_bonded_json', str(res.get('json', '')))
+                            mol.SetProp('_yadonpy_bonded_method', 'DRIH')
+                            mol.SetProp('_yadonpy_bonded_requested', 'drih')
+                            mol.SetProp('_yadonpy_bonded_signature', 'drih')
+                            mol.SetProp('_yadonpy_bonded_override', '1')
+                        except Exception:
+                            pass
+                else:
+                    # For anionic polyions, use a stronger Hessian basis aligned with the RESP/ESP single-point
+                    hess_method = str(charge_method) if fc < 0 else str(opt_method)
+                    if fc < 0:
+                        hess_basis = str(charge_basis)
+                        hess_basis_gen = charge_basis_gen
+                    else:
+                        hess_basis = str(opt_basis)
+                        hess_basis_gen = opt_basis_gen
+
+                    utils.yadon_print(
+                        f"QM task: bonded_params (mseminario, bond+angle) purpose={log_name} opt={opt_method}/{opt_basis} hess={hess_method}/{hess_basis}",
+                        level=1,
+                    )
+                    res = bond_angle_params_mseminario(
+                        mol,
+                        confId=confId,
+                        opt=False,
+                        work_dir=str(work_dir_root),
+                        tmp_dir=tmp_dir,
+                        log_name=str(log_name),
+                        qm_solver=qm_solver,
+                        opt_method=str(opt_method),
+                        opt_basis=str(opt_basis),
+                        hess_method=hess_method,
+                        hess_basis=hess_basis,
+                        hess_basis_gen=hess_basis_gen,
+                        total_charge=total_charge,
+                        total_multiplicity=total_multiplicity,
+                    )
+                    if res.get('itp'):
+                        try:
+                            mol.SetProp('_yadonpy_mseminario_itp', str(res['itp']))
+                            mol.SetProp('_yadonpy_mseminario_json', str(res.get('json', '')))
+                            # also populate generic keys for downstream injection
+                            mol.SetProp('_yadonpy_bonded_itp', str(res['itp']))
+                            mol.SetProp('_yadonpy_bonded_json', str(res.get('json', '')))
+                            mol.SetProp('_yadonpy_bonded_method', 'mseminario')
+                            mol.SetProp('_yadonpy_bonded_requested', 'mseminario')
+                            mol.SetProp('_yadonpy_bonded_signature', 'mseminario')
+                            mol.SetProp('_yadonpy_bonded_override', '1')
+                        except Exception:
+                            pass
         except Exception as e:
             # Non-fatal: keep the workflow moving; topology will fall back to GAFF.
             utils.yadon_print(f"QM warning: bonded-params({_bp}) failed for {log_name}: {e}", level=2)
@@ -560,12 +802,12 @@ def assign_charges(
     try:
         # Export a charged MOL2 + JSON in a predictable module folder.
         if work_dir_root is not None:
-            from ..io.mol2 import write_mol2_from_rdkit
+            from ..io.mol2 import write_mol2
 
             # Keep QM module exports grouped and sortable.
             d = Path(work_dir_root) / "01_qm" / "90_charged_mol2"
             d.mkdir(parents=True, exist_ok=True)
-            write_mol2_from_rdkit(mol=mol, out_mol2=d / f"{log_name}.mol2", mol_name=str(log_name))
+            write_mol2(mol=mol, out_mol2=d / f"{log_name}.mol2", mol_name=str(log_name))
 
             # Also write JSON charges for easy resuming.
             try:
@@ -580,13 +822,20 @@ def assign_charges(
     if not flag:
         raise RuntimeError(f"Charge assignment failed (charge={charge}) for {log_name}")
 
+    try:
+        if charged_sdf is not None:
+            _write_sdf_one(mol, charged_sdf)
+    except Exception as e:
+        utils.yadon_print(f"QM restart warning: failed to save charged SDF for {log_name}: {e}", level=2)
+
+    _qm_done("QM charge assignment", t_qm, detail=f"charge_model={charge}")
     return flag
         
 
 def conformation_search(mol, ff=None, nconf=1000, dft_nconf=4, etkdg_ver=2, rmsthresh=0.5, tfdthresh=0.02, clustering='TFD', qm_solver='psi4',
-    opt_method='wb97m-d3bj', opt_basis='6-31G(d,p)', opt_basis_gen={'Br': '6-31G(d,p)', 'I': 'lanl2dz'},
+    opt_method='wb97m-d3bj', opt_basis='def2-SVP', opt_basis_gen={'Br': 'def2-SVP', 'I': 'def2-SVP'},
     geom_iter=50, geom_conv='QCHEM', geom_algorithm='RFO', log_name=None, work_dir=None, tmp_dir=None,
-    etkdg_omp=-1, psi4_omp=-1, psi4_mp=0, mm_mp=0, memory=1000, mm_solver='rdkit', gmx_refine_n=0, gmx_ntomp=None, gmx_ntmpi=None, gmx_gpu_id=None, total_charge=None, total_multiplicity=None, **kwargs):
+    etkdg_omp=-1, psi4_omp=-1, psi4_mp=0, mm_mp=0, memory=1000, mm_solver='rdkit', gmx_refine_n=0, gmx_ntomp=None, gmx_ntmpi=None, gmx_gpu_id=None, total_charge=None, total_multiplicity=None, restart: Optional[bool] = None, **kwargs):
     """
     sim.qm.conformation_search
 
@@ -617,21 +866,18 @@ def conformation_search(mol, ff=None, nconf=1000, dft_nconf=4, etkdg_ver=2, rmst
     # Default naming: if log_name is not provided, use the molecule's name.
     if log_name is None:
         try:
-            log_name = utils.ensure_name(mol, name=None, depth=1)
+            # Called from this wrapper; use depth=2 to inspect user-script frames.
+            log_name = utils.ensure_name(mol, name=None, depth=2, prefer_var=True)
         except Exception:
             log_name = 'mol'
 
-    # Log the goal and SMILES for reproducibility
-    try:
-        if mol.HasProp('_yadonpy_input_smiles'):
-            _smi = mol.GetProp('_yadonpy_input_smiles')
-        elif mol.HasProp('_yadonpy_smiles'):
-            _smi = mol.GetProp('_yadonpy_smiles')
-        else:
-            _smi = Chem.MolToSmiles(mol)
-    except Exception:
-        _smi = '?'
-    utils.yadon_print(f"QM task: conformation_search purpose={log_name} smiles={_smi}", level=1)
+    t_qm = _qm_begin(
+        "QM conformation search",
+        log_name=str(log_name),
+        mol=mol,
+        detail=f"nconf={int(nconf)} | dft_nconf={int(dft_nconf)}",
+    )
+    _smi = _qm_smiles(mol)
     # Compatibility: some scripts mistakenly pass MD runtime keys (mpi/omp) into QM helpers.
     # - "omp" here should NOT be used for Psi4; use psi4_omp instead. We drop it to avoid crashes.
     # - "mpi" is an MD setting and is ignored here.
@@ -656,19 +902,73 @@ def conformation_search(mol, ff=None, nconf=1000, dft_nconf=4, etkdg_ver=2, rmst
             _smi = Chem.MolToSmiles(mol)
     except Exception:
         _smi = '?'
-    utils.yadon_print(f"QM task: conformation_search (nconf={nconf}, dft_nconf={dft_nconf}) purpose={log_name} smiles={_smi}", level=1)
+    _qm_log(f"[ITEM] search_config     : smiles={_smi} | nconf={nconf} | dft_nconf={dft_nconf}", level=1)
+
+    # ------------------------------------------------------------------
+    # Auto-infer charge and multiplicity from SMILES/RDKit (best-effort)
+    # and apply default basis policy (2026-03).
+    #
+    #   anions : OPT def2-SVPD / wb97m
+    #   others : OPT def2-SVP  / wb97m
+    # ------------------------------------------------------------------
+    try:
+        fc = 0
+        n_rad = 0
+        for a in mol.GetAtoms():
+            fc += int(a.GetFormalCharge())
+            n_rad += int(a.GetNumRadicalElectrons())
+        eff_charge = int(total_charge) if type(total_charge) is int else int(fc)
+        if (type(total_charge) is not int) and eff_charge != 0:
+            total_charge = int(eff_charge)
+        if (type(total_multiplicity) is not int) and (total_multiplicity is None) and (n_rad > 0):
+            total_multiplicity = int(n_rad + 1)
+        if eff_charge < 0 and str(opt_basis).strip().lower() == 'def2-svp':
+            opt_basis = 'def2-SVPD'
+            opt_basis_gen = {'Br': 'def2-SVPD', 'I': 'def2-SVPD', **(opt_basis_gen or {})}
+    except Exception:
+        pass
 
     # ------------------------------------------------------------------
     # Work dir hygiene: keep work_dir clean by writing QM artifacts under
     #   work_dir/01_qm/<log_name>/confsearch/
     # ------------------------------------------------------------------
+    conf_sdf = None
+    energy_json = None
     if work_dir is not None:
         _root, work_dir = _qm_task_dir(work_dir, log_name=str(log_name), task="confsearch")
         if tmp_dir is None:
             tmp_dir = work_dir
+        conf_sdf = Path(work_dir) / f"{log_name}.opt.sdf"
+        energy_json = Path(work_dir) / f"{log_name}.energy.json"
+
+    restart_flag = resolve_restart(restart)
+    if restart_flag and conf_sdf is not None and conf_sdf.exists():
+        try:
+            cached = _read_sdf_one(conf_sdf)
+            _copy_geometry_inplace(mol, cached)
+            energy = _load_energy_json(energy_json) if energy_json is not None else None
+            _qm_log(f"[SKIP] Reused cached conformer | file={conf_sdf.name}", level=1)
+            _qm_done("QM conformation search", t_qm, detail="restart cache hit")
+            return mol, energy
+        except Exception as e:
+            utils.yadon_print(f"QM restart warning: cached conformation_search restore failed for {log_name}: {e}; recomputing.", level=2)
 
 
-    mol, energy = calc.conformation_search(mol, ff=ff, nconf=nconf, dft_nconf=dft_nconf, etkdg_ver=etkdg_ver, rmsthresh=rmsthresh, qm_solver=qm_solver,
+    # ------------------------------------------------------------------
+    # IMPORTANT robustness note
+    # ------------------------------------------------------------------
+    # `core.calc.conformation_search` deep-copies the input and returns a *new*
+    # RDKit Mol. This is easy to misuse when molecules are iterated in a list.
+    # If users do not rebind the returned Mol back to their variables, later
+    # steps (RESP, polymerization, export) will operate on the *old* Mol object
+    # without 3D geometry/charges.
+    #
+    # We therefore apply the optimized geometry back onto the *input* Mol in
+    # place (best-effort) and return the original object. Scripts that rebind
+    # the return value keep working.
+    mol_in = mol
+
+    mol_out, energy = calc.conformation_search(mol_in, ff=ff, nconf=nconf, dft_nconf=dft_nconf, etkdg_ver=etkdg_ver, rmsthresh=rmsthresh, qm_solver=qm_solver,
                 tfdthresh=tfdthresh, clustering=clustering, opt_method=opt_method, opt_basis=opt_basis,
                 opt_basis_gen=opt_basis_gen, geom_iter=geom_iter, geom_conv=geom_conv, geom_algorithm=geom_algorithm, log_name=log_name, work_dir=work_dir, tmp_dir=tmp_dir,
                 etkdg_omp=etkdg_omp, psi4_omp=psi4_omp, psi4_mp=psi4_mp, mm_mp=mm_mp, memory=memory,
@@ -679,20 +979,61 @@ def conformation_search(mol, ff=None, nconf=1000, dft_nconf=4, etkdg_ver=2, rmst
     # RDKit's CombineMols warns (and may drop coords) if molecules have different numbers of conformers.
     # Keep only the lowest-energy conformer (ID 0) to make behavior deterministic and robust.
     try:
-        n_c = int(mol.GetNumConformers())
+        n_c = int(mol_out.GetNumConformers())
         if n_c > 1:
             for cid in range(n_c - 1, 0, -1):
-                mol.RemoveConformer(cid)
+                mol_out.RemoveConformer(cid)
     except Exception:
         pass
 
-    return mol, energy
+    # Best-effort: copy the resulting geometry back to the input molecule.
+    # If this fails (e.g., atom count mismatch), fall back to returning mol_out.
+    try:
+        if int(mol_in.GetNumAtoms()) == int(mol_out.GetNumAtoms()):
+            # Replace conformers on the input molecule
+            try:
+                mol_in.RemoveAllConformers()
+            except Exception:
+                try:
+                    for cid in range(int(mol_in.GetNumConformers()) - 1, -1, -1):
+                        mol_in.RemoveConformer(cid)
+                except Exception:
+                    pass
+
+            conf = Chem.Conformer(int(mol_out.GetNumAtoms()))
+            conf.Set3D(True)
+            pos = mol_out.GetConformer(0).GetPositions()
+            for i in range(int(mol_out.GetNumAtoms())):
+                conf.SetAtomPosition(i, Geom.Point3D(float(pos[i, 0]), float(pos[i, 1]), float(pos[i, 2])))
+            mol_in.AddConformer(conf, assignId=True)
+            try:
+                if conf_sdf is not None:
+                    _write_sdf_one(mol_in, conf_sdf)
+                if energy_json is not None:
+                    _save_energy_json(energy_json, energy, log_name=str(log_name))
+            except Exception as e:
+                utils.yadon_print(f"QM restart warning: failed to save conformation_search cache for {log_name}: {e}", level=2)
+            _qm_done("QM conformation search", t_qm, detail="best conformer ready")
+            return mol_in, energy
+    except Exception:
+        pass
+
+    try:
+        if conf_sdf is not None:
+            _write_sdf_one(mol_out, conf_sdf)
+        if energy_json is not None:
+            _save_energy_json(energy_json, energy, log_name=str(log_name))
+    except Exception as e:
+        utils.yadon_print(f"QM restart warning: failed to save conformation_search cache for {log_name}: {e}", level=2)
+
+    _qm_done("QM conformation search", t_qm, detail="best conformer ready")
+    return mol_out, energy
 
 
 def sp_prop(mol, confId=0, opt=True, work_dir=None, tmp_dir=None, log_name='sp_prop', qm_solver='psi4',
-    opt_method='wb97m-d3bj', opt_basis='6-31G(d,p)', opt_basis_gen={'Br': '6-31G(d,p)', 'I': 'lanl2dz'}, 
+    opt_method='wb97m-d3bj', opt_basis='def2-SVP', opt_basis_gen={'Br': 'def2-SVP', 'I': 'def2-SVP'}, 
     geom_iter=50, geom_conv='QCHEM', geom_algorithm='RFO',
-    sp_method='wb97m-d3bj', sp_basis='6-311G(d,p)', sp_basis_gen={'Br': '6-311G(d,p)', 'I': 'lanl2dz'},
+    sp_method='wb97m-d3bj', sp_basis='def2-TZVP', sp_basis_gen={'Br': 'def2-TZVP', 'I': 'def2-TZVP'},
     total_charge=None, total_multiplicity=None, **kwargs):
     """
     sim.qm.sp_prop
@@ -731,6 +1072,25 @@ def sp_prop(mol, confId=0, opt=True, work_dir=None, tmp_dir=None, log_name='sp_p
             tmp_dir = work_dir
 
     kwargs = _set_total_charge_multiplicity(mol, total_charge, total_multiplicity, kwargs)
+
+    # Default basis policy (2026-03): use diffuse basis for anions.
+    try:
+        eff_charge = int(kwargs.get('charge', 0))
+    except Exception:
+        eff_charge = 0
+    if eff_charge < 0:
+        try:
+            if str(opt_basis).strip().lower() == 'def2-svp':
+                opt_basis = 'def2-SVPD'
+                opt_basis_gen = {'Br': 'def2-SVPD', 'I': 'def2-SVPD', **(opt_basis_gen or {})}
+        except Exception:
+            pass
+        try:
+            if str(sp_basis).strip().lower() == 'def2-tzvp':
+                sp_basis = 'def2-TZVPD'
+                sp_basis_gen = {'Br': 'def2-TZVPD', 'I': 'def2-TZVPD', **(sp_basis_gen or {})}
+        except Exception:
+            pass
 
     psi4mol = QMw(mol, confId=confId, work_dir=work_dir, tmp_dir=tmp_dir, method=opt_method, basis=opt_basis, basis_gen=opt_basis_gen, qm_solver=qm_solver,
                     name=log_name, **kwargs)
@@ -1170,7 +1530,6 @@ def refractive_index_sos(mols, density, ratio=None, wavelength=None, confId=0, o
 
     if type(mols) is Chem.Mol: mols = [mols]
     mol_weight = [calc.molecular_weight(mol) for mol in mols]
-
     p_data = {}
     a_list = []
     for i, mol in enumerate(mols):
@@ -1249,8 +1608,6 @@ def abbe_number_sos(mols, density, ratio=None, confId=0, opt=True, work_dir=None
             frequency dependent dipole polarizability tensor of repeating units (float, angstrom^3)
     """
     if type(mols) is Chem.Mol: mols = [mols]
-    mol_weight = [calc.molecular_weight(mol) for mol in mols]
-
     ri_data = refractive_index_sos(mols, density=density, ratio=ratio, wavelength=[656, 589, 486], confId=confId,
                             opt=opt, work_dir=work_dir, tmp_dir=tmp_dir, log_name=log_name, qm_solver=qm_solver,
                             opt_method=opt_method, opt_basis=opt_basis, opt_basis_gen=opt_basis_gen,
@@ -1292,6 +1649,9 @@ def bond_angle_params_mseminario(
     hess_basis_gen: Optional[Dict[str, Any]] = None,
     # Modified-Seminario options
     linear_angle_deg_cutoff: float = 175.0,
+    projection_mode: str = "abs",
+    keep_linear_angles: bool = True,
+    symmetrize_equivalents: bool = True,
     # Charge/multiplicity overrides
     total_charge: Optional[int] = None,
     total_multiplicity: Optional[int] = None,
@@ -1364,13 +1724,38 @@ def bond_angle_params_mseminario(
         except Exception:
             pass
 
-    # Hessian level (defaults to opt level)
+    # Hessian level (defaults to opt level, with diffuse basis for anions)
     if hess_method:
         psi4mol.method = hess_method
-    if hess_basis:
-        psi4mol.basis = hess_basis
-    if h_basis_gen is not None:
-        psi4mol.basis_gen = h_basis_gen
+
+    eff_total_charge = None
+    try:
+        if total_charge is not None:
+            eff_total_charge = int(total_charge)
+        else:
+            eff_total_charge = int(sum(int(a.GetFormalCharge()) for a in mol.GetAtoms()))
+    except Exception:
+        eff_total_charge = None
+
+    eff_hess_basis = hess_basis
+    eff_h_basis_gen = dict(h_basis_gen or {})
+    if not eff_hess_basis:
+        eff_hess_basis = opt_basis
+        if eff_total_charge is not None and eff_total_charge < 0:
+            base = str(opt_basis or '').strip()
+            if base in ('6-31G(d,p)', '6-31+G(d,p)', 'def2-SVP', 'def2-SVPD', 'def2-TZVP', 'def2-TZVPD'):
+                eff_hess_basis = 'def2-TZVPD'
+            elif 'TZVP' in base and 'D' not in base:
+                eff_hess_basis = base + 'D'
+    psi4mol.basis = eff_hess_basis
+
+    if eff_total_charge is not None and eff_total_charge < 0:
+        if 'Br' not in eff_h_basis_gen:
+            eff_h_basis_gen['Br'] = 'def2-TZVPD'
+        if 'I' not in eff_h_basis_gen:
+            eff_h_basis_gen['I'] = 'def2-TZVPD'
+    if eff_h_basis_gen is not None:
+        psi4mol.basis_gen = eff_h_basis_gen
 
     hess = psi4mol.hessian(wfn=True)
 
@@ -1379,6 +1764,9 @@ def bond_angle_params_mseminario(
         hess,
         confId=confId,
         linear_angle_deg_cutoff=float(linear_angle_deg_cutoff),
+        projection_mode=str(projection_mode),
+        keep_linear_angles=bool(keep_linear_angles),
+        symmetrize_equivalents=bool(symmetrize_equivalents),
     )
     params.setdefault("meta", {})
     params["meta"].update(
@@ -1388,14 +1776,16 @@ def bond_angle_params_mseminario(
             "opt_method": opt_method,
             "opt_basis": opt_basis,
             "hess_method": hess_method or opt_method,
-            "hess_basis": hess_basis or opt_basis,
+            "hess_basis": eff_hess_basis,
             "linear_angle_deg_cutoff": float(linear_angle_deg_cutoff),
+            "projection_mode": str(projection_mode),
+            "keep_linear_angles": bool(keep_linear_angles),
+            "symmetrize_equivalents": bool(symmetrize_equivalents),
         }
     )
 
     json_path = (task_dir / str(json_name)).resolve()
     json_path.write_text(json.dumps(params, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-
     itp_path = None
     if write_itp:
         itp_path = (task_dir / str(itp_name)).resolve()
@@ -1435,17 +1825,23 @@ def bond_angle_params_drih(
     k_bond_kj_mol_nm2: float = 350000.0,
     k_angle_kj_mol_rad2: float = 2500.0,
     k_angle_linear_kj_mol_rad2: float = 6000.0,
+    stiffness_scale: float = 1.0,
     write_itp: bool = True,
     itp_name: str = "bonded_drih_patch.itp",
     json_name: str = "bonded_drih_params.json",
 ) -> dict:
     """DRIH-like robust bonded parameterization for high-symmetry inorganic ions.
 
-    This is a **geometry-driven** stiffening method intended for AX4/AX6 ions
-    (PF6-, BF4-, ClO4-, AsF6- ...). It does not require a Hessian, and it
-    enforces symmetry by averaging all equivalent bonds/angles.
+    The early implementation used one global set of fixed force constants.
+    That was simple, but it made all AX4/AX6 ions look mechanically identical and
+    was also vulnerable to cache mix-ups with plain GAFF artifacts. This version
+    keeps the same low-dependency, no-Hessian philosophy, but strengthens it by:
 
-    Output format matches Seminario writer: params['bonds'/'angles'].
+    - exact geometry symmetrization for AX4/AX6 motifs;
+    - species-aware presets for common ions (PF6-, BF4-, ClO4-, AsF6-, SbF6-);
+    - mild bond-length scaling so unusually long/short geometries do not reuse a
+      completely inappropriate stiffness;
+    - explicit metadata that downstream caches/exporters can validate.
     """
     from ..core import utils as _u
     import numpy as np
@@ -1454,14 +1850,13 @@ def bond_angle_params_drih(
     task_dir = Path(work_dir) / "01_qm" / "07_bonded_params" / str(log_name)
     task_dir.mkdir(parents=True, exist_ok=True)
 
-    # Ensure geometry is symmetrized if possible
+    # Ensure geometry is symmetrized if possible.
     try:
         if _u.is_high_symmetry_polyhedral_ion(mol, smiles_hint=smiles_hint):
             _u.symmetrize_polyhedral_ion_geometry(mol, confId=int(confId))
     except Exception:
         pass
 
-    # Detect AX polyhedron
     hit = None
     try:
         hit = _u._detect_ax_polyhedron(mol)  # internal helper (center, lig_idxs, cn)
@@ -1476,18 +1871,57 @@ def bond_angle_params_drih(
         p = conf.GetAtomPosition(int(i))
         return np.array([p.x, p.y, p.z], dtype=float)
 
+    center_atom = mol.GetAtomWithIdx(int(center_idx))
+    ligand_atom = mol.GetAtomWithIdx(int(lig_idxs[0]))
+    center_sym = str(center_atom.GetSymbol())
+    ligand_sym = str(ligand_atom.GetSymbol())
+
     cpos = _pos(center_idx)
     lig_pos = [_pos(i) for i in lig_idxs]
 
-    # Bonds: all center-ligand
-    r0s = [float(np.linalg.norm(p - cpos)) for p in lig_pos]
-    r0_nm = float(np.mean(r0s)) * 0.1  # Angstrom -> nm
-    bonds = []
-    for i in lig_idxs:
-        bonds.append({"i": int(center_idx), "j": int(i), "r0_nm": float(r0_nm), "k_kj_mol_nm2": float(k_bond_kj_mol_nm2)})
+    # Species-aware presets. Values remain conservative GROMACS harmonic terms.
+    preset_map = {
+        ('P', 'F', 6): dict(k_bond=430000.0, k_cis=3200.0, k_trans=9500.0, tag='PF6'),
+        ('As', 'F', 6): dict(k_bond=390000.0, k_cis=3000.0, k_trans=9000.0, tag='AsF6'),
+        ('Sb', 'F', 6): dict(k_bond=370000.0, k_cis=2900.0, k_trans=8600.0, tag='SbF6'),
+        ('B', 'F', 4): dict(k_bond=470000.0, k_cis=3400.0, k_trans=3400.0, tag='BF4'),
+        ('Cl', 'O', 4): dict(k_bond=520000.0, k_cis=3200.0, k_trans=3200.0, tag='ClO4'),
+    }
+    preset = dict(preset_map.get((center_sym, ligand_sym, int(cn)), {}))
+    if not preset:
+        preset = dict(k_bond=float(k_bond_kj_mol_nm2), k_cis=float(k_angle_kj_mol_rad2), k_trans=float(k_angle_linear_kj_mol_rad2), tag='generic')
+    else:
+        # Allow user-level scaling on top of the species preset.
+        preset['k_bond'] = float(preset['k_bond'])
+        preset['k_cis'] = float(preset['k_cis'])
+        preset['k_trans'] = float(preset['k_trans'])
 
-    # Angles: all ligand-center-ligand
+    # Mild geometry scaling so obviously stretched/compressed coordinates do not
+    # inherit an unphysical preset unchanged.
+    r0s_a = [float(np.linalg.norm(p - cpos)) for p in lig_pos]
+    r0_avg_a = float(np.mean(r0s_a))
+    if r0_avg_a <= 1.0e-8:
+        raise ValueError('DRIH failed: zero bond length detected')
+    ref_a = 1.60 if cn == 6 else 1.45
+    length_scale = (ref_a / r0_avg_a) ** 4
+    length_scale = float(min(1.40, max(0.70, length_scale)))
+    total_scale = float(max(0.10, stiffness_scale)) * length_scale
+
+    k_bond_eff = float(preset['k_bond']) * total_scale
+    k_cis_eff = float(preset['k_cis']) * total_scale
+    k_trans_eff = float(preset['k_trans']) * total_scale
+
+    # Bonds: all center-ligand, symmetrized to the average radius.
+    r0_nm = float(r0_avg_a) * 0.1  # Angstrom -> nm
+    bonds = [
+        {"i": int(center_idx), "j": int(i), "r0_nm": float(r0_nm), "k_kj_mol_nm2": float(k_bond_eff)}
+        for i in lig_idxs
+    ]
+
+    # Angles: all ligand-center-ligand.
     angles = []
+    n_cis = 0
+    n_trans = 0
     for a in range(len(lig_idxs)):
         for b in range(a + 1, len(lig_idxs)):
             i = int(lig_idxs[a])
@@ -1502,17 +1936,18 @@ def bond_angle_params_drih(
             cosang = max(-1.0, min(1.0, cosang))
             ang = float(np.degrees(np.arccos(cosang)))
             if cn == 6:
-                # classify trans vs cis by angle
                 if ang > 150.0:
                     th0 = 180.0
-                    kk = float(k_angle_linear_kj_mol_rad2)
+                    kk = float(k_trans_eff)
+                    n_trans += 1
                 else:
                     th0 = 90.0
-                    kk = float(k_angle_kj_mol_rad2)
+                    kk = float(k_cis_eff)
+                    n_cis += 1
             else:
-                # tetrahedral
                 th0 = 109.471
-                kk = float(k_angle_kj_mol_rad2)
+                kk = float(k_cis_eff)
+                n_cis += 1
             angles.append({"i": i, "j": int(center_idx), "k": k, "theta0_deg": float(th0), "k_kj_mol_rad2": float(kk)})
 
     params = {
@@ -1521,9 +1956,17 @@ def bond_angle_params_drih(
             "cn": int(cn),
             "center_idx": int(center_idx),
             "ligand_indices": [int(x) for x in lig_idxs],
-            "k_bond_kj_mol_nm2": float(k_bond_kj_mol_nm2),
-            "k_angle_kj_mol_rad2": float(k_angle_kj_mol_rad2),
-            "k_angle_linear_kj_mol_rad2": float(k_angle_linear_kj_mol_rad2),
+            "center_symbol": center_sym,
+            "ligand_symbol": ligand_sym,
+            "preset": str(preset.get('tag', 'generic')),
+            "r0_avg_angstrom": float(r0_avg_a),
+            "length_scale": float(length_scale),
+            "stiffness_scale": float(stiffness_scale),
+            "k_bond_kj_mol_nm2": float(k_bond_eff),
+            "k_angle_kj_mol_rad2": float(k_cis_eff),
+            "k_angle_linear_kj_mol_rad2": float(k_trans_eff),
+            "n_cis_angles": int(n_cis),
+            "n_trans_angles": int(n_trans),
         },
         "bonds": bonds,
         "angles": angles,
@@ -1537,23 +1980,21 @@ def bond_angle_params_drih(
         itp_path = (task_dir / str(itp_name)).resolve()
         seminario.write_bond_angle_itp(mol, params, itp_path, comment="generated by yadonpy DRIH (bond+angle)")
 
-    # Attach patch paths for downstream writers
     try:
         if itp_path:
             mol.SetProp('_yadonpy_bonded_itp', str(itp_path))
         mol.SetProp('_yadonpy_bonded_json', str(json_path))
         mol.SetProp('_yadonpy_bonded_method', 'DRIH')
+        mol.SetProp('_yadonpy_bonded_signature', 'drih')
     except Exception:
         pass
 
-    # Also apply to mol props (best-effort)
     try:
         apply_mseminario_params_to_mol(mol, params)
     except Exception:
         pass
 
     return {"work_dir": str(task_dir), "json": str(json_path), "itp": str(itp_path) if itp_path else None, "params": params}
-
 
 def apply_mseminario_params_to_mol(mol: Chem.Mol, params: Dict[str, Any], *, overwrite: bool = True) -> None:
     """Apply (m)Seminario bond+angle parameters onto an RDKit mol.
@@ -1602,9 +2043,14 @@ def apply_mseminario_params_to_mol(mol: Chem.Mol, params: Dict[str, Any], *, ove
                 continue
         for apar in params.get("angles", []) or []:
             try:
-                a = int(apar["a"])
-                b = int(apar["b"])
-                c = int(apar["c"])
+                if "i" in apar or "j" in apar or "k" in apar:
+                    a = int(apar["i"])
+                    b = int(apar["j"])
+                    c = int(apar["k"])
+                else:
+                    a = int(apar["a"])
+                    b = int(apar["b"])
+                    c = int(apar["c"])
             except Exception:
                 continue
             k = ang_key_map.get((a, b, c))
@@ -1635,7 +2081,6 @@ def _psi4_basis_exists(basis: str, elements: Optional[List[str]] = None) -> bool
     """
     try:
         import psi4
-        from psi4.driver.qcdb.exceptions import BasisSetNotFound
         # Build a minimal molecule that contains at least one of each element we care about.
         elems = elements or ["H"]
         geom_lines = []
@@ -1645,7 +2090,7 @@ def _psi4_basis_exists(basis: str, elements: Optional[List[str]] = None) -> bool
         # Quiet build attempt
         _ = psi4.core.BasisSet.build(mol, "ORBITAL", basis, quiet=True)
         return True
-    except Exception as e:
+    except Exception:
         # BasisSetNotFound or any build error => treat as missing.
         return False
 
@@ -1655,6 +2100,5 @@ def _pick_first_available_basis(candidates: List[str], elements: Optional[List[s
             return b
     # Fall back to the last candidate (even if missing), let Psi4 error be explicit.
     return candidates[-1]
-
 
 

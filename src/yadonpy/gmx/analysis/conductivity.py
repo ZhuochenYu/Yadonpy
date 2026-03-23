@@ -15,6 +15,7 @@ from typing import Optional
 import numpy as np
 
 from .xvg import read_xvg
+from ..topology import parse_system_top
 
 import re
 
@@ -268,6 +269,115 @@ def conductivity_from_current_dsp(
         r2=float(r2),
         note=str(note),
     )
+
+
+def write_eh_dsp_from_unwrapped_positions(
+    *,
+    xtc: Path,
+    tpr: Path,
+    top: Path,
+    gro: Path,
+    out_dsp_xvg: Path,
+    temp_k: float,
+    vol_m3: float,
+    charge_threshold_e: float = 0.1,
+) -> Path:
+    r"""Write an EH-like `-dsp` curve from unwrapped positions (no velocities required).
+
+    Motivation
+    ----------
+    Some workflows do not write velocities (no `.trr`), which makes `gmx current -dsp`
+    unusable. The Einstein–Helfand conductivity can also be computed from the
+    *charge-weighted displacement* (Helfand moment):
+
+        M(t) = \sum_i q_i r_i(t)
+        \Delta M(t) = M(t) - M(0)
+
+    The EH prefactor gives:
+
+        y(t) = <|\Delta M(t)|^2> / (6 V k_B T)
+
+    When time is in ps, the slope of y(t) is (S/m)/ps, so multiplying by 1e12
+    yields S/m. This matches `conductivity_from_current_dsp()`.
+
+    Notes
+    -----
+    - This implementation uses a single time origin (t0), which is usually
+      sufficient for long trajectories (ns scale) and makes the fallback robust.
+    - Positions must be unwrapped (nojump). Callers should ensure the input
+      trajectory has no PBC jumps.
+    """
+    out_dsp_xvg = Path(out_dsp_xvg)
+    out_dsp_xvg.parent.mkdir(parents=True, exist_ok=True)
+
+    topo = parse_system_top(Path(top))
+    # Build per-atom charges for the full system in GRO order.
+    e_c = 1.602176634e-19
+    k_b = 1.380649e-23
+
+    charges_C: list[float] = []
+    ion_mask: list[bool] = []
+    for moltype, count in topo.molecules:
+        mt = topo.moleculetypes.get(moltype)
+        if mt is None:
+            continue
+        is_ion = abs(float(mt.net_charge)) >= float(charge_threshold_e)
+        q = [float(x) * e_c for x in mt.charges]
+        for _ in range(int(count)):
+            charges_C.extend(q)
+            ion_mask.extend([is_ion] * len(q))
+
+    # Determine atom count from the trajectory (most reliable).
+    try:
+        import mdtraj as md
+    except Exception as e:
+        raise ImportError("mdtraj is required for EH fallback from positions") from e
+
+    try:
+        fr0 = md.load_frame(str(xtc), 0, top=str(tpr))
+        n_atoms = int(fr0.n_atoms)
+    except Exception as e:
+        raise RuntimeError(f"Failed to read trajectory for EH fallback: {xtc}") from e
+
+    if len(charges_C) != n_atoms:
+        raise ValueError(
+            f"Atom count mismatch for EH fallback: topology charges len={len(charges_C)} vs traj n_atoms={n_atoms}. "
+            f"Check that {top} matches {xtc}."
+        )
+
+    qC = np.asarray(charges_C, dtype=float)
+    ion_idx = np.nonzero(np.asarray(ion_mask, dtype=bool))[0]
+    if ion_idx.size == 0:
+        raise ValueError("No ionic atoms selected for EH fallback (all moltypes are near-neutral).")
+
+    qC_ion = qC[ion_idx]
+
+    times_ps: list[float] = []
+    series: list[float] = []
+
+    # First frame reference moment.
+    r0_nm = fr0.xyz[0]  # (n_atoms,3) in nm
+    M0 = np.tensordot(r0_nm[ion_idx], qC_ion, axes=([0], [0])) * 1e-9  # (3,) C*m
+
+    # Stream trajectory to keep memory bounded.
+    for chunk in md.iterload(str(xtc), top=str(tpr), chunk=200):
+        r_nm = chunk.xyz  # (n_frames, n_atoms, 3)
+        # Charge-weighted moment for each frame: sum_i q_i r_i
+        M = np.tensordot(r_nm[:, ion_idx, :], qC_ion, axes=([1], [0])) * 1e-9  # (n_frames,3)
+        dM = M - M0[None, :]
+        msd_M = np.sum(dM * dM, axis=1)  # (n_frames,)
+        y = msd_M / (6.0 * float(vol_m3) * k_b * float(temp_k))
+        times_ps.extend([float(t) for t in chunk.time])
+        series.extend([float(v) for v in y])
+
+    if len(times_ps) < 10:
+        raise ValueError("Too few frames for EH fallback.")
+
+    # Write xvg (no metadata; consistent with xvg none used elsewhere).
+    with out_dsp_xvg.open("w", encoding="utf-8") as f:
+        for t, v in zip(times_ps, series):
+            f.write(f"{t:.6f} {v:.12e}\n")
+    return out_dsp_xvg
 
 
 

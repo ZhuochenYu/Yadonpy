@@ -19,6 +19,8 @@ class MoleculeType:
     atomtypes: List[str]
     atomnames: List[str]
     charges: List[float]
+    masses: List[float]
+    bonds: List[Tuple[int, int]]
 
     @property
     def natoms(self) -> int:
@@ -27,6 +29,10 @@ class MoleculeType:
     @property
     def net_charge(self) -> float:
         return float(sum(self.charges))
+
+    @property
+    def total_mass(self) -> float:
+        return float(sum(self.masses))
 
 
 @dataclass
@@ -53,6 +59,8 @@ def parse_itp(itp_path: Path) -> Optional[MoleculeType]:
     atomtypes: List[str] = []
     atomnames: List[str] = []
     charges: List[float] = []
+    masses: List[float] = []
+    bonds: List[Tuple[int, int]] = []
 
     for raw in lines:
         line = _strip_comment(raw)
@@ -81,10 +89,26 @@ def parse_itp(itp_path: Path) -> Optional[MoleculeType]:
             atomtypes.append(atype)
             atomnames.append(aname)
             charges.append(q)
+            try:
+                m = float(parts[7]) if len(parts) > 7 else 0.0
+            except Exception:
+                m = 0.0
+            masses.append(m)
+        elif section == 'bonds':
+            parts = line.split()
+            if len(parts) < 2:
+                continue
+            try:
+                ai = int(parts[0])
+                aj = int(parts[1])
+            except Exception:
+                continue
+            if ai >= 1 and aj >= 1:
+                bonds.append((ai, aj))
 
     if mol_name is None or not atomtypes:
         return None
-    return MoleculeType(name=mol_name, atomtypes=atomtypes, atomnames=atomnames, charges=charges)
+    return MoleculeType(name=mol_name, atomtypes=atomtypes, atomnames=atomnames, charges=charges, masses=masses, bonds=bonds)
 
 
 def parse_system_top(top_path: Path) -> SystemTopology:

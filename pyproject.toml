@@ -4,9 +4,9 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "yadonpy"
-version = "0.4.35"
+version = "0.8.53"
 description = "SMILES-driven workflow toolkit using GROMACS"
-requires-python = ">=3.9"
+requires-python = ">=3.11"
 authors = [{name = "YZC"}]
 readme = "README.md"
 license = {text = "BSD-3-Clause"}
@@ -16,8 +16,16 @@ dependencies = [
   "pandas",
   "matplotlib",
   "scipy",
+  "packaging",
+  "parmed",
   "rdkit>=2025.03.1",
+  "mdtraj",
 ]
+
+[project.optional-dependencies]
+accel = ["numba>=0.61"]
+test = ["pytest>=8"]
+
 
 [tool.setuptools]
 package-dir = {"" = "src"}
@@ -28,6 +36,10 @@ where = ["src"]
 [tool.setuptools.package-data]
 yadonpy = [
   "ff/ff_dat/*.json",
-  "resources/ff/*.json",
-  "resources/basic_top/**/*",
+  "core/pdb/*.pdb",
 ]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-q"

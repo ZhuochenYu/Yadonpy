@@ -8,5 +8,6 @@ knowledge, this project does not raise copyright issues.
 
 from .gromacs_top import AmberGaffScaling, defaults_block
 from .artifacts import write_molecule_artifacts
+from .gmx import write_gmx
 
-__all__ = ["AmberGaffScaling", "defaults_block", "write_molecule_artifacts"]
+__all__ = ["AmberGaffScaling", "defaults_block", "write_gmx", "write_molecule_artifacts"]

@@ -8,12 +8,15 @@ knowledge, this project does not raise copyright issues.
 
 from __future__ import annotations
 
+import math
+import time
 from dataclasses import dataclass
 from pathlib import Path
-import numpy as np
 from typing import Optional, Sequence
 
-from ..analysis.plot import plot_xvg_svg, plot_xvg_split_svg
+from ...io.mol2 import write_mol2_from_top_gro_parmed
+from ...runtime import resolve_restart
+from ..analysis.auto_plot import plot_thermo_stage
 from ..analysis.thermo import bulk_modulus_gpa_from_kappa_t, cp_molar_from_enthalpy, kappa_t_from_volume, summarize_terms_xvg
 from ..analysis.xvg import read_xvg
 from ..engine import GromacsRunner
@@ -26,7 +29,7 @@ from ..mdp_templates import (
     MdpSpec,
     default_mdp_params,
 )
-from ._util import RunResources, atomic_write_json, load_json, pbc_mol_fix_inplace, safe_mkdir
+from ._util import RunResources, atomic_write_json, load_json, normalize_gro_molecules_inplace, pbc_mol_fix_inplace, safe_mkdir
 
 
 @dataclass(frozen=True)
@@ -51,6 +54,7 @@ class EquilibrationJob:
         *,
         gro: Path,
         top: Path,
+        ndx: Optional[Path] = None,
         out_dir: Path,
         stages: Sequence[EqStage],
         runner: Optional[GromacsRunner] = None,
@@ -59,11 +63,118 @@ class EquilibrationJob:
     ):
         self.gro = gro
         self.top = top
+        self.ndx = ndx
         self.out_dir = out_dir
         self.stages = list(stages)
         self.runner = runner or GromacsRunner()
         self.resources = resources
         self.frac_last = frac_last
+
+    @staticmethod
+    def _format_elapsed(seconds: float) -> str:
+        seconds = float(max(0.0, seconds))
+        if seconds < 60.0:
+            return f"{seconds:.1f}s"
+        minutes, sec = divmod(seconds, 60.0)
+        if minutes < 60.0:
+            return f"{int(minutes)}m {sec:.1f}s"
+        hours, minutes = divmod(minutes, 60.0)
+        return f"{int(hours)}h {int(minutes)}m {sec:.0f}s"
+
+    @staticmethod
+    def _compact_path(path_like: object) -> str:
+        try:
+            p = Path(path_like)
+            parts = list(p.parts)
+            if len(parts) <= 4:
+                return str(p)
+            return str(Path(*parts[-4:]))
+        except Exception:
+            return str(path_like)
+
+    @staticmethod
+    def _gro_box_lengths_nm(gro: Path) -> tuple[float, float, float] | None:
+        try:
+            lines = [line.strip() for line in Path(gro).read_text(encoding="utf-8").splitlines() if line.strip()]
+            if not lines:
+                return None
+            raw = lines[-1].split()
+            vals = [abs(float(token)) for token in raw]
+        except Exception:
+            return None
+        if len(vals) >= 9:
+            ax, by, cz, ay, az, bx, bz, cx, cy = vals[:9]
+            avec = (ax, ay, az)
+            bvec = (bx, by, bz)
+            cvec = (cx, cy, cz)
+            return (
+                math.sqrt(sum(v * v for v in avec)),
+                math.sqrt(sum(v * v for v in bvec)),
+                math.sqrt(sum(v * v for v in cvec)),
+            )
+        if len(vals) >= 3:
+            return (vals[0], vals[1], vals[2])
+        return None
+
+    @staticmethod
+    def _apply_box_safe_cutoffs(mdp: MdpSpec, *, gro: Path) -> tuple[MdpSpec, dict[str, object] | None]:
+        box_nm = EquilibrationJob._gro_box_lengths_nm(gro)
+        if not box_nm:
+            return mdp, None
+        min_box_nm = min(box_nm)
+        if min_box_nm <= 0.0:
+            return mdp, None
+
+        cutoff_cap_nm = round(min_box_nm * 0.45, 4)
+        if cutoff_cap_nm <= 0.0:
+            return mdp, None
+
+        params = dict(mdp.params)
+        adjusted: dict[str, dict[str, float]] = {}
+        for key in ("rlist", "rcoulomb", "rvdw"):
+            value = params.get(key)
+            try:
+                current = float(value)
+            except Exception:
+                continue
+            if current > cutoff_cap_nm:
+                params[key] = cutoff_cap_nm
+                adjusted[key] = {"old": current, "new": cutoff_cap_nm}
+
+        if not adjusted:
+            return mdp, None
+
+        return (
+            MdpSpec(mdp.template, params),
+            {
+                "box_nm": [round(v, 4) for v in box_nm],
+                "min_box_nm": round(min_box_nm, 4),
+                "cutoff_cap_nm": cutoff_cap_nm,
+                "cutoffs": adjusted,
+            },
+        )
+
+    def _section(self, title: str, detail: str | None = None) -> None:
+        self._log('=' * 78)
+        self._log(f"[SECTION] {title}")
+        if detail:
+            self._log(f"[NOTE] {detail}")
+
+    def _item(self, label: str, value: object) -> None:
+        self._log(f"[ITEM] {label:<18}: {value}")
+
+    def _stage_begin(self, idx: int, total: int, stage: EqStage, stage_dir: Path) -> float:
+        frac = 100.0 * float(idx) / float(max(total, 1))
+        self._log('-' * 78)
+        self._log(f"[STEP] Stage {idx}/{total} | {stage.name} ({stage.kind}) | {frac:5.1f}%")
+        self._log(f"[ITEM] stage_dir          : {self._compact_path(stage_dir)}")
+        return time.perf_counter()
+
+    def _stage_done(self, idx: int, total: int, stage: EqStage, t0: float, *, detail: str | None = None) -> None:
+        msg = f"[DONE] Stage {idx}/{total} | {stage.name} | elapsed={self._format_elapsed(time.perf_counter() - t0)}"
+        if detail:
+            msg += f" | {detail}"
+        self._log(msg)
 
     def _log(self, msg: str) -> None:
         """Lightweight logger for this workflow.
@@ -119,6 +230,9 @@ class EquilibrationJob:
                         **p,
                         "nsteps": max(ns_to_steps(nvt_ns), 1000),
                         "ref_t": temperature_k,
+                        "gen_vel": "yes",
+                        "gen_temp": temperature_k,
+                        "gen_seed": -1,
                     },
                 ),
             )
@@ -144,6 +258,9 @@ class EquilibrationJob:
                         "nsteps": max(ns_to_steps(npt_ns), 1000),
                         "ref_t": temperature_k,
                         "ref_p": pressure_bar,
+                        "gen_vel": "no",
+                        "gen_temp": temperature_k,
+                        "gen_seed": -1,
                     },
                 ),
             )
@@ -162,14 +279,26 @@ class EquilibrationJob:
                         "nsteps": max(ns_to_steps(prod_ns), 1000),
                         "ref_t": temperature_k,
                         "ref_p": pressure_bar,
+                        "gen_vel": "no",
+                        "gen_temp": temperature_k,
+                        "gen_seed": -1,
                     },
                 ),
             )
         )
         return stages
 
-    def run(self, *, restart: bool = True) -> Path:
+    def run(self, *, restart: Optional[bool] = None) -> Path:
         out = safe_mkdir(self.out_dir)
+        rst_flag = resolve_restart(restart)
+        t_all = time.perf_counter()
+        self._section("GROMACS equilibration workflow", detail=f"restart={bool(rst_flag)} | stages={len(self.stages)}")
+        self._item("out_dir", self._compact_path(out))
+        self._item("input_gro", self._compact_path(self.gro))
+        self._item("topology", self._compact_path(self.top))
+        if self.ndx is not None:
+            self._item("index", self._compact_path(self.ndx))
+        self._item("resources", f"ntmpi={self.resources.ntmpi} | ntomp={self.resources.ntomp} | gpu={bool(self.resources.use_gpu)} | gpu_id={self.resources.gpu_id}")
         summary_path = out / "summary.json"
         summary: dict = load_json(summary_path) or {"job": "EquilibrationJob", "out_dir": str(out), "stages": []}
 
@@ -193,7 +322,43 @@ class EquilibrationJob:
                 return total_threads, 1
             return ntomp, ntmpi
 
-        def _mdrun_em_minimal(*, deffnm: str, cwd: Path, ntomp: int, gpu_id: Optional[str]) -> None:
+        def _is_constraint_failure(msg: object) -> bool:
+            text = str(msg or "").lower()
+            needles = (
+                "lincs",
+                "constraint failure",
+                "constraint failures",
+                "too many lincs warnings",
+                "constrained together",
+                "update groups can not be used",
+            )
+            return any(token in text for token in needles)
+
+        def _constraints_mode(mdp: MdpSpec) -> str | None:
+            try:
+                for raw in mdp.render().splitlines():
+                    line = raw.split(";", 1)[0].strip()
+                    if not line or "=" not in line:
+                        continue
+                    key, value = [part.strip().lower() for part in line.split("=", 1)]
+                    if key == "constraints":
+                        return value
+            except Exception:
+                return None
+            return None
+
+        def _canonicalize_stage_gro(*, out_tpr: Path, out_gro: Path, stage_dir: Path) -> dict[str, object]:
+            pbc_gro = pbc_mol_fix_inplace(self.runner, tpr=out_tpr, traj_or_gro=out_gro, cwd=stage_dir)
+            whole_gro = normalize_gro_molecules_inplace(top=self.top, gro=out_gro)
+            if whole_gro.get("applied"):
+                self._log(
+                    f"[INFO] Whole-molecule canonicalization applied to {out_gro.name} | normalized_molecules={whole_gro.get('normalized_molecules', 0)}"
+                )
+            elif whole_gro.get("error"):
+                self._log(f"[WARN] Whole-molecule canonicalization skipped for {out_gro.name}: {whole_gro.get('error')}")
+            return {"pbc_gro": pbc_gro, "whole_gro": whole_gro}
+
+        def _mdrun_em_minimal(*, deffnm: str, cwd: Path, ntomp: int, gpu_id: Optional[str], use_gpu: bool = False) -> None:
             """Run energy minimization with a minimal, user-friendly mdrun command.
 
             By design we keep EM command-line args lean to improve portability and
@@ -204,28 +369,58 @@ class EquilibrationJob:
             # Always add -v when supported for live progress.
             if self.runner._tool_has_option("mdrun", "-v", cwd=cwd):
                 args += ["-v"]
+            # Requested default: -stepout 10000 for deterministic step prints.
+            args += ["-stepout", "10000"]
             # Thread-MPI layout: EM runs as a single MPI rank.
             if self.runner._tool_has_option("mdrun", "-ntmpi", cwd=cwd):
                 args += ["-ntmpi", "1"]
             if self.runner._tool_has_option("mdrun", "-ntomp", cwd=cwd):
                 args += ["-ntomp", str(int(ntomp))]
             # Nonbonded on GPU (if available in this GROMACS build).
-            if self.runner._tool_has_option("mdrun", "-nb", cwd=cwd):
+            if use_gpu and self.runner._tool_has_option("mdrun", "-nb", cwd=cwd):
                 args += ["-nb", "gpu"]
-            if gpu_id is not None and str(gpu_id).strip() != "" and self.runner._tool_has_option("mdrun", "-gpu_id", cwd=cwd):
+            if use_gpu and gpu_id is not None and str(gpu_id).strip() != "" and self.runner._tool_has_option("mdrun", "-gpu_id", cwd=cwd):
                 args += ["-gpu_id", str(gpu_id).strip()]
             rc, tail = self.runner._run_capture_tee(args, cwd=cwd)
+            # Very old GROMACS builds may not support -stepout; retry once without it.
+            if rc != 0 and "-stepout" in args and "unknown option" in (tail or "").lower() and "-stepout" in (tail or "").lower():
+                try:
+                    j = args.index("-stepout")
+                    del args[j:j+2]
+                    self._log("[WARN] Detected unsupported -stepout in EM mdrun. Retrying without -stepout.")
+                except Exception:
+                    pass
+                rc, tail = self.runner._run_capture_tee(args, cwd=cwd)
             if rc != 0:
                 raise RuntimeError(f"GROMACS mdrun (EM) failed (rc={rc})\n  cwd: {cwd}\n  cmd: {' '.join(args)}\n  tail:\n{tail}\n")
 
-        for st in self.stages:
+        total_stages = len(self.stages)
+        for idx, st in enumerate(self.stages, start=1):
             stage_dir = safe_mkdir(out / st.name)
+            t_stage = self._stage_begin(idx, total_stages, st, stage_dir)
             deffnm = "md"  # keep consistent within stage dir
             stage_summary_path = stage_dir / "summary.json"
 
             out_gro = stage_dir / f"{deffnm}.gro"
             out_cpt = stage_dir / f"{deffnm}.cpt"
             out_tpr = stage_dir / f"{deffnm}.tpr"
+            stage_cutoff_events: list[dict[str, object]] = []
+
+            def _write_stage_mdp(*, mdp: MdpSpec, gro: Path, filename: str, label: str) -> Path:
+                prepared_mdp, cutoff_info = self._apply_box_safe_cutoffs(mdp, gro=gro)
+                if cutoff_info:
+                    self._log(
+                        f"[WARN] Auto-shrinking nonbond cutoffs for {st.name}:{label} | "
+                        f"min_box={cutoff_info['min_box_nm']:.4f} nm | cap={cutoff_info['cutoff_cap_nm']:.4f} nm"
+                    )
+                    stage_cutoff_events.append(
+                        {
+                            "label": label,
+                            "input_gro": str(gro),
+                            **cutoff_info,
+                        }
+                    )
+                return prepared_mdp.write(stage_dir / filename)
 
             stage_has_outputs = bool(out_gro.exists())
 
@@ -241,18 +436,22 @@ class EquilibrationJob:
             # Robust stage restart logic
             # ----------------------
             # 1) Stage complete: keep outputs and move on.
-            if restart and out_gro.exists():
+            if rst_flag and out_gro.exists():
                 current_gro = out_gro
                 current_cpt = out_cpt if out_cpt.exists() else None
+                self._log(f"[SKIP] Existing stage output detected | gro={out_gro.name}")
+                _canonicalize_stage_gro(out_tpr=out_tpr, out_gro=out_gro, stage_dir=stage_dir)
                 # If summary exists, the postprocess was already done.
                 if stage_summary_path.exists():
+                    self._stage_done(idx, total_stages, st, t_stage, detail="reused existing outputs + summary")
                     continue
                 # Otherwise, fall through to regenerate the summary only (no rerun).
                 stage_has_outputs = True
 
             # 2) Stage interrupted but checkpoint exists: continue without re-running grompp.
             #    This is the standard GROMACS restart mode: mdrun -cpi md.cpt -append.
-            if (not stage_has_outputs) and restart and out_tpr.exists() and out_cpt.exists() and (not out_gro.exists()):
+            if (not stage_has_outputs) and rst_flag and out_tpr.exists() and out_cpt.exists() and (not out_gro.exists()):
+                self._log(f"[RUN] Resuming interrupted stage from checkpoint | cpt={out_cpt.name}")
                 ntomp_sel, ntmpi_sel = _choose_threads(stage_use_gpu)
                 self.runner.mdrun(
                     tpr=out_tpr,
@@ -271,7 +470,7 @@ class EquilibrationJob:
             else:
                 # 3) Fresh stage run: if stale partial outputs exist, remove them to avoid
                 #    confusing GROMACS (e.g., "-append" to an incompatible file set).
-                if (not stage_has_outputs) and restart:
+                if (not stage_has_outputs) and rst_flag:
                     for p in stage_dir.glob(f"{deffnm}.*"):
                         try:
                             p.unlink()
@@ -279,6 +478,7 @@ class EquilibrationJob:
                             pass
 
                 if not stage_has_outputs:
+                    self._log(f"[RUN] Fresh stage execution | restart={bool(rst_flag)} | gpu={bool(stage_use_gpu)}")
                     # Special-case minimization: mirror yzc-gmx-gen with a robust
                     # steepest-descent (constraints=none) pre-minimization followed by
                     # the main CG minimization (constraints=h-bonds). We keep the final
@@ -286,74 +486,116 @@ class EquilibrationJob:
                     gro_for_main = current_gro
 
                     if st.kind in ("minim", "em"):
-                        steep_deffnm = "md_steep"
-                        steep_gro = stage_dir / f"{steep_deffnm}.gro"
-                        steep_tpr = stage_dir / f"{steep_deffnm}.tpr"
-                        if not steep_gro.exists():
-                            steep_mdp = MdpSpec(
-                                MINIM_STEEP_MDP,
-                                {**st.mdp.params, "nsteps": 50000, "emtol": 1000.0, "emstep": 0.01},
-                            ).write(stage_dir / "steep.mdp")
-                            self.runner.grompp(
-                                mdp=steep_mdp,
-                                gro=current_gro,
-                                top=self.top,
-                                out_tpr=steep_tpr,
-                                cpt=current_cpt,
-                                cwd=stage_dir,
-                            )
-                            # Energy minimization: minimal mdrun args for portability.
-                            ntomp_sel, _ = _choose_threads(False)
-                            _mdrun_em_minimal(
-                                deffnm=steep_deffnm,
-                                cwd=stage_dir,
-                                ntomp=int(ntomp_sel or 1),
-                                gpu_id=self.resources.gpu_id,
-                            )
+                        target_constraints = _constraints_mode(st.mdp)
+                        if target_constraints == "none":
+                            mdp_path = _write_stage_mdp(mdp=st.mdp, gro=current_gro, filename=f"{st.kind}.mdp", label="main")
+                            gro_for_main = current_gro
+                        else:
+                            bridge_failed = False
+                            steep_deffnm = "md_steep"
+                            steep_gro = stage_dir / f"{steep_deffnm}.gro"
+                            steep_tpr = stage_dir / f"{steep_deffnm}.tpr"
+                            if not steep_gro.exists():
+                                steep_mdp = _write_stage_mdp(
+                                    mdp=MdpSpec(
+                                        MINIM_STEEP_MDP,
+                                        {**st.mdp.params, "nsteps": 50000, "emtol": 1000.0, "emstep": 0.01},
+                                    ),
+                                    gro=current_gro,
+                                    filename="steep.mdp",
+                                    label="steep",
+                                )
+                                self.runner.grompp(
+                                    mdp=steep_mdp,
+                                    gro=current_gro,
+                                    top=self.top,
+                                    ndx=self.ndx,
+                                    out_tpr=steep_tpr,
+                                    cpt=current_cpt,
+                                    cwd=stage_dir,
+                                )
+                                ntomp_sel, _ = _choose_threads(False)
+                                _mdrun_em_minimal(
+                                    deffnm=steep_deffnm,
+                                    cwd=stage_dir,
+                                    ntomp=int(ntomp_sel or 1),
+                                    gpu_id=self.resources.gpu_id,
+                                    use_gpu=False,
+                                )
 
-                        # Bridge minimization (steep, constraints=h-bonds).
-                        # This step is tolerant to constraint problems that CG cannot handle,
-                        # and dramatically improves robustness for rough packed structures.
-                        bridge_deffnm = "md_steep_hbonds"
-                        bridge_gro = stage_dir / f"{bridge_deffnm}.gro"
-                        bridge_tpr = stage_dir / f"{bridge_deffnm}.tpr"
-                        if not bridge_gro.exists():
-                            bridge_mdp = MdpSpec(
-                                MINIM_STEEP_HBONDS_MDP,
-                                {
-                                    **st.mdp.params,
-                                    "nsteps": 50000,
-                                    "emtol": 1000.0,
-                                    # Use a smaller step size to avoid large bond rotations.
-                                    "emstep": 0.001,
-                                },
-                            ).write(stage_dir / "steep_hbonds.mdp")
-                            self.runner.grompp(
-                                mdp=bridge_mdp,
-                                gro=steep_gro if steep_gro.exists() else current_gro,
-                                top=self.top,
-                                out_tpr=bridge_tpr,
-                                cpt=None,
-                                cwd=stage_dir,
-                            )
-                            # Energy minimization (bridge): minimal mdrun args.
-                            ntomp_sel, _ = _choose_threads(False)
-                            _mdrun_em_minimal(
-                                deffnm=bridge_deffnm,
-                                cwd=stage_dir,
-                                ntomp=int(ntomp_sel or 1),
-                                gpu_id=self.resources.gpu_id,
-                            )
+                            bridge_deffnm = "md_steep_hbonds"
+                            bridge_gro = stage_dir / f"{bridge_deffnm}.gro"
+                            bridge_tpr = stage_dir / f"{bridge_deffnm}.tpr"
+                            if not bridge_gro.exists():
+                                try:
+                                    bridge_input_gro = steep_gro if steep_gro.exists() else current_gro
+                                    bridge_mdp = _write_stage_mdp(
+                                        mdp=MdpSpec(
+                                            MINIM_STEEP_HBONDS_MDP,
+                                            {
+                                                **st.mdp.params,
+                                                "nsteps": 50000,
+                                                "emtol": 1000.0,
+                                                "emstep": 0.0005,
+                                                "lincs_iter": max(int(st.mdp.params.get("lincs_iter", 2)), 4),
+                                                "lincs_order": max(int(st.mdp.params.get("lincs_order", 8)), 12),
+                                            },
+                                        ),
+                                        gro=bridge_input_gro,
+                                        filename="steep_hbonds.mdp",
+                                        label="steep_hbonds",
+                                    )
+                                    self.runner.grompp(
+                                        mdp=bridge_mdp,
+                                        gro=bridge_input_gro,
+                                        top=self.top,
+                                        ndx=self.ndx,
+                                        out_tpr=bridge_tpr,
+                                        cpt=None,
+                                        cwd=stage_dir,
+                                    )
+                                    ntomp_sel, _ = _choose_threads(False)
+                                    _mdrun_em_minimal(
+                                        deffnm=bridge_deffnm,
+                                        cwd=stage_dir,
+                                        ntomp=int(ntomp_sel or 1),
+                                        gpu_id=self.resources.gpu_id,
+                                        use_gpu=False,
+                                    )
+                                except Exception as e:
+                                    if _is_constraint_failure(e):
+                                        bridge_failed = True
+                                        self._log("[WARN] Constraint-sensitive steep_hbonds bridge failed. Continuing from the unconstrained steep result.")
+                                    else:
+                                        raise
 
-                        # Main minimization starts from the bridge result if available.
-                        gro_for_main = bridge_gro if bridge_gro.exists() else (steep_gro if steep_gro.exists() else current_gro)
-
-                    mdp_path = st.mdp.write(stage_dir / f"{st.kind}.mdp")
+                            gro_for_main = bridge_gro if bridge_gro.exists() else (steep_gro if steep_gro.exists() else current_gro)
+                            if bridge_failed:
+                                self._log("[WARN] Replacing the final CG minimization with an unconstrained steep minimization for this stage.")
+                                mdp_path = _write_stage_mdp(
+                                    mdp=MdpSpec(
+                                        MINIM_STEEP_MDP,
+                                        {
+                                            **st.mdp.params,
+                                            "nsteps": int(max(100000, int(st.mdp.params.get("nsteps", 50000)))),
+                                            "emtol": float(st.mdp.params.get("emtol", 1000.0)),
+                                            "emstep": 0.0005,
+                                        },
+                                    ),
+                                    gro=gro_for_main,
+                                    filename=f"{st.kind}.mdp",
+                                    label="main_fallback",
+                                )
+                            else:
+                                mdp_path = _write_stage_mdp(mdp=st.mdp, gro=gro_for_main, filename=f"{st.kind}.mdp", label="main")
+                    else:
+                        mdp_path = _write_stage_mdp(mdp=st.mdp, gro=gro_for_main, filename=f"{st.kind}.mdp", label="main")
                     tpr = out_tpr
                     self.runner.grompp(
                         mdp=mdp_path,
                         gro=gro_for_main,
                         top=self.top,
+                        ndx=self.ndx,
                         out_tpr=tpr,
                         cpt=current_cpt,
                         cwd=stage_dir,
@@ -376,34 +618,38 @@ class EquilibrationJob:
                         # fall back to a steep minimization with constraints in the same stage so
                         # the workflow can proceed.
                         msg = str(e)
-                        if st.kind in ("minim", "em") and ("Minimizer 'cg' can not handle" in msg or "constraint failures" in msg or "LINCS" in msg):
-                            self._log("[WARN] CG minimization failed due to constraint issues. Falling back to steep (constraints=h-bonds).")
-                            # Overwrite md.tpr with a steep/h-bonds minim and run as deffnm=md.
-                            fb_mdp = MdpSpec(
-                                MINIM_STEEP_HBONDS_MDP,
-                                {
-                                    **st.mdp.params,
-                                    "nsteps": int(max(100000, int(st.mdp.params.get("nsteps", 50000)))),
-                                    "emtol": float(st.mdp.params.get("emtol", 1000.0)),
-                                    "emstep": 0.001,
-                                },
-                            ).write(stage_dir / "minim_fallback_steep_hbonds.mdp")
-                            # Re-run grompp to the standard out_tpr (md.tpr)
+                        if st.kind in ("minim", "em") and _is_constraint_failure(msg):
+                            self._log("[WARN] Constraint-sensitive minimization failed. Falling back to steep (constraints=none).")
+                            fb_mdp = _write_stage_mdp(
+                                mdp=MdpSpec(
+                                    MINIM_STEEP_MDP,
+                                    {
+                                        **st.mdp.params,
+                                        "nsteps": int(max(100000, int(st.mdp.params.get("nsteps", 50000)))),
+                                        "emtol": float(st.mdp.params.get("emtol", 1000.0)),
+                                        "emstep": 0.0005,
+                                    },
+                                ),
+                                gro=gro_for_main,
+                                filename="minim_fallback_steep_none.mdp",
+                                label="constraint_fallback",
+                            )
                             self.runner.grompp(
                                 mdp=fb_mdp,
                                 gro=gro_for_main,
                                 top=self.top,
+                                ndx=self.ndx,
                                 out_tpr=tpr,
                                 cpt=None,
                                 cwd=stage_dir,
                             )
-                            # Energy minimization fallback: minimal mdrun args.
                             ntomp_sel, _ = _choose_threads(False)
                             _mdrun_em_minimal(
                                 deffnm=deffnm,
                                 cwd=stage_dir,
                                 ntomp=int(ntomp_sel or 1),
                                 gpu_id=self.resources.gpu_id,
+                                use_gpu=False,
                             )
                         else:
                             raise
@@ -422,13 +668,28 @@ class EquilibrationJob:
             # OpenBabel, etc.) may infer impossible bonding if coordinates are wrapped.
             #
             # We therefore rewrite BOTH the final stage structure and trajectory with:
-            #   gmx trjconv -pbc mol -center -ur compact
+            #   gmx trjconv -pbc mol
             # in-place (md.gro/md.xtc). Best-effort only.
-            pbc_gro = pbc_mol_fix_inplace(self.runner, tpr=out_tpr, traj_or_gro=out_gro, cwd=stage_dir)
+            canonical_gro = _canonicalize_stage_gro(out_tpr=out_tpr, out_gro=out_gro, stage_dir=stage_dir)
+            pbc_gro = canonical_gro["pbc_gro"]
+            whole_gro = canonical_gro["whole_gro"]
             pbc_xtc = {"applied": False, "error": None}
             out_xtc = stage_dir / f"{deffnm}.xtc"
             if out_xtc.exists():
                 pbc_xtc = pbc_mol_fix_inplace(self.runner, tpr=out_tpr, traj_or_gro=out_xtc, cwd=stage_dir)
+            # ----------------------
+            # Optional MOL2 export (system-level) via ParmEd
+            # ----------------------
+            # For visualization/interoperability, convert the final stage gro to mol2 using the stage topology.
+            # This is best-effort and will not fail the workflow if conversion is unavailable.
+            mol2_path = write_mol2_from_top_gro_parmed(
+                top_path=self.top,
+                gro_path=out_gro,
+                out_mol2=stage_dir / f"{deffnm}.mol2",
+                overwrite=True,
+            )
+
+
 
             # Postprocess (thermo)
             stage_record: dict = {
@@ -437,10 +698,13 @@ class EquilibrationJob:
                 "dir": str(stage_dir),
                 "gro": str(current_gro),
                 "edr": str(stage_dir / f"{deffnm}.edr") if (stage_dir / f"{deffnm}.edr").exists() else None,
+                "mol2": str(mol2_path) if mol2_path else None,
                 "pbc_mol": {
                     "gro": pbc_gro,
                     "xtc": pbc_xtc,
                 },
+                "whole_molecule_gro": whole_gro,
+                "auto_cutoff_adjustments": stage_cutoff_events,
             }
 
             edr = stage_dir / f"{deffnm}.edr"
@@ -452,6 +716,9 @@ class EquilibrationJob:
                     "Pressure",
                     "Density",
                     "Volume",
+                    "Box-X",
+                    "Box-Y",
+                    "Box-Z",
                     "Potential",
                     "Kinetic En.",
                     "Total Energy",
@@ -463,13 +730,13 @@ class EquilibrationJob:
                     thermo_stats = summarize_terms_xvg(xvg=xvg, terms=terms, frac_last=self.frac_last)
                     stage_record["thermo"] = {k: v.__dict__ for k, v in thermo_stats.items()}
 
-                    # Plots (SVG-first)
+                    # Plots (SVG-first, annotated)
                     try:
-                            plots_dir = stage_dir / "plots"
-                            plots_dir.mkdir(parents=True, exist_ok=True)
-                            plot_xvg_svg(xvg, out_svg=plots_dir / "thermo.svg", title=f"{stage_dir.name} thermo")
-                            # Split per term
-                            plot_xvg_split_svg(xvg, out_dir=plots_dir, title_prefix=f"{stage_dir.name}")
+                        plots_dir = stage_dir / "plots"
+                        plots_dir.mkdir(parents=True, exist_ok=True)
+                        stage_record.setdefault("plots", {}).update(
+                            plot_thermo_stage(xvg, out_dir=plots_dir, title_prefix=f"{stage_dir.name}")
+                        )
                     except Exception as _pe:
                         stage_record["thermo_plot_warning"] = str(_pe)
 
@@ -493,8 +760,12 @@ class EquilibrationJob:
 
             atomic_write_json(stage_summary_path, stage_record)
             summary["stages"].append(stage_record)
+            self._stage_done(idx, total_stages, st, t_stage, detail=f"output={out_gro.name}")
 
         atomic_write_json(summary_path, summary)
+        self._log("=" * 78)
+        self._log(f"[DONE] GROMACS equilibration workflow | elapsed={self._format_elapsed(time.perf_counter() - t_all)} | summary={self._compact_path(summary_path)}")
+        self._log("=" * 78)
         return summary_path
 
     # ----------------------

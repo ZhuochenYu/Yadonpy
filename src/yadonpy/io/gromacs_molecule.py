@@ -12,9 +12,22 @@ from pathlib import Path
 from typing import Dict, List, Tuple
 
 
-import math
 
 from .units import angstrom_to_nm
+
+
+def _gro_wrap_index(value: int) -> int:
+    value = int(value)
+    if value < 0:
+        return -((-value) % 100000)
+    return value % 100000
+
+
+def _format_gro_atom_line(*, resnr: int, resname: str, atomname: str, atomnr: int, x: float, y: float, z: float) -> str:
+    return (
+        f"{_gro_wrap_index(resnr):5d}{str(resname)[:5]:<5}{str(atomname)[:5]:>5}{_gro_wrap_index(atomnr):5d}"
+        f"{float(x):8.3f}{float(y):8.3f}{float(z):8.3f}"
+    )
 
 
 def _canon_angle_key(i: int, j: int, k: int) -> tuple[int, int, int]:
@@ -201,7 +214,6 @@ def _get_atom_mass(atom) -> float:
 
 def write_gro_from_rdkit(mol, out_gro: Path, mol_name: str) -> None:
     """Write a minimal .gro from RDKit conformer (expects Angstrom coords)."""
-    from rdkit import Chem
 
     conf = mol.GetConformer()
     n = mol.GetNumAtoms()
@@ -217,8 +229,7 @@ def write_gro_from_rdkit(mol, out_gro: Path, mol_name: str) -> None:
         resnr = 1
         resname = mol_name[:5]
         aname = (atom.GetSymbol() + str(i))[:5]
-        # fmt: resnr(5) resname(5) atomname(5) atomnr(5) x y z
-        lines.append(f"{resnr:5d}{resname:<5}{aname:>5}{i:5d}{x:8.3f}{y:8.3f}{z:8.3f}\n")
+        lines.append(_format_gro_atom_line(resnr=resnr, resname=resname, atomname=aname, atomnr=i, x=x, y=y, z=z) + "\n")
 
     # A dummy box (1 nm cube) - caller may override for systems.
     lines.append("   1.00000   1.00000   1.00000\n")
@@ -376,32 +387,38 @@ def write_gromacs_single_molecule_topology(
     itp_path.write_text("".join(itp), encoding="utf-8")
 
     # Optional: patch bonds/angles from QM-derived methods (mseminario / DRIH)
-    #
-    # IMPORTANT:
-    #   This block should NEVER fail the main topology generation.
-    #   If the fragment is missing / malformed, we keep the GAFF-family bonded terms.
+    explicit_bonded = False
+    requested_bonded = None
+    frag = None
+    method = "mseminario"
     try:
-        frag = None
-        if hasattr(mol, "HasProp") and mol.HasProp("_yadonpy_bonded_itp"):
-            frag = Path(mol.GetProp("_yadonpy_bonded_itp"))
-        elif hasattr(mol, "HasProp") and mol.HasProp("_yadonpy_mseminario_itp"):
-            frag = Path(mol.GetProp("_yadonpy_mseminario_itp"))
-
-        if frag is not None and frag.is_file():
-            method = "mseminario"
-            try:
-                if hasattr(mol, "HasProp") and mol.HasProp("_yadonpy_bonded_method"):
-                    method = str(mol.GetProp("_yadonpy_bonded_method")).strip() or method
-                elif hasattr(mol, "HasProp") and mol.HasProp("_yadonpy_bonded_itp"):
-                    # If method not recorded, assume DRIH for generic bonded patch
-                    method = "drih"
-            except Exception:
-                pass
-
-            _apply_bond_angle_patch_from_fragment(itp_path, frag, method=method)
+        if hasattr(mol, "HasProp"):
+            if mol.HasProp("_yadonpy_bonded_explicit"):
+                explicit_bonded = str(mol.GetProp("_yadonpy_bonded_explicit")).strip().lower() in ("1", "true", "yes", "on")
+            if mol.HasProp("_yadonpy_bonded_requested"):
+                requested_bonded = str(mol.GetProp("_yadonpy_bonded_requested")).strip().lower() or None
+            if mol.HasProp("_yadonpy_bonded_method"):
+                method = str(mol.GetProp("_yadonpy_bonded_method")).strip() or method
+            if mol.HasProp("_yadonpy_bonded_itp"):
+                frag = Path(mol.GetProp("_yadonpy_bonded_itp"))
+            elif mol.HasProp("_yadonpy_mseminario_itp"):
+                frag = Path(mol.GetProp("_yadonpy_mseminario_itp"))
+                if not requested_bonded:
+                    requested_bonded = 'mseminario'
     except Exception:
-        # Intentionally swallow all errors here to keep the export pipeline robust.
-        pass
+        explicit_bonded = False
+        requested_bonded = None
+        frag = None
+
+    patched = False
+    if frag is not None and frag.is_file():
+        patched = bool(_apply_bond_angle_patch_from_fragment(itp_path, frag, method=method))
+
+    if explicit_bonded and requested_bonded and not patched:
+        raise RuntimeError(
+            f"Explicit bonded override '{requested_bonded}' was requested, but no valid bonded patch was applied. "
+            f"fragment={frag}"
+        )
 
     # 3) TOP
     from .gromacs_top import defaults_block

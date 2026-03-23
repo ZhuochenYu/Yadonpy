@@ -15,14 +15,13 @@ knowledge, this project does not raise copyright issues.
 # ******************************************************************************
 
 import numpy as np
-import os
-import json
-from itertools import permutations
 from rdkit import Chem
-from ..core import calc, utils
+from ..core import utils
 from . import ff_class
 import sys
 from rdkit import Geometry as Geom
+from .report import print_ff_assignment_report
+
 
 
 def make_atom(symbol, charge, name):
@@ -77,7 +76,7 @@ class TIP3P():
     
         return rwmol.GetMol()
         
-    def ff_assign(self, mol):
+    def ff_assign(self, mol, report: bool = True):
         """
         TIP3P.ff_assign
 
@@ -105,7 +104,10 @@ class TIP3P():
         if result: result = self.assign_dtypes(mol)
         if result: result = self.assign_itypes(mol)
 
-        return result
+        if result and report:
+            print_ff_assignment_report(mol, ff_obj=self)
+
+        return mol if result else False
 
 
     def assign_ptypes(self, mol):
@@ -307,7 +309,7 @@ class TIP4P():
     
         return rwmol.GetMol()
         
-    def ff_assign(self, mol):
+    def ff_assign(self, mol, report: bool = True):
         """
         TIP4P.ff_assign
 
@@ -335,7 +337,10 @@ class TIP4P():
         if result: result = self.assign_dtypes(mol)
         if result: result = self.assign_itypes(mol)
 
-        return result
+        if result and report:
+            print_ff_assignment_report(mol, ff_obj=self)
+
+        return mol if result else False
 
 
     def assign_ptypes(self, mol):
@@ -541,7 +546,7 @@ class TIP5P():
     
         return rwmol.GetMol()
         
-    def ff_assign(self, mol):
+    def ff_assign(self, mol, report: bool = True):
         """
         TIP5P.ff_assign
 
@@ -569,7 +574,10 @@ class TIP5P():
         if result: result = self.assign_dtypes(mol)
         if result: result = self.assign_itypes(mol)
 
-        return result
+        if result and report:
+            print_ff_assignment_report(mol, ff_obj=self)
+
+        return mol if result else False
 
 
     def assign_ptypes(self, mol):

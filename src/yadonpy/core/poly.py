@@ -5,6 +5,7 @@ Its software design is inspired by RadonPy (an automated workflow for polymer bu
 developed by a Japanese research group) and by yuzc's in-house yzc-gmx-gen toolkit. To the best of our
 knowledge, this project does not raise copyright issues.
 """
+from __future__ import annotations
 
 #  Copyright (c) 2026. YadonPy developers. All rights reserved.
 #  Use of this source code is governed by a BSD-3-style
@@ -17,18 +18,800 @@ knowledge, this project does not raise copyright issues.
 import numpy as np
 import pandas as pd
 import re
-import os
 from copy import copy
 import itertools
 import datetime
+import time
 import multiprocessing as MP
 import concurrent.futures as confu
+from pathlib import Path
 from rdkit import Chem
-from rdkit.Chem import AllChem, Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
 from rdkit import Geometry as Geom
 from rdkit import RDLogger
 from . import calc, const, utils
+from .molspec import MolSpec, as_rdkit_mol, molecular_weight
+from .resources import core_data_path
 from ..ff.gaff2_mod import GAFF2_mod
+from ..runtime import resolve_restart
+
+
+def _resolve_work_dir_path(work_dir):
+    if work_dir is None:
+        return None
+    try:
+        return Path(work_dir).expanduser().resolve()
+    except Exception:
+        return None
+
+
+def _resolve_mol_like(mol):
+    if isinstance(mol, MolSpec):
+        resolved = mol.get_resolved_mol(strict=False)
+        if resolved is None:
+            utils.radon_print(
+                'Input MolSpec has not been resolved into an RDKit Mol yet. '
+                'Call ff.ff_assign(spec) first or use ff.mol_rdkit(...).',
+                level=3,
+            )
+        return resolved
+    return mol
+
+
+def _resolve_mol_list(mols):
+    if isinstance(mols, Chem.Mol):
+        return [mols]
+    if isinstance(mols, MolSpec):
+        return [_resolve_mol_like(mols)]
+    if isinstance(mols, list):
+        out = []
+        for m in mols:
+            out.append(_resolve_mol_like(m))
+        return out
+    return mols
+
+
+def _normalize_mol_counts(mols, n):
+    mols = _resolve_mol_list(mols)
+    if type(mols) is Chem.Mol:
+        mols = [mols]
+    elif not isinstance(mols, list):
+        mols = list(mols)
+
+    if type(n) is int:
+        n = [int(n)]
+    elif not isinstance(n, list):
+        n = [int(x) for x in n]
+    else:
+        n = [int(x) for x in n]
+
+    if len(mols) != len(n):
+        raise ValueError(f'mols/n length mismatch: {len(mols)} species vs {len(n)} counts')
+    return mols, n
+
+
+def _cache_artifacts_best_effort(mols, *, prefer_var: bool = False) -> None:
+    try:
+        from ..io.molecule_cache import ensure_cached_artifacts
+
+        for mol in mols:
+            mol_name = None
+            try:
+                if prefer_var:
+                    mol_name = utils.ensure_name(mol, name=None, depth=2, prefer_var=True)
+                else:
+                    if hasattr(mol, 'HasProp') and mol.HasProp('_yadonpy_resname'):
+                        mol_name = str(mol.GetProp('_yadonpy_resname'))
+                    elif hasattr(mol, 'HasProp') and mol.HasProp('_Name'):
+                        mol_name = str(mol.GetProp('_Name'))
+                    elif hasattr(mol, 'HasProp') and mol.HasProp('name'):
+                        mol_name = str(mol.GetProp('name'))
+            except Exception:
+                mol_name = None
+            ensure_cached_artifacts(mol, mol_name=mol_name)
+    except Exception:
+        # Caching is a best-effort optimization and should never break packing.
+        pass
+
+
+def _amorphous_pack_priority(mol) -> tuple[float, float, float, int]:
+    nat = 0
+    try:
+        nat = int(mol.GetNumAtoms())
+    except Exception:
+        nat = 0
+    max_span = 0.0
+    bbox_volume = 0.0
+    mw = 0.0
+    try:
+        conf = mol.GetConformer(0)
+        coords = np.asarray(conf.GetPositions(), dtype=float)
+        if coords.size > 0:
+            span = np.ptp(coords, axis=0)
+            max_span = float(np.max(span))
+            bbox_volume = float(np.prod(np.maximum(span, 1.0e-3)))
+    except Exception:
+        pass
+    try:
+        mw = float(molecular_weight(mol))
+    except Exception:
+        mw = 0.0
+    return (bbox_volume, max_span, mw, nat)
+
+
+def _amorphous_pack_order(mols, n) -> tuple[int, ...]:
+    ranked: list[tuple[tuple[float, float, float, int], int]] = []
+    for idx, (mol, count) in enumerate(zip(mols, n)):
+        if int(count) <= 0:
+            continue
+        ranked.append((_amorphous_pack_priority(mol), int(idx)))
+    ranked.sort(key=lambda item: item[0], reverse=True)
+    return tuple(idx for _, idx in ranked)
+
+
+def _cell_log_begin(func_name: str, *, restart: bool):
+    dt1 = None
+    if not restart:
+        dt1 = datetime.datetime.now()
+        utils.radon_print(f'Start {func_name} generation by poly.{func_name}.', level=1)
+    return dt1
+
+
+def _cell_log_done(func_name: str, dt1, *, restart: bool) -> None:
+    if restart or dt1 is None:
+        return
+    dt2 = datetime.datetime.now()
+    utils.radon_print('Normal termination of poly.%s. Elapsed time = %s' % (func_name, str(dt2-dt1)), level=1)
+
+
+def _rw_cache_root(work_dir):
+    wd = _resolve_work_dir_path(work_dir)
+    if wd is None:
+        return None
+    root = wd / '.yadonpy' / 'random_walk'
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def _rw_cache_key(kind: str, payload: dict) -> str:
+    import hashlib, json
+    blob = json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(',', ':')).encode('utf-8')
+    return f"{kind}-{hashlib.sha256(blob).hexdigest()[:16]}"
+
+
+def _rw_normalize_value(value):
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, np.ndarray):
+        return [_rw_normalize_value(v) for v in value.tolist()]
+    if isinstance(value, (list, tuple)):
+        return [_rw_normalize_value(v) for v in value]
+    if isinstance(value, dict):
+        out = {}
+        for k, v in value.items():
+            if v is None:
+                continue
+            out[str(k)] = _rw_normalize_value(v)
+        return out
+    if isinstance(value, (np.bool_, bool)):
+        return bool(value)
+    if isinstance(value, (np.integer, int)):
+        return int(value)
+    if isinstance(value, (np.floating, float)):
+        return float(f'{float(value):.12g}')
+    return value
+
+
+def _rw_payload(kind: str, **kwargs):
+    return _rw_normalize_value({'kind': kind, **kwargs})
+
+
+def _rw_compat_payload(kind: str, payload: dict):
+    compat = _rw_normalize_value(payload)
+    if not isinstance(compat, dict):
+        return compat
+    compat.pop('name', None)
+    if kind in ('random_copolymerize_rw', 'random_copolymerize_rw_plan'):
+        smiles = compat.get('smiles') or []
+        if compat.get('ratio') is None and isinstance(smiles, list) and len(smiles) > 0:
+            compat['ratio'] = _rw_normalize_value(ratio_to_prob([1] * len(smiles)))
+    return compat
+
+
+def _rw_state_path(work_dir, kind: str, payload: dict):
+    root = _rw_cache_root(work_dir)
+    if root is None:
+        return None
+    key = _rw_cache_key(kind, payload)
+    return root / f'{key}.state.json'
+
+
+def _rw_load_state(work_dir, kind: str, payload: dict):
+    state = _rw_state_path(work_dir, kind, payload)
+    if state is None or not state.exists():
+        return None
+    try:
+        import json
+
+        return json.loads(state.read_text(encoding='utf-8'))
+    except Exception:
+        return None
+
+
+def _rw_save_state(work_dir, kind: str, payload: dict, data: dict):
+    state = _rw_state_path(work_dir, kind, payload)
+    if state is None:
+        return
+    try:
+        import json
+
+        state.write_text(json.dumps(_rw_normalize_value(data), indent=2, ensure_ascii=False) + '\n', encoding='utf-8')
+    except Exception:
+        pass
+
+
+def _cache_mol_smiles(mol):
+    try:
+        return Chem.MolToSmiles(mol, isomericSmiles=True)
+    except Exception:
+        return None
+
+
+def _cell_cache_payload(kind: str, *, mols, n, cell, density, threshold, dec_rate, check_bond_ring_intersection, mp,
+        neutralize, neutralize_tol, charge_scale, charge_tolerance, ions):
+    ion_payload = []
+    if ions is not None:
+        seq = ions if isinstance(ions, (list, tuple)) else [ions]
+        for pack in seq:
+            ion_payload.append({
+                'smiles': _cache_mol_smiles(getattr(pack, 'mol', None)),
+                'n': getattr(pack, 'n', None),
+                'ff_name': getattr(pack, 'ff_name', None),
+            })
+    return _rw_payload(
+        kind,
+        smiles=[_cache_mol_smiles(mol) for mol in mols],
+        n=[int(v) for v in n],
+        cell_smiles=_cache_mol_smiles(cell) if isinstance(cell, Chem.Mol) else None,
+        density=density,
+        threshold=threshold,
+        dec_rate=dec_rate,
+        check_bond_ring_intersection=bool(check_bond_ring_intersection),
+        mp=int(mp),
+        neutralize=bool(neutralize),
+        neutralize_tol=float(neutralize_tol),
+        charge_scale=charge_scale,
+        charge_tolerance=float(charge_tolerance),
+        ions=ion_payload,
+    )
+
+
+def _cell_state_from_mol(mol):
+    if mol is None or not hasattr(mol, 'cell'):
+        return None
+    try:
+        return {
+            'cell': {
+                'xhi': float(mol.cell.xhi),
+                'xlo': float(mol.cell.xlo),
+                'yhi': float(mol.cell.yhi),
+                'ylo': float(mol.cell.ylo),
+                'zhi': float(mol.cell.zhi),
+                'zlo': float(mol.cell.zlo),
+            }
+        }
+    except Exception:
+        return None
+
+
+def _restore_cached_cell_state(mol, state):
+    if mol is None or not isinstance(state, dict):
+        return mol
+    cell_state = state.get('cell')
+    if not isinstance(cell_state, dict):
+        return mol
+    try:
+        setattr(
+            mol,
+            'cell',
+            utils.Cell(
+                float(cell_state['xhi']),
+                float(cell_state['xlo']),
+                float(cell_state['yhi']),
+                float(cell_state['ylo']),
+                float(cell_state['zhi']),
+                float(cell_state['zlo']),
+            ),
+        )
+    except Exception:
+        pass
+    return mol
+
+
+def _copy_cell_holder(mol):
+    holder = Chem.Mol()
+    if mol is None or not hasattr(mol, 'cell'):
+        return holder
+    try:
+        src = mol.cell
+        setattr(holder, 'cell', utils.Cell(float(src.xhi), float(src.xlo), float(src.yhi), float(src.ylo), float(src.zhi), float(src.zlo)))
+    except Exception:
+        pass
+    return holder
+
+
+def _next_amorphous_retry_target(cell, density, dec_rate):
+    if density is not None:
+        retry_density = float(density) * float(dec_rate)
+        return {
+            'cell': cell,
+            'density': retry_density,
+            'log': '[PACK] Retry poly.amorphous_cell. Remaining %i times. The density is reduced to %f.',
+            'log_value': retry_density,
+        }
+
+    if cell is None or not hasattr(cell, 'cell'):
+        raise ValueError('poly.amorphous_cell retry requires either density or an explicit cell with box lengths.')
+
+    grow = 1.0 / max(float(dec_rate), 1.0e-8)
+    src = cell.cell
+    dx = float(src.xhi) - float(src.xlo)
+    dy = float(src.yhi) - float(src.ylo)
+    dz = (float(src.zhi) - float(src.zlo)) * grow
+    retry_cell = _copy_cell_holder(cell)
+    setattr(retry_cell, 'cell', utils.Cell(dx, 0.0, dy, 0.0, dz, 0.0))
+    return {
+        'cell': retry_cell,
+        'density': None,
+        'log': '[PACK] Retry poly.amorphous_cell. Remaining %i times. Density is fixed by explicit cell; expanded Z to %f while keeping XY fixed.',
+        'log_value': dz,
+    }
+
+
+def _pdb_atom_name(atom):
+    return atom.GetProp('ff_type') if atom.HasProp('ff_type') else atom.GetSymbol()
+
+
+def _infer_residue_defaults(mol, residue_name='RU0', residue_number=1):
+    if mol is None:
+        return residue_name, residue_number
+    for atom in mol.GetAtoms():
+        info = atom.GetPDBResidueInfo()
+        if info is None:
+            continue
+        try:
+            info_name = str(info.GetResidueName()).strip()
+        except Exception:
+            info_name = ''
+        try:
+            info_number = int(info.GetResidueNumber())
+        except Exception:
+            info_number = 0
+        return info_name or residue_name, info_number if info_number > 0 else residue_number
+    return residue_name, residue_number
+
+
+def _ensure_atom_residue_info(atom, residue_name='RU0', residue_number=1):
+    atom_name = _pdb_atom_name(atom)
+    info = atom.GetPDBResidueInfo()
+    if info is None:
+        atom.SetMonomerInfo(
+            Chem.AtomPDBResidueInfo(
+                atom_name,
+                residueName=residue_name,
+                residueNumber=int(residue_number),
+                isHeteroAtom=False,
+            )
+        )
+        return atom.GetPDBResidueInfo()
+
+    info.SetName(atom_name)
+    try:
+        current_name = str(info.GetResidueName()).strip()
+    except Exception:
+        current_name = ''
+    if not current_name:
+        info.SetResidueName(residue_name)
+    try:
+        current_number = int(info.GetResidueNumber())
+    except Exception:
+        current_number = 0
+    if current_number <= 0:
+        info.SetResidueNumber(int(residue_number))
+    return info
+
+
+def _ensure_mol_residue_info(mol, residue_name='RU0', residue_number=1):
+    if mol is None:
+        return None
+    default_name, default_number = _infer_residue_defaults(mol, residue_name=residue_name, residue_number=residue_number)
+    for atom in mol.GetAtoms():
+        _ensure_atom_residue_info(atom, residue_name=default_name, residue_number=default_number)
+    return mol
+
+
+def _set_atom_residue(mol, atom_idx: int, residue_name: str, residue_number: int):
+    atom = mol.GetAtomWithIdx(int(atom_idx))
+    info = _ensure_atom_residue_info(atom, residue_name=residue_name, residue_number=residue_number)
+    info.SetResidueName(residue_name)
+    info.SetResidueNumber(int(residue_number))
+    return atom
+
+
+def _rw_load_sdf(path: Path, kind: str):
+    try:
+        sup = Chem.SDMolSupplier(str(path), removeHs=False)
+        mol = sup[0] if sup and len(sup) > 0 else None
+        if mol is not None:
+            _ensure_mol_residue_info(mol)
+            utils.radon_print(f'[RESTART] Reusing cached {kind}: {path.name}', level=1)
+        return mol
+    except Exception:
+        return None
+
+
+def _rw_find_compatible_sdf(root: Path, kind: str, payload: dict):
+    want = _rw_compat_payload(kind, payload)
+    candidates = []
+    for meta in root.glob('*.json'):
+        if meta.name.endswith('.state.json'):
+            continue
+        try:
+            import json
+
+            have = json.loads(meta.read_text(encoding='utf-8'))
+        except Exception:
+            continue
+        if not isinstance(have, dict) or str(have.get('kind')) != str(kind):
+            continue
+        if _rw_compat_payload(kind, have) != want:
+            continue
+        sdf = meta.with_suffix('.sdf')
+        if sdf.exists():
+            candidates.append(sdf)
+    if not candidates:
+        return None
+    candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    return candidates[0]
+
+
+def _rw_load(work_dir, kind: str, payload: dict):
+    root = _rw_cache_root(work_dir)
+    if root is None:
+        return None
+    key = _rw_cache_key(kind, payload)
+    sdf = root / f'{key}.sdf'
+    if sdf.exists():
+        return _rw_load_sdf(sdf, kind)
+    compat = _rw_find_compatible_sdf(root, kind, payload)
+    if compat is None:
+        return None
+    return _rw_load_sdf(compat, kind)
+
+
+def _rw_save(work_dir, kind: str, payload: dict, mol):
+    root = _rw_cache_root(work_dir)
+    if root is None or mol is None:
+        return
+    key = _rw_cache_key(kind, payload)
+    sdf = root / f'{key}.sdf'
+    meta = root / f'{key}.json'
+    try:
+        w = Chem.SDWriter(str(sdf))
+        w.write(mol)
+        w.close()
+        import json
+        meta.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + '\n', encoding='utf-8')
+    except Exception:
+        pass
+
+
+def _cell_cache_root(work_dir):
+    wd = _resolve_work_dir_path(work_dir)
+    if wd is None:
+        return None
+    root = wd / '.yadonpy' / 'cell_cache'
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def _cell_cache_paths(work_dir, kind: str):
+    root = _cell_cache_root(work_dir)
+    if root is None:
+        return None
+    stem = str(kind).strip() or 'cell'
+    return {
+        'sdf': root / f'{stem}.sdf',
+        'meta': root / f'{stem}.json',
+        'state': root / f'{stem}.state.json',
+    }
+
+
+def _cell_cache_load(work_dir, kind: str, payload: dict):
+    paths = _cell_cache_paths(work_dir, kind)
+    if paths is None:
+        return None, None
+    sdf = paths['sdf']
+    meta = paths['meta']
+    state = paths['state']
+    if not sdf.exists() or not meta.exists():
+        return None, None
+    try:
+        import json
+
+        have = json.loads(meta.read_text(encoding='utf-8'))
+    except Exception:
+        return None, None
+    if not isinstance(have, dict) or str(have.get('kind')) != str(kind):
+        return None, None
+    if _rw_compat_payload(kind, have) != _rw_compat_payload(kind, payload):
+        return None, None
+    mol = _rw_load_sdf(sdf, kind)
+    if mol is None:
+        return None, None
+    cell_state = None
+    if state.exists():
+        try:
+            import json
+
+            cell_state = json.loads(state.read_text(encoding='utf-8'))
+        except Exception:
+            cell_state = None
+    return mol, cell_state
+
+
+def _cell_cache_save(work_dir, kind: str, payload: dict, mol, state: dict | None = None):
+    paths = _cell_cache_paths(work_dir, kind)
+    if paths is None or mol is None:
+        return
+    try:
+        w = Chem.SDWriter(str(paths['sdf']))
+        w.write(mol)
+        w.close()
+        import json
+
+        meta = {'kind': str(kind), **dict(payload)}
+        paths['meta'].write_text(json.dumps(_rw_normalize_value(meta), indent=2, ensure_ascii=False) + '\n', encoding='utf-8')
+        if state is not None:
+            paths['state'].write_text(json.dumps(_rw_normalize_value(state), indent=2, ensure_ascii=False) + '\n', encoding='utf-8')
+    except Exception:
+        pass
+
+
+def _cell_log_restart_reuse(func_name: str, *, source: str, work_dir=None) -> None:
+    wd = _resolve_work_dir_path(work_dir)
+    detail = f' | work_dir={wd}' if wd is not None else ''
+    utils.radon_print(f'[SKIP] poly.{func_name}: restored cached result from {source}{detail}', level=1)
+
+
+def _cell_log_restart_miss(func_name: str, *, work_dir=None) -> None:
+    wd = _resolve_work_dir_path(work_dir)
+    detail = f' at {wd}' if wd is not None else ''
+    utils.radon_print(f'[RESTART] No compatible cached {func_name} result found{detail}; rebuilding packed cell.', level=1)
+
+
+def _effective_restart_flag(work_dir, restart, *, restart_flag=None):
+    if restart is not None and restart_flag is not None and bool(restart) != bool(restart_flag):
+        raise ValueError('Conflicting restart controls: restart and restart_flag differ')
+    if restart is not None:
+        return bool(restart)
+    if restart_flag is not None:
+        return bool(restart_flag)
+    try:
+        return bool(getattr(work_dir, 'restart'))
+    except Exception:
+        return bool(resolve_restart(None))
+
+
+def _count_sssr_rings(mol) -> int:
+    try:
+        sssr = Chem.GetSSSR(mol)
+    except Exception:
+        return 0
+    if isinstance(sssr, int):
+        return int(sssr)
+    try:
+        return int(len(sssr))
+    except Exception:
+        return 0
+
+
+def _estimate_rw_rigidity(mol) -> float:
+    mol = _resolve_mol_like(mol)
+    if not isinstance(mol, Chem.Mol) or mol.GetNumAtoms() <= 0:
+        return 0.5
+
+    total_atoms = max(int(mol.GetNumAtoms()), 1)
+    try:
+        mol.UpdatePropertyCache(strict=False)
+    except Exception:
+        pass
+    heavy_atoms = max(int(mol.GetNumHeavyAtoms()), 1)
+    ring_count = _count_sssr_rings(mol)
+    aromatic_fraction = sum(1 for atom in mol.GetAtoms() if atom.GetIsAromatic()) / total_atoms
+    branch_fraction = sum(1 for atom in mol.GetAtoms() if atom.GetDegree() > 2) / total_atoms
+    try:
+        rotatable = float(rdMolDescriptors.CalcNumRotatableBonds(mol))
+    except Exception:
+        rotatable = 0.0
+
+    ring_density = min(ring_count / max(heavy_atoms / 6.0, 1.0), 1.0)
+    flexibility = min(rotatable / max(heavy_atoms - 1, 1), 1.0)
+    rigidity = (
+        0.45 * ring_density
+        + 0.25 * float(aromatic_fraction)
+        + 0.15 * float(branch_fraction)
+        + 0.15 * (1.0 - flexibility)
+    )
+    return float(np.clip(rigidity, 0.0, 1.0))
+
+
+def _resolve_rw_retry_budget(mols, retry, rollback, rollback_shaking, retry_step, retry_opt_step):
+    mols = [mol for mol in _resolve_mol_list(mols) if isinstance(mol, Chem.Mol)]
+    rigidity = max((_estimate_rw_rigidity(mol) for mol in mols), default=0.5)
+
+    if rigidity >= 0.72:
+        caps = {'retry': 80, 'rollback': 4, 'retry_step': 120, 'retry_opt_step': 8}
+    elif rigidity >= 0.38:
+        caps = {'retry': 60, 'rollback': 3, 'retry_step': 90, 'retry_opt_step': 4}
+    else:
+        caps = {'retry': 40, 'rollback': 3, 'retry_step': 60, 'retry_opt_step': 2}
+
+    original = {
+        'retry': int(retry),
+        'rollback': int(rollback),
+        'retry_step': int(retry_step),
+        'retry_opt_step': int(retry_opt_step),
+    }
+    effective = {
+        'retry': max(0, min(original['retry'], caps['retry'])),
+        'rollback': max(1, min(original['rollback'], caps['rollback'])),
+        'retry_step': max(1, min(original['retry_step'], caps['retry_step'])),
+        'retry_opt_step': max(0, min(original['retry_opt_step'], caps['retry_opt_step'])),
+    }
+    changed = {key: (original[key], effective[key]) for key in effective if original[key] != effective[key]}
+
+    return {
+        'rigidity': rigidity,
+        'retry': effective['retry'],
+        'rollback': effective['rollback'],
+        'rollback_shaking': bool(rollback_shaking),
+        'retry_step': effective['retry_step'],
+        'retry_opt_step': effective['retry_opt_step'],
+        'changed': changed,
+    }
+
+
+def _nudge_first_atom_charge(mol, delta: float) -> None:
+    if mol is None or mol.GetNumAtoms() <= 0:
+        return
+    atom = mol.GetAtomWithIdx(0)
+    keys = ['AtomicCharge', 'AtomicCharge_raw', 'RESP', 'RESP_raw']
+    base = 0.0
+    for k in keys:
+        try:
+            if atom.HasProp(k):
+                base = float(atom.GetDoubleProp(k))
+                break
+        except Exception:
+            pass
+    for k in keys:
+        try:
+            if atom.HasProp(k) or k in ('AtomicCharge', 'RESP'):
+                atom.SetDoubleProp(k, float(base + delta))
+        except Exception:
+            pass
+
+
+def _format_rw_elapsed(seconds: float) -> str:
+    seconds = float(max(0.0, seconds))
+    if seconds < 60.0:
+        return f'{seconds:.1f}s'
+    minutes, sec = divmod(seconds, 60.0)
+    if minutes < 60.0:
+        return f'{int(minutes)}m {sec:.1f}s'
+    hours, minutes = divmod(minutes, 60.0)
+    return f'{int(hours)}h {int(minutes)}m {sec:.0f}s'
+
+
+def _rw_progress_step_interval(total_steps: int) -> int:
+    total_steps = max(int(total_steps), 1)
+    if total_steps <= 10:
+        return 1
+    if total_steps <= 100:
+        return 10
+    return 25
+
+
+def _rw_emit_heartbeat(*, step_idx: int, total_steps: int, retry_idx: int, retry_total: int,
+        step_started_at: float, walk_started_at: float, state: dict, now: float | None = None) -> None:
+    interval = float(getattr(const, 'rw_heartbeat_seconds', 0.0) or 0.0)
+    if interval <= 0.0:
+        return
+    now = time.perf_counter() if now is None else float(now)
+    last_heartbeat = float(state.get('last_heartbeat', walk_started_at))
+    if (now - last_heartbeat) < interval:
+        return
+    utils.radon_print(
+        '[RW] progress step %i/%i: searching for a valid placement; current_retry=%i/%i; step_elapsed=%s; total_elapsed=%s'
+        % (
+            int(step_idx),
+            int(total_steps),
+            int(retry_idx),
+            int(retry_total),
+            _format_rw_elapsed(now - float(step_started_at)),
+            _format_rw_elapsed(now - float(walk_started_at)),
+        ),
+        level=1,
+    )
+    state['last_heartbeat'] = now
+
+
+def _rw_emit_step_progress(*, step_idx: int, total_steps: int, retries_used: int,
+        step_started_at: float, walk_started_at: float, state: dict, now: float | None = None) -> None:
+    if not const.tqdm_disable:
+        return
+    now = time.perf_counter() if now is None else float(now)
+    every = int(state.get('step_interval', _rw_progress_step_interval(total_steps)))
+    if step_idx not in {1, int(total_steps)} and (int(step_idx) % max(every, 1)) != 0:
+        return
+    utils.radon_print(
+        '[RW] accepted step %i/%i; retries_used=%i; step_elapsed=%s; total_elapsed=%s'
+        % (
+            int(step_idx),
+            int(total_steps),
+            int(retries_used),
+            _format_rw_elapsed(now - float(step_started_at)),
+            _format_rw_elapsed(now - float(walk_started_at)),
+        ),
+        level=1,
+    )
+
+
+def _rdkit_clone_mol(mol):
+    try:
+        return Chem.Mol(mol)
+    except Exception:
+        return utils.deepcopy_mol(mol)
+
+
+def _rw_growth_clone_mol(mol):
+    if mol is None:
+        return None
+    clone = _rdkit_clone_mol(mol)
+    if hasattr(mol, 'cell'):
+        try:
+            setattr(clone, 'cell', copy(mol.cell))
+        except Exception:
+            pass
+    return clone
+
+
+def _rw_finalize_bonded_terms(mol):
+    if mol is None:
+        return None
+    has_angles = bool(getattr(mol, 'angles', {}) or {})
+    has_dihedrals = bool(getattr(mol, 'dihedrals', {}) or {})
+    if has_angles and (mol.GetNumAtoms() < 4 or has_dihedrals):
+        return mol
+    if not hasattr(mol, 'HasProp') or not mol.HasProp('ff_name'):
+        return mol
+    ff_name = str(mol.GetProp('ff_name')).strip()
+    if not ff_name:
+        return mol
+    try:
+        from ..api import get_ff
+
+        ff_obj = get_ff(ff_name)
+        if mol.GetNumAtoms() >= 3 and not has_angles and hasattr(ff_obj, 'assign_atypes'):
+            ff_obj.assign_atypes(mol)
+        if mol.GetNumAtoms() >= 4 and not has_dihedrals and hasattr(ff_obj, 'assign_dtypes'):
+            ff_obj.assign_dtypes(mol)
+        if hasattr(ff_obj, 'assign_itypes'):
+            ff_obj.assign_itypes(mol)
+    except Exception:
+        pass
+    return mol
 
 def ratio_to_prob(ratio):
     """Convert an integer (or float) feed ratio list into probabilities.
@@ -151,24 +934,246 @@ def _mol_net_charge(mol, use_atomic_charge=True):
     """Compute net charge of an RDKit Mol.
 
     Priority:
-      1) If AtomicCharge exists on atoms, sum it (RESP/Gasteiger results).
+      1) If any recognized per-atom charge property exists, sum it.
       2) Otherwise, use formal charge from SMILES.
     """
     q = 0.0
     if use_atomic_charge:
-        has_ac = False
+        charge_keys = (
+            'AtomicCharge',
+            'AtomicCharge_raw',
+            'RESP',
+            'RESP_raw',
+            'ESP',
+            'MullikenCharge',
+            'LowdinCharge',
+            '_GasteigerCharge',
+        )
+        used_any = False
         for a in mol.GetAtoms():
-            if a.HasProp('AtomicCharge'):
-                has_ac = True
-                break
-        if has_ac:
+            for key in charge_keys:
+                if not a.HasProp(key):
+                    continue
+                try:
+                    q += float(a.GetDoubleProp(key))
+                    used_any = True
+                    break
+                except Exception:
+                    try:
+                        q += float(a.GetProp(key))
+                        used_any = True
+                        break
+                    except Exception:
+                        continue
+        if used_any:
             for a in mol.GetAtoms():
-                q += float(a.GetDoubleProp('AtomicCharge')) if a.HasProp('AtomicCharge') else 0.0
+                if a.HasProp('AtomicCharge'):
+                    return q
             return q
     # fallback
     for a in mol.GetAtoms():
         q += float(a.GetFormalCharge())
     return q
+
+def _init_connect_linkers(mol1, mol2, *, set_linker=True, label1=1, label2=1, headhead=False, tailtail=False):
+    if headhead:
+        set_linker_flag(mol1, reverse=True, label=label1)
+    elif set_linker:
+        set_linker_flag(mol1, label=label1)
+    if tailtail and not headhead:
+        set_linker_flag(mol2, reverse=True, label=label2)
+    elif set_linker:
+        set_linker_flag(mol2, label=label2)
+
+    if mol1.GetIntProp('tail_idx') < 0 or mol1.GetIntProp('tail_ne_idx') < 0:
+        utils.radon_print('Cannot connect_mols because mol1 does not have a tail linker atom.', level=2)
+        return False
+    if mol2.GetIntProp('head_idx') < 0 or mol2.GetIntProp('head_ne_idx') < 0:
+        utils.radon_print('Cannot connect_mols because mol2 does not have a head linker atom.', level=2)
+        return False
+    return True
+
+
+def _prepare_connect_trial(mol1, mol2, bond_length=1.5, dihedral=np.pi, random_rot=False, dih_type='monomer', set_linker=True,
+                label1=1, label2=1, headhead=False, tailtail=False, confId1=0, confId2=0):
+    if mol1 is None or mol2 is None:
+        return None
+    if not _init_connect_linkers(
+        mol1,
+        mol2,
+        set_linker=set_linker,
+        label1=label1,
+        label2=label2,
+        headhead=headhead,
+        tailtail=tailtail,
+    ):
+        return None
+
+    mol1_n = mol1.GetNumAtoms()
+    mol2_n = mol2.GetNumAtoms()
+    mol1_coord = np.asarray(mol1.GetConformer(confId1).GetPositions(), dtype=float)
+    mol2_coord = np.asarray(mol2.GetConformer(confId2).GetPositions(), dtype=float)
+    tail_idx = mol1.GetIntProp('tail_idx')
+    tail_ne_idx = mol1.GetIntProp('tail_ne_idx')
+    head_idx = mol2.GetIntProp('head_idx')
+    head_ne_idx = mol2.GetIntProp('head_ne_idx')
+
+    mol1_tail_vec = mol1_coord[tail_ne_idx] - mol1_coord[tail_idx]
+    mol2_head_vec = mol2_coord[head_ne_idx] - mol2_coord[head_idx]
+
+    angle = calc.angle_vec(mol1_tail_vec, mol2_head_vec, rad=True)
+    center = mol2_coord[head_ne_idx]
+    if angle == 0:
+        mol2_coord_rot = (mol2_coord - center) * -1 + center
+    elif angle == np.pi:
+        mol2_coord_rot = mol2_coord.copy()
+    else:
+        vcross = np.cross(mol1_tail_vec, mol2_head_vec)
+        mol2_coord_rot = calc.rotate_rod(mol2_coord, vcross, (np.pi-angle), center=center)
+
+    trans = mol1_coord[tail_ne_idx] - (bond_length * mol1_tail_vec / np.linalg.norm(mol1_tail_vec))
+    mol2_coord_rot = mol2_coord_rot + trans - mol2_coord_rot[head_ne_idx]
+
+    if random_rot == True:
+        dih = np.random.uniform(-np.pi, np.pi)
+    else:
+        if dih_type == 'monomer':
+            dih = calc.dihedral_coord(
+                mol1_coord[mol1.GetIntProp('head_idx')],
+                mol1_coord[tail_ne_idx],
+                mol2_coord_rot[head_ne_idx],
+                mol2_coord_rot[mol2.GetIntProp('tail_idx')],
+                rad=True,
+            )
+        elif dih_type == 'bond':
+            path1 = Chem.GetShortestPath(mol1, mol1.GetIntProp('head_idx'), tail_idx)
+            path2 = Chem.GetShortestPath(mol2, head_idx, mol2.GetIntProp('tail_idx'))
+            dih = calc.dihedral_coord(
+                mol1_coord[path1[-3]],
+                mol1_coord[path1[-2]],
+                mol2_coord_rot[path2[1]],
+                mol2_coord_rot[path2[2]],
+                rad=True,
+            )
+        else:
+            utils.radon_print('Illegal option of dih_type=%s.' % str(dih_type), level=3)
+            return None
+    mol2_coord_rot = calc.rotate_rod(mol2_coord_rot, -mol1_tail_vec, (dihedral-dih), center=mol2_coord_rot[head_ne_idx])
+
+    keep_idx1 = np.delete(np.arange(mol1_n, dtype=int), tail_idx)
+    keep_idx2 = np.delete(np.arange(mol2_n, dtype=int), head_idx)
+    tail_ne_idx_new = int(tail_ne_idx - 1) if tail_idx < tail_ne_idx else int(tail_ne_idx)
+    head_ne_idx_new = int(head_ne_idx - 1) if head_idx < head_ne_idx else int(head_ne_idx)
+
+    return {
+        'mol1_coord': mol1_coord,
+        'mol2_coord_rot': mol2_coord_rot,
+        'mol1_n': int(mol1_n),
+        'del_idx1': int(tail_idx),
+        'del_idx2': int(head_idx),
+        'keep_idx1': keep_idx1,
+        'keep_idx2': keep_idx2,
+        'poly_coord': mol1_coord[keep_idx1],
+        'mon_coord': mol2_coord_rot[keep_idx2],
+        'tail_ne_idx_new': tail_ne_idx_new,
+        'head_ne_idx_new': head_ne_idx_new,
+        'charge_list': ['AtomicCharge', '_GasteigerCharge', 'RESP', 'ESP', 'MullikenCharge', 'LowdinCharge'],
+    }
+
+
+def _connect_trial_cross_dmat(mol1, mol2, trial, poly_dmat=None, mon_dmat=None):
+    if poly_dmat is None or mon_dmat is None or trial is None:
+        return None
+    try:
+        tail_ne_idx = mol1.GetIntProp('tail_ne_idx')
+        head_ne_idx = mol2.GetIntProp('head_ne_idx')
+        poly_block = np.asarray(poly_dmat)[np.ix_(trial['keep_idx1'], [tail_ne_idx])]
+        mon_block = np.asarray(mon_dmat)[np.ix_([head_ne_idx], trial['keep_idx2'])]
+        return poly_block + 1 + mon_block
+    except Exception:
+        return None
+
+
+def check_3d_structure_connect_trial(mol1, mol2, trial, poly_dmat=None, mon_dmat=None, dist_min=1.0, ignore_rad=3):
+    if trial is None:
+        return False
+    p_coord = trial['poly_coord']
+    m_coord = trial['mon_coord']
+    candidate_idx = _local_proximity_candidate_indices(p_coord, m_coord, dist_min=dist_min)
+    if candidate_idx.size == 0:
+        return True
+
+    p_local = p_coord[candidate_idx] if candidate_idx.size < len(p_coord) else p_coord
+    cross_dmat = _connect_trial_cross_dmat(mol1, mol2, trial, poly_dmat=poly_dmat, mon_dmat=mon_dmat)
+    if cross_dmat is not None and candidate_idx.size < len(p_coord):
+        cross_dmat = cross_dmat[candidate_idx, :]
+    return check_3d_proximity(p_local, coord2=m_coord, dist_min=dist_min, dmat=cross_dmat, ignore_rad=ignore_rad)
+
+
+def _materialize_connected_mols(mol1, mol2, trial, *, res_name_1='RU0', res_name_2='RU0'):
+    mol = combine_mols(mol1, mol2, res_name_1=res_name_1, res_name_2=res_name_2)
+    mol1_n = int(trial['mol1_n'])
+
+    for i in range(mol2.GetNumAtoms()):
+        coord = trial['mol2_coord_rot'][i]
+        mol.GetConformer(0).SetAtomPosition(i+mol1_n, Geom.Point3D(coord[0], coord[1], coord[2]))
+
+    for charge in trial['charge_list']:
+        try:
+            idx_head = mol2.GetIntProp('head_idx') + mol1_n
+            idx_head_ne = mol2.GetIntProp('head_ne_idx') + mol1_n
+            idx_tail = mol1.GetIntProp('tail_idx')
+            idx_tail_ne = mol1.GetIntProp('tail_ne_idx')
+            need = (idx_head, idx_head_ne, idx_tail, idx_tail_ne)
+            if not all(mol.GetAtomWithIdx(i).HasProp(charge) for i in need):
+                continue
+            head_charge = mol.GetAtomWithIdx(idx_head).GetDoubleProp(charge)
+            head_ne_charge = mol.GetAtomWithIdx(idx_head_ne).GetDoubleProp(charge)
+            tail_charge = mol.GetAtomWithIdx(idx_tail).GetDoubleProp(charge)
+            tail_ne_charge = mol.GetAtomWithIdx(idx_tail_ne).GetDoubleProp(charge)
+            mol.GetAtomWithIdx(idx_head_ne).SetDoubleProp(charge, head_charge + head_ne_charge)
+            mol.GetAtomWithIdx(idx_tail_ne).SetDoubleProp(charge, tail_charge + tail_ne_charge)
+        except Exception:
+            continue
+
+    del_idx1 = int(trial['del_idx1'])
+    del_idx2 = int(trial['del_idx2']) + mol1_n - 1
+    mol = utils.remove_atom(mol, del_idx1)
+    mol = utils.remove_atom(mol, del_idx2)
+
+    tail_ne_idx = int(trial['tail_ne_idx_new'])
+    head_ne_idx = int(trial['head_ne_idx_new']) + mol1_n - 1
+    if del_idx2 < head_ne_idx:
+        head_ne_idx -= 1
+    mol = utils.add_bond(mol, tail_ne_idx, head_ne_idx, order=Chem.rdchem.BondType.SINGLE)
+    new_bond = mol.GetBondBetweenAtoms(tail_ne_idx, head_ne_idx)
+    new_bond.SetBoolProp('new_bond', True)
+
+    Chem.SanitizeMol(mol)
+
+    mol.GetAtomWithIdx(tail_ne_idx).SetBoolProp('tail_neighbor', False)
+    mol.GetAtomWithIdx(head_ne_idx).SetBoolProp('head_neighbor', False)
+
+    head_idx = mol1.GetIntProp('head_idx')
+    if del_idx1 < head_idx:
+        head_idx -= 1
+    head_ne_idx_poly = mol1.GetIntProp('head_ne_idx')
+    if del_idx1 < head_ne_idx_poly:
+        head_ne_idx_poly -= 1
+    tail_idx = mol2.GetIntProp('tail_idx') + mol1_n - 1
+    if del_idx2 < tail_idx:
+        tail_idx -= 1
+    tail_ne_idx_poly = mol2.GetIntProp('tail_ne_idx') + mol1_n - 1
+    if del_idx2 < tail_ne_idx_poly:
+        tail_ne_idx_poly -= 1
+
+    mol.SetIntProp('head_idx', head_idx)
+    mol.SetIntProp('head_ne_idx', head_ne_idx_poly)
+    mol.SetIntProp('tail_idx', tail_idx)
+    mol.SetIntProp('tail_ne_idx', tail_ne_idx_poly)
+
+    return mol
+
 
 def connect_mols(mol1, mol2, bond_length=1.5, dihedral=np.pi, random_rot=False, dih_type='monomer', set_linker=True, label1=1, label2=1,
                 headhead=False, tailtail=False, confId1=0, confId2=0, res_name_1='RU0', res_name_2='RU0'):
@@ -196,125 +1201,24 @@ def connect_mols(mol1, mol2, bond_length=1.5, dihedral=np.pi, random_rot=False, 
 
     if mol1 is None: return mol2
     if mol2 is None: return mol1
-
-    # Initialize
-    if headhead: set_linker_flag(mol1, reverse=True, label=label1)
-    elif set_linker: set_linker_flag(mol1, label=label1)
-    if tailtail and not headhead: set_linker_flag(mol2, reverse=True, label=label2)
-    elif set_linker: set_linker_flag(mol2, label=label2)
-
-    if mol1.GetIntProp('tail_idx') < 0 or mol1.GetIntProp('tail_ne_idx') < 0:
-        utils.radon_print('Cannot connect_mols because mol1 does not have a tail linker atom.', level=2)
+    trial = _prepare_connect_trial(
+        mol1,
+        mol2,
+        bond_length=bond_length,
+        dihedral=dihedral,
+        random_rot=random_rot,
+        dih_type=dih_type,
+        set_linker=set_linker,
+        label1=label1,
+        label2=label2,
+        headhead=headhead,
+        tailtail=tailtail,
+        confId1=confId1,
+        confId2=confId2,
+    )
+    if trial is None:
         return mol1
-    elif mol2.GetIntProp('head_idx') < 0 or mol2.GetIntProp('head_ne_idx') < 0:
-        utils.radon_print('Cannot connect_mols because mol2 does not have a head linker atom.', level=2)
-        return mol1
-
-    mol1_n = mol1.GetNumAtoms()
-    mol1_coord = mol1.GetConformer(confId1).GetPositions()
-    mol2_coord = mol2.GetConformer(confId2).GetPositions()
-    mol1_tail_vec = mol1_coord[mol1.GetIntProp('tail_ne_idx')] - mol1_coord[mol1.GetIntProp('tail_idx')]
-    mol2_head_vec = mol2_coord[mol2.GetIntProp('head_ne_idx')] - mol2_coord[mol2.GetIntProp('head_idx')]
-    charge_list = ['AtomicCharge', '_GasteigerCharge', 'RESP', 'ESP', 'MullikenCharge', 'LowdinCharge']
-    #bd1type = mol1.GetBondBetweenAtoms(mol1.GetIntProp('tail_idx'), mol1.GetIntProp('tail_ne_idx')).GetBondTypeAsDouble()
-    #bd2type = mol2.GetBondBetweenAtoms(mol2.GetIntProp('head_idx'), mol2.GetIntProp('head_ne_idx')).GetBondTypeAsDouble()
-
-    # Rotation mol2 to align bond vectors of head and tail
-    angle = calc.angle_vec(mol1_tail_vec, mol2_head_vec, rad=True)
-    center = mol2_coord[mol2.GetIntProp('head_ne_idx')]
-    if angle == 0:
-        mol2_coord_rot = (mol2_coord - center) * -1 + center
-    elif angle == np.pi:
-        mol2_coord_rot = mol2_coord
-    else:
-        vcross = np.cross(mol1_tail_vec, mol2_head_vec)
-        mol2_coord_rot = calc.rotate_rod(mol2_coord, vcross, (np.pi-angle), center=center)
-
-    # Translation mol2
-    trans = mol1_coord[mol1.GetIntProp('tail_ne_idx')] - ( bond_length * mol1_tail_vec / np.linalg.norm(mol1_tail_vec) )
-    mol2_coord_rot = mol2_coord_rot + trans - mol2_coord_rot[mol2.GetIntProp('head_ne_idx')]
-
-    # Rotation mol2 around new bond
-    if random_rot == True:
-        dih = np.random.uniform(-np.pi, np.pi)
-    else:
-        if dih_type == 'monomer':
-            dih = calc.dihedral_coord(mol1_coord[mol1.GetIntProp('head_idx')], mol1_coord[mol1.GetIntProp('tail_ne_idx')],
-                                      mol2_coord_rot[mol2.GetIntProp('head_ne_idx')], mol2_coord_rot[mol2.GetIntProp('tail_idx')], rad=True)
-        elif dih_type == 'bond':
-            path1 = Chem.GetShortestPath(mol1, mol1.GetIntProp('head_idx'), mol1.GetIntProp('tail_idx'))
-            path2 = Chem.GetShortestPath(mol2, mol2.GetIntProp('head_idx'), mol2.GetIntProp('tail_idx'))
-            dih = calc.dihedral_coord(mol1_coord[path1[-3]], mol1_coord[path1[-2]],
-                                      mol2_coord_rot[path2[1]], mol2_coord_rot[path2[2]], rad=True)
-        else:
-            utils.radon_print('Illegal option of dih_type=%s.' % str(dih_type), level=3)
-    mol2_coord_rot = calc.rotate_rod(mol2_coord_rot, -mol1_tail_vec, (dihedral-dih), center=mol2_coord_rot[mol2.GetIntProp('head_ne_idx')])
-
-    # Combining mol1 and mol2
-    mol = combine_mols(mol1, mol2, res_name_1=res_name_1, res_name_2=res_name_2)
-
-    # Set atomic coordinate
-    for i in range(mol2.GetNumAtoms()):
-        mol.GetConformer(0).SetAtomPosition(i+mol1_n, Geom.Point3D(mol2_coord_rot[i, 0], mol2_coord_rot[i, 1], mol2_coord_rot[i, 2]))
-
-    # Set atomic charge
-    for charge in charge_list:
-        if not mol.GetAtomWithIdx(0).HasProp(charge) or not mol.GetAtomWithIdx(mol.GetNumAtoms()-1).HasProp(charge):
-            continue
-        head_charge = mol.GetAtomWithIdx(mol2.GetIntProp('head_idx') + mol1_n).GetDoubleProp(charge)
-        head_ne_charge = mol.GetAtomWithIdx(mol2.GetIntProp('head_ne_idx') + mol1_n).GetDoubleProp(charge)
-        tail_charge = mol.GetAtomWithIdx(mol1.GetIntProp('tail_idx')).GetDoubleProp(charge)
-        tail_ne_charge = mol.GetAtomWithIdx(mol1.GetIntProp('tail_ne_idx')).GetDoubleProp(charge)
-        mol.GetAtomWithIdx(mol2.GetIntProp('head_ne_idx') + mol1_n).SetDoubleProp(charge, head_charge+head_ne_charge)
-        mol.GetAtomWithIdx(mol1.GetIntProp('tail_ne_idx')).SetDoubleProp(charge, tail_charge+tail_ne_charge)
-
-    # Delete linker atoms and bonds
-    del_idx1 = mol1.GetIntProp('tail_idx')
-    del_idx2 = mol2.GetIntProp('head_idx') + mol1_n - 1
-    mol = utils.remove_atom(mol, del_idx1)
-    mol = utils.remove_atom(mol, del_idx2)
-
-    # Add a new bond
-    tail_ne_idx = mol1.GetIntProp('tail_ne_idx')
-    head_ne_idx = mol2.GetIntProp('head_ne_idx') + mol1_n - 1
-    if del_idx1 < tail_ne_idx: tail_ne_idx -= 1
-    if del_idx2 < head_ne_idx: head_ne_idx -= 1
-    mol = utils.add_bond(mol, tail_ne_idx, head_ne_idx, order=Chem.rdchem.BondType.SINGLE)
-    new_bond = mol.GetBondBetweenAtoms(tail_ne_idx, head_ne_idx)
-    new_bond.SetBoolProp('new_bond', True)
-    #if bd1type == 2.0 or bd2type == 2.0:
-    #    mol = utils.add_bond(mol, tail_ne_idx, head_ne_idx, order=Chem.rdchem.BondType.DOUBLE)
-    #elif bd1type == 3.0 or bd2type == 3.0:
-    #    mol = utils.add_bond(mol, tail_ne_idx, head_ne_idx, order=Chem.rdchem.BondType.TRIPLE)
-    #else:
-    #    mol = utils.add_bond(mol, tail_ne_idx, head_ne_idx, order=Chem.rdchem.BondType.SINGLE)
-
-    # Finalize
-    Chem.SanitizeMol(mol)
-    #set_linker_flag(mol)
-
-    # Update linker_flag
-    mol.GetAtomWithIdx(tail_ne_idx).SetBoolProp('tail_neighbor', False)
-    mol.GetAtomWithIdx(head_ne_idx).SetBoolProp('head_neighbor', False)
-
-    head_idx = mol1.GetIntProp('head_idx')
-    if del_idx1 < head_idx: head_idx -= 1
-
-    head_ne_idx = mol1.GetIntProp('head_ne_idx')
-    if del_idx1 < head_ne_idx: head_ne_idx -= 1
-
-    tail_idx = mol2.GetIntProp('tail_idx') + mol1_n - 1
-    if del_idx2 < tail_idx: tail_idx -= 1
-
-    tail_ne_idx = mol2.GetIntProp('tail_ne_idx') + mol1_n - 1
-    if del_idx2 < tail_ne_idx: tail_ne_idx -= 1
-
-    mol.SetIntProp('head_idx', head_idx)
-    mol.SetIntProp('head_ne_idx', head_ne_idx)
-    mol.SetIntProp('tail_idx', tail_idx)
-    mol.SetIntProp('tail_ne_idx', tail_ne_idx)
-
-    return mol
+    return _materialize_connected_mols(mol1, mol2, trial, res_name_1=res_name_1, res_name_2=res_name_2)
 
 
 def combine_mols(mol1, mol2, res_name_1='RU0', res_name_2='RU0'):
@@ -333,6 +1237,11 @@ def combine_mols(mol1, mol2, res_name_1='RU0', res_name_2='RU0'):
         RDkit Mol object
     """
 
+    # Combine two molecules.
+    # RDKit preserves per-atom properties (including SetDoubleProp charges)
+    # correctly in CombineMols(). Charge loss that was observed in some
+    # workflows actually came from later topology edits (RemoveAtom), which we
+    # guard against in utils.remove_atom().
     mol = Chem.rdmolops.CombineMols(mol1, mol2)
 
     mol1_n = mol1.GetNumAtoms()
@@ -626,18 +1535,18 @@ def terminate_mols(poly, mol1, mol2=None, confId=0, bond_length=1.5, dihedral=np
     res_name_2 = 'TU1'
         
     if Chem.MolToSmiles(mol1_c) == '[H][3H]' or Chem.MolToSmiles(mol1_c) == '[3H][H]':
-        poly_c.GetAtomWithIdx(poly_c.GetIntProp('head_idx')).SetIsotope(0)
-        poly_c.GetAtomWithIdx(poly_c.GetIntProp('head_idx')).GetPDBResidueInfo().SetResidueName(res_name_1)
-        poly_c.GetAtomWithIdx(poly_c.GetIntProp('head_idx')).GetPDBResidueInfo().SetResidueNumber(1+poly_c.GetIntProp('num_units'))
+        head_idx = poly_c.GetIntProp('head_idx')
+        residue_number = 1 + poly_c.GetIntProp('num_units')
+        _set_atom_residue(poly_c, head_idx, res_name_1, residue_number).SetIsotope(0)
         poly_c.SetIntProp('num_units', 1+poly_c.GetIntProp('num_units'))
     else:
         poly_c = connect_mols(mol1_c, poly_c, bond_length=bond_length, dihedral=dihedral, random_rot=random_rot, dih_type=dih_type,
                             res_name_1=res_name_1)
 
     if Chem.MolToSmiles(mol2_c) == '[H][3H]' or Chem.MolToSmiles(mol2_c) == '[3H][H]':
-        poly_c.GetAtomWithIdx(poly_c.GetIntProp('tail_idx')).SetIsotope(0)
-        poly_c.GetAtomWithIdx(poly_c.GetIntProp('tail_idx')).GetPDBResidueInfo().SetResidueName(res_name_2)
-        poly_c.GetAtomWithIdx(poly_c.GetIntProp('tail_idx')).GetPDBResidueInfo().SetResidueNumber(1+poly_c.GetIntProp('num_units'))
+        tail_idx = poly_c.GetIntProp('tail_idx')
+        residue_number = 1 + poly_c.GetIntProp('num_units')
+        _set_atom_residue(poly_c, tail_idx, res_name_2, residue_number).SetIsotope(0)
         poly_c.SetIntProp('num_units', 1+poly_c.GetIntProp('num_units'))
     else:
         poly_c = connect_mols(poly_c, mol2_c, bond_length=bond_length, dihedral=dihedral, random_rot=random_rot, dih_type=dih_type,
@@ -652,8 +1561,8 @@ def terminate_mols(poly, mol1, mol2=None, confId=0, bond_length=1.5, dihedral=np
 # Polymer chain generator with self-avoiding random walk
 ##########################################################
 def random_walk_polymerization(mols, m_idx, chi_inv, start_num=0, init_poly=None, headhead=False, confId=0,
-            dist_min=0.7, retry=100, rollback=5, rollback_shaking=False, retry_step=200, retry_opt_step=0, tacticity=None,
-            res_name_init='INI', res_name=None, label=None, label_init=1, ff=None, work_dir=None, omp=1, mpi=0, gpu=0, mp_idx=None):
+            dist_min=0.7, retry=60, rollback=3, rollback_shaking=False, retry_step=80, retry_opt_step=4, tacticity=None,
+            res_name_init='INI', res_name=None, label=None, label_init=1, ff=None, work_dir=None, omp=1, mpi=0, gpu=0, mp_idx=None, restart=None):
     """
     poly.random_walk_polymerization
 
@@ -685,6 +1594,27 @@ def random_walk_polymerization(mols, m_idx, chi_inv, start_num=0, init_poly=None
     """
     utils.radon_print('Start poly.random_walk_polymerization.')
 
+    mols = _resolve_mol_list(mols)
+    init_poly = _resolve_mol_like(init_poly) if init_poly is not None else None
+    budget = _resolve_rw_retry_budget(mols, retry, rollback, rollback_shaking, retry_step, retry_opt_step)
+    retry = budget['retry']
+    rollback = budget['rollback']
+    rollback_shaking = budget['rollback_shaking']
+    retry_step = budget['retry_step']
+    retry_opt_step = budget['retry_opt_step']
+    if start_num == 0 and budget['changed']:
+        details = ', '.join(f'{key} {old}->{new}' for key, (old, new) in budget['changed'].items())
+        utils.radon_print(
+            f'Adaptive random-walk budget applied (rigidity={budget["rigidity"]:.2f}): {details}',
+            level=1,
+        )
+    rst_flag = _effective_restart_flag(work_dir, restart)
+    payload = _rw_payload('random_walk_polymerization', smiles=[Chem.MolToSmiles(m, isomericSmiles=True) for m in mols], m_idx=list(np.asarray(m_idx).tolist()), chi_inv=[bool(x) for x in chi_inv], start_num=int(start_num), headhead=bool(headhead), tacticity=tacticity, label=label, label_init=label_init, init_poly_smiles=(Chem.MolToSmiles(init_poly, isomericSmiles=True) if isinstance(init_poly, Chem.Mol) else None))
+    if rst_flag:
+        cached = _rw_load(work_dir, 'random_walk_polymerization', payload)
+        if cached is not None:
+            return cached
+
     if len(m_idx) != len(chi_inv):
         utils.radon_print('Inconsistency length of m_idx and chi_inv', level=3)
     if len(mols) <= max(m_idx):
@@ -692,12 +1622,28 @@ def random_walk_polymerization(mols, m_idx, chi_inv, start_num=0, init_poly=None
 
     mols_copy = []
     mols_inv = []
+    mols_dmat = []
+    mols_inv_dmat = []
     has_ring = False
     retry_flag = False
     tri_coord = None
     bond_coord = None    
     poly = None
     poly_copy = [None]
+    poly_dmat_current = None
+    total_steps = int(len(m_idx))
+    walk_started_at = time.perf_counter()
+    progress_state = {
+        'last_heartbeat': walk_started_at,
+        'step_interval': _rw_progress_step_interval(total_steps),
+    }
+
+    if start_num == 0 and const.tqdm_disable and total_steps > 0:
+        utils.radon_print(
+            '[RW] heartbeat logging active: total_steps=%i; heartbeat=%ss; accepted-step-log-every=%i'
+            % (total_steps, f'{float(getattr(const, "rw_heartbeat_seconds", 0.0)):.0f}', progress_state['step_interval']),
+            level=1,
+        )
 
     if res_name is None:
         res_name = ['RU%s' % const.pdb_id[i] for i in range(len(mols))]
@@ -715,6 +1661,8 @@ def random_walk_polymerization(mols, m_idx, chi_inv, start_num=0, init_poly=None
         poly = utils.deepcopy_mol(init_poly)
         set_linker_flag(poly, label=label_init)
         poly_copy = []
+        if dist_min > 1.0:
+            poly_dmat_current = np.asarray(Chem.GetDistanceMatrix(_rdkit_clone_mol(poly)))
         sssr_tmp = Chem.GetSSSR(poly)
         if type(sssr_tmp) is int:
             if sssr_tmp > 0:
@@ -726,6 +1674,12 @@ def random_walk_polymerization(mols, m_idx, chi_inv, start_num=0, init_poly=None
         set_linker_flag(mol, label=label[i][0])
         mols_copy.append(utils.deepcopy_mol(mol))
         mols_inv.append(calc.mirror_inversion_mol(mol))
+        if dist_min > 1.0:
+            mols_dmat.append(np.asarray(Chem.GetDistanceMatrix(_rdkit_clone_mol(mols_copy[-1]))))
+            mols_inv_dmat.append(np.asarray(Chem.GetDistanceMatrix(_rdkit_clone_mol(mols_inv[-1]))))
+        else:
+            mols_dmat.append(None)
+            mols_inv_dmat.append(None)
         sssr_tmp = Chem.GetSSSR(mol)
         if type(sssr_tmp) is int:
             if sssr_tmp > 0:
@@ -734,12 +1688,15 @@ def random_walk_polymerization(mols, m_idx, chi_inv, start_num=0, init_poly=None
             has_ring = True
 
     for i in tqdm(range(start_num, len(m_idx)), desc='[Polymerization]', disable=const.tqdm_disable):
-        dmat = None
+        dmat = poly_dmat_current
+        step_started_at = time.perf_counter()
     
         if chi_inv[i]:
             mol_c = mols_inv[m_idx[i]]
+            mon_dmat = mols_inv_dmat[m_idx[i]]
         else:
             mol_c = mols_copy[m_idx[i]]
+            mon_dmat = mols_dmat[m_idx[i]]
 
         if i == 0:
             res_name_1 = res_name_init
@@ -747,15 +1704,24 @@ def random_walk_polymerization(mols, m_idx, chi_inv, start_num=0, init_poly=None
             res_name_1 = res_name[m_idx[i-1]]
 
         if type(poly) is Chem.Mol:
-            poly_copy.append(utils.deepcopy_mol(poly))
+            poly_copy.append(_rw_growth_clone_mol(poly))
         else:
-            poly_copy.append(utils.deepcopy_mol(mol_c))
+            poly_copy.append(_rw_growth_clone_mol(mol_c))
 
         if len(poly_copy) > rollback:
             del poly_copy[0]
 
         for r in range(retry_step*(1+retry_opt_step)):
             check_3d = False
+            _rw_emit_heartbeat(
+                step_idx=i+1,
+                total_steps=total_steps,
+                retry_idx=r+1,
+                retry_total=retry_step*(1+retry_opt_step),
+                step_started_at=step_started_at,
+                walk_started_at=walk_started_at,
+                state=progress_state,
+            )
             if i > 0:
                 label1 = label[m_idx[i-1]][1]
             elif type(init_poly) == Chem.Mol:
@@ -763,52 +1729,85 @@ def random_walk_polymerization(mols, m_idx, chi_inv, start_num=0, init_poly=None
             else:
                 label1 = 1
 
-            if headhead and i % 2 == 0:
-                poly = connect_mols(poly, mol_c, tailtail=True, random_rot=True, set_linker=True,
-                            confId2=confId, res_name_1=res_name_1, res_name_2=res_name[m_idx[i]],
-                            label1=label1, label2=label[m_idx[i]][1])
-            else:
-                poly = connect_mols(poly, mol_c, random_rot=True, set_linker=True,
-                            confId2=confId, res_name_1=res_name_1, res_name_2=res_name[m_idx[i]],
-                            label1=label1, label2=label[m_idx[i]][0])
-
             if i == 0 and init_poly is None:
                 break
 
-            if dmat is None and dist_min > 1.0:
-                # This deepcopy avoids a bug of RDKit
-                dmat = Chem.GetDistanceMatrix(utils.deepcopy_mol(poly))
+            trial = _prepare_connect_trial(
+                poly,
+                mol_c,
+                random_rot=True,
+                set_linker=True,
+                tailtail=bool(headhead and i % 2 == 0),
+                confId2=confId,
+                label1=label1,
+                label2=(label[m_idx[i]][1] if headhead and i % 2 == 0 else label[m_idx[i]][0]),
+            )
+            if trial is None:
+                poly = _rw_growth_clone_mol(poly_copy[-1]) if type(poly_copy[-1]) is Chem.Mol else None
+                continue
 
-            if r % retry_step == 0 and r > 0:
-                if MD_avail:
-                    utils.radon_print('Molecular geometry shaking by a short time and high temperature MD simulation')
-                    if ff is None:
-                        ff = GAFF2_mod()
-                    if poly.GetAtomWithIdx(0).HasProp('AtomicCharge') and poly.GetAtomWithIdx(poly.GetNumAtoms()-1).HasProp('AtomicCharge'):
-                        ff.ff_assign(poly)
-                    else:
-                        ff.ff_assign(poly, charge='gasteiger')
-                    poly, _ = md.quick_rw(poly, work_dir=work_dir, omp=omp, mpi=mpi, gpu=gpu, idx=mp_idx)
-                else:
-                    utils.radon_print('Molecular geometry optimization by RDKit')
-                    AllChem.MMFFOptimizeMolecule(poly, maxIters=50, mmffVariant='MMFF94s', nonBondedThresh=3.0, confId=0)
-                check_3d = check_3d_structure_poly(poly, mol_c, dmat, dist_min=dist_min, check_bond_length=True, tacticity=tacticity)
-                tri_coord = None
-                bond_coord = None
-            else:
-                check_3d = check_3d_structure_poly(poly, mol_c, dmat, dist_min=dist_min, check_bond_length=False)
+            if dmat is None and dist_min > 1.0:
+                dmat = np.asarray(Chem.GetDistanceMatrix(_rdkit_clone_mol(poly)))
+                poly_dmat_current = dmat
+
+            check_3d = check_3d_structure_connect_trial(
+                poly,
+                mol_c,
+                trial,
+                poly_dmat=dmat,
+                mon_dmat=mon_dmat,
+                dist_min=dist_min,
+            )
 
             if check_3d and has_ring:
-                check_3d, tri_coord_new, bond_coord_new = check_3d_bond_ring_intersection(poly, mon=mol_c,
-                                                                    tri_coord=tri_coord, bond_coord=bond_coord)
+                check_3d, tri_coord_new, bond_coord_new = check_3d_bond_ring_intersection(
+                    poly,
+                    mon=mol_c,
+                    poly_coord=trial['poly_coord'],
+                    mon_coord=trial['mon_coord'],
+                    tri_coord=tri_coord,
+                    bond_coord=None,
+                    poly_atom_indices=trial['keep_idx1'],
+                    mon_atom_indices=trial['keep_idx2'],
+                )
+
+            if check_3d:
+                poly = _materialize_connected_mols(poly, mol_c, trial, res_name_1=res_name_1, res_name_2=res_name[m_idx[i]])
+                if dmat is not None or tacticity:
+                    post_dmat = None
+                    if dmat is not None:
+                        post_dmat = np.asarray(Chem.GetDistanceMatrix(_rdkit_clone_mol(poly)))
+                    check_3d = check_3d_structure_poly(
+                        poly,
+                        mol_c,
+                        post_dmat,
+                        dist_min=dist_min,
+                        check_bond_length=bool(dmat is not None),
+                        tacticity=tacticity,
+                    )
+                    if not check_3d:
+                        poly = _rw_growth_clone_mol(poly_copy[-1]) if type(poly_copy[-1]) is Chem.Mol else None
+                        tri_coord = None
+                        bond_coord = None
+                        continue
+                    if post_dmat is not None:
+                        poly_dmat_current = post_dmat
 
             if check_3d:
                 if has_ring:
                     tri_coord = tri_coord_new
                     bond_coord = bond_coord_new
+                _rw_emit_step_progress(
+                    step_idx=i+1,
+                    total_steps=total_steps,
+                    retries_used=r+1,
+                    step_started_at=step_started_at,
+                    walk_started_at=walk_started_at,
+                    state=progress_state,
+                )
                 break
             elif r < retry_step * (1 + retry_opt_step) - 1:
-                poly = utils.deepcopy_mol(poly_copy[-1]) if type(poly_copy[-1]) is Chem.Mol else None
+                poly = _rw_growth_clone_mol(poly_copy[-1]) if type(poly_copy[-1]) is Chem.Mol else None
                 if r == 0 or (r+1) % 100 == 0:
                     utils.radon_print('Retry random walk step %i, %i/%i' % (i+1, r+1, retry_step*(1+retry_opt_step)))
             else:
@@ -838,7 +1837,13 @@ def random_walk_polymerization(mols, m_idx, chi_inv, start_num=0, init_poly=None
                 utils.radon_print('Molecular geometry shaking by a short time and high temperature MD simulation')
                 if ff is None:
                     ff = GAFF2_mod()
-                if rb_poly.GetAtomWithIdx(0).HasProp('AtomicCharge') and poly.GetAtomWithIdx(poly.GetNumAtoms()-1).HasProp('AtomicCharge'):
+                # Use a robust check: if *any* atom already has AtomicCharge, preserve it.
+                has_q = False
+                try:
+                    has_q = any(a.HasProp('AtomicCharge') for a in rb_poly.GetAtoms())
+                except Exception:
+                    has_q = False
+                if has_q:
                     ff.ff_assign(rb_poly)
                 else:
                     ff.ff_assign(rb_poly, charge='gasteiger')
@@ -848,15 +1853,18 @@ def random_walk_polymerization(mols, m_idx, chi_inv, start_num=0, init_poly=None
                 mols, m_idx, chi_inv, start_num=start_num, init_poly=rb_poly, headhead=headhead, confId=confId,
                 dist_min=dist_min, retry=retry, rollback=rollback, retry_step=retry_step, retry_opt_step=retry_opt_step, tacticity=tacticity,
                 res_name_init=res_name_init, res_name=res_name, label=label, label_init=label_init,
-                ff=ff, work_dir=work_dir, omp=omp, mpi=mpi, gpu=gpu
+                ff=ff, work_dir=work_dir, omp=omp, mpi=mpi, gpu=gpu, restart=restart
             )
-            
+
+    poly = _rw_finalize_bonded_terms(poly)
+
+    _rw_save(work_dir, 'random_walk_polymerization', payload, poly)
     return poly
 
 
 def polymerize_rw(mol, n, init_poly=None, headhead=False, confId=0, tacticity='atactic', atac_ratio=0.5,
-            dist_min=0.7, retry=100, rollback=5, rollback_shaking=True, retry_step=200, retry_opt_step=20, ter1=None, ter2=None,
-            label=None, label_ter1=1, label_ter2=1, res_name='RU0', ff=None, work_dir=None, omp=0, mpi=1, gpu=0, mp_idx=None):
+            dist_min=0.7, retry=60, rollback=3, rollback_shaking=False, retry_step=80, retry_opt_step=4, ter1=None, ter2=None,
+            label=None, label_ter1=1, label_ter2=1, res_name='RU0', ff=None, work_dir=None, omp=0, mpi=1, gpu=0, mp_idx=None, restart=None):
     """
     poly.polymerize_rw
 
@@ -889,10 +1897,56 @@ def polymerize_rw(mol, n, init_poly=None, headhead=False, confId=0, tacticity='a
     dt1 = datetime.datetime.now()
     utils.radon_print('Start poly.polymerize_rw.', level=1)
 
-    m_idx = gen_monomer_array(1, n)
-    chi_inv, check_chi = gen_chiral_inv_array([mol], m_idx, init_poly=init_poly, tacticity=tacticity, atac_ratio=atac_ratio)
-    if not check_chi:
-        tacticity = None
+    mol = _resolve_mol_like(mol)
+    init_poly = _resolve_mol_like(init_poly) if init_poly is not None else None
+    ter1 = _resolve_mol_like(ter1) if ter1 is not None else None
+    ter2 = _resolve_mol_like(ter2) if ter2 is not None else None
+    rst_flag = _effective_restart_flag(work_dir, restart)
+    payload = _rw_payload(
+        'polymerize_rw',
+        smiles=(Chem.MolToSmiles(mol, isomericSmiles=True) if isinstance(mol, Chem.Mol) else None),
+        n=int(n),
+        headhead=bool(headhead),
+        tacticity=tacticity,
+        atac_ratio=float(atac_ratio),
+        label=label,
+        ter1_smiles=(Chem.MolToSmiles(ter1, isomericSmiles=True) if isinstance(ter1, Chem.Mol) else None),
+        ter2_smiles=(Chem.MolToSmiles(ter2, isomericSmiles=True) if isinstance(ter2, Chem.Mol) else None),
+        init_poly_smiles=(Chem.MolToSmiles(init_poly, isomericSmiles=True) if isinstance(init_poly, Chem.Mol) else None),
+    )
+    plan_payload = _rw_payload(
+        'polymerize_rw_plan',
+        smiles=(Chem.MolToSmiles(mol, isomericSmiles=True) if isinstance(mol, Chem.Mol) else None),
+        n=int(n),
+        headhead=bool(headhead),
+        tacticity=tacticity,
+        atac_ratio=float(atac_ratio),
+        label=label,
+        ter1_smiles=(Chem.MolToSmiles(ter1, isomericSmiles=True) if isinstance(ter1, Chem.Mol) else None),
+        ter2_smiles=(Chem.MolToSmiles(ter2, isomericSmiles=True) if isinstance(ter2, Chem.Mol) else None),
+        init_poly_smiles=(Chem.MolToSmiles(init_poly, isomericSmiles=True) if isinstance(init_poly, Chem.Mol) else None),
+    )
+    plan = _rw_load_state(work_dir, 'polymerize_rw_plan', plan_payload) if rst_flag else None
+    if plan is not None and isinstance(plan, dict):
+        m_idx = [int(x) for x in plan.get('m_idx', [])]
+        chi_inv = [bool(x) for x in plan.get('chi_inv', [])]
+        tacticity = plan.get('effective_tacticity', tacticity)
+    else:
+        m_idx = gen_monomer_array(1, n)
+        chi_inv, check_chi = gen_chiral_inv_array([mol], m_idx, init_poly=init_poly, tacticity=tacticity, atac_ratio=atac_ratio)
+        if not check_chi:
+            tacticity = None
+        _rw_save_state(
+            work_dir,
+            'polymerize_rw_plan',
+            plan_payload,
+            {'m_idx': list(m_idx), 'chi_inv': [bool(x) for x in chi_inv], 'effective_tacticity': tacticity},
+        )
+
+    if rst_flag:
+        cached = _rw_load(work_dir, 'polymerize_rw', payload)
+        if cached is not None:
+            return cached
 
     if type(ter1) is Chem.Mol:
         if ter2 is None:
@@ -913,7 +1967,7 @@ def polymerize_rw(mol, n, init_poly=None, headhead=False, confId=0, tacticity='a
     poly = random_walk_polymerization(
         mols, m_idx, chi_inv, start_num=0, init_poly=init_poly, headhead=headhead, confId=confId,
         dist_min=dist_min, retry=retry, rollback=rollback, rollback_shaking=rollback_shaking, retry_step=retry_step, retry_opt_step=retry_opt_step,
-        tacticity=tacticity, res_name=res_name, label=label, ff=ff, work_dir=work_dir, omp=omp, mpi=mpi, gpu=gpu, mp_idx=mp_idx
+        tacticity=tacticity, res_name=res_name, label=label, ff=ff, work_dir=work_dir, omp=omp, mpi=mpi, gpu=gpu, mp_idx=mp_idx, restart=restart
     )
 
     if type(ter1) is Chem.Mol:
@@ -921,21 +1975,22 @@ def polymerize_rw(mol, n, init_poly=None, headhead=False, confId=0, tacticity='a
     dt2 = datetime.datetime.now()
     utils.radon_print('Normal termination of poly.polymerize_rw. Elapsed time = %s' % str(dt2-dt1), level=1)
 
+    _rw_save(work_dir, 'polymerize_rw', payload, poly)
     return poly
 
 
 def polymerize_rw_old(mol, n, init_poly=None, headhead=False, confId=0, tacticity='atactic', atac_ratio=0.5,
             dist_min=0.7, retry=10, rollback=5, rollback_shaking=False, retry_step=0, retry_opt_step=50, ter1=None, ter2=None,
-            label=None, label_ter1=1, label_ter2=1, res_name='RU0', ff=None, work_dir=None, omp=0, mpi=1, gpu=0):
+            label=None, label_ter1=1, label_ter2=1, res_name='RU0', ff=None, work_dir=None, omp=0, mpi=1, gpu=0, restart=None):
     # Backward campatibility
     return polymerize_rw(mol, n, init_poly=init_poly, headhead=headhead, confId=confId, tacticity=tacticity, atac_ratio=atac_ratio, dist_min=dist_min, 
             retry=retry, rollback=rollback, rollback_shaking=rollback_shaking, retry_step=retry_step, retry_opt_step=retry_opt_step, ter1=ter1, ter2=ter2,
             label=label, label_ter1=label_ter1, label_ter2=label_ter2, res_name=res_name, ff=ff,
-            work_dir=work_dir, omp=omp, mpi=mpi, gpu=gpu)
+            work_dir=work_dir, omp=omp, mpi=mpi, gpu=gpu, restart=restart)
 
 
 def polymerize_rw_mp(mol, n, init_poly=None, headhead=False, confId=0, tacticity='atactic', atac_ratio=0.5,
-            dist_min=0.7, retry=100, rollback=5, rollback_shaking=False, retry_step=200, retry_opt_step=0, ter1=None, ter2=None,
+            dist_min=0.7, retry=60, rollback=3, rollback_shaking=False, retry_step=80, retry_opt_step=4, ter1=None, ter2=None,
             label=None, label_ter1=1, label_ter2=1, res_name='RU0',
             ff=None, work_dir=None, omp=0, mpi=1, gpu=0, nchain=1, mp=None, fail_copy=True):
 
@@ -978,8 +2033,8 @@ def _polymerize_rw_mp_worker(args):
 
 
 def copolymerize_rw(mols, n, init_poly=None, headhead=False, confId=0, tacticity='atactic', atac_ratio=0.5,
-            dist_min=0.7, retry=100, rollback=5, rollback_shaking=False, retry_step=200, retry_opt_step=0, ter1=None, ter2=None,
-            label=None, label_ter1=1, label_ter2=1, res_name=None, ff=None, work_dir=None, omp=0, mpi=1, gpu=0, mp_idx=None):
+            dist_min=0.7, retry=60, rollback=3, rollback_shaking=False, retry_step=80, retry_opt_step=4, ter1=None, ter2=None,
+            label=None, label_ter1=1, label_ter2=1, res_name=None, ff=None, work_dir=None, omp=0, mpi=1, gpu=0, mp_idx=None, restart=None):
     """
     poly.copolymerize_rw
 
@@ -1012,10 +2067,34 @@ def copolymerize_rw(mols, n, init_poly=None, headhead=False, confId=0, tacticity
     dt1 = datetime.datetime.now()
     utils.radon_print('Start poly.copolymerize_rw.', level=1)
 
-    m_idx = gen_monomer_array(len(mols), n, copoly='alt')
-    chi_inv, check_chi = gen_chiral_inv_array(mols, m_idx, init_poly=init_poly, tacticity=tacticity, atac_ratio=atac_ratio)
-    if not check_chi:
-        tacticity = None
+    mols = _resolve_mol_list(mols)
+    init_poly = _resolve_mol_like(init_poly) if init_poly is not None else None
+    ter1 = _resolve_mol_like(ter1) if ter1 is not None else None
+    ter2 = _resolve_mol_like(ter2) if ter2 is not None else None
+    rst_flag = _effective_restart_flag(work_dir, restart)
+    payload = _rw_payload('copolymerize_rw', smiles=[Chem.MolToSmiles(m, isomericSmiles=True) for m in mols], n=n if isinstance(n, list) else int(n), headhead=bool(headhead), tacticity=tacticity, atac_ratio=float(atac_ratio), label=label, ter1_smiles=(Chem.MolToSmiles(ter1, isomericSmiles=True) if isinstance(ter1, Chem.Mol) else None), ter2_smiles=(Chem.MolToSmiles(ter2, isomericSmiles=True) if isinstance(ter2, Chem.Mol) else None), init_poly_smiles=(Chem.MolToSmiles(init_poly, isomericSmiles=True) if isinstance(init_poly, Chem.Mol) else None))
+    plan_payload = _rw_payload('copolymerize_rw_plan', smiles=[Chem.MolToSmiles(m, isomericSmiles=True) for m in mols], n=n if isinstance(n, list) else int(n), headhead=bool(headhead), tacticity=tacticity, atac_ratio=float(atac_ratio), label=label, ter1_smiles=(Chem.MolToSmiles(ter1, isomericSmiles=True) if isinstance(ter1, Chem.Mol) else None), ter2_smiles=(Chem.MolToSmiles(ter2, isomericSmiles=True) if isinstance(ter2, Chem.Mol) else None), init_poly_smiles=(Chem.MolToSmiles(init_poly, isomericSmiles=True) if isinstance(init_poly, Chem.Mol) else None))
+    plan = _rw_load_state(work_dir, 'copolymerize_rw_plan', plan_payload) if rst_flag else None
+    if plan is not None and isinstance(plan, dict):
+        m_idx = [int(x) for x in plan.get('m_idx', [])]
+        chi_inv = [bool(x) for x in plan.get('chi_inv', [])]
+        tacticity = plan.get('effective_tacticity', tacticity)
+    else:
+        m_idx = gen_monomer_array(len(mols), n, copoly='alt')
+        chi_inv, check_chi = gen_chiral_inv_array(mols, m_idx, init_poly=init_poly, tacticity=tacticity, atac_ratio=atac_ratio)
+        if not check_chi:
+            tacticity = None
+        _rw_save_state(
+            work_dir,
+            'copolymerize_rw_plan',
+            plan_payload,
+            {'m_idx': list(m_idx), 'chi_inv': [bool(x) for x in chi_inv], 'effective_tacticity': tacticity},
+        )
+
+    if rst_flag:
+        cached = _rw_load(work_dir, 'copolymerize_rw', payload)
+        if cached is not None:
+            return cached
 
     if res_name is None:
         res_name = ['RU%s' % const.pdb_id[i] for i in range(len(mols))]
@@ -1034,7 +2113,7 @@ def copolymerize_rw(mols, n, init_poly=None, headhead=False, confId=0, tacticity
     poly = random_walk_polymerization(
         mols, m_idx, chi_inv, start_num=0, init_poly=init_poly, headhead=headhead, confId=confId, dist_min=dist_min,
         retry=retry, rollback=rollback, rollback_shaking=rollback_shaking, retry_step=retry_step, retry_opt_step=retry_opt_step,
-        tacticity=tacticity, res_name=res_name, label=label, ff=ff, work_dir=work_dir, omp=omp, mpi=mpi, gpu=gpu, mp_idx=mp_idx
+        tacticity=tacticity, res_name=res_name, label=label, ff=ff, work_dir=work_dir, omp=omp, mpi=mpi, gpu=gpu, mp_idx=mp_idx, restart=restart
     )
 
     if type(ter1) is Chem.Mol:
@@ -1042,6 +2121,7 @@ def copolymerize_rw(mols, n, init_poly=None, headhead=False, confId=0, tacticity
     dt2 = datetime.datetime.now()
     utils.radon_print('Normal termination of poly.copolymerize_rw. Elapsed time = %s' % str(dt2-dt1), level=1)
 
+    _rw_save(work_dir, 'copolymerize_rw', payload, poly)
     return poly
 
 
@@ -1052,7 +2132,7 @@ def copolymerize_rw_old(mols, n, init_poly=None, headhead=False, confId=0, tacti
     return copolymerize_rw(mols, n, init_poly=init_poly, headhead=headhead, confId=confId, tacticity=tacticity, atac_ratio=atac_ratio, dist_min=dist_min, 
             retry=retry, rollback=rollback, rollback_shaking=rollback_shaking, retry_step=retry_step, retry_opt_step=retry_opt_step, ter1=ter1, ter2=ter2,
             label=label, label_ter1=label_ter1, label_ter2=label_ter2, res_name=res_name, ff=ff,
-            work_dir=work_dir, omp=omp, mpi=mpi, gpu=gpu)
+            work_dir=work_dir, omp=omp, mpi=mpi, gpu=gpu, restart=restart)
 
 
 def copolymerize_rw_mp(mols, n, init_poly=None, tacticity='atactic', atac_ratio=0.5,
@@ -1101,8 +2181,8 @@ def _copolymerize_rw_mp_worker(args):
 
 
 def random_copolymerize_rw(mols, n, ratio=None, reac_ratio=[], init_poly=None, headhead=False, confId=0, tacticity='atactic', atac_ratio=0.5,
-            dist_min=0.7, retry=100, rollback=5, rollback_shaking=True, retry_step=200, retry_opt_step=20, ter1=None, ter2=None,
-            label=None, label_ter1=1, label_ter2=1, res_name=None, ff=None, work_dir=None, omp=0, mpi=1, gpu=0, mp_idx=None, name: str | None = None):
+            dist_min=0.7, retry=60, rollback=3, rollback_shaking=False, retry_step=80, retry_opt_step=4, ter1=None, ter2=None,
+            label=None, label_ter1=1, label_ter2=1, res_name=None, ff=None, work_dir=None, omp=0, mpi=1, gpu=0, mp_idx=None, name: str | None = None, restart=None):
     """
     poly.random_copolymerize_rw
 
@@ -1137,16 +2217,41 @@ def random_copolymerize_rw(mols, n, ratio=None, reac_ratio=[], init_poly=None, h
     dt1 = datetime.datetime.now()
     utils.radon_print('Start poly.random_copolymerize_rw.', level=1)
 
+    mols = _resolve_mol_list(mols)
+    init_poly = _resolve_mol_like(init_poly) if init_poly is not None else None
+    ter1 = _resolve_mol_like(ter1) if ter1 is not None else None
+    ter2 = _resolve_mol_like(ter2) if ter2 is not None else None
+    rst_flag = _effective_restart_flag(work_dir, restart)
     if ratio is None:
-        ratio = np.full(len(mols), 1/len(mols))
+        ratio = np.full(len(mols), 1 / len(mols))
+    ratio = ratio_to_prob(ratio)
+
+    payload = _rw_payload('random_copolymerize_rw', smiles=[Chem.MolToSmiles(m, isomericSmiles=True) for m in mols], n=int(n), ratio=ratio, reac_ratio=list(np.asarray(reac_ratio).tolist()) if len(reac_ratio) > 0 else [], headhead=bool(headhead), tacticity=tacticity, atac_ratio=float(atac_ratio), label=label, ter1_smiles=(Chem.MolToSmiles(ter1, isomericSmiles=True) if isinstance(ter1, Chem.Mol) else None), ter2_smiles=(Chem.MolToSmiles(ter2, isomericSmiles=True) if isinstance(ter2, Chem.Mol) else None), init_poly_smiles=(Chem.MolToSmiles(init_poly, isomericSmiles=True) if isinstance(init_poly, Chem.Mol) else None))
+    plan_payload = _rw_payload('random_copolymerize_rw_plan', smiles=[Chem.MolToSmiles(m, isomericSmiles=True) for m in mols], n=int(n), ratio=ratio, reac_ratio=list(np.asarray(reac_ratio).tolist()) if len(reac_ratio) > 0 else [], headhead=bool(headhead), tacticity=tacticity, atac_ratio=float(atac_ratio), label=label, ter1_smiles=(Chem.MolToSmiles(ter1, isomericSmiles=True) if isinstance(ter1, Chem.Mol) else None), ter2_smiles=(Chem.MolToSmiles(ter2, isomericSmiles=True) if isinstance(ter2, Chem.Mol) else None), init_poly_smiles=(Chem.MolToSmiles(init_poly, isomericSmiles=True) if isinstance(init_poly, Chem.Mol) else None))
+    plan = _rw_load_state(work_dir, 'random_copolymerize_rw_plan', plan_payload) if rst_flag else None
+    if rst_flag:
+        cached = _rw_load(work_dir, 'random_copolymerize_rw', payload)
+        if cached is not None:
+            return cached
 
     if len(mols) != len(ratio):
         utils.radon_print('Inconsistency length of mols and ratio', level=3)
 
-    m_idx = gen_monomer_array(len(mols), n, copoly='random', ratio=ratio, reac_ratio=reac_ratio)
-    chi_inv, check_chi = gen_chiral_inv_array(mols, m_idx, init_poly=init_poly, tacticity=tacticity, atac_ratio=atac_ratio)
-    if not check_chi:
-        tacticity = None
+    if plan is not None and isinstance(plan, dict):
+        m_idx = [int(x) for x in plan.get('m_idx', [])]
+        chi_inv = [bool(x) for x in plan.get('chi_inv', [])]
+        tacticity = plan.get('effective_tacticity', tacticity)
+    else:
+        m_idx = gen_monomer_array(len(mols), n, copoly='random', ratio=ratio, reac_ratio=reac_ratio)
+        chi_inv, check_chi = gen_chiral_inv_array(mols, m_idx, init_poly=init_poly, tacticity=tacticity, atac_ratio=atac_ratio)
+        if not check_chi:
+            tacticity = None
+        _rw_save_state(
+            work_dir,
+            'random_copolymerize_rw_plan',
+            plan_payload,
+            {'m_idx': list(m_idx), 'chi_inv': [bool(x) for x in chi_inv], 'effective_tacticity': tacticity},
+        )
 
     if res_name is None:
         res_name = ['RU%s' % const.pdb_id[i] for i in range(len(mols))]
@@ -1165,7 +2270,7 @@ def random_copolymerize_rw(mols, n, ratio=None, reac_ratio=[], init_poly=None, h
     poly = random_walk_polymerization(
         mols, m_idx, chi_inv, start_num=0, init_poly=init_poly, headhead=headhead, confId=confId, dist_min=dist_min,
         retry=retry, rollback=rollback, rollback_shaking=rollback_shaking, retry_step=retry_step, retry_opt_step=retry_opt_step,
-        tacticity=tacticity, res_name=res_name, label=label, ff=ff, work_dir=work_dir, omp=omp, mpi=mpi, gpu=gpu, mp_idx=mp_idx
+        tacticity=tacticity, res_name=res_name, label=label, ff=ff, work_dir=work_dir, omp=omp, mpi=mpi, gpu=gpu, mp_idx=mp_idx, restart=restart
     )
 
     if type(ter1) is Chem.Mol:
@@ -1247,6 +2352,7 @@ def random_copolymerize_rw(mols, n, ratio=None, reac_ratio=[], init_poly=None, h
 
 
 
+    _rw_save(work_dir, 'random_copolymerize_rw', payload, poly)
     return poly
 
 
@@ -1261,7 +2367,7 @@ def random_copolymerize_rw_old(mols, n, ratio=None, reac_ratio=[], init_poly=Non
 
 
 def random_copolymerize_rw_mp(mols, n, ratio=None, reac_ratio=[], init_poly=None, tacticity='atactic', atac_ratio=0.5,
-                dist_min=0.7, retry=100, rollback=5, rollback_shaking=False, retry_step=200, retry_opt_step=0, ter1=None, ter2=None,
+                dist_min=0.7, retry=60, rollback=3, rollback_shaking=False, retry_step=80, retry_opt_step=4, ter1=None, ter2=None,
                 label=None, label_ter1=1, label_ter2=1, res_name=None,
                 ff=None, work_dir=None, omp=1, mpi=1, gpu=0, nchain=1, mp=None, fail_copy=True):
 
@@ -1306,8 +2412,8 @@ def _random_copolymerize_rw_mp_worker(args):
 
 
 def block_copolymerize_rw(mols, n, init_poly=None, headhead=False, confId=0, tacticity='atactic', atac_ratio=0.5,
-            dist_min=0.7, retry=100, rollback=5, rollback_shaking=False, retry_step=200, retry_opt_step=0, ter1=None, ter2=None,
-            label=None, label_ter1=1, label_ter2=1, res_name=None, ff=None, work_dir=None, omp=0, mpi=1, gpu=0, mp_idx=None):
+            dist_min=0.7, retry=60, rollback=3, rollback_shaking=False, retry_step=80, retry_opt_step=4, ter1=None, ter2=None,
+            label=None, label_ter1=1, label_ter2=1, res_name=None, ff=None, work_dir=None, omp=0, mpi=1, gpu=0, mp_idx=None, restart=None):
     """
     poly.block_copolymerize_rw
 
@@ -1340,6 +2446,17 @@ def block_copolymerize_rw(mols, n, init_poly=None, headhead=False, confId=0, tac
     dt1 = datetime.datetime.now()
     utils.radon_print('Start poly.block_copolymerize_rw.', level=1)
 
+    mols = _resolve_mol_list(mols)
+    init_poly = _resolve_mol_like(init_poly) if init_poly is not None else None
+    ter1 = _resolve_mol_like(ter1) if ter1 is not None else None
+    ter2 = _resolve_mol_like(ter2) if ter2 is not None else None
+    rst_flag = _effective_restart_flag(work_dir, restart)
+    payload = _rw_payload('block_copolymerize_rw', smiles=[Chem.MolToSmiles(m, isomericSmiles=True) for m in mols], n=list(np.asarray(n).tolist()) if isinstance(n, list) else int(n), headhead=bool(headhead), tacticity=tacticity, atac_ratio=float(atac_ratio), label=label, ter1_smiles=(Chem.MolToSmiles(ter1, isomericSmiles=True) if isinstance(ter1, Chem.Mol) else None), ter2_smiles=(Chem.MolToSmiles(ter2, isomericSmiles=True) if isinstance(ter2, Chem.Mol) else None), init_poly_smiles=(Chem.MolToSmiles(init_poly, isomericSmiles=True) if isinstance(init_poly, Chem.Mol) else None))
+    if rst_flag:
+        cached = _rw_load(work_dir, 'block_copolymerize_rw', payload)
+        if cached is not None:
+            return cached
+
     if len(mols) != len(n):
         utils.radon_print('Inconsistency length of mols and n', level=3)
 
@@ -1365,7 +2482,7 @@ def block_copolymerize_rw(mols, n, init_poly=None, headhead=False, confId=0, tac
     poly = random_walk_polymerization(
         mols, m_idx, chi_inv, start_num=0, init_poly=init_poly, headhead=headhead, confId=confId,
         dist_min=dist_min, retry=retry, rollback=rollback, rollback_shaking=rollback_shaking, retry_step=retry_step, retry_opt_step=retry_opt_step,
-        tacticity=tacticity, res_name=res_name, label=label, ff=ff, work_dir=work_dir, omp=omp, mpi=mpi, gpu=gpu, mp_idx=mp_idx
+        tacticity=tacticity, res_name=res_name, label=label, ff=ff, work_dir=work_dir, omp=omp, mpi=mpi, gpu=gpu, mp_idx=mp_idx, restart=restart
     )
 
     if type(ter1) is Chem.Mol:
@@ -1373,6 +2490,7 @@ def block_copolymerize_rw(mols, n, init_poly=None, headhead=False, confId=0, tac
     dt2 = datetime.datetime.now()
     utils.radon_print('Normal termination of poly.block_copolymerize_rw. Elapsed time = %s' % str(dt2-dt1), level=1)
 
+    _rw_save(work_dir, 'block_copolymerize_rw', payload, poly)
     return poly
 
 
@@ -1387,7 +2505,7 @@ def block_copolymerize_rw_old(mols, n, init_poly=None, headhead=False, confId=0,
 
 
 def block_copolymerize_rw_mp(mols, n, init_poly=None, tacticity='atactic', atac_ratio=0.5,
-            dist_min=0.7, retry=100, rollback=5, rollback_shaking=False, retry_step=200, retry_opt_step=0, ter1=None, ter2=None,
+            dist_min=0.7, retry=60, rollback=3, rollback_shaking=False, retry_step=80, retry_opt_step=4, ter1=None, ter2=None,
             label=None, label_ter1=1, label_ter2=1, res_name=None, 
             ff=None, work_dir=None, omp=0, mpi=1, gpu=0, nchain=10, mp=10, fail_copy=True):
 
@@ -1475,7 +2593,7 @@ def polymerize_mp_exec(func, args, mp, nchain=1, fail_copy=True):
 
 
 def terminate_rw(poly, mol1, mol2=None, confId=0, dist_min=1.0, retry=100, rollback_shaking=False, retry_step=200, retry_opt_step=0,
-            res_name='RU0', label=None, ff=None, work_dir=None, omp=0, mpi=1, gpu=0, name: str | None = None):
+            res_name='RU0', label=None, ff=None, work_dir=None, omp=0, mpi=1, gpu=0, name: str | None = None, restart=None):
     """
     poly.terminate_rw
 
@@ -1503,6 +2621,16 @@ def terminate_rw(poly, mol1, mol2=None, confId=0, dist_min=1.0, retry=100, rollb
     dt1 = datetime.datetime.now()
     utils.radon_print('Start poly.terminate_rw.', level=1)
 
+    poly = _resolve_mol_like(poly)
+    mol1 = _resolve_mol_like(mol1)
+    mol2 = _resolve_mol_like(mol2) if mol2 is not None else None
+    rst_flag = _effective_restart_flag(work_dir, restart)
+    payload = _rw_payload('terminate_rw', poly_smiles=(Chem.MolToSmiles(poly, isomericSmiles=True) if isinstance(poly, Chem.Mol) else None), mol1_smiles=(Chem.MolToSmiles(mol1, isomericSmiles=True) if isinstance(mol1, Chem.Mol) else None), mol2_smiles=(Chem.MolToSmiles(mol2, isomericSmiles=True) if isinstance(mol2, Chem.Mol) else None), res_name=res_name, label=label, name=name)
+    if rst_flag:
+        cached = _rw_load(work_dir, 'terminate_rw', payload)
+        if cached is not None:
+            return cached
+
     if mol2 is None:
         mol2 = mol1
     H2_flag1 = False
@@ -1510,17 +2638,18 @@ def terminate_rw(poly, mol1, mol2=None, confId=0, dist_min=1.0, retry=100, rollb
     res_name_1 = 'TU0'
     res_name_2 = 'TU1'
     poly_c = utils.deepcopy_mol(poly)
+    _ensure_mol_residue_info(poly_c)
 
     if Chem.MolToSmiles(mol1) == '[H][3H]' or Chem.MolToSmiles(mol1) == '[3H][H]':
-        poly_c.GetAtomWithIdx(poly_c.GetIntProp('head_idx')).SetIsotope(0)
-        poly_c.GetAtomWithIdx(poly_c.GetIntProp('head_idx')).GetPDBResidueInfo().SetResidueName(res_name_1)
-        poly_c.GetAtomWithIdx(poly_c.GetIntProp('head_idx')).GetPDBResidueInfo().SetResidueNumber(1+poly_c.GetIntProp('num_units'))
+        head_idx = poly_c.GetIntProp('head_idx')
+        residue_number = 1 + poly_c.GetIntProp('num_units')
+        _set_atom_residue(poly_c, head_idx, res_name_1, residue_number).SetIsotope(0)
         poly_c.SetIntProp('num_units', 1+poly_c.GetIntProp('num_units'))
         H2_flag1 = True
     if Chem.MolToSmiles(mol2) == '[H][3H]' or Chem.MolToSmiles(mol2) == '[3H][H]':
-        poly_c.GetAtomWithIdx(poly_c.GetIntProp('tail_idx')).SetIsotope(0)
-        poly_c.GetAtomWithIdx(poly_c.GetIntProp('tail_idx')).GetPDBResidueInfo().SetResidueName(res_name_2)
-        poly_c.GetAtomWithIdx(poly_c.GetIntProp('tail_idx')).GetPDBResidueInfo().SetResidueNumber(1+poly_c.GetIntProp('num_units'))
+        tail_idx = poly_c.GetIntProp('tail_idx')
+        residue_number = 1 + poly_c.GetIntProp('num_units')
+        _set_atom_residue(poly_c, tail_idx, res_name_2, residue_number).SetIsotope(0)
         poly_c.SetIntProp('num_units', 1+poly_c.GetIntProp('num_units'))
         H2_flag2 = True
 
@@ -1543,7 +2672,7 @@ def terminate_rw(poly, mol1, mol2=None, confId=0, dist_min=1.0, retry=100, rollb
         poly_c = random_walk_polymerization(
             mols, mon_idx, chi_inv, confId=confId,
             dist_min=dist_min, retry=retry, rollback_shaking=rollback_shaking, retry_step=retry_step, retry_opt_step=retry_opt_step,
-            res_name=res_name, label=label, ff=ff, work_dir=work_dir, omp=omp, mpi=mpi, gpu=gpu
+            res_name=res_name, label=label, ff=ff, work_dir=work_dir, omp=omp, mpi=mpi, gpu=gpu, restart=restart
         )
 
     set_terminal_idx(poly_c)
@@ -1563,6 +2692,7 @@ def terminate_rw(poly, mol1, mol2=None, confId=0, dist_min=1.0, retry=100, rollb
             pass
 
 
+    _rw_save(work_dir, 'terminate_rw', payload, poly_c)
     return poly_c
 
 
@@ -1758,12 +2888,14 @@ def amorphous_cell(
         dec_rate=0.8,
         check_bond_ring_intersection=False,
         mp=0,
-        restart_flag=False,
+        restart_flag=None,
         ions=None,
         neutralize=True,
         neutralize_tol=1e-4,
         charge_scale=None,
         charge_tolerance=1e-2,
+        work_dir=None,
+        restart=None,
 ):
     """
     poly.amorphous_cell
@@ -1785,35 +2917,47 @@ def amorphous_cell(
     Returns:
         Rdkit Mol object
     """
-    if not restart_flag:
-        dt1 = datetime.datetime.now()
-        utils.radon_print('Start amorphous cell generation by poly.amorphous_cell.', level=1)
+    rst_flag = _effective_restart_flag(work_dir, restart, restart_flag=restart_flag)
+    dt1 = _cell_log_begin('amorphous_cell', restart=rst_flag)
 
-    if type(mols) is Chem.Mol:
-        mols = [mols]
-    if type(n) is int:
-        n = [int(n)]
+    mols, n = _normalize_mol_counts(mols, n)
+
+    cache_payload = _cell_cache_payload(
+        'amorphous_cell',
+        mols=mols,
+        n=n,
+        cell=cell,
+        density=density,
+        threshold=threshold,
+        dec_rate=dec_rate,
+        check_bond_ring_intersection=check_bond_ring_intersection,
+        mp=mp,
+        neutralize=neutralize,
+        neutralize_tol=neutralize_tol,
+        charge_scale=charge_scale,
+        charge_tolerance=charge_tolerance,
+        ions=ions,
+    )
+    if rst_flag:
+        cached = _rw_load(work_dir, 'amorphous_cell', cache_payload)
+        if cached is not None:
+            cached_state = _rw_load_state(work_dir, 'amorphous_cell', cache_payload)
+            _cell_log_restart_reuse('amorphous_cell', source='hashed restart cache', work_dir=work_dir)
+            _cell_log_done('amorphous_cell', dt1, restart=rst_flag)
+            return _restore_cached_cell_state(cached, cached_state)
+        cached, cached_state = _cell_cache_load(work_dir, 'amorphous_cell', cache_payload)
+        if cached is not None:
+            _cell_log_restart_reuse('amorphous_cell', source='stable cell cache', work_dir=work_dir)
+            _cell_log_done('amorphous_cell', dt1, restart=rst_flag)
+            return _restore_cached_cell_state(cached, cached_state)
+        _cell_log_restart_miss('amorphous_cell', work_dir=work_dir)
+
+    utils.radon_print('[PACK] Building amorphous cell by random molecular placement.', level=1)
 
     # ------------------------------------------------------------------
     # yadonpy: cache per-molecule GROMACS artifacts early.
-    #
-    # In workflows like Example 01, molecules are later copied/merged/split
-    # (e.g., Chem.GetMolFrags on the packed cell), which preserves RDKit props
-    # but drops Python-level topology containers (angles/dihedrals).
-    # By writing artifacts here (on the fully parameterized molecules) and
-    # stamping atoms with a stable mol_id, system export can always recover
-    # correct ITP/GRO/TOP files.
     # ------------------------------------------------------------------
-    try:
-        from ..io.molecule_cache import ensure_cached_artifacts
-        for _m in mols:
-            # Default behavior: if no explicit name was set, infer the caller's
-            # variable name (copoly, solvent_A, ...) and persist it.
-            _nm = utils.ensure_name(_m, name=None, depth=2)
-            ensure_cached_artifacts(_m, mol_name=_nm)
-    except Exception:
-        # Caching is a best-effort optimization and should never break packing.
-        pass
+    _cache_artifacts_best_effort(mols, prefer_var=True)
 
 
     # ------------------------------------------------------------------
@@ -1882,6 +3026,18 @@ def amorphous_cell(
         q_raw = None
         q_scaled = None
         tol = float(charge_tolerance)
+
+    # Small residual system charge can appear after RESP/rounding or charge scaling.
+    # If the scaled net charge is already close to zero, fold the tiny remainder into
+    # the first atom of the first ITP-carrying species instead of treating the box as charged.
+    try:
+        if len(mols) > 0 and q_scaled is not None and abs(float(q_scaled)) < 0.1:
+            _nudge_first_atom_charge(mols[0], -float(q_scaled))
+            q_scaled = 0.0
+            q_raw = None
+            utils.radon_print('[PACK] Adjusted the first atom charge of the first species to absorb a residual system charge < 0.1 e.', level=1)
+    except Exception:
+        pass
 
     # --- Ion injection / charge neutrality ---------------------------------
     # If ions were registered by ion(), use them unless explicit ions= is given.
@@ -1967,8 +3123,10 @@ def amorphous_cell(
         setattr(cell_c, 'cell', utils.Cell(xhi, xlo, yhi, ylo, zhi, zlo))
 
     retry_flag = False
-    for m, mol in enumerate(mols_c):
-        for i in tqdm(range(n[m]), desc='[Unit cell generation %i/%i]' % (m+1, len(mols_c)), disable=const.tqdm_disable):
+    pack_order = _amorphous_pack_order(mols_c, n)
+    for order_idx, m in enumerate(pack_order):
+        mol = mols_c[m]
+        for i in tqdm(range(n[m]), desc='[Unit cell generation %i/%i]' % (order_idx+1, len(pack_order)), disable=const.tqdm_disable):
             for r in range(retry_step):
                 # Random rotation and translation
                 trans = np.array([
@@ -1988,7 +3146,7 @@ def amorphous_cell(
 
                 check_3d = check_3d_structure_cell(cell_c, mol_coord_c, dist_min=threshold)
                 if check_3d and check_bond_ring_intersection and has_ring:
-                    check_3d, tri_coord_new, bond_coord_new = check_3d_bond_ring_intersection(cell_c, mon=mol_c, mon_coord=mol_coord_c,
+                    check_3d, tri_coord_new, bond_coord_new = check_3d_bond_ring_intersection(cell_c, mon=mol, mon_coord=mol_coord_c,
                                                                     tri_coord=tri_coord, bond_coord=bond_coord, mp=mp)
                 if check_3d:
                     if check_bond_ring_intersection and has_ring:
@@ -1998,11 +3156,11 @@ def amorphous_cell(
                 elif r < retry_step-1:
                     if r == 0 or (r+1) % 100 == 0:
                         step_n = sum(n[:m])+i+1 if m > 0 else i+1
-                        utils.radon_print('Retry placing a molecule in cell. Step=%i, %i/%i' % (step_n, r+1, retry_step))
+                        utils.radon_print('[PACK] Retry placing a molecule in cell. Step=%i, %i/%i' % (step_n, r+1, retry_step), level=1)
                 else:
                     retry_flag = True
                     step_n = sum(n[:m])+i+1 if m > 0 else i+1
-                    utils.radon_print('Reached maximum number of retrying in the step %i of poly.amorphous_cell.' % step_n, level=1)
+                    utils.radon_print('[PACK] Reached maximum number of retrying in step %i of poly.amorphous_cell.' % step_n, level=1)
 
             if retry_flag and retry > 0: break
 
@@ -2024,21 +3182,22 @@ def amorphous_cell(
         if retry <= 0:
             utils.radon_print('Reached maximum number of retrying poly.amorphous_cell.', level=3)
         else:
-            density *= dec_rate
-            utils.radon_print('Retry poly.amorphous_cell. Remainig %i times. The density is reduced to %f.' % (retry, density), level=1)
+            retry_target = _next_amorphous_retry_target(cell, density, dec_rate)
+            utils.radon_print(retry_target['log'] % (retry, retry_target['log_value']), level=1)
             retry -= 1
             cell_c = amorphous_cell(
                     mols,
                     n,
-                    cell=cell,
-                    density=density,
+                    cell=retry_target['cell'],
+                    density=retry_target['density'],
                     retry=retry,
                     retry_step=retry_step,
                     threshold=threshold,
                     dec_rate=dec_rate,
                     check_bond_ring_intersection=check_bond_ring_intersection,
                     mp=mp,
-                    restart_flag=True,
+                    restart=True,
+                    work_dir=work_dir,
                     ions=ions,
                     neutralize=neutralize,
                     neutralize_tol=neutralize_tol,
@@ -2046,9 +3205,7 @@ def amorphous_cell(
                     charge_tolerance=charge_tolerance,
             )
 
-    if not restart_flag:
-        dt2 = datetime.datetime.now()
-        utils.radon_print('Normal termination of poly.amorphous_cell. Elapsed time = %s' % str(dt2-dt1), level=1)
+    _cell_log_done('amorphous_cell', dt1, restart=rst_flag)
 
     # ------------------------------------------------------------------
     # yadonpy extension: attach composition metadata to the returned cell.
@@ -2071,14 +3228,55 @@ def amorphous_cell(
                     cs_val = float(_cs[idx])
                 except Exception:
                     cs_val = 1.0
+            _bonded_requested = None
+            _bonded_method = None
+            _bonded_explicit = False
+            _bonded_signature = None
+            _cached_mol_id = None
+            _cached_artifact_dir = None
+            _ff_name = None
+            try:
+                if hasattr(_mol, 'HasProp'):
+                    if _mol.HasProp('_yadonpy_bonded_requested'):
+                        _bonded_requested = str(_mol.GetProp('_yadonpy_bonded_requested')).strip() or None
+                    if _mol.HasProp('_yadonpy_bonded_method'):
+                        _bonded_method = str(_mol.GetProp('_yadonpy_bonded_method')).strip() or None
+                    if _mol.HasProp('_yadonpy_bonded_explicit'):
+                        _bonded_explicit = str(_mol.GetProp('_yadonpy_bonded_explicit')).strip().lower() in ('1','true','yes','on')
+                    if _mol.HasProp('_yadonpy_bonded_signature'):
+                        _bonded_signature = str(_mol.GetProp('_yadonpy_bonded_signature')).strip() or None
+                    if _mol.HasProp('_yadonpy_molid'):
+                        _cached_mol_id = str(_mol.GetProp('_yadonpy_molid')).strip() or None
+                    if _mol.HasProp('_yadonpy_artifact_dir'):
+                        _cached_artifact_dir = str(_mol.GetProp('_yadonpy_artifact_dir')).strip() or None
+                    if _mol.HasProp('ff_name'):
+                        _ff_name = str(_mol.GetProp('ff_name')).strip() or None
+            except Exception:
+                _bonded_requested = None
+                _bonded_method = None
+                _bonded_explicit = False
+                _bonded_signature = None
+                _cached_mol_id = None
+                _cached_artifact_dir = None
+                _ff_name = None
             meta.append({
                 'smiles': smi,
                 'n': int(_count),
                 'natoms': int(_mol.GetNumAtoms()),
                 'charge_scale': cs_val,
-                'name': (_mol.GetProp('_yadonpy_resname') if _mol.HasProp('_yadonpy_resname') else (_mol.GetProp('_Name') if _mol.HasProp('_Name') else None)),
+                'name': (utils.get_name(_mol, default=None)),
+                'bonded_requested': _bonded_requested,
+                'bonded_method': _bonded_method,
+                'bonded_explicit': bool(_bonded_explicit),
+                'bonded_signature': _bonded_signature,
+                'cached_mol_id': _cached_mol_id,
+                'cached_artifact_dir': _cached_artifact_dir,
+                'ff_name': _ff_name,
             })
-        payload = {'density_g_cm3': float(density), 'species': meta}
+        payload = {
+            'density_g_cm3': (float(density) if density is not None else None),
+            'species': meta,
+        }
         if isinstance(_cs, dict):
             payload['charge_scale'] = _cs
 
@@ -2124,6 +3322,12 @@ def amorphous_cell(
     except Exception:
         pass
 
+    _rw_save(work_dir, 'amorphous_cell', cache_payload, cell_c)
+    state = _cell_state_from_mol(cell_c)
+    if state is not None:
+        _rw_save_state(work_dir, 'amorphous_cell', cache_payload, state)
+    _cell_cache_save(work_dir, 'amorphous_cell', cache_payload, cell_c, state=state)
+
     return cell_c
 
 
@@ -2139,6 +3343,8 @@ def amorphous_mixture_cell(
         check_bond_ring_intersection=False,
         mp=0,
         charge_scale=None,
+        work_dir=None,
+        restart=None,
 ):
     """
     poly.amorphous_mixture_cell
@@ -2156,13 +3362,14 @@ def amorphous_mixture_cell(
             dec_rate=dec_rate,
             check_bond_ring_intersection=check_bond_ring_intersection,
             mp=mp,
-            restart_flag=False,
             charge_scale=charge_scale,
+            work_dir=work_dir,
+            restart=restart,
     )
 
 
 def nematic_cell(mols, n, cell=None, density=0.1, retry=20, retry_step=1000, threshold=2.0, dec_rate=0.8,
-        check_bond_ring_intersection=False, mp=0, restart_flag=False):
+        check_bond_ring_intersection=False, mp=0, restart_flag=None, work_dir=None, restart=None):
     """
     poly.nematic_cell
 
@@ -2183,42 +3390,16 @@ def nematic_cell(mols, n, cell=None, density=0.1, retry=20, retry_step=1000, thr
     Returns:
         Rdkit Mol object
     """
-    if not restart_flag:
-        dt1 = datetime.datetime.now()
-        utils.radon_print('Start amorphous cell generation by poly.nematic_cell.', level=1)
+    rst_flag = _effective_restart_flag(work_dir, restart, restart_flag=restart_flag)
+    dt1 = _cell_log_begin('nematic_cell', restart=rst_flag)
 
-    if type(mols) is Chem.Mol:
-        mols = [mols]
-    if type(n) is int:
-        n = [int(n)]
+    mols, n = _normalize_mol_counts(mols, n)
 
     # ------------------------------------------------------------------
     # yadonpy: cache per-molecule GROMACS artifacts early.
-    #
-    # In workflows like Example 01, molecules are later copied/merged/split
-    # (e.g., Chem.GetMolFrags on the packed cell), which preserves RDKit props
-    # but drops Python-level topology containers (angles/dihedrals).
-    # By writing artifacts here (on the fully parameterized molecules) and
-    # stamping atoms with a stable mol_id, system export can always recover
-    # correct ITP/GRO/TOP files.
     # ------------------------------------------------------------------
-    try:
-        from ..io.molecule_cache import ensure_cached_artifacts
-        for _i, _m in enumerate(mols):
-            # best-effort names; examples usually set mol.SetProp('name', ...)
-            _name = None
-            try:
-                if hasattr(_m, 'HasProp') and _m.HasProp('_yadonpy_resname'):
-                    _name = str(_m.GetProp('_yadonpy_resname'))
-                elif hasattr(_m, 'HasProp') and _m.HasProp('_Name'):
-                    _name = str(_m.GetProp('_Name'))
-                elif hasattr(_m, 'HasProp') and _m.HasProp('name'):
-                    _name = str(_m.GetProp('name'))
-            except Exception:
-                _name = None
-            ensure_cached_artifacts(_m, mol_name=_name)
-    except Exception:
-        pass
+    _cache_artifacts_best_effort(mols, prefer_var=False)
+
 
 
     has_ring = False
@@ -2241,7 +3422,7 @@ def nematic_cell(mols, n, cell=None, density=0.1, retry=20, retry_step=1000, thr
     # Alignment molecules
     for mol in mols_c:
         Chem.rdMolTransforms.CanonicalizeConformer(mol.GetConformer(0), ignoreHs=False)
-        sssr_tmp = Chem.GetSSSR(mol_c)
+        sssr_tmp = Chem.GetSSSR(mol)
         if type(sssr_tmp) is int:
             if sssr_tmp > 0:
                 has_ring = True
@@ -2259,7 +3440,8 @@ def nematic_cell(mols, n, cell=None, density=0.1, retry=20, retry_step=1000, thr
         xhi, xlo, yhi, ylo, zhi, zlo = calc_cell_length([*mols_c, cell_c], [*n, 1], density=density)
         setattr(cell_c, 'cell', utils.Cell(xhi, xlo, yhi, ylo, zhi, zlo))
 
-    utils.radon_print('Start nematic-like cell generation.', level=1)
+    if not rst_flag:
+        utils.radon_print('Start nematic-like cell generation.', level=1)
     retry_flag = False
     for m, mol in enumerate(mols_c):
         for i in tqdm(range(n[m]), desc='[Unit cell generation %i/%i]' % (m+1, len(mols_c)), disable=const.tqdm_disable):
@@ -2286,7 +3468,7 @@ def nematic_cell(mols, n, cell=None, density=0.1, retry=20, retry_step=1000, thr
 
                 check_3d = check_3d_structure_cell(cell_c, mol_coord_c, dist_min=threshold)
                 if check_3d and check_bond_ring_intersection and has_ring:
-                    check_3d, tri_coord_new, bond_coord_new = check_3d_bond_ring_intersection(cell_c, mon=mol_c, mon_coord=mol_coord_c,
+                    check_3d, tri_coord_new, bond_coord_new = check_3d_bond_ring_intersection(cell_c, mon=mol, mon_coord=mol_coord_c,
                                                                     tri_coord=tri_coord, bond_coord=bond_coord, mp=mp)
                 if check_3d:
                     if check_bond_ring_intersection and has_ring:
@@ -2327,24 +3509,22 @@ def nematic_cell(mols, n, cell=None, density=0.1, retry=20, retry_step=1000, thr
             retry -= 1
             cell_c = nematic_cell(mols, n, cell=cell, density=density, retry=retry,
                     retry_step=retry_step, threshold=threshold, dec_rate=dec_rate,
-                    check_bond_ring_intersection=check_bond_ring_intersection, mp=mp, restart_flag=True)
+                    check_bond_ring_intersection=check_bond_ring_intersection, mp=mp, restart=True, work_dir=work_dir)
 
-    if not restart_flag:
-        dt2 = datetime.datetime.now()
-        utils.radon_print('Normal termination of poly.nematic_cell. Elapsed time = %s' % str(dt2-dt1), level=1)
+    _cell_log_done('nematic_cell', dt1, restart=rst_flag)
 
     return cell_c
 
 
 def nematic_mixture_cell(mols, n, cell=None, density=0.1, retry=20, retry_step=1000, threshold=2.0, dec_rate=0.8,
-                            check_bond_ring_intersection=False, mp=0):
+                            check_bond_ring_intersection=False, mp=0, work_dir=None, restart=None):
     """
     poly.nematic_mixture_cell
 
     This function is alias of poly.nematic_cell to maintain backward compatibility
     """
     return nematic_cell(mols, n, cell=cell, density=density, retry=retry, retry_step=retry_step, threshold=threshold, dec_rate=dec_rate,
-                            check_bond_ring_intersection=check_bond_ring_intersection, mp=mp, restart_flag=False)
+                            check_bond_ring_intersection=check_bond_ring_intersection, mp=mp, work_dir=work_dir, restart=restart)
 
 
 # DEPRECATION
@@ -3106,10 +4286,25 @@ def check_3d_proximity(coord1, coord2=None, dist_min=1.5, wrap=None, ignore_rad=
                             wrap.yhi, wrap.ylo, wrap.zhi, wrap.zlo)
 
     if coord2 is not None:
-        dist_matrix = calc.distance_matrix(coord1, coord2)
-    else:
-        dist_matrix = calc.distance_matrix(coord1)
-        np.fill_diagonal(dist_matrix, np.nan)
+        if coord1.size == 0 or coord2.size == 0:
+            return True
+        threshold_sq = float(dist_min) * float(dist_min)
+        chunk_size = 256
+        for start in range(0, len(coord1), chunk_size):
+            stop = min(start + chunk_size, len(coord1))
+            diff = coord1[start:stop, None, :] - coord2[None, :, :]
+            dist_sq = np.einsum('ijk,ijk->ij', diff, diff, optimize=True)
+            if dmat is not None:
+                mask = np.asarray(dmat[start:stop, :]) > ignore_rad
+                if not np.any(mask):
+                    continue
+                dist_sq = np.where(mask, dist_sq, np.inf)
+            if np.any(dist_sq <= threshold_sq):
+                return False
+        return True
+
+    dist_matrix = calc.distance_matrix(coord1)
+    np.fill_diagonal(dist_matrix, np.nan)
 
     if dmat is not None:
         imat = np.where(dmat <= ignore_rad, np.nan, 1)
@@ -3167,7 +4362,8 @@ def check_3d_bond_length(mol, confId=0, bond_s=2.7, bond_a=1.9, bond_d=1.8, bond
     return check
 
 
-def check_3d_bond_ring_intersection(poly, mon=None, poly_coord=None, mon_coord=None, tri_coord=None, bond_coord=None, confId=0, wrap=None, mp=0):
+def check_3d_bond_ring_intersection(poly, mon=None, poly_coord=None, mon_coord=None, tri_coord=None, bond_coord=None,
+                                    poly_atom_indices=None, mon_atom_indices=None, confId=0, wrap=None, mp=0):
     """
     poly.check_3d_bond_ring_intersection
 
@@ -3194,7 +4390,6 @@ def check_3d_bond_ring_intersection(poly, mon=None, poly_coord=None, mon_coord=N
     check = True
     poly_n = poly.GetNumAtoms()
     mon_idx = poly_n
-    poly_bond_n = poly.GetNumBonds()
     ring = Chem.GetSymmSSSR(poly)
     if poly_coord is None:
         poly_coord = np.array(poly.GetConformer(confId).GetPositions())
@@ -3202,28 +4397,60 @@ def check_3d_bond_ring_intersection(poly, mon=None, poly_coord=None, mon_coord=N
     if len(ring) == 0:
         return True, None, None
 
+    def _coord_index_map(atom_count, coord, atom_indices):
+        if atom_indices is None:
+            return {int(i): int(i) for i in range(min(int(atom_count), len(coord)))}
+        return {int(atom_idx): int(pos) for pos, atom_idx in enumerate(np.asarray(atom_indices, dtype=int).tolist())}
+
+    def _coords_from_indices(coord, indices, idx_map):
+        mapped = []
+        for atom_idx in indices:
+            pos = idx_map.get(int(atom_idx))
+            if pos is None or pos < 0 or pos >= len(coord):
+                return None
+            mapped.append(coord[pos])
+        return mapped
+
+    poly_idx_map = _coord_index_map(poly_n, poly_coord, poly_atom_indices)
+
     if type(mon) is Chem.Mol:
         mon_n = mon.GetNumAtoms()
         if mon_coord is None:
             mon_idx = int(poly_n - mon_n)
+            mon_idx_map = None
+        else:
+            mon_idx_map = _coord_index_map(mon_n, mon_coord, mon_atom_indices)
+    else:
+        mon_idx_map = None
 
     # Construction of bond and ring surface coordinates in the growing chain part
     if tri_coord is None:
         if wrap is not None:
             poly_coord = calc.wrap(poly_coord, wrap.xhi, wrap.xlo,
                             wrap.yhi, wrap.ylo, wrap.zhi, wrap.zlo)
-        p_ring_coord = [[poly_coord[j] for j in list(ring[i])] for i in range(len(ring)) if list(ring[i])[0] < mon_idx]
+        p_ring_coord = []
+        for i in range(len(ring)):
+            ring_idx = list(ring[i])
+            if ring_idx[0] >= mon_idx:
+                continue
+            mapped = _coords_from_indices(poly_coord, ring_idx, poly_idx_map)
+            if mapped is not None:
+                p_ring_coord.append(mapped)
         p_tri_coord = np.array([np.array([r[0], r[x+1], r[x+2]]) for r in p_ring_coord for x in range(len(r)-2)])
     else:
         p_tri_coord = tri_coord
 
     if bond_coord is None:
-        p_bond_coord = np.array([
-                            np.array([
-                                poly_coord[b.GetBeginAtomIdx()],
-                                poly_coord[b.GetEndAtomIdx()]
-                            ]) for b in poly.GetBonds() if b.GetBeginAtomIdx() < mon_idx and b.GetEndAtomIdx() < mon_idx
-                        ])
+        p_bond_list = []
+        for b in poly.GetBonds():
+            begin_idx = b.GetBeginAtomIdx()
+            end_idx = b.GetEndAtomIdx()
+            if begin_idx >= mon_idx or end_idx >= mon_idx:
+                continue
+            mapped = _coords_from_indices(poly_coord, (begin_idx, end_idx), poly_idx_map)
+            if mapped is not None:
+                p_bond_list.append(np.array(mapped))
+        p_bond_coord = np.array(p_bond_list)
     else:
         p_bond_coord = bond_coord
 
@@ -3233,35 +4460,42 @@ def check_3d_bond_ring_intersection(poly, mon=None, poly_coord=None, mon_coord=N
         if mon_coord is None:
             m_ring_coord = []
             for i in range(len(ring), 0, -1):
-                tmp_list = []
                 if list(ring[i-1])[0] < mon_idx:
                     break
-                for j in list(ring[i-1]):
-                    tmp_list.append(poly_coord[j])
-                m_ring_coord.append(tmp_list)
+                mapped = _coords_from_indices(poly_coord, list(ring[i-1]), poly_idx_map)
+                if mapped is not None:
+                    m_ring_coord.append(mapped)
             m_tri_coord = np.array([np.array([r[0], r[x+1], r[x+2]]) for r in m_ring_coord for x in range(len(r)-2)])
 
-            m_bond_coord = np.array([
-                                np.array([
-                                    poly_coord[b.GetBeginAtomIdx()],
-                                    poly_coord[b.GetEndAtomIdx()]
-                                ]) for b in poly.GetBonds() if b.GetBeginAtomIdx() >= mon_idx or b.GetEndAtomIdx() >= mon_idx
-                            ])
+            m_bond_list = []
+            for b in poly.GetBonds():
+                begin_idx = b.GetBeginAtomIdx()
+                end_idx = b.GetEndAtomIdx()
+                if begin_idx < mon_idx and end_idx < mon_idx:
+                    continue
+                mapped = _coords_from_indices(poly_coord, (begin_idx, end_idx), poly_idx_map)
+                if mapped is not None:
+                    m_bond_list.append(np.array(mapped))
+            m_bond_coord = np.array(m_bond_list)
         else:
             if wrap is not None:
                 mon_coord = calc.wrap(mon_coord, wrap.xhi, wrap.xlo,
                                 wrap.yhi, wrap.ylo, wrap.zhi, wrap.zlo)
 
-                m_ring = Chem.GetSymmSSSR(mon)
-                m_ring_coord = [[mon_coord[j] for j in list(m_ring[i])] for i in range(len(m_ring))]
-                m_tri_coord = np.array([np.array([r[0], r[x+1], r[x+2]]) for r in m_ring_coord for x in range(len(r)-2)])
+            m_ring = Chem.GetSymmSSSR(mon)
+            m_ring_coord = []
+            for i in range(len(m_ring)):
+                mapped = _coords_from_indices(mon_coord, list(m_ring[i]), mon_idx_map)
+                if mapped is not None:
+                    m_ring_coord.append(mapped)
+            m_tri_coord = np.array([np.array([r[0], r[x+1], r[x+2]]) for r in m_ring_coord for x in range(len(r)-2)])
 
-                m_bond_coord = np.array([
-                                    np.array([
-                                        mon_coord[b.GetBeginAtomIdx()],
-                                        mon_coord[b.GetEndAtomIdx()]
-                                    ]) for b in mon.GetBonds()
-                                ])
+            m_bond_list = []
+            for b in mon.GetBonds():
+                mapped = _coords_from_indices(mon_coord, (b.GetBeginAtomIdx(), b.GetEndAtomIdx()), mon_idx_map)
+                if mapped is not None:
+                    m_bond_list.append(np.array(mapped))
+            m_bond_coord = np.array(m_bond_list)
 
         if  len(p_tri_coord) > 0 and len(m_tri_coord) > 0:
             r_tri_coord = np.vstack([p_tri_coord, m_tri_coord])
@@ -3272,44 +4506,18 @@ def check_3d_bond_ring_intersection(poly, mon=None, poly_coord=None, mon_coord=N
         r_bond_coord = np.vstack([p_bond_coord, m_bond_coord])
 
 
-        # Ray-triangle intersection to check bond-ring intersection
-        # Step 1: rings in poly vs. bonds in monomer
-        if mp == 0:
-            for bond, tri in itertools.product(m_bond_coord, p_tri_coord):
-                if MollerTrumbore(bond, tri):
-                    check = False
-                    break
-
-            # Step 2: rings in monomer vs. bonds in poly
-            if check:
-                for bond, tri in itertools.product(p_bond_coord, m_tri_coord):
-                    if MollerTrumbore(bond, tri):
-                        check = False
-                        break
-        else:
-            args = list(itertools.product(m_bond_coord, p_tri_coord)) + list(itertools.product(p_bond_coord, m_tri_coord))
-            args = list(np.array_split(np.array(args, dtype=object), mp))
-            with confu.ProcessPoolExecutor(max_workers=mp, mp_context=MP.get_context('spawn')) as executor:
-                results = executor.map(_MollerTrumbore, args)
-            check = not np.any(np.array(list(results)))
+        if _has_bond_triangle_intersection(m_bond_coord, p_tri_coord, mp=mp):
+            check = False
+        elif _has_bond_triangle_intersection(p_bond_coord, m_tri_coord, mp=mp):
+            check = False
 
 
     else:
         r_tri_coord = p_tri_coord
         r_bond_coord = p_bond_coord
 
-        # Ray-triangle intersection to judge penetration into a ring by a bond
-        if mp == 0:
-            for bond, tri in itertools.product(p_bond_coord, p_tri_coord):
-                if MollerTrumbore(bond, tri):
-                    check = False
-                    break
-        else:
-            args = list(itertools.product(p_bond_coord, p_tri_coord))
-            args = list(np.array_split(np.array(args, dtype=object), mp))
-            with confu.ProcessPoolExecutor(max_workers=mp, mp_context=MP.get_context('spawn')) as executor:
-                results = executor.map(_MollerTrumbore, args)
-            check = not np.any(np.array(list(results)))
+        if _has_bond_triangle_intersection(p_bond_coord, p_tri_coord, mp=mp):
+            check = False
 
     if not check:
         utils.radon_print('A bond-ring intersection was found.')
@@ -3367,6 +4575,72 @@ def _MollerTrumbore(args):
     return False
 
 
+def _bond_triangle_bbox_pairs(bond_coord, tri_coord, *, padding: float = 1.0e-8, chunk_size: int = 256):
+    if len(bond_coord) == 0 or len(tri_coord) == 0:
+        return []
+
+    bond_min = np.min(bond_coord, axis=1)
+    bond_max = np.max(bond_coord, axis=1)
+    tri_min = np.min(tri_coord, axis=1)
+    tri_max = np.max(tri_coord, axis=1)
+    pairs: list[tuple[np.ndarray, np.ndarray]] = []
+    pad = float(max(padding, 0.0))
+    chunk = int(max(chunk_size, 1))
+
+    for start in range(0, len(bond_coord), chunk):
+        stop = min(start + chunk, len(bond_coord))
+        overlaps = np.all(
+            (bond_max[start:stop, None, :] + pad) >= tri_min[None, :, :],
+            axis=2,
+        ) & np.all(
+            (tri_max[None, :, :] + pad) >= bond_min[start:stop, None, :],
+            axis=2,
+        )
+        if not np.any(overlaps):
+            continue
+        local_bonds, local_tris = np.nonzero(overlaps)
+        for b_idx, t_idx in zip(local_bonds.tolist(), local_tris.tolist()):
+            pairs.append((bond_coord[start + int(b_idx)], tri_coord[int(t_idx)]))
+    return pairs
+
+
+def _has_bond_triangle_intersection(bond_coord, tri_coord, *, mp: int = 0) -> bool:
+    pairs = _bond_triangle_bbox_pairs(bond_coord, tri_coord)
+    if not pairs:
+        return False
+
+    if int(mp) == 0:
+        for bond, tri in pairs:
+            if MollerTrumbore(bond, tri):
+                return True
+        return False
+
+    args = list(np.array_split(np.array(pairs, dtype=object), int(mp)))
+    with confu.ProcessPoolExecutor(max_workers=int(mp), mp_context=MP.get_context('spawn')) as executor:
+        results = executor.map(_MollerTrumbore, args)
+    return bool(np.any(np.array(list(results))))
+
+
+def _local_proximity_candidate_indices(poly_coord, mon_coord, dist_min=1.0, padding=1.25):
+    if poly_coord.size == 0 or mon_coord.size == 0:
+        return np.arange(len(poly_coord), dtype=int)
+
+    cutoff = float(max(dist_min, 0.0)) + float(padding)
+    lower = np.min(mon_coord, axis=0) - cutoff
+    upper = np.max(mon_coord, axis=0) + cutoff
+    bbox_mask = np.all((poly_coord >= lower) & (poly_coord <= upper), axis=1)
+    if np.any(bbox_mask):
+        return np.flatnonzero(bbox_mask)
+
+    mon_center = np.mean(mon_coord, axis=0)
+    mon_radius = float(np.max(np.linalg.norm(mon_coord - mon_center, axis=1))) if len(mon_coord) > 0 else 0.0
+    shell_mask = np.linalg.norm(poly_coord - mon_center, axis=1) <= (mon_radius + cutoff)
+    if np.any(shell_mask):
+        return np.flatnonzero(shell_mask)
+
+    return np.empty(0, dtype=int)
+
+
 def check_3d_structure_poly(poly, mon, poly_dmat=None, dist_min=1.0, ignore_rad=3, check_bond_length=False, tacticity=None):
     """
     poly.check_3d_structure_poly
@@ -3395,7 +4669,15 @@ def check_3d_structure_poly(poly, mon, poly_dmat=None, dist_min=1.0, ignore_rad=
     coord = np.array(poly.GetConformer(0).GetPositions())
     p_coord = coord[:-n_mon]
     m_coord = coord[-n_mon:]
-    check = check_3d_proximity(p_coord, coord2=m_coord, dist_min=dist_min, dmat=poly_dmat, ignore_rad=ignore_rad)
+    candidate_idx = _local_proximity_candidate_indices(p_coord, m_coord, dist_min=dist_min)
+    if candidate_idx.size == 0:
+        check = True
+    else:
+        if candidate_idx.size < len(p_coord):
+            p_coord = p_coord[candidate_idx]
+            if poly_dmat is not None:
+                poly_dmat = poly_dmat[candidate_idx, :]
+        check = check_3d_proximity(p_coord, coord2=m_coord, dist_min=dist_min, dmat=poly_dmat, ignore_rad=ignore_rad)
 
     if check and check_bond_length:
         check = check_3d_bond_length(poly)
@@ -3918,7 +5200,7 @@ def polymer_stats(mol, df=False, join=False):
     molcount = utils.count_mols(mol)
     polymer_chains = Chem.GetMolFrags(mol, asMols=True)
     natom = np.array([chain.GetNumAtoms() for chain in polymer_chains])
-    molweight = np.array([Descriptors.MolWt(chain) for chain in polymer_chains])
+    molweight = np.array([molecular_weight(chain, strict=True) for chain in polymer_chains])
 
     poly_stats = {
         'n_mol': molcount,
@@ -3964,7 +5246,7 @@ def polymerize_MolFromSmiles(smiles, n=2, terminal='C', label=1):
     try:
         mol = Chem.MolFromSmiles(poly_smiles)
         mol = Chem.AddHs(mol)
-    except Exception as e:
+    except Exception:
         mol = None
     
     return mol
@@ -4008,15 +5290,12 @@ def make_linearpolymer(smiles, n=2, terminal='C', label=1):
         mol_tail = Chem.MolFromSmiles(smiles_tail)
         mol_terminal = Chem.MolFromSmiles(terminal)
         mol_dummy = Chem.MolFromSmiles(dummy)
-        mol_dummy_head = Chem.MolFromSmiles(dummy_head)
         mol_dummy_tail = Chem.MolFromSmiles(dummy_tail)
 
         con_point = 1
-        bdtype = 1.0
         for atom in mol_tail.GetAtoms():
             if atom.GetSymbol() == mol_dummy_tail.GetAtomWithIdx(0).GetSymbol():
                 con_point = atom.GetNeighbors()[0].GetIdx()
-                bdtype = mol_tail.GetBondBetweenAtoms(atom.GetIdx(), con_point).GetBondTypeAsDouble()
                 break
         
         for poly in range(n-1):
@@ -4036,7 +5315,7 @@ def make_linearpolymer(smiles, n=2, terminal='C', label=1):
         poly_smiles = poly_smiles.replace(dummy_head, terminal)
         poly_smiles = utils.h2star(poly_smiles)
 
-    except Exception as e:
+    except Exception:
         utils.radon_print('Cannot transform to polymer from monomer SMILES. %s' % smiles_in, level=2)
         return None
 
@@ -4339,7 +5618,7 @@ def _make_full_match_smiles(args):
 
     try:
         smi = Chem.MolToSmiles(Chem.MolFromSmiles(smi))
-    except Exception as e:
+    except Exception:
         utils.radon_print('Cannot convert to canonical SMILES from %s' % smi, level=2)
         return args[0]
         
@@ -4413,8 +5692,8 @@ def monomerization_smiles(smiles, min_length=1, label=1):
                     try:
                         if Chem.MolToSmiles(Chem.MolFromSmiles(csmi)) == Chem.MolToSmiles(Chem.MolFromSmiles(smiles)):
                             return fsmi[0]
-                    except Exception as e:
-                        utils.radon_print('Cannot convert to canonical SMILES from %s' % smi, level=2)
+                    except Exception:
+                        utils.radon_print('Cannot convert to canonical SMILES from %s' % smiles, level=2)
 
     return smiles
 
@@ -4432,7 +5711,7 @@ def extract_mainchain(smiles, label=1):
             try:
                 main_smi = Chem.MolToSmiles(Chem.MolFromSmiles(s.replace('[%iH]' % int(label+2), '*')))
             except:
-                utils.radon_print('Cannot convert to canonical SMILES from %s' % smi, level=2)
+                utils.radon_print('Cannot convert to canonical SMILES from %s' % s, level=2)
 
     return main_smi
 
@@ -4450,7 +5729,7 @@ def extract_sidechain(smiles, label=1):
             try:
                 side_smi.append(Chem.MolToSmiles(Chem.MolFromSmiles(s)))
             except:
-                utils.radon_print('Cannot convert to canonical SMILES from %s' % smi, level=2)
+                utils.radon_print('Cannot convert to canonical SMILES from %s' % s, level=2)
 
     return side_smi
 
@@ -4717,7 +5996,6 @@ def polyinfo_classifier_series(smi_series, return_flag=False, mp=None):
         results = executor.map(_polyinfo_classifier_worker, args)
         res = [r for r in results]
 
-    df_tmp = smi_series.to_frame()
     if return_flag:
         class_dict = []
         for idx, class_id, pcflag in res:
@@ -4835,8 +6113,8 @@ def branch_polymerization_rw(poly_mol, mols, n, confId=0, n_dist='uniform',
                     chi_inv = [False]
                     tactic = None
                 else:
-                    m_idx = poly.gen_monomer_array(len(mols[idx]), n_array[i], copoly=copoly_type)
-                    chi_inv, check_chi = poly.gen_chiral_inv_array(mols[idx], m_idx, tacticity=tacticity, atac_ratio=atac_ratio)
+                    m_idx = gen_monomer_array(len(mols[idx]), n_array[i], copoly=copoly_type)
+                    chi_inv, check_chi = gen_chiral_inv_array(mols[idx], m_idx, tacticity=tacticity, atac_ratio=atac_ratio)
                     if not check_chi:
                         tactic = None
                     else:
@@ -4848,10 +6126,10 @@ def branch_polymerization_rw(poly_mol, mols, n, confId=0, n_dist='uniform',
                 # 3rd arg.: Whether to perform chiral inversion (List of boolean)
                 # label: List of label to be used as connecting points
                 #        [[head label of mol1, tail label of mol1], [head label of mol2, tail label of mol2], ...]
-                bpoly = poly.random_walk_polymerization(mols[idx], m_idx, chi_inv, confId=confId, label=label, init_poly=bpoly,
+                bpoly = random_walk_polymerization(mols[idx], m_idx, chi_inv, confId=confId, label=label, init_poly=bpoly,
                                                         label_init=pos, tacticity=tactic, **kwargs)
             else:
-                poly.set_linker_flag(bpoly, label=pos)
+                set_linker_flag(bpoly, label=pos)
                 bpoly.GetAtomWithIdx(bpoly.GetIntProp('tail_idx')).SetIsotope(0)
 
     dt2 = datetime.datetime.now()
@@ -4870,6 +6148,8 @@ def calc_n_from_num_atoms(mols, natom, ratio=[1.0], label=1, terminal1=None, ter
 
     pf_flag = False
 
+    mols = _resolve_mol_list(mols)
+    mols = _resolve_mol_list(mols)
     if type(mols) is Chem.Mol:
         mols = [mols]
     elif type(mols) is not list:
@@ -5294,6 +6574,15 @@ def random_walk_polymerization_dev(mols, m_idx, chi_inv, start_num=0, init_poly=
     """
     utils.radon_print('Start poly.random_walk_polymerization.')
 
+    mols = _resolve_mol_list(mols)
+    init_poly = _resolve_mol_like(init_poly) if init_poly is not None else None
+    rst_flag = _effective_restart_flag(work_dir, restart)
+    payload = _rw_payload('random_walk_polymerization', smiles=[Chem.MolToSmiles(m, isomericSmiles=True) for m in mols], m_idx=list(np.asarray(m_idx).tolist()), chi_inv=[bool(x) for x in chi_inv], start_num=int(start_num), headhead=bool(headhead), tacticity=tacticity, label=label, label_init=label_init, init_poly_smiles=(Chem.MolToSmiles(init_poly, isomericSmiles=True) if isinstance(init_poly, Chem.Mol) else None))
+    if rst_flag:
+        cached = _rw_load(work_dir, 'random_walk_polymerization', payload)
+        if cached is not None:
+            return cached
+
     if len(m_idx) != len(chi_inv):
         utils.radon_print('Inconsistency length of m_idx and chi_inv', level=3)
     if len(mols) <= max(m_idx):
@@ -5390,22 +6679,48 @@ def random_walk_polymerization_dev(mols, m_idx, chi_inv, start_num=0, init_poly=
                 # This deepcopy avoids a bug of RDKit
                 dmat = Chem.GetDistanceMatrix(utils.deepcopy_mol(poly))
 
-            if r % retry_step == 0 and r > 0:
-                if MD_avail:
-                    utils.radon_print('Molecular geometry shaking by a short time and high temperature MD simulation')
-                    if ff is None:
-                        ff = GAFF2_mod()
-                    if poly.GetAtomWithIdx(0).HasProp('AtomicCharge') and poly.GetAtomWithIdx(poly.GetNumAtoms()-1).HasProp('AtomicCharge'):
-                        ff.ff_assign(poly)
+                if r % retry_step == 0 and r > 0:
+                    # Periodically "shake" the geometry to escape poor local minima.
+                    # If MD is available, do a short high-T MD; otherwise fall back to a quick RDKit MMFF optimization.
+                    if MD_avail:
+                        utils.radon_print('Molecular geometry shaking by a short time and high temperature MD simulation')
+                        if ff is None:
+                            ff = GAFF2_mod()
+
+                        # Robust charge-preservation: if *any* atom already has AtomicCharge, treat the molecule
+                        # as pre-charged and do NOT overwrite charges.
+                        try:
+                            has_q = any(a.HasProp('AtomicCharge') for a in poly.GetAtoms())
+                        except Exception:
+                            has_q = False
+
+                        if has_q:
+                            ff.ff_assign(poly)
+                        else:
+                            ff.ff_assign(poly, charge='gasteiger')
+
+                        # Always perform the MD shake after FF assignment.
+                        poly, _ = md.quick_rw(poly, work_dir=work_dir, omp=omp, mpi=mpi, gpu=gpu, idx=mp_idx)
                     else:
-                        ff.ff_assign(poly, charge='gasteiger')
-                    poly, _ = md.quick_rw(poly, work_dir=work_dir, omp=omp, mpi=mpi, gpu=gpu, idx=mp_idx)
-                else:
-                    utils.radon_print('Molecular geometry optimization by RDKit')
-                    AllChem.MMFFOptimizeMolecule(poly, maxIters=50, mmffVariant='MMFF94s', nonBondedThresh=3.0, confId=0)
-                check_3d = check_3d_structure_poly(poly, mol_c, dmat, dist_min=dist_min, check_bond_length=True, tacticity=tacticity)
-                tri_coord = None
-                bond_coord = None
+                        utils.radon_print('Molecular geometry optimization by RDKit')
+                        AllChem.MMFFOptimizeMolecule(
+                            poly,
+                            maxIters=50,
+                            mmffVariant='MMFF94s',
+                            nonBondedThresh=3.0,
+                            confId=0,
+                        )
+
+                    check_3d = check_3d_structure_poly(
+                        poly,
+                        mol_c,
+                        dmat,
+                        dist_min=dist_min,
+                        check_bond_length=True,
+                        tacticity=tacticity,
+                    )
+                    tri_coord = None
+                    bond_coord = None
             else:
                 check_3d = check_3d_structure_poly(poly, mol_c, dmat, dist_min=dist_min, check_bond_length=False)
 
@@ -5449,7 +6764,13 @@ def random_walk_polymerization_dev(mols, m_idx, chi_inv, start_num=0, init_poly=
                 utils.radon_print('Molecular geometry shaking by a short time and high temperature MD simulation')
                 if ff is None:
                     ff = GAFF2_mod()
-                if rb_poly.GetAtomWithIdx(0).HasProp('AtomicCharge') and poly.GetAtomWithIdx(poly.GetNumAtoms()-1).HasProp('AtomicCharge'):
+                # Use a robust check: if *any* atom already has AtomicCharge, preserve it.
+                has_q = False
+                try:
+                    has_q = any(a.HasProp('AtomicCharge') for a in rb_poly.GetAtoms())
+                except Exception:
+                    has_q = False
+                if has_q:
                     ff.ff_assign(rb_poly)
                 else:
                     ff.ff_assign(rb_poly, charge='gasteiger')
@@ -5540,9 +6861,7 @@ def polymerize_ladder_rw(mol, n, init_poly=None, headhead=False, confId=0, tacti
 
 def mol_from_amino_residues(residues):
 
-    f_dir = os.path.dirname(os.path.realpath(__file__))
-
-    mols = [utils.mol_from_pdb(os.path.join(f_dir, 'pdb', res + '.pdb'), charge=True)
+    mols = [utils.mol_from_pdb(str(core_data_path("pdb", res + ".pdb")), charge=True)
             for res in residues]
 
     mol = block_copolymerize_mols(mols, 1, tacticity='isotactic')

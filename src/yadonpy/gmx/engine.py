@@ -18,6 +18,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Sequence
 
+from ..core.logging_utils import yadon_print
+
 
 class GromacsError(RuntimeError):
     """Raised when a GROMACS command fails."""
@@ -71,6 +73,34 @@ class GromacsExec:
 
 
 class GromacsRunner:
+    @staticmethod
+    def _normalize_energy_term_name(name: str) -> str:
+        """Normalize GROMACS energy term names for robust matching."""
+        s = str(name or '').strip().lower()
+        s = re.sub(r'\([^)]*\)', '', s)
+        s = s.replace('_', ' ')
+        s = re.sub(r'[^a-z0-9]+', ' ', s)
+        s = re.sub(r'\s+', ' ', s).strip()
+        return s
+
+    @classmethod
+    def _semantic_energy_aliases(cls, requested: str) -> list[str]:
+        base = cls._normalize_energy_term_name(requested)
+        aliases = {base}
+        if base == 'temperature':
+            aliases.update({'temperature', 'temp', 't system'})
+        elif base == 'pressure':
+            aliases.update({'pressure', 'pres dc', 'pressure dc', 'pres', 'pressure bar'})
+        elif base == 'density':
+            aliases.update({'density', 'density kg m 3', 'density kg m3', 'mass density'})
+        elif base == 'volume':
+            aliases.update({'volume', 'box volume'})
+        elif base == 'kinetic en':
+            aliases.update({'kinetic en', 'kinetic energy'})
+        elif base == 'total energy':
+            aliases.update({'total energy', 'tot energy'})
+        return [a for a in aliases if a]
+
     """Small helper to run GROMACS commands with good error messages."""
 
     def __init__(
@@ -90,7 +120,7 @@ class GromacsRunner:
 
     def _log(self, msg: str) -> None:
         if self.verbose:
-            print(msg)
+            yadon_print(str(msg), level=1)
 
     def _gmx_help(self, subcmd: str, *, cwd: Optional[Path] = None) -> str:
         """Return cached help output for `gmx <subcmd> -h` (best-effort)."""
@@ -189,7 +219,7 @@ class GromacsRunner:
 
         # Stream raw bytes to preserve \r behavior, while capturing a tail for errors.
         for chunk in iter(lambda: proc.stdout.read(4096), b""):
-            if self.verbose or True:
+            if self.verbose:
                 try:
                     import sys
 
@@ -221,7 +251,7 @@ class GromacsRunner:
         out_tpr: Path,
         ndx: Optional[Path] = None,
         cpt: Optional[Path] = None,
-        maxwarn: int = 1,
+        maxwarn: int = 5,
         cwd: Optional[Path] = None,
     ) -> None:
         args = [
@@ -287,6 +317,13 @@ class GromacsRunner:
         # Relying on help-text detection for `-v` has proven unreliable on
         # some clusters/GROMACS wrappers.
         args += ["-v"]
+
+        # Write coordinates to the log at a coarse interval.
+        # Requested default: -stepout 10000 (applies to all runs).
+        # We add it unconditionally; if a very old GROMACS build rejects it,
+        # the mdrun retry logic will drop it and re-run.
+        args += ["-stepout", "10000"]
+
 
         # Pinning improves CPU-side efficiency on most nodes.
         if self._tool_has_option("mdrun", "-pin", cwd=cwd):
@@ -404,6 +441,7 @@ class GromacsRunner:
             "-npme",
             "-nt",
             "-pin",
+            "-stepout",
             "-g",
             "-deffnm",
             "-s",
@@ -511,6 +549,17 @@ class GromacsRunner:
             rc, tail = self._run_capture_tee(args, cwd=cwd, env=env_run)
             if rc == 0:
                 return
+
+            # Very old GROMACS builds may not support -stepout. Retry without it.
+            if "-stepout" in args and "unknown option" in (tail or "").lower() and "-stepout" in (tail or "").lower():
+                try:
+                    j = args.index("-stepout")
+                    # remove flag + value if present
+                    del args[j:j+2]
+                    self._log("[WARN] Detected unsupported -stepout. Retrying without -stepout.")
+                    continue
+                except Exception:
+                    pass
 
             # GPU update incompatibility: retry once with -update cpu.
             if uses_gpu and prefer_gpu_update and _is_update_gpu_incompatible(tail):
@@ -632,7 +681,7 @@ class GromacsRunner:
         """
         ids, missing = self._resolve_energy_term_ids(edr=edr, terms=terms, cwd=cwd, allow_missing=allow_missing)
         menu = "\n".join([*map(str, ids), "0", ""])  # trailing newline
-        args = ["energy", "-f", str(edr), "-o", str(out_xvg), "-xvg", "none"]
+        args = ["energy", "-f", str(edr), "-o", str(out_xvg), "-xvg", "xmgrace"]
         self.run(args, cwd=cwd, stdin_text=menu)
         return {"resolved_terms": list(terms) if not missing else [t for t in terms if t not in missing], "missing_terms": missing}
 
@@ -654,6 +703,9 @@ class GromacsRunner:
         end_ps: Optional[float] = None,
         cwd: Optional[Path] = None,
     ) -> None:
+        # NOTE (2026-02): `gmx rdf` does NOT support a `-nojump` CLI option in
+        # modern GROMACS (e.g., 2025.x). Any unwrapping must be done via
+        # `gmx trjconv -pbc nojump` on the trajectory beforehand.
         args = [
             "rdf",
             "-s",
@@ -694,6 +746,7 @@ class GromacsRunner:
         #   - uses a safer default trestart (20 ps), and
         #   - lets higher-level code auto-tune it from the written frame interval.
         trestart_ps: float = 20.0,
+        dt_ps: Optional[float] = None,
         rmcomm: bool = True,
         begin_ps: Optional[float] = None,
         end_ps: Optional[float] = None,
@@ -716,6 +769,19 @@ class GromacsRunner:
             "-trestart",
             str(trestart_ps),
         ]
+
+        # GROMACS 2025+ enforces that -trestart is divisible by -dt.
+        # Many versions default -dt to the trajectory frame interval. Passing it
+        # explicitly avoids ambiguity and makes our auto-tuned trestart robust.
+        if dt_ps is not None and self._tool_has_option("msd", "-dt", cwd=cwd):
+            args += ["-dt", f"{float(dt_ps):.6f}"]
+        # If supported, ask `gmx msd` to unwrap internally. This is a safety net
+        # (we also generate a nojump trajectory upstream).
+        if self._tool_has_option("msd", "-pbc", cwd=cwd):
+            args += ["-pbc", "nojump"]
+        # NOTE (v0.5.23): Do NOT add `-mol` by default.
+        # Users may prefer atom-based MSD (especially for polymers / custom selections)
+        # and `-mol` can change the meaning of the group selection.
         if rmcomm and self._tool_has_option("msd", "-rmcomm", cwd=cwd):
             args += ["-rmcomm"]
         if begin_ps is not None:
@@ -843,24 +909,24 @@ class GromacsRunner:
 
         text = (proc.stdout or b"").decode("utf-8", errors="replace")
         mapping: dict[str, int] = {}
-        # Typical lines look like:
-        #  12  Pressure
-        #  13  Pres-XX
+        # Some GROMACS builds print multiple "id  name" entries on the same line, e.g.
+        #   14  Temperature   15  Pres-XX   16  Pressure   20  Volume   21  Density
+        # Parse all entries on each line instead of assuming one entry per line.
+        entry_pat = re.compile(r'(?:^|\s)(\d+)\s+([^\d].*?)(?=(?:\s{2,}\d+\s+[^\d])|$)')
         for line in text.splitlines():
             s = line.strip()
             if not s:
                 continue
-            # Must start with an integer id
-            parts = s.split()
-            if len(parts) < 2:
-                continue
-            try:
-                idx = int(parts[0])
-            except Exception:
-                continue
-            name = " ".join(parts[1:]).strip()
-            # Filter obvious non-entries
-            if name and name.lower() not in {"end", "0"}:
+            for m in entry_pat.finditer(line):
+                try:
+                    idx = int(m.group(1))
+                except Exception:
+                    continue
+                name = re.sub(r'\s+', ' ', (m.group(2) or '').strip())
+                if not name:
+                    continue
+                if name.lower() in {"end", "0"}:
+                    continue
                 mapping[name] = idx
 
         # Save to cache for this runner instance.
@@ -875,8 +941,9 @@ class GromacsRunner:
                 "Please check your GROMACS installation and the .edr file."
             )
 
-        # Case-insensitive lookup with a few safe fallbacks.
+        # Case-insensitive + normalized semantic lookup.
         by_lower = {k.lower(): v for k, v in mapping.items()}
+        by_norm = {self._normalize_energy_term_name(k): v for k, v in mapping.items()}
 
         resolved: list[int] = []
         missing: list[str] = []
@@ -886,8 +953,13 @@ class GromacsRunner:
                 continue
             v = by_lower.get(key.lower())
             if v is None:
-                # Try "contains" match if unique
-                hits = [v2 for k2, v2 in by_lower.items() if key.lower() in k2]
+                for alias in self._semantic_energy_aliases(key):
+                    v = by_norm.get(alias)
+                    if v is not None:
+                        break
+            if v is None:
+                key_norm = self._normalize_energy_term_name(key)
+                hits = [v2 for k2, v2 in by_norm.items() if key_norm and (key_norm in k2 or k2 in key_norm)]
                 hits = list(dict.fromkeys(hits))
                 if len(hits) == 1:
                     v = hits[0]
@@ -954,6 +1026,9 @@ class GromacsRunner:
     ) -> None:
         """Make a no-jump trajectory for `gmx current` (best-effort)."""
         args = ["trjconv", "-s", str(tpr), "-f", str(traj), "-o", str(out_traj), "-pbc", "nojump"]
+        # Preserve velocities when the output format supports it (required for conductivity).
+        if out_traj.suffix.lower() in (".trr", ".tng"):
+            args += ["-vel"]
         # trjconv asks for a group selection
         self.run(args, cwd=cwd, stdin_text=f"{group}\n")
 
@@ -1013,10 +1088,23 @@ class GromacsRunner:
         if efit_ps is not None:
             args += ["-efit", str(float(efit_ps))]
 
-        # gmx current prompts multiple times; using the same group index is robust.
-        gidx = self._ndx_group_index(ndx=ndx, group=group)
-        stdin = "\n".join([str(int(gidx))] * 6) + "\n"
+        # gmx current prompts multiple times. Most GROMACS tools accept either an index or a group name
+        # at the prompt. Using the group name avoids fragile index mapping between .tpr built-in groups and
+        # external .ndx groups (a common cause of selecting the wrong group silently).
+        stdin = "\n".join([str(group)] * 20) + "\n"
         proc = self.run(args, cwd=cwd, stdin_text=stdin, check=False)
+
+        # Sanity check: some failures (e.g., missing velocities) may still exit 0 but produce an empty -dsp file.
+        if out_dsp is not None:
+            try:
+                dsp_path = Path(out_dsp)
+                if (not dsp_path.exists()) or dsp_path.stat().st_size < 16:
+                    raise GromacsError(
+                        "gmx current produced an empty -dsp output (required for EH conductivity). "
+                        "This typically indicates that velocities are not present in the trajectory or the selected group has no charges."
+                    )
+            except OSError:
+                raise GromacsError("gmx current did not produce a readable -dsp output.")
 
         # cleanup
         try:

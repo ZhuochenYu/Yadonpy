@@ -4,7 +4,6 @@ from dataclasses import dataclass
 from typing import List, Optional
 
 import matplotlib
-import matplotlib.pyplot as plt
 
 try:
     from cycler import cycler  # noqa: F401

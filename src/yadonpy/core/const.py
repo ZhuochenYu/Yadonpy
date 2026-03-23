@@ -16,8 +16,31 @@ knowledge, this project does not raise copyright issues.
 import os
 
 
+def _env_flag(name: str, default: bool) -> bool:
+	value = os.getenv(name)
+	if value is None:
+		return bool(default)
+	text = str(value).strip().lower()
+	if text in {"1", "true", "t", "yes", "y", "on"}:
+		return True
+	if text in {"0", "false", "f", "no", "n", "off"}:
+		return False
+	return bool(default)
+
+
+def _env_float(name: str, default: float) -> float:
+	value = os.getenv(name)
+	if value is None:
+		return float(default)
+	try:
+		return float(str(value).strip())
+	except Exception:
+		return float(default)
+
+
 print_level = 1
-tqdm_disable = True
+tqdm_disable = _env_flag('YADONPY_DISABLE_TQDM', False)
+rw_heartbeat_seconds = max(0.0, _env_float('YADONPY_RW_PROGRESS_INTERVAL', 15.0))
 debug = True
 
 # Do not check installing optional packages

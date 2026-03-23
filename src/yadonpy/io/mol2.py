@@ -23,7 +23,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from typing import Dict, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
 import re
 
@@ -42,6 +42,85 @@ def _elem_from_atom_name(aname: str) -> str:
 
 
 import numpy as np
+
+
+# ---------------------------------------------------------------------------
+# MOL2 reader with charge recovery
+# ---------------------------------------------------------------------------
+def _parse_mol2_atom_charges(mol2_path: Path) -> list[float]:
+    """Parse per-atom charges from a MOL2 file.
+
+    We parse @<TRIPOS>ATOM lines and take the last column as charge.
+    This is robust across most MOL2 variants YadonPy produces.
+    """
+    charges: list[float] = []
+    in_atom = False
+    for raw in Path(mol2_path).read_text(encoding="utf-8", errors="replace").splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        if line.upper().startswith("@<TRIPOS>ATOM"):
+            in_atom = True
+            continue
+        if line.upper().startswith("@<TRIPOS>") and not line.upper().startswith("@<TRIPOS>ATOM"):
+            if in_atom:
+                break
+            continue
+        if in_atom:
+            parts = line.split()
+            # MOL2 ATOM line typically has 9 columns:
+            # id name x y z type subst_id subst_name charge
+            if len(parts) < 6:
+                continue
+            try:
+                q = float(parts[-1])
+                charges.append(q)
+            except Exception:
+                # If charge column missing, append 0.0 to keep indices aligned.
+                charges.append(0.0)
+    return charges
+
+
+def read_mol2_with_charges(
+    mol2_path: Path,
+    *,
+    sanitize: bool = True,
+    removeHs: bool = False,
+    charge_prop: str = "AtomicCharge",
+    also_resp: bool = True,
+):
+    """Read MOL2 into RDKit Mol and restore per-atom charges.
+
+    RDKit's MolFromMol2File does not reliably populate charge properties
+    across builds. YadonPy therefore re-parses the charge column and writes
+    it into atom double props.
+
+    Returns:
+        RDKit Mol with charges set on each atom.
+    """
+    try:
+        from rdkit.Chem import rdmolfiles
+    except Exception as e:
+        raise RuntimeError("RDKit is required to read MOL2") from e
+
+    mol = rdmolfiles.MolFromMol2File(str(mol2_path), sanitize=bool(sanitize), removeHs=bool(removeHs))
+    if mol is None:
+        raise RuntimeError(f"Failed to read mol2: {mol2_path}")
+
+    charges = _parse_mol2_atom_charges(Path(mol2_path))
+    if len(charges) == int(mol.GetNumAtoms()):
+        for i, a in enumerate(mol.GetAtoms()):
+            try:
+                q = float(charges[i])
+            except Exception:
+                q = 0.0
+            a.SetDoubleProp(str(charge_prop), float(q))
+            if also_resp:
+                try:
+                    a.SetDoubleProp("RESP", float(q))
+                except Exception:
+                    pass
+    return mol
 
 
 @dataclass
@@ -176,7 +255,7 @@ def write_mol2_from_gro_itp(
     return out_mol2
 
 
-def write_mol2_from_rdkit(
+def write_mol2(
     *,
     mol,
     name: str | None = None,
@@ -192,11 +271,6 @@ def write_mol2_from_rdkit(
     If the requested charge property does not exist, we fall back to RESP,
     then to 0.0.
     """
-    try:
-        from rdkit import Chem
-    except Exception as e:  # pragma: no cover
-        raise RuntimeError("RDKit is required to write MOL2 from RDKit mol") from e
-
     # Resolve naming / output path.
     #
     # Semantics:
@@ -207,8 +281,10 @@ def write_mol2_from_rdkit(
     #     If not provided, it defaults to the resolved `name`.
     try:
         from ..core import utils
-        # ensure_name() already implements best-effort variable-name inference.
-        _stem = utils.ensure_name(mol, name=name, depth=2)
+        # Ensure consistent naming with exported GROMACS artifacts.
+        # Prefer the caller's Python variable name when available (e.g. copoly, solvent_A).
+        # This avoids opaque auto-names like "C2H6O_8d9587" in examples/00_molecules.
+        _stem = utils.ensure_name(mol, name=name, depth=2, prefer_var=True)
     except Exception:
         _stem = (name or "molecule")
 
@@ -286,3 +362,87 @@ def write_mol2_from_rdkit(
             f.write(f"{k:6d} {i:4d} {j:4d} {bt}\n")
 
     return out_mol2
+
+
+# ----------------------
+# System-level mol2 export (GROMACS top + gro) via ParmEd
+# ----------------------
+
+
+def write_mol2_from_top_gro_parmed(
+    *,
+    top_path: Path,
+    gro_path: Path,
+    out_mol2: Optional[Path] = None,
+    overwrite: bool = True,
+) -> Optional[Path]:
+    """Write a **system** MOL2 from a GROMACS ``.top`` + coordinate ``.gro`` using ParmEd.
+
+    This is intended for *debugging / visualization / interoperability*.
+    It preserves the full system (all residues/ions/solvents) in a single MOL2.
+
+    Notes
+    -----
+    - ``top_path`` is resolved to an **absolute path** before passing to ParmEd,
+      to avoid surprises with changing working directories.
+    - Best-effort: returns ``None`` if ParmEd is unavailable or the conversion fails.
+
+    Args:
+        top_path: path to ``system.top`` (or any GROMACS topology file)
+        gro_path: coordinate file (e.g. ``md.gro``)
+        out_mol2: output path. Default: same folder as gro with ``.mol2`` suffix.
+        overwrite: overwrite existing file
+
+    Returns:
+        Path to the written mol2, or None on failure.
+    """
+    top_path = Path(top_path).expanduser().resolve()
+    gro_path = Path(gro_path).expanduser().resolve()
+    if out_mol2 is None:
+        out_mol2 = gro_path.with_suffix(".mol2")
+    out_mol2 = Path(out_mol2).expanduser()
+    out_mol2.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        out_mol2 = (out_mol2.parent.resolve() / out_mol2.name)
+    except Exception:
+        pass
+
+    try:
+        import parmed as pmd  # type: ignore
+    except Exception:
+        return None
+
+    try:
+        import warnings
+        with warnings.catch_warnings():
+            # ParmEd does not generate 1-4 pairs from [defaults] gen-pairs; it warns and sets them to zero
+            # internally. This is harmless for MOL2 export (topology is not used downstream) and would otherwise
+            # spam the console. We suppress only these warnings.
+            try:
+                from parmed.gromacs.gromacstop import GromacsWarning  # type: ignore
+                warnings.filterwarnings("ignore", category=GromacsWarning)
+            except Exception:
+                warnings.filterwarnings("ignore", message=r".*1-4 pairs were missing from the \[ pairs \].*")
+            s = pmd.load_file(str(top_path), xyz=str(gro_path))
+        s.save(str(out_mol2), overwrite=bool(overwrite))
+        # Guard against silent failures
+        if not out_mol2.exists() or out_mol2.stat().st_size == 0:
+            return None
+        return out_mol2
+    except Exception:
+        return None
+
+
+
+def write_mol2_from_rdkit(*args, **kwargs):
+    """Backward-compatible alias for ``write_mol2``."""
+    return write_mol2(*args, **kwargs)
+
+
+__all__ = [
+    "read_mol2_with_charges",
+    "write_mol2",
+    "write_mol2_from_rdkit",
+    "write_mol2_from_gro_itp",
+    "write_mol2_from_top_gro_parmed",
+]

@@ -14,8 +14,8 @@ knowledge, this project does not raise copyright issues.
 # ff.gaff2_mod module
 # ******************************************************************************
 
-import os
 from ..core import utils
+from ..core.resources import ff_data_path
 from .gaff2 import GAFF2
 
 
@@ -41,7 +41,7 @@ class GAFF2_mod(GAFF2):
     """
     def __init__(self, db_file=None):
         if db_file is None:
-            db_file = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'ff_dat', 'gaff2_mod.json')
+            db_file = str(ff_data_path("ff_dat", "gaff2_mod.json"))
         super().__init__(db_file)
         # Guard: keep GAFF2 and GAFF2_mod distinct (GAFF2_mod must load gaff2_mod parameters)
         if getattr(self.param, 'ff_name', None) not in (None, 'gaff2_mod'):

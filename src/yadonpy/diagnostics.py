@@ -11,7 +11,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from importlib import import_module
 from importlib.util import find_spec
-from pathlib import Path
 import shutil
 import sys
 from typing import Any, Optional
@@ -23,7 +22,9 @@ from .core.data_dir import get_data_root, DataLayout
 class DepStatus:
     name: str
     installed: bool
+    import_ok: bool = False
     version: Optional[str] = None
+    import_error: Optional[str] = None
     hint: Optional[str] = None
 
 
@@ -35,6 +36,14 @@ def _try_import_version(mod: str, attr: str = "__version__") -> Optional[str]:
         return None
 
 
+def _try_import(mod: str) -> tuple[bool, Optional[str]]:
+    try:
+        import_module(mod)
+        return True, None
+    except Exception as e:
+        return False, repr(e)
+
+
 def check_python_module(mod: str, *, import_name: Optional[str] = None, hint: Optional[str] = None) -> DepStatus:
     """Check if a Python module is importable.
 
@@ -44,8 +53,9 @@ def check_python_module(mod: str, *, import_name: Optional[str] = None, hint: Op
         hint: Install hint.
     """
     installed = find_spec(mod) is not None
-    ver = _try_import_version(import_name or mod) if installed else None
-    return DepStatus(name=mod, installed=installed, version=ver, hint=hint)
+    import_ok, err = _try_import(import_name or mod) if installed else (False, None)
+    ver = _try_import_version(import_name or mod) if import_ok else None
+    return DepStatus(name=mod, installed=installed, import_ok=import_ok, version=ver, import_error=err, hint=hint)
 
 
 def require_rdkit() -> None:
@@ -108,15 +118,11 @@ def doctor(*, print_report: bool = True) -> dict[str, Any]:
     checks = {
         "python": sys.version.split()[0],
         "data_root": str(layout.root),
+        "moldb_dir": str(layout.moldb_dir),
         "initialized": layout.marker.exists(),
         "executables": {
             "gmx": shutil.which("gmx"),
             "gmx_mpi": shutil.which("gmx_mpi"),
-        },
-        "gromacs_forcefields": {
-            "gaff": str((layout.gmx_forcefields_dir / "gaff" / "forcefield.itp")) if (layout.gmx_forcefields_dir / "gaff" / "forcefield.itp").exists() else None,
-            "gaff2": str((layout.gmx_forcefields_dir / "gaff2" / "forcefield.itp")) if (layout.gmx_forcefields_dir / "gaff2" / "forcefield.itp").exists() else None,
-            "gaff2_mod": str((layout.gmx_forcefields_dir / "gaff2_mod" / "forcefield.itp")) if (layout.gmx_forcefields_dir / "gaff2_mod" / "forcefield.itp").exists() else None,
         },
         "modules": {
             "rdkit": check_python_module(
@@ -138,20 +144,23 @@ def doctor(*, print_report: bool = True) -> dict[str, Any]:
         print("[yadonpy] doctor report", flush=True)
         print(f"  python: {checks['python']}", flush=True)
         print(f"  data_root: {checks['data_root']}", flush=True)
+        print(f"  moldb_dir: {checks['moldb_dir']}", flush=True)
         print(f"  initialized: {checks['initialized']}", flush=True)
-        print("  gromacs forcefields:", flush=True)
-        for k, v in checks["gromacs_forcefields"].items():
-            print(f"    {k}: {v if v else 'NOT GENERATED'}", flush=True)
         print("  executables:", flush=True)
         for k, v in checks["executables"].items():
             print(f"    {k}: {v if v else 'NOT FOUND'}", flush=True)
         print("  python modules:", flush=True)
         for k, d in checks["modules"].items():
-            status = "OK" if d["installed"] else "MISSING"
+            if not d["installed"]:
+                status = "MISSING"
+            else:
+                status = "OK" if d.get("import_ok", False) else "BROKEN"
             ver = d.get("version")
             extra = f" (v{ver})" if ver else ""
             print(f"    {k}: {status}{extra}", flush=True)
             if (not d["installed"]) and d.get("hint"):
                 print(f"      hint: {d['hint']}", flush=True)
+            if d.get("installed") and (not d.get("import_ok", False)) and d.get("import_error"):
+                print(f"      import error: {d['import_error']}", flush=True)
 
     return checks

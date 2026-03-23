@@ -40,6 +40,8 @@ DispCorr                 = {dispcorr}
 pbc                      = xyz
 
 constraints              = none
+
+{extra_mdp}
 """
 
 
@@ -70,6 +72,8 @@ constraints              = h-bonds
 constraint_algorithm     = lincs
 lincs_iter               = {lincs_iter}
 lincs_order              = {lincs_order}
+
+{extra_mdp}
 """
 
 
@@ -103,6 +107,8 @@ constraints              = h-bonds
 constraint_algorithm     = lincs
 lincs_iter               = {lincs_iter}
 lincs_order              = {lincs_order}
+
+{extra_mdp}
 """
 
 
@@ -142,13 +148,13 @@ lincs_order              = {lincs_order}
 
 ; temperature coupling
 tcoupl                    = V-rescale
-tc-grps                   = System
+tc-grps                   = {tc_grps}
 tau_t                     = {tau_t}
 ref_t                     = {ref_t}
 
 ; velocity generation
-gen_vel                   = yes
-gen_temp                  = {ref_t}
+gen_vel                   = {gen_vel}
+gen_temp                  = {gen_temp}
 gen_seed                  = {gen_seed}
 ; output control
 nstxout                  = {nstxout_trr}
@@ -157,6 +163,8 @@ nstxout-compressed       = {nstxout}
 nstvout                  = {nstvout}
 nstenergy                = {nstenergy}
 nstlog                   = {nstlog}
+
+{extra_mdp}
 """
 
 
@@ -189,7 +197,7 @@ lincs_order              = {lincs_order}
 
 ; temperature coupling
 tcoupl                    = V-rescale
-tc-grps                   = System
+tc-grps                   = {tc_grps}
 tau_t                     = {tau_t}
 ref_t                     = {ref_t}
 
@@ -201,7 +209,9 @@ ref_p                     = {ref_p}
 compressibility           = {compressibility}
 
 ; velocity generation
-gen_vel                   = no
+gen_vel                   = {gen_vel}
+gen_temp                  = {gen_temp}
+gen_seed                  = {gen_seed}
 ; output control
 nstxout                  = {nstxout_trr}
 ; compressed coordinates (xtc)
@@ -209,6 +219,107 @@ nstxout-compressed       = {nstxout}
 nstvout                  = {nstvout}
 nstenergy                = {nstenergy}
 nstlog                   = {nstlog}
+
+{extra_mdp}
+"""
+
+
+NVT_NO_CONSTRAINTS_MDP = """; yadonpy: NVT equilibration (no constraints)
+integrator               = md
+dt                       = {dt}
+nsteps                   = {nsteps}
+
+; nonbonded settings (yzc-gmx-gen style)
+cutoff-scheme            = {cutoff_scheme}
+nstlist                  = {nstlist}
+rlist                    = {rlist}
+
+vdwtype                  = {vdwtype}
+rvdw                     = {rvdw}
+coulombtype              = {coulombtype}
+rcoulomb                 = {rcoulomb}
+
+fourierspacing           = {fourierspacing}
+pme-order                = {pme_order}
+ewald-rtol               = {ewald_rtol}
+DispCorr                 = {dispcorr}
+
+pbc                      = xyz
+
+constraints              = none
+
+; temperature coupling
+tcoupl                    = V-rescale
+tc-grps                   = {tc_grps}
+tau_t                     = {tau_t}
+ref_t                     = {ref_t}
+
+; velocity generation
+gen_vel                   = {gen_vel}
+gen_temp                  = {gen_temp}
+gen_seed                  = {gen_seed}
+; output control
+nstxout                  = {nstxout_trr}
+; compressed coordinates (xtc)
+nstxout-compressed       = {nstxout}
+nstvout                  = {nstvout}
+nstenergy                = {nstenergy}
+nstlog                   = {nstlog}
+
+{extra_mdp}
+"""
+
+
+NPT_NO_CONSTRAINTS_MDP = """; yadonpy: NPT equilibration (no constraints)
+integrator               = md
+dt                       = {dt}
+nsteps                   = {nsteps}
+
+; nonbonded settings (yzc-gmx-gen style)
+cutoff-scheme            = {cutoff_scheme}
+nstlist                  = {nstlist}
+rlist                    = {rlist}
+
+vdwtype                  = {vdwtype}
+rvdw                     = {rvdw}
+coulombtype              = {coulombtype}
+rcoulomb                 = {rcoulomb}
+
+fourierspacing           = {fourierspacing}
+pme-order                = {pme_order}
+ewald-rtol               = {ewald_rtol}
+DispCorr                 = {dispcorr}
+
+pbc                      = xyz
+
+constraints              = none
+
+; temperature coupling
+tcoupl                    = V-rescale
+tc-grps                   = {tc_grps}
+tau_t                     = {tau_t}
+ref_t                     = {ref_t}
+
+; pressure coupling
+pcoupl                    = {pcoupl}
+pcoupltype                = {pcoupltype}
+tau_p                     = {tau_p}
+ref_p                     = {ref_p}
+compressibility           = {compressibility}
+
+; velocity generation
+gen_vel                   = {gen_vel}
+gen_temp                  = {gen_temp}
+gen_seed                  = {gen_seed}
+; output control
+nstxout                  = {nstxout_trr}
+; compressed coordinates (xtc)
+nstxout-compressed       = {nstxout}
+nstvout                  = {nstvout}
+nstenergy                = {nstenergy}
+nstlog                   = {nstlog}
+
+{extra_mdp}
 """
 
 
@@ -314,6 +425,7 @@ def default_mdp_params() -> Dict[str, object]:
         "lincs_iter": 2,
         "lincs_order": 8,
         # thermostat
+        "tc_grps": "System",
         "tau_t": 0.5,
         "ref_t": 298.15,
         # barostat (default: C-rescale; PR is forbidden in MdpSpec.render())
@@ -327,6 +439,8 @@ def default_mdp_params() -> Dict[str, object]:
         "deform_z": 0.0,
         # velocity generation seed (for NVT when gen_vel=yes)
         "gen_seed": -1,
+        "gen_vel": "no",
+        "gen_temp": 298.15,
         # output control (yzc-gmx-gen style: lean trajectory by default)
         # - trr/velocity output disabled unless user opts in
         # - xtc written every 10k steps (20 ps at dt=2 fs)
@@ -335,4 +449,5 @@ def default_mdp_params() -> Dict[str, object]:
         "nstvout": 10000,
         "nstenergy": 10000,
         "nstlog": 10000,
+        "extra_mdp": "",
     }

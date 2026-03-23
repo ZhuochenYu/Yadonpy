@@ -1,27 +1,22 @@
 """Bond/angle parameterization from a QM Hessian via (Modified) Seminario.
 
-This module is intentionally lightweight and dependency-minimal:
+This implementation is intentionally lightweight and dependency-minimal:
 - Input Hessian: Cartesian Hessian in kJ/(mol*Angstrom^2)
   (Psi4w.hessian() already returns this unit).
 - Connectivity: RDKit Mol bonds/angles
 - Output: bond/angle equilibrium values + harmonic force constants in
   GROMACS units (nm, degrees, kJ/mol/nm^2, kJ/mol/rad^2).
 
-Notes
------
-1) This does *not* attempt to derive dihedrals/impropers.
-2) As with all Seminario-family methods, results depend on the QM level
-   of theory and on the quality of the optimized geometry.
-3) We treat the 3x3 interatomic Hessian block symmetrically and clip
-   negative eigenvalues to 0 (best-effort robustness).
+Compared with the early implementation, this version adds three robustness
+features that matter for highly symmetric ions such as PF6-:
 
-References
-----------
-- Seminario, J. M. (1996) calculation of intramolecular force constants
-  from a molecular Hessian.
-- "Modified Seminario" variants (Bernetti/Bussi context is barostat; not
-  related). Several community implementations use the same projection
-  vectors employed here.
+1) near-linear angles are no longer dropped silently; they are handled with a
+   dedicated two-plane fallback;
+2) equivalent bonds/angles can be symmetrized by RDKit symmetry rank and coarse
+   geometry class (e.g. PF6- cis vs trans);
+3) the projection routine supports the classical "Seminario-like" absolute
+   projection as well as the quadratic Hessian-projection form, and defaults to
+   the more conservative absolute projection.
 """
 
 from __future__ import annotations
@@ -86,26 +81,57 @@ def _eig_sym(m: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
     return vals, vecs
 
 
-def _seminario_k_from_block(block_ij: np.ndarray, direction: np.ndarray) -> float:
-    """Compute projected force constant from a 3x3 block and a unit direction.
+def _projection_force_constant(vals: np.ndarray, vecs: np.ndarray, direction: np.ndarray, *, mode: str = "abs") -> float:
+    """Project a direction onto Hessian eigenmodes.
 
-    We follow the common Seminario convention using the *negative* interatomic
-    block (restoring positive curvature).
-
-    Returns k in the same unit as the input block (kJ/mol/Ang^2).
+    ``mode='abs'`` follows the more common Seminario-style absolute projection,
+    while ``mode='quadratic'`` keeps the older quadratic Hessian-projection form.
     """
     u = _unit(direction)
-    if float(np.linalg.norm(u)) < 1e-12:
+    if float(np.linalg.norm(u)) < 1.0e-12:
         return 0.0
-
-    # Use -H_ij and symmetrize
-    vals, vecs = _eig_sym(-block_ij)
-    # projection of u onto eigenvectors
     proj = vecs.T @ u
-    k = float(np.sum(vals * (proj ** 2)))
+    mode_l = str(mode or "abs").strip().lower()
+    if mode_l in {"quadratic", "square", "squared", "projection"}:
+        k = float(np.sum(vals * (proj ** 2)))
+    elif mode_l in {"hybrid", "max"}:
+        k_abs = float(np.sum(vals * np.abs(proj)))
+        k_quad = float(np.sum(vals * (proj ** 2)))
+        k = max(k_abs, k_quad)
+    else:
+        # Seminario-style absolute projection.
+        k = float(np.sum(vals * np.abs(proj)))
     if not np.isfinite(k):
         return 0.0
     return max(k, 0.0)
+
+
+def _seminario_k_from_block(block_ij: np.ndarray, direction: np.ndarray, *, projection_mode: str = "abs") -> float:
+    """Compute projected force constant from a 3x3 block and a unit direction.
+
+    We follow the common convention using the *negative* interatomic block
+    (restoring positive curvature). Returns k in the same unit as the input
+    block (kJ/mol/Ang^2).
+    """
+    vals, vecs = _eig_sym(-block_ij)
+    return _projection_force_constant(vals, vecs, direction, mode=projection_mode)
+
+
+def _perpendicular_basis(axis: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    """Return two orthonormal vectors perpendicular to ``axis``."""
+    u = _unit(axis)
+    if float(np.linalg.norm(u)) < 1.0e-12:
+        return np.array([1.0, 0.0, 0.0]), np.array([0.0, 1.0, 0.0])
+    # Pick a reference vector that is not nearly parallel to the axis.
+    ref = np.array([1.0, 0.0, 0.0])
+    if abs(float(np.dot(u, ref))) > 0.8:
+        ref = np.array([0.0, 1.0, 0.0])
+    v1 = _unit(np.cross(u, ref))
+    if float(np.linalg.norm(v1)) < 1.0e-12:
+        ref = np.array([0.0, 0.0, 1.0])
+        v1 = _unit(np.cross(u, ref))
+    v2 = _unit(np.cross(u, v1))
+    return v1, v2
 
 
 def bond_params_from_hessian(
@@ -113,6 +139,7 @@ def bond_params_from_hessian(
     hessian_kj_mol_a2: np.ndarray,
     *,
     confId: int = 0,
+    projection_mode: str = "abs",
 ) -> List[BondParam]:
     """Compute harmonic bond parameters for all RDKit bonds."""
     xyz = _coords_angstrom(mol, confId=confId)
@@ -126,7 +153,7 @@ def bond_params_from_hessian(
         if r0_a <= 1e-6:
             continue
 
-        k_a2 = _seminario_k_from_block(_block(hessian_kj_mol_a2, i, j), rij)
+        k_a2 = _seminario_k_from_block(_block(hessian_kj_mol_a2, i, j), rij, projection_mode=projection_mode)
 
         # Unit conversion:
         #  - r0: Ang -> nm
@@ -149,25 +176,68 @@ def _angle_triplets(mol: Chem.Mol) -> Iterable[Tuple[int, int, int]]:
             yield i, j, k
 
 
+def _combine_angle_force_constants(k1: float, k2: float, r1: float, r2: float) -> float:
+    eps = 1.0e-12
+    denom = (1.0 / max(r1 * r1 * max(k1, eps), eps)) + (1.0 / max(r2 * r2 * max(k2, eps), eps))
+    if denom <= 0.0:
+        return 0.0
+    k_theta = 1.0 / denom
+    if not np.isfinite(k_theta):
+        return 0.0
+    return float(max(k_theta, 0.0))
+
+
+def _linear_angle_force_constant(
+    hessian_kj_mol_a2: np.ndarray,
+    i: int,
+    j: int,
+    k: int,
+    u1: np.ndarray,
+    u2: np.ndarray,
+    r1: float,
+    r2: float,
+    *,
+    projection_mode: str = "abs",
+) -> float:
+    """Fallback for near-linear angles.
+
+    For a 180° angle the in-plane modified-Seminario vectors become ill-conditioned.
+    We therefore build two orthogonal bending directions perpendicular to the bond
+    axis and average their force constants.
+    """
+    axis = _unit(u1 - u2)
+    if float(np.linalg.norm(axis)) < 1.0e-12:
+        axis = _unit(u1 if np.linalg.norm(u1) > np.linalg.norm(u2) else u2)
+    v1, v2 = _perpendicular_basis(axis)
+    ks: list[float] = []
+    for vv in (v1, v2):
+        ki = _seminario_k_from_block(_block(hessian_kj_mol_a2, i, j), vv, projection_mode=projection_mode)
+        kk = _seminario_k_from_block(_block(hessian_kj_mol_a2, k, j), vv, projection_mode=projection_mode)
+        kval = _combine_angle_force_constants(ki, kk, r1, r2)
+        if kval > 0.0:
+            ks.append(float(kval))
+    if not ks:
+        return 0.0
+    return float(sum(ks) / len(ks))
+
+
 def angle_params_from_hessian(
     mol: Chem.Mol,
     hessian_kj_mol_a2: np.ndarray,
     *,
     confId: int = 0,
     linear_angle_deg_cutoff: float = 175.0,
+    projection_mode: str = "abs",
+    keep_linear_angles: bool = True,
 ) -> List[AngleParam]:
     """Compute harmonic angle parameters for all RDKit angles.
 
-    We use the common "modified Seminario" projection vectors:
+    For regular angles we use the common modified-Seminario projection vectors:
       n_i = normalize(u_jk - cos(theta)*u_ji)
       n_k = normalize(u_ji - cos(theta)*u_jk)
 
-    Combination rule (widely used in practice):
-      k_theta = 1 / ( 1/(r_ji^2*k_i) + 1/(r_jk^2*k_k) )
-
-    k_i and k_k are obtained by projecting (-H_ij) and (-H_kj) onto n_i/n_k.
-
-    Returns k in kJ/mol/rad^2 and theta0 in degrees.
+    For near-linear angles we switch to a dedicated two-plane fallback instead of
+    dropping the term, which is particularly important for AX6 ions such as PF6-.
     """
     xyz = _coords_angstrom(mol, confId=confId)
     out: List[AngleParam] = []
@@ -186,8 +256,28 @@ def angle_params_from_hessian(
         theta = float(np.arccos(cos_t))
         theta_deg = float(theta * 180.0 / np.pi)
 
-        # Skip near-linear angles: projection vectors become ill-conditioned.
-        if theta_deg >= linear_angle_deg_cutoff or theta_deg <= (180.0 - linear_angle_deg_cutoff):
+        is_linear = theta_deg >= float(linear_angle_deg_cutoff)
+        is_collapsed = theta_deg <= max(1.0e-6, 180.0 - float(linear_angle_deg_cutoff))
+        if is_collapsed:
+            continue
+
+        if is_linear:
+            if not keep_linear_angles:
+                continue
+            k_theta = _linear_angle_force_constant(
+                hessian_kj_mol_a2,
+                i,
+                j,
+                k,
+                u1,
+                u2,
+                r1,
+                r2,
+                projection_mode=projection_mode,
+            )
+            if k_theta <= 0.0:
+                continue
+            out.append(AngleParam(i=i, j=j, k=k, theta0_deg=180.0, k_kj_mol_rad2=k_theta))
             continue
 
         # In-plane perpendicular directions
@@ -196,21 +286,83 @@ def angle_params_from_hessian(
         if float(np.linalg.norm(n1)) < 1e-12 or float(np.linalg.norm(n2)) < 1e-12:
             continue
 
-        k_i_a2 = _seminario_k_from_block(_block(hessian_kj_mol_a2, i, j), n1)
-        k_k_a2 = _seminario_k_from_block(_block(hessian_kj_mol_a2, k, j), n2)
-
-        # Combine to get k_theta (kJ/mol/rad^2)
-        eps = 1e-12
-        denom = (1.0 / max(r1 * r1 * max(k_i_a2, eps), eps)) + (1.0 / max(r2 * r2 * max(k_k_a2, eps), eps))
-        if denom <= 0:
+        k_i_a2 = _seminario_k_from_block(_block(hessian_kj_mol_a2, i, j), n1, projection_mode=projection_mode)
+        k_k_a2 = _seminario_k_from_block(_block(hessian_kj_mol_a2, k, j), n2, projection_mode=projection_mode)
+        k_theta = _combine_angle_force_constants(k_i_a2, k_k_a2, r1, r2)
+        if k_theta <= 0.0:
             continue
-        k_theta = 1.0 / denom
-        if not np.isfinite(k_theta):
-            continue
-        k_theta = float(max(k_theta, 0.0))
 
         out.append(AngleParam(i=i, j=j, k=k, theta0_deg=theta_deg, k_kj_mol_rad2=k_theta))
 
+    return out
+
+
+def _symmetry_ranks(mol: Chem.Mol) -> list[int]:
+    try:
+        return [int(x) for x in Chem.CanonicalRankAtoms(mol, breakTies=False)]
+    except Exception:
+        return list(range(int(mol.GetNumAtoms())))
+
+
+def _bond_group_key(item: Dict[str, Any], ranks: list[int]) -> tuple:
+    i = int(item["i"])
+    j = int(item["j"])
+    return tuple(sorted((ranks[i], ranks[j])))
+
+
+def _angle_group_key(item: Dict[str, Any], ranks: list[int]) -> tuple:
+    i = int(item["i"])
+    j = int(item["j"])
+    k = int(item["k"])
+    th = float(item["theta0_deg"])
+    if th >= 175.0:
+        bucket = "linear"
+    else:
+        bucket = int(round(th / 10.0) * 10)
+    return (min(ranks[i], ranks[k]), ranks[j], max(ranks[i], ranks[k]), bucket)
+
+
+def _symmetrize_equivalent_terms(mol: Chem.Mol, params: Dict[str, Any]) -> Dict[str, Any]:
+    """Average equivalent bonds/angles by RDKit symmetry rank and coarse geometry.
+
+    This is intentionally conservative: trans and cis angle manifolds remain separate,
+    which is essential for AX6 ions.
+    """
+    ranks = _symmetry_ranks(mol)
+    out = {
+        "meta": dict(params.get("meta") or {}),
+        "bonds": [dict(x) for x in (params.get("bonds") or [])],
+        "angles": [dict(x) for x in (params.get("angles") or [])],
+    }
+
+    # Bonds
+    b_groups: Dict[tuple, list[Dict[str, Any]]] = {}
+    for item in out["bonds"]:
+        b_groups.setdefault(_bond_group_key(item, ranks), []).append(item)
+    for items in b_groups.values():
+        if len(items) <= 1:
+            continue
+        r0 = float(sum(float(x["r0_nm"]) for x in items) / len(items))
+        kk = float(sum(float(x["k_kj_mol_nm2"]) for x in items) / len(items))
+        for x in items:
+            x["r0_nm"] = r0
+            x["k_kj_mol_nm2"] = kk
+
+    # Angles
+    a_groups: Dict[tuple, list[Dict[str, Any]]] = {}
+    for item in out["angles"]:
+        a_groups.setdefault(_angle_group_key(item, ranks), []).append(item)
+    for items in a_groups.values():
+        if len(items) <= 1:
+            continue
+        th = float(sum(float(x["theta0_deg"]) for x in items) / len(items))
+        kk = float(sum(float(x["k_kj_mol_rad2"]) for x in items) / len(items))
+        for x in items:
+            x["theta0_deg"] = th
+            x["k_kj_mol_rad2"] = kk
+
+    out.setdefault("meta", {})
+    out["meta"]["symmetrized_equivalents"] = True
     return out
 
 
@@ -220,17 +372,27 @@ def bond_angle_params_from_hessian(
     *,
     confId: int = 0,
     linear_angle_deg_cutoff: float = 175.0,
+    projection_mode: str = "abs",
+    keep_linear_angles: bool = True,
+    symmetrize_equivalents: bool = True,
 ) -> Dict[str, Any]:
     """Convenience: return both bond+angle params as JSON-serializable dict."""
-    bonds = bond_params_from_hessian(mol, hessian_kj_mol_a2, confId=confId)
+    bonds = bond_params_from_hessian(
+        mol,
+        hessian_kj_mol_a2,
+        confId=confId,
+        projection_mode=projection_mode,
+    )
     angles = angle_params_from_hessian(
         mol,
         hessian_kj_mol_a2,
         confId=confId,
         linear_angle_deg_cutoff=float(linear_angle_deg_cutoff),
+        projection_mode=projection_mode,
+        keep_linear_angles=bool(keep_linear_angles),
     )
 
-    return {
+    params: Dict[str, Any] = {
         "meta": {
             "confId": int(confId),
             "num_atoms": int(mol.GetNumAtoms()),
@@ -241,6 +403,9 @@ def bond_angle_params_from_hessian(
                 "angle_k": "kJ/mol/rad^2",
             },
             "method": "mseminario",
+            "projection_mode": str(projection_mode),
+            "keep_linear_angles": bool(keep_linear_angles),
+            "linear_angle_deg_cutoff": float(linear_angle_deg_cutoff),
         },
         "bonds": [
             {
@@ -262,6 +427,12 @@ def bond_angle_params_from_hessian(
             for p in angles
         ],
     }
+
+    if symmetrize_equivalents:
+        params = _symmetrize_equivalent_terms(mol, params)
+    else:
+        params.setdefault("meta", {})["symmetrized_equivalents"] = False
+    return params
 
 
 def write_bond_angle_itp(

@@ -27,11 +27,13 @@ Typical use case in YadonPy:
     ac = poly.amorphous_cell(polymer, 10, density=0.05)  # ions are injected from registry
 """
 
-import os
 import json
 from rdkit import Chem
 from rdkit import Geometry as Geom
 from ..core import utils
+from ..core.resources import ff_data_path
+from .report import print_ff_assignment_report
+
 
 
 
@@ -51,7 +53,7 @@ class MERZ():
 
     def __init__(self, db_file=None):
         if db_file is None:
-            db_file = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'ff_dat', 'Merz.json')
+            db_file = str(ff_data_path("ff_dat", "Merz.json"))
 
         with open(db_file, 'r') as f:
             self._raw = json.loads(f.read())
@@ -131,7 +133,7 @@ class MERZ():
     # Public API
     # -------------------------------------------------------------------------
 
-    def ff_assign(self, mol, charge=None, **kwargs):
+    def ff_assign(self, mol, charge=None, report: bool = True, **kwargs):
         """
         Assign force field parameters for an ion molecule.
 
@@ -141,7 +143,10 @@ class MERZ():
         """
         mol.SetProp('ff_name', str(self.name))
         mol.SetProp('ff_class', str(self.ff_class))
-        return self.assign_ptypes(mol)
+        result = self.assign_ptypes(mol)
+        if result and report:
+            print_ff_assignment_report(mol, ff_obj=self)
+        return mol if result else False
 
     def create_ion_mol(self, ion='Na+', confId=0):
         """Create a monoatomic ion RDKit Mol with Merz charges + 3D coordinates.
@@ -217,6 +222,10 @@ class MERZ():
         # Helpful metadata
         mol.SetProp('mol_name', molname)
         mol.GetAtomWithIdx(0).SetProp('ion_name', molname)
+
+        # RDKit descriptor calls such as MolWt() expect the implicit-valence
+        # cache to be initialized even for single-atom charged species.
+        mol.UpdatePropertyCache(strict=False)
 
         return mol
 

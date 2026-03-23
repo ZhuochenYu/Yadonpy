@@ -19,7 +19,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, Optional, Sequence, Union
+from typing import Any, Callable, Dict, Optional, Sequence, Union
+
+from ..runtime import resolve_restart, resolve_strict_inputs
+from ..core.logging_utils import yadon_print
 
 from .resume import ResumeManager, StepSpec
 
@@ -43,11 +46,13 @@ class Restart:
     """
 
     work_dir: Union[Path, str]
-    restart: bool = True
-    strict_inputs: bool = False
+    restart: Optional[bool] = None
+    strict_inputs: Optional[bool] = None
 
     def __post_init__(self) -> None:
         self.work_dir = Path(self.work_dir).expanduser().resolve()
+        self.restart = resolve_restart(self.restart)
+        self.strict_inputs = resolve_strict_inputs(self.strict_inputs)
         self.work_dir.mkdir(parents=True, exist_ok=True)
         # Note: ResumeManager has its own skip logic, so we must pass enabled=self.restart
         # to ensure restart=False always runs steps.
@@ -80,7 +85,7 @@ class Restart:
         spec = StepSpec(name=name, outputs=_as_paths(outputs), inputs=inputs, description=description)
         if self.restart and self._mgr.is_done(spec):
             if verbose:
-                print(f"[SKIP] {name} (already done)")
+                yadon_print(f"[SKIP] {name} | already done", level=1)
             return load() if load is not None else None
         # Run the step (even if restart=False)
         out = self._mgr.run(spec, run, verbose=verbose)

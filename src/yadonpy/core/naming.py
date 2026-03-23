@@ -5,6 +5,75 @@ import inspect
 import hashlib
 import re
 
+
+def _infer_var_name(obj, *, depth: int = 1, max_depth: int = 12) -> str | None:
+    """Infer a Python variable name referencing `obj` (robust best-effort).
+
+    Why this exists:
+      - In user scripts, we often see calls like:
+          ac = poly.amorphous_cell([copoly, EC, Li, PF6], ...)
+        Stack-based token inference fails here because the argument is a list
+        expression, not a single variable.
+      - We therefore walk up the call stack and try to find *any* local/global
+        name that is identical (``is``) to the given object.
+
+    The search starts from the caller's frame (skipping `depth` frames) and
+    continues upward (up to `max_depth` frames). We ignore generic placeholders
+    (loop indices, internal temporaries like ``_m``) via `is_bad_default_name`.
+
+    This helper does **not** mutate any object properties.
+    """
+    try:
+        frame = inspect.currentframe()
+        # Move to the requested starting frame.
+        for _ in range(max(0, int(depth))):
+            if frame is None or frame.f_back is None:
+                break
+            frame = frame.f_back
+        if frame is None:
+            return None
+
+        candidates: list[str] = []
+
+        # Walk up a limited number of frames to find a good variable name.
+        for _ in range(max(1, int(max_depth))):
+            if frame is None:
+                break
+
+            # Prefer locals, but also check globals (important for module-scope scripts).
+            for scope in (getattr(frame, "f_locals", {}), getattr(frame, "f_globals", {})):
+                try:
+                    for k, v in scope.items():
+                        if v is obj and isinstance(k, str) and k:
+                            if not is_bad_default_name(k):
+                                candidates.append(k)
+                except Exception:
+                    pass
+
+            if candidates:
+                # Choose the "best" one: prefer longer, non-underscore names.
+                candidates.sort(key=lambda s: (s.startswith("_"), len(s)))
+                return candidates[-1]
+
+            frame = frame.f_back
+
+    except Exception:
+        return None
+    return None
+
+
+
+def _resolve_inferred_name(obj, *, depth: int = 1, max_depth: int = 16) -> str | None:
+    """Return a sanitized variable-derived name or None."""
+    inferred = _infer_var_name(obj, depth=depth, max_depth=max_depth)
+    if inferred is None:
+        return None
+    inferred_s = str(inferred).strip()
+    if not inferred_s or is_bad_default_name(inferred_s):
+        return None
+    return inferred_s
+
+
 def set_name_from_var(obj, *, depth: int = 1, prop: str = '_Name'):
     """Best-effort: set RDKit Mol name from the caller's Python variable name.
 
@@ -19,40 +88,59 @@ def set_name_from_var(obj, *, depth: int = 1, prop: str = '_Name'):
     Returns:
         str or None: the inferred variable name.
     """
-    try:
-        import inspect
-        frame = inspect.currentframe()
-        # move to caller frame
-        for _ in range(max(1, int(depth))):
-            if frame is None or frame.f_back is None:
-                break
-            frame = frame.f_back
-        if frame is None:
-            return None
-        for k, v in frame.f_locals.items():
-            if v is obj and isinstance(k, str) and k:
-                try:
-                    if hasattr(obj, 'SetProp'):
-                        obj.SetProp(prop, k)
-                except Exception:
-                    pass
-                return k
-    except Exception:
+    inferred = _resolve_inferred_name(obj, depth=depth, max_depth=16)
+    if inferred is None:
         return None
-    return None
+    try:
+        if hasattr(obj, 'SetProp'):
+            obj.SetProp(prop, inferred)
+    except Exception:
+        pass
+    return inferred
 
 
 
 # Generic placeholders commonly seen from RDKit / implicit constructors.
-BAD_DEFAULTS = {"mol", "molecule", "rdkit", "none", "null", ""}
-
-
+BAD_DEFAULTS = {
+    "mol", "molecule", "rdkit", "none", "null", "",
+    # common loop / generic variable names
+    "m", "mon", "monomer", "sp", "species", "item", "x", "y", "z",
+    "a", "b", "c", "i", "j", "k",
+    # internal placeholder names frequently introduced inside helper methods
+    "spec", "molspec", "handle", "obj", "resolved",
+    # common placeholders used in yadonpy internals / examples
+    "poly", "polymer", "copolymer", "solvent", "cation", "anion",
+}
 def is_bad_default_name(name: str) -> bool:
-    """Return True if `name` is a generic placeholder (e.g., RDKit default 'mol')."""
+    """Return True if `name` is a generic placeholder / internal temporary.
+
+    We use this to avoid persisting names like ``_m`` or ``i`` onto molecules,
+    which would break artifact naming (e.g., producing ``_m.itp``).
+    """
     try:
-        return str(name).strip().lower() in BAD_DEFAULTS
+        s = str(name).strip()
+        if not s:
+            return True
+        # Internal temporaries and dunder
+        if s.startswith("_"):
+            return True
+
+        sl = s.lower()
+
+        # Common placeholders
+        if sl in BAD_DEFAULTS:
+            return True
+
+        # Pattern placeholders frequently appearing in polymer builders
+        # (e.g., monomer_A, monomer_B, monomer_1, ...).
+        if re.match(r"^monomer_[a-z0-9]+$", sl):
+            return True
+
+        return False
     except Exception:
         return True
+
+
 
 
 def get_name(obj, *, default: str | None = None) -> str | None:
@@ -98,8 +186,13 @@ def _auto_name(obj) -> str:
     try:
         # RDKit imports are optional here to keep import-time light.
         from rdkit.Chem import rdMolDescriptors, MolToSmiles
+        from .molspec import as_rdkit_mol
+
+        rdkit_obj = as_rdkit_mol(obj, strict=False)
+        if rdkit_obj is None:
+            rdkit_obj = obj
         try:
-            formula = rdMolDescriptors.CalcMolFormula(obj)
+            formula = rdMolDescriptors.CalcMolFormula(rdkit_obj)
         except Exception:
             formula = ""
         # Prefer original input SMILES if present; otherwise canonicalize.
@@ -111,7 +204,7 @@ def _auto_name(obj) -> str:
             smi = ""
         if not smi:
             try:
-                smi = MolToSmiles(obj, isomericSmiles=True)
+                smi = MolToSmiles(rdkit_obj, isomericSmiles=True)
             except Exception:
                 smi = ""
         h = hashlib.sha1((smi or formula or "molecule").encode("utf-8")).hexdigest()[:6]
@@ -126,7 +219,13 @@ def _auto_name(obj) -> str:
     base = re.sub(r"[^A-Za-z0-9._-]+", "_", str(base)).strip("_")
     return base or "molecule"
 
-def ensure_name(obj, *, name: str | None = None, depth: int = 1) -> str:
+def ensure_name(
+    obj,
+    *,
+    name: str | None = None,
+    depth: int = 1,
+    prefer_var: bool = False,
+) -> str:
     """Ensure an object has a stable name.
 
     If `name` is provided, it is written to all supported property keys.
@@ -144,13 +243,25 @@ def ensure_name(obj, *, name: str | None = None, depth: int = 1) -> str:
     resolved = (str(name).strip() if name is not None else None)
     if not resolved:
         resolved = get_name(obj, default=None)
-        if resolved and str(resolved).strip().lower() in {"mol","molecule","rdkit","polymer"}:
+        if resolved and str(resolved).strip().lower() in {"mol", "molecule", "rdkit", "polymer"}:
             resolved = None
 
-    if not resolved:
-        # infer from Python variable name in the *caller's* frame
-        inferred = set_name_from_var(obj, depth=depth + 1, prop="_Name")
-        resolved = (str(inferred).strip() if inferred else None)
+    # Prefer the user's script variable name when requested.
+    # This is useful for polymers that may accidentally inherit a monomer-like
+    # name from upstream builders. The variable name in the user script is
+    # usually the intended moltype/resname for exported artifacts.
+    if prefer_var and (name is None):
+        # Robust variable-name inference: scan up the stack (handles list expressions
+        # like `[copoly, EC, Li]` where token-based inference fails).
+        inferred_s = _resolve_inferred_name(obj, depth=depth + 1, max_depth=16)
+        if inferred_s is not None:
+            if resolved != inferred_s:
+                resolved = inferred_s
+            try:
+                if hasattr(obj, "SetProp"):
+                    obj.SetProp("_Name", inferred_s)
+            except Exception:
+                pass
 
     if not resolved:
         resolved = _auto_name(obj)
@@ -167,6 +278,25 @@ def ensure_name(obj, *, name: str | None = None, depth: int = 1) -> str:
         pass
 
     return resolved
+
+
+def infer_var_name(obj, *, depth: int = 1) -> str | None:
+    """Best-effort inference of the caller's variable name for *any* Python object.
+
+    This is useful for lightweight handles (e.g., MolSpec) that do not support
+    RDKit's SetProp/HasProp interface.
+
+    Args:
+        obj: any python object
+        depth: stack depth (1 = direct caller)
+
+    Returns:
+        Inferred variable name, or None if not found.
+    """
+    try:
+        return _resolve_inferred_name(obj, depth=depth + 1, max_depth=16)
+    except Exception:
+        return None
 
 
 def named(obj, name: str) -> any:

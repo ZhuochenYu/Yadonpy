@@ -1,0 +1,7 @@
+global-exclude *.py[cod]
+global-exclude .DS_Store
+prune .pytest_cache
+prune .yadonpy_cache
+prune tmp_workdir_smoke
+prune src/yadonpy/__pycache__
+global-exclude __pycache__

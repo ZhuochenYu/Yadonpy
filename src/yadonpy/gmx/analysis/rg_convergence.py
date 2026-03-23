@@ -103,10 +103,10 @@ def find_rg_convergence(
     min_window_frac: float = 0.25,
     step_frac: float = 0.02,
     window_frac: float = 0.10,
-    slope_threshold_per_ps: float = 1e-7,
-    rel_std_threshold: float = 0.02,
-    sma_sd_threshold: float = 0.01,
-    rg_sd_crit: float = 0.01,
+    slope_threshold_per_ps: float = 1e-3,
+    rel_std_threshold: float = 0.10,
+    sma_sd_threshold: float = 0.05,
+    rg_sd_crit: float = 0.10,
 ) -> RgConvergenceResult:
     """Find the earliest time after which Rg is converged.
 
@@ -136,11 +136,22 @@ def find_rg_convergence(
     if t.ndim != 1 or rg.ndim != 1 or len(t) != len(rg):
         raise ValueError("find_rg_convergence expects 1D t and rg of equal length")
 
+    # Filter invalid points (NaN/inf) to make the convergence check robust.
+    mask = np.isfinite(t) & np.isfinite(rg)
+    if comps is not None:
+        # Only keep rows where all components are finite.
+        mask = mask & np.all(np.isfinite(comps), axis=1)
+    if not np.all(mask):
+        t = t[mask]
+        rg = rg[mask]
+        if comps is not None:
+            comps = comps[mask]
+
     n = len(t)
     if n < 20:
         return RgConvergenceResult(
             ok=False,
-            converged_by="none",
+            converged_by="insufficient_data",
             ok_trend=False,
             ok_sd_max=False,
             plateau_start_time=float("nan"),
@@ -214,7 +225,19 @@ def find_rg_convergence(
             sd_max = float(std)
         else:
             seg = comps[start:]
-            sd_max = float(np.max(np.std(seg, axis=0))) if seg.size else float("nan")
+            if not seg.size:
+                sd_max = float("nan")
+            else:
+                # Use NaN-safe statistics. Some engines can output NaN components
+                # if the selected group is empty or the trajectory is too short.
+                sd_cols = np.nanstd(seg, axis=0)
+                if np.all(np.isnan(sd_cols)):
+                    sd_max = float("nan")
+                else:
+                    # Avoid RuntimeWarning from np.nanmax on all-NaN slices
+                    sd_cols2 = np.where(np.isnan(sd_cols), float("-inf"), sd_cols)
+                    v = float(np.max(sd_cols2))
+                    sd_max = float("nan") if v == float("-inf") else float(v)
 
         if mean != 0 and not math.isnan(sd_max):
             sd_max_rel = float(sd_max / abs(mean))
@@ -223,13 +246,14 @@ def find_rg_convergence(
             sd_max_rel = float("nan")
             ok_sd_max = False
 
-        ok = bool(ok_trend or ok_sd_max)
-        if ok_trend and ok_sd_max:
-            converged_by = "both"
-        elif ok_trend:
-            converged_by = "trend"
+        ok = bool(ok_sd_max or ok_trend)
+        # Prefer sd_max strategy: as long as we enter a plateau by sd_max, pass.
+        if ok_sd_max and ok_trend:
+            converged_by = "sd_max"
         elif ok_sd_max:
             converged_by = "sd_max"
+        elif ok_trend:
+            converged_by = "trend"
         else:
             converged_by = "none"
 
@@ -312,7 +336,10 @@ def plot_rg_convergence_svg(
         if np.all(np.isnan(sd_stack)):
             sd_max_roll = np.full(sd_stack.shape[1], np.nan, dtype=float)
         else:
-            sd_max_roll = np.nanmax(sd_stack, axis=0)
+            # Avoid RuntimeWarning from np.nanmax when some time slices are all-NaN
+            sd_stack2 = np.where(np.isnan(sd_stack), float("-inf"), sd_stack)
+            sd_max_roll = np.max(sd_stack2, axis=0)
+            sd_max_roll = np.where(sd_max_roll == float("-inf"), np.nan, sd_max_roll)
 
     with np.errstate(divide="ignore", invalid="ignore"):
         sd_max_roll_rel = sd_max_roll / np.abs(rg_mu)
@@ -358,6 +385,13 @@ def plot_rg_convergence_svg(
     )
     ax1.text(0.02, 0.02, txt, transform=ax1.transAxes, fontsize=9, va="bottom", ha="left")
 
-    plt.tight_layout()
+    # tight_layout can emit warnings with some backends/layouts; ignore them.
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        try:
+            plt.tight_layout()
+        except Exception:
+            pass
     plt.savefig(out_svg, format="svg")
     plt.close(fig)

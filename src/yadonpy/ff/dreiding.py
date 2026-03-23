@@ -15,14 +15,14 @@ knowledge, this project does not raise copyright issues.
 # ******************************************************************************
 
 import numpy as np
-import os
 import json
 from itertools import permutations
-from rdkit.Chem import AllChem
 from rdkit import Chem
 from ..core import calc, utils
+from ..core.resources import ff_data_path
 from . import ff_class
-from math import sin, cos, pi, acos
+from .report import print_ff_assignment_report
+
 
 
 class Dreiding():
@@ -43,7 +43,7 @@ class Dreiding():
     """
     def __init__(self, db_file=None):
         if db_file is None:
-            db_file = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'ff_dat', 'dreiding.json')
+            db_file = str(ff_data_path("ff_dat", "dreiding.json"))
         self.param = self.load_ff_json(db_file)
         self.name = 'dreiding'
         self.pair_style = 'lj'
@@ -62,7 +62,7 @@ class Dreiding():
         self.alt_ptype = {}
 
 
-    def ff_assign(self, mol, charge=None, retryMDL=True, useMDL=True):
+    def ff_assign(self, mol, charge=None, retryMDL=True, useMDL=True, report: bool = True):
         """
         Dreiding.ff_assign
 
@@ -107,7 +107,9 @@ class Dreiding():
             if result and charge is not None: result = calc.assign_charges(mol, charge=charge)
             if result: utils.radon_print('Success to assign with MDL aromaticity model', level=1)
 
-        return result
+        if result and report:
+            print_ff_assignment_report(mol, ff_obj=self)
+        return mol if result else False
 
 
     def assign_ptypes(self, mol):
@@ -274,8 +276,8 @@ class Dreiding():
             boolean
         """
         result_flag = True
-        mol.SetProp('bond_style', self.bond_style)
         alt_ptype = self.alt_ptype
+        mol.SetProp('bond_style', self.bond_style)
         for b in mol.GetBonds():
             ba = b.GetBeginAtom().GetProp('ff_type')
             bb = b.GetEndAtom().GetProp('ff_type')
@@ -333,16 +335,13 @@ class Dreiding():
         """
         result_flag = True
         mol.SetProp('angle_style', self.angle_style)
-        alt_ptype = self.alt_ptype
         setattr(mol, 'angles', [])
 
-        count=0
         for p in mol.GetAtoms():
             for p1 in p.GetNeighbors():
                 for p2 in p.GetNeighbors():
                     if p1.GetIdx() == p2.GetIdx(): continue
                     unique = True
-                    atoms = [p1, p, p2]
                     for ang in mol.angles:
                         if ((ang.a == p1.GetIdx() and ang.b == p.GetIdx() and ang.c == p2.GetIdx()) or
                             (ang.c == p1.GetIdx() and ang.b == p.GetIdx() and ang.a == p2.GetIdx())):
@@ -398,8 +397,8 @@ class Dreiding():
             boolean
         """
         result_flag = True
-        mol.SetProp('dihedral_style', self.dihedral_style)
         alt_ptype = self.alt_ptype
+        mol.SetProp('dihedral_style', self.dihedral_style)
         setattr(mol, 'dihedrals', [])
         
         for b in mol.GetBonds():
@@ -409,7 +408,6 @@ class Dreiding():
                 for p2b in p2.GetNeighbors():
                     if p1.GetIdx() == p2b.GetIdx() or p2.GetIdx() == p1b.GetIdx() or p1b.GetIdx() == p2b.GetIdx(): continue
                     unique = True
-                    atoms = [p1b, p1, p2, p2b]
                     for dih in mol.dihedrals:
                         if ((dih.a == p1b.GetIdx() and dih.b == p1.GetIdx() and
                              dih.c == p2.GetIdx() and dih.d == p2b.GetIdx()) or
@@ -493,8 +491,8 @@ class Dreiding():
         Returns:
             boolean
         """
-        mol.SetProp('improper_style', self.improper_style)
         alt_ptype = self.alt_ptype
+        mol.SetProp('improper_style', self.improper_style)
         setattr(mol, 'impropers', [])
         
         for p in mol.GetAtoms():
@@ -716,7 +714,7 @@ class Dreiding_UT(Dreiding):
     """
     def __init__(self, db_file=None):
         if db_file is None:
-            db_file = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'ff_dat', 'dreiding_ut.json')
+            db_file = str(ff_data_path("ff_dat", "dreiding_ut.json"))
         super().__init__(db_file)
         self.name = 'dreiding_ut'
 

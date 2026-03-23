@@ -5,6 +5,7 @@ Its software design is inspired by RadonPy (an automated workflow for polymer bu
 developed by a Japanese research group) and by yuzc's in-house yzc-gmx-gen toolkit. To the best of our
 knowledge, this project does not raise copyright issues.
 """
+from __future__ import annotations
 
 #  Copyright (c) 2026. YadonPy developers. All rights reserved.
 #  Use of this source code is governed by a BSD-3-style
@@ -19,29 +20,47 @@ import os
 import gc
 import datetime
 import socket
-from distutils.version import LooseVersion
 import multiprocessing as MP
 import concurrent.futures as confu
+from packaging.version import parse as parse_version
 from rdkit import Chem
 from rdkit import Geometry as Geom
 
 # Psi4/resp are optional dependencies.
 # We must not fail at import time when users only want non-QM workflows.
-try:
+#
+# IMPORTANT: Some users only need Psi4 for geometry optimizations / ESP tasks
+# that do *not* require the Python package `resp`. Therefore:
+#   - We require Psi4 at object construction.
+#   - We require `resp` lazily only when calling Psi4w.resp().
+#
+# Also, catch broad exceptions and preserve the root cause for better error
+# messages (conda environments can have ABI issues that raise OSError).
+psi4 = None
+_psi4_import_error: Exception | None = None
+try:  # pragma: no cover
     import psi4  # type: ignore
-except Exception:  # pragma: no cover
+except Exception as e:  # pragma: no cover
+    _psi4_import_error = e
     psi4 = None
 
-try:
+resp = None
+_resp_import_error: Exception | None = None
+try:  # pragma: no cover
     import resp  # type: ignore
-except Exception:  # pragma: no cover
+except Exception as e:  # pragma: no cover
+    _resp_import_error = e
     resp = None
 
 from ..core import const, calc, utils
 
 
+def _version_key(raw: object):
+    return parse_version(str(raw))
+
+
 if psi4 is not None:
-    if LooseVersion(psi4.__version__) >= LooseVersion('1.4'):
+    if _version_key(psi4.__version__) >= _version_key('1.4'):
         import qcengine  # type: ignore
 
 if const.mpi4py_avail:
@@ -54,10 +73,11 @@ if const.mpi4py_avail:
 
 class Psi4w():
     def __init__(self, mol, confId=0, work_dir=None, tmp_dir=None, name=None, **kwargs):
-        if psi4 is None or resp is None:
+        if psi4 is None:
+            detail = f" (root cause: {_psi4_import_error!r})" if _psi4_import_error else ""
             raise ImportError(
-                "QM features require optional dependencies 'psi4' and 'resp'. "
-                "Install e.g. via: conda install -c psi4 psi4 resp"
+                "QM features require optional dependency 'psi4'. "
+                "Install e.g. via: conda install -c psi4 psi4" + detail
             )
         self.work_dir = work_dir if work_dir is not None else './'
         self.tmp_dir = tmp_dir if tmp_dir is not None else self.work_dir
@@ -95,12 +115,24 @@ class Psi4w():
         nr = calc.get_num_radicals(self.mol)
         self.multiplicity = kwargs.get('multiplicity', 1 if nr == 0 else 2 if nr%2 == 1 else 3)
 
-        # Default to RadonPy's modern dispersion-corrected functional.
-        # We keep the default consistent across all species/tasks.
-        self.method = kwargs.get('method', 'wb97m-d3bj')
-        self.basis = kwargs.get('basis', '6-31G(d,p)')
+        # Default functional/basis policy (2026-03):
+        # - Use wb97m-d3bj for general electrolyte/FF workflows (Psi4 method keyword).
+        # - Users sometimes write "wb97m" informally; in Psi4 v1.10 it is NOT
+        #   a valid method keyword, so we treat it as an alias of wb97m-d3bj.
+        # - Basis selection for anions is handled at the workflow layer (qm.py/calc.py).
+        def _normalize_method(m):
+            try:
+                s = str(m).strip().lower()
+            except Exception:
+                return m
+            if s == 'wb97m':
+                return 'wb97m-d3bj'
+            return m
+
+        self.method = _normalize_method(kwargs.get('method', 'wb97m-d3bj'))
+        self.basis = kwargs.get('basis', 'def2-SVP')
         basis_Br = kwargs.get('basis_Br', self.basis)
-        basis_I = kwargs.get('basis_I', 'lanl2dz')
+        basis_I = kwargs.get('basis_I', self.basis)
         self.basis_gen = {'Br': basis_Br, 'I': basis_I, **kwargs.get('basis_gen', {})}
 
         self.scf_type = kwargs.get('scf_type', 'df')
@@ -111,7 +143,7 @@ class Psi4w():
         self.cwd = os.getcwd()
         self.error_flag = False
 
-        if LooseVersion(psi4.__version__) >= LooseVersion('1.4'):
+        if _version_key(psi4.__version__) >= _version_key('1.4'):
             self.get_global_org = qcengine.config.get_global
 
         # Corresponds to Gaussian keyword
@@ -136,11 +168,50 @@ class Psi4w():
 
 
     def __del__(self):
-        psi4.core.clean()
-        psi4.core.clean_options()
-        psi4.core.clean_variables()
-        del self.wfn, self.cc2wfn
-        gc.collect()
+        # Be defensive: __init__ may have failed (partial construction),
+        # or psi4 might not be importable in this environment.
+        try:
+            if psi4 is not None:
+                psi4.core.clean()
+                psi4.core.clean_options()
+                psi4.core.clean_variables()
+        except Exception:
+            pass
+        try:
+            if hasattr(self, "wfn"):
+                del self.wfn
+            if hasattr(self, "cc2wfn"):
+                del self.cc2wfn
+        except Exception:
+            pass
+        try:
+            gc.collect()
+        except Exception:
+            pass
+
+    @staticmethod
+    def _require_resp() -> None:
+        """Ensure the optional `resp` dependency is importable.
+
+        We only need this when performing RESP charge fitting.
+        """
+        global resp, _resp_import_error
+        if resp is not None:
+            return
+        # Try importing again in case environment changed after module import.
+        try:
+            import resp as _resp  # type: ignore
+            resp = _resp
+            _resp_import_error = None
+            return
+        except Exception as e:
+            _resp_import_error = e
+            raise ImportError(
+                "RESP charge fitting requires optional dependency 'resp'.\n"
+                "Try (conda):\n"
+                "  conda install -c psi4 resp\n"
+                f"Root cause when importing resp: {e!r}"
+            )
 
 
     @property
@@ -156,7 +227,7 @@ class Psi4w():
     def _init_psi4(self, *args, output=None):
 
         # Avoiding errors on Fugaku and in mpi4py
-        if LooseVersion(psi4.__version__) >= LooseVersion('1.4'):
+        if _version_key(psi4.__version__) >= _version_key('1.4'):
             qcengine.config.get_global = _override_get_global
 
         psi4.core.clean_options()
@@ -165,6 +236,11 @@ class Psi4w():
         psi4.core.IOManager.shared_object().set_default_path(os.path.abspath(self.psi4_scratch))
 
         pmol = self._mol2psi4(*args)
+        try:
+            if self._is_high_symmetry_polyhedral_ion():
+                pmol = self._force_c1_molecule(pmol)
+        except Exception:
+            pass
         self.error_flag = False
         self._basis_set_construction()
         psi4.set_num_threads(self.num_threads)
@@ -183,7 +259,7 @@ class Psi4w():
         # Avoiding the bug due to MKL (https://github.com/psi4/psi4/issues/2279)
         if '1.4rc' in str(psi4.__version__):
             psi4.set_options({'wcombine': False})
-        elif LooseVersion('1.4.1') > LooseVersion(psi4.__version__) >= LooseVersion('1.4'):
+        elif _version_key('1.4.1') > _version_key(psi4.__version__) >= _version_key('1.4'):
             psi4.set_options({'wcombine': False})
 
         self.cwd = os.getcwd()
@@ -197,7 +273,7 @@ class Psi4w():
     def _fin_psi4(self):
         psi4.core.clean()
         psi4.core.clean_options()
-        if LooseVersion(psi4.__version__) >= LooseVersion('1.4'):
+        if _version_key(psi4.__version__) >= _version_key('1.4'):
             qcengine.config.get_global = self.get_global_org
 
         # Avoiding the bug that optimization is failed due to the optimization binary file remaining.
@@ -209,7 +285,7 @@ class Psi4w():
         gc.collect()
 
 
-    def _mol2psi4(self, *args):
+    def _mol2psi4(self, *args, symmetry: str | None = None, no_reorient: bool = False, no_com: bool = False):
         """
         Psi4w._mol2psi4
 
@@ -294,12 +370,68 @@ class Psi4w():
             pass
         for i in range(self.mol.GetNumAtoms()):
             geom += '%2s  % .8f  % .8f  % .8f\n' % (self.mol.GetAtomWithIdx(i).GetSymbol(), coord[i, 0], coord[i, 1], coord[i, 2])
+        if symmetry:
+            geom += f'symmetry {str(symmetry).strip()}\n'
+        if no_reorient:
+            geom += 'no_reorient\n'
+        if no_com:
+            geom += 'no_com\n'
 
         pmol = psi4.geometry(geom)
         pmol.update_geometry()
         pmol.set_name(self.name)
 
         return pmol
+
+
+    def _is_high_symmetry_polyhedral_ion(self) -> bool:
+        try:
+            return bool(utils.is_high_symmetry_polyhedral_ion(self.mol, smiles_hint=getattr(self, 'name', None)))
+        except Exception:
+            return False
+
+
+    def _force_c1_molecule(self, pmol):
+        """Force a Psi4 molecule to stay in C1 and keep the current frame."""
+        try:
+            pmol.reset_point_group('c1')
+        except Exception:
+            pass
+        try:
+            pmol.fix_orientation(True)
+        except Exception:
+            pass
+        try:
+            pmol.fix_com(True)
+        except Exception:
+            pass
+        try:
+            pmol.update_geometry()
+        except Exception:
+            pass
+        return pmol
+
+
+    def _sync_rdkit_from_psi4_mol(self, pmol):
+        """Best-effort coordinate sync from a Psi4 molecule back to the RDKit conformer."""
+        try:
+            coord = np.asarray(pmol.geometry().to_array(), dtype=float) * const.bohr2ang
+        except Exception:
+            try:
+                coord = np.asarray(pmol.geometry(), dtype=float) * const.bohr2ang
+            except Exception:
+                return None
+        try:
+            conf = self.mol.GetConformer(int(self.confId))
+        except Exception:
+            conf = self.mol.GetConformer(0)
+            self.confId = 0
+        try:
+            for i in range(self.mol.GetNumAtoms()):
+                conf.SetAtomPosition(i, Geom.Point3D(float(coord[i, 0]), float(coord[i, 1]), float(coord[i, 2])))
+        except Exception:
+            pass
+        return coord
 
 
     def _basis_set_construction(self):
@@ -383,7 +515,7 @@ class Psi4w():
         pmol = self._init_psi4(output='./%s_psi4_opt.log' % self.name)
 
         # Older Psi4/OptKing stacks can be fragile with linear angles; bump dynamic_level automatically.
-        if dynamic_level == 0 and calc.find_liner_angle(self.mol) and LooseVersion(psi4.__version__) < LooseVersion('1.8'):
+        if dynamic_level == 0 and calc.find_liner_angle(self.mol) and _version_key(psi4.__version__) < _version_key('1.8'):
             utils.radon_print("Found a linear angle in the molecule. Psi4 optimization setting 'dynamic_level' was changed to 2.", level=2)
             dynamic_level = 2
             geom_iter = int(2 * geom_iter)
@@ -424,8 +556,11 @@ class Psi4w():
         if len(frozen_dihedral) > 0:
             opt_dict['OPTKING__FROZEN_DIHEDRAL'] = ' '.join(frozen_dihedral)
 
-        def _run_opt(engine=None):
+        def _run_opt(engine=None, pmol_override=None):
             """Run Psi4 optimization with current opt_dict; return (energy_h, coord_ang, wfn)."""
+            nonlocal pmol
+            if pmol_override is not None:
+                pmol = pmol_override
             psi4.set_options(opt_dict)
             dt1 = datetime.datetime.now()
             try:
@@ -488,6 +623,24 @@ class Psi4w():
         except BaseException as e:
             last_err = e
 
+            # Retry 0: restart from the current geometry with symmetry disabled if the
+            # optimizer reports a point-group change. This keeps symmetric ions such as
+            # PF6- robust while still allowing the symmetry increase to happen naturally.
+            try:
+                _msg = str(e)
+                if ('Point group changed!' in _msg) or ('point group changed' in _msg.lower()):
+                    utils.radon_print(f'Point group changed during optimization ({e}). Retrying from the latest geometry with symmetry c1...', level=2)
+                    pmol_pg = self._mol2psi4(symmetry='c1', no_reorient=True, no_com=True)
+                    pmol_pg = self._force_c1_molecule(pmol_pg)
+                    energy_h, coord, wfn_obj = _run_opt(engine=None, pmol_override=pmol_pg)
+                    if wfn:
+                        self.wfn = wfn_obj
+                    last_err = None
+                else:
+                    raise e
+            except BaseException as e_pg:
+                last_err = e_pg
+
             # Retry 1: force CARTESIAN coordinates for OptKing if not already requested
             try:
                 oc = opt_dict.get('OPTKING__OPT_COORDINATES', None)
@@ -503,7 +656,39 @@ class Psi4w():
             except BaseException as e2:
                 last_err = e2
 
-                        # Retry 2: geomeTRIC optimizer (optional)
+            # Final fallback for PF6-/BF4-/ClO4-/AsF6- like ions:
+            # keep a C1-symmetrized geometry and continue to the ESP/RESP stage
+            # instead of aborting the whole workflow on a symmetry-only optimizer issue.
+            if last_err is not None:
+                try:
+                    _msg = str(last_err)
+                    if self._is_high_symmetry_polyhedral_ion() and ('Point group changed!' in _msg or 'point group changed' in _msg.lower()):
+                        utils.radon_print(
+                            'Psi4 optimization still reports a point-group change for a high-symmetry inorganic ion. '
+                            'Falling back to a C1 fixed geometry and continuing to the charge-fitting step.',
+                            level=2,
+                        )
+                        try:
+                            utils.symmetrize_polyhedral_ion_geometry(self.mol, confId=int(self.confId))
+                        except Exception:
+                            pass
+                        pmol_c1 = self._mol2psi4(symmetry='c1', no_reorient=True, no_com=True)
+                        pmol_c1 = self._force_c1_molecule(pmol_c1)
+                        coord = self._sync_rdkit_from_psi4_mol(pmol_c1)
+                        if coord is None:
+                            try:
+                                conf = self.mol.GetConformer(int(self.confId))
+                            except Exception:
+                                conf = self.mol.GetConformer(0)
+                                self.confId = 0
+                            coord = np.asarray(conf.GetPositions(), dtype=float)
+                        energy_h = float('nan')
+                        last_err = None
+                        self.error_flag = False
+                except Exception:
+                    pass
+
+            # Retry 2: geomeTRIC optimizer (optional)
             # - Do NOT retry with geomeTRIC for basis/level errors; let the caller fall back to another basis.
             # - Only retry if the 'geometric' python package is available.
             if last_err is not None:
@@ -525,7 +710,7 @@ class Psi4w():
                     if wfn:
                         self.wfn = wfn_obj
                     last_err = None
-                except (TypeError, ModuleNotFoundError) as e3:
+                except (TypeError, ModuleNotFoundError):
                     # engine kw not supported OR geometric not installed -> keep original error
                     last_err = last_err
                 except BaseException as e4:
@@ -575,7 +760,7 @@ class Psi4w():
         energies = np.array([])
         coords = []
 
-        if dynamic_level == 0 and calc.find_liner_angle(self.mol) and LooseVersion(psi4.__version__) < LooseVersion('1.8'):
+        if dynamic_level == 0 and calc.find_liner_angle(self.mol) and _version_key(psi4.__version__) < _version_key('1.8'):
             utils.radon_print('Found a linear angle in the molecule. Psi4 optimization setting \'dynamic_level\' was changed to 2.')
             dynamic_level = 2
             geom_iter = int(2*geom_iter)
@@ -664,7 +849,7 @@ class Psi4w():
                 for i in range(self.mol.GetNumAtoms()):
                     self.mol.GetConformer(int(self.confId)).SetAtomPosition(i, Geom.Point3D(coord[i, 0], coord[i, 1], coord[i, 2]))
                     conf.SetAtomPosition(i, Geom.Point3D(coord[i, 0], coord[i, 1], coord[i, 2]))
-                conf_id = self.mol.AddConformer(conf, assignId=True)
+                self.mol.AddConformer(conf, assignId=True)
 
             self._fin_psi4()
 
@@ -820,7 +1005,7 @@ class Psi4w():
         Returns:
             TD-DFT result
         """
-        if LooseVersion(psi4.__version__) < LooseVersion('1.3.100'):
+        if _version_key(psi4.__version__) < _version_key('1.3.100'):
             utils.radon_print('TD-DFT calclation is not implemented in Psi4 of this version (%s).' % str(psi4.__version__), level=3)
             return []
 
@@ -877,6 +1062,9 @@ class Psi4w():
             RESP charge (float, array)
         """
 
+        # `resp` is an optional dependency. Require it lazily here.
+        Psi4w._require_resp()
+
         def _new_esp_solve(A, B):
             """
             Override function of resp.espfit.esp_solve to avoid LinAlgError
@@ -904,7 +1092,7 @@ class Psi4w():
             if np.linalg.cond(A) > 1/np.finfo(A.dtype).eps:
                 q = np.linalg.lstsq(A, B, rcond=None)[0]
 
-            if LooseVersion(resp.__version__) >= LooseVersion('0.8'):
+            if _version_key(resp.__version__) >= _version_key('0.8'):
                 return q
             else:
                 return q, ''
@@ -915,7 +1103,7 @@ class Psi4w():
         ptab = Chem.GetPeriodicTable()
 
         # Avoid a bug in RESP 0.8
-        if LooseVersion(resp.__version__) >= LooseVersion('0.8'):
+        if _version_key(resp.__version__) >= _version_key('0.8'):
             # Make a dict of expected bonds
             defv_dict = {ptab.GetElementSymbol(n).upper(): ptab.GetDefaultValence(n) if ptab.GetDefaultValence(n) >= 0 else 0 for n in range(1, 119)}
             psi4.qcdb.parker._expected_bonds = {**defv_dict, **psi4.qcdb.parker._expected_bonds} 
@@ -964,7 +1152,7 @@ class Psi4w():
             options['RADIUS'] = {}
 
             # Add c for atoms fixed in second stage
-            if LooseVersion(resp.__version__) >= LooseVersion('0.8'):
+            if _version_key(resp.__version__) >= _version_key('0.8'):
                 resp.stage2_helper.set_stage2_constraint(pmol, charges1[1], options)
                 options['grid'] = ['./1_%s_grid.dat' % pmol.name()]
                 options['esp'] = ['./1_%s_grid_esp.dat' % pmol.name()]
@@ -1144,7 +1332,7 @@ class Psi4w():
                         psi4.set_options({'perturb_dipole': divec})
                         energy_x, wfn = psi4.energy(self.method, molecule=pmol, return_wfn=True, **kwargs)
                         psi4.oeprop(wfn, 'DIPOLE')
-                        if LooseVersion(psi4.__version__) < LooseVersion('1.3.100'):
+                        if _version_key(psi4.__version__) < _version_key('1.3.100'):
                             p_mu[i, j, 0] = psi4.variable('SCF DIPOLE X') / const.au2debye
                             p_mu[i, j, 1] = psi4.variable('SCF DIPOLE Y') / const.au2debye
                             p_mu[i, j, 2] = psi4.variable('SCF DIPOLE Z') / const.au2debye
@@ -1316,7 +1504,7 @@ class Psi4w():
             psi4.core.set_output_file('./%s_psi4_hyperpolar.log' % (self.name), False)
             energy_x, wfn = psi4.energy(self.method, molecule=pmol, return_wfn=True, **kwargs)
             psi4.oeprop(wfn, 'DIPOLE')
-            if LooseVersion(psi4.__version__) < LooseVersion('1.3.100'):
+            if _version_key(psi4.__version__) < _version_key('1.3.100'):
                 np_mu[0] = psi4.variable('SCF DIPOLE X') / const.au2debye
                 np_mu[1] = psi4.variable('SCF DIPOLE Y') / const.au2debye
                 np_mu[2] = psi4.variable('SCF DIPOLE Z') / const.au2debye
@@ -1462,7 +1650,7 @@ class Psi4w():
         """
         if self.wfn is None: return np.nan
         psi4.oeprop(self.wfn, 'DIPOLE')
-        if LooseVersion(psi4.__version__) < LooseVersion('1.3.100'):
+        if _version_key(psi4.__version__) < _version_key('1.3.100'):
             x = psi4.variable('SCF DIPOLE X')
             y = psi4.variable('SCF DIPOLE Y')
             z = psi4.variable('SCF DIPOLE Z')
@@ -1483,7 +1671,7 @@ class Psi4w():
         """
         if self.wfn is None: return np.nan
         psi4.oeprop(self.wfn, 'QUADRUPOLE')
-        if LooseVersion(psi4.__version__) < LooseVersion('1.3.100'):
+        if _version_key(psi4.__version__) < _version_key('1.3.100'):
             xx = psi4.variable('SCF QUADRUPOLE XX')
             yy = psi4.variable('SCF QUADRUPOLE YY')
             zz = psi4.variable('SCF QUADRUPOLE ZZ')
@@ -1716,7 +1904,7 @@ def _polar_mp_worker(args):
     try:
         energy_x, wfn = psi4.energy(psi4obj.method, molecule=pmol, return_wfn=True)
         psi4.oeprop(wfn, 'DIPOLE')
-        if LooseVersion(psi4.__version__) < LooseVersion('1.3.100'):
+        if _version_key(psi4.__version__) < _version_key('1.3.100'):
             dipole[0] = psi4.variable('SCF DIPOLE X') / const.au2debye
             dipole[1] = psi4.variable('SCF DIPOLE Y') / const.au2debye
             dipole[2] = psi4.variable('SCF DIPOLE Z') / const.au2debye

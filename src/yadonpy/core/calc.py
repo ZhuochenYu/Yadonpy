@@ -33,6 +33,7 @@ from rdkit.Chem import AllChem, TorsionFingerprints
 from rdkit import Geometry as Geom
 from rdkit.ML.Cluster import Butina
 from . import utils, const
+from .charge_models import assign_quick_charges, parse_charge_model_spec
 
 
 # NOTE: yadonpy is GROMACS-only. LAMMPS backends from upstream RadonPy are removed.
@@ -275,7 +276,7 @@ def _gmx_em_optimize_conformer(
     _write_em_mdp(str(mdp_path))
 
     tpr = wdir / 'em.tpr'
-    runner.grompp(mdp=mdp_path, gro=boxed_gro, top=top_path, out_tpr=tpr, maxwarn=1, cwd=wdir)
+    runner.grompp(mdp=mdp_path, gro=boxed_gro, top=top_path, out_tpr=tpr, maxwarn=5, cwd=wdir)
 
     runner.mdrun(tpr=tpr, deffnm='em', cwd=wdir, ntomp=ntomp, ntmpi=ntmpi, gpu_id=gpu_id, append=False)
 
@@ -554,7 +555,6 @@ def mol_trans_in_cell(mol, confId=0):
     n_mol = utils.count_mols(mol_c)
     coord = np.array(mol_c.GetConformer(confId).GetPositions())
     cell_center = [(mol_c.cell.xhi+mol_c.cell.xlo)/2, (mol_c.cell.yhi+mol_c.cell.ylo)/2, (mol_c.cell.zhi+mol_c.cell.zlo)/2]
-    mol_coord_list = []
 
     for i in range(1, n_mol+1):
         mol_coord = []
@@ -590,14 +590,39 @@ def mirror_inversion_mol(mol, confId=0):
 
 
 def molecular_weight(mol, ignore_linker=True):
-    mol_weight = 0.0
-    for atom in mol.GetAtoms():
-        if ignore_linker and atom.GetSymbol() == "H" and atom.GetIsotope() >= 3:
-            pass
-        else:
-            mol_weight += atom.GetMass()
+    from .molspec import as_rdkit_mol
 
-    return mol_weight
+    rdkit_mol = as_rdkit_mol(mol, strict=True)
+    try:
+        rdkit_mol.UpdatePropertyCache(strict=False)
+    except Exception:
+        pass
+
+    if not ignore_linker:
+        try:
+            from rdkit.Chem import Descriptors
+
+            return float(Descriptors.MolWt(rdkit_mol))
+        except Exception:
+            pass
+
+    ptable = Chem.GetPeriodicTable()
+    h_avg_mass = float(ptable.GetAtomicWeight(1))
+    mol_weight = 0.0
+    for atom in rdkit_mol.GetAtoms():
+        if ignore_linker and atom.GetSymbol() == "H" and atom.GetIsotope() >= 3:
+            continue
+        atom_mass = float(atom.GetMass())
+        if atom_mass <= 0.0:
+            atom_mass = float(ptable.GetAtomicWeight(int(atom.GetAtomicNum())))
+        mol_weight += atom_mass
+        if not ignore_linker:
+            try:
+                mol_weight += float(atom.GetNumImplicitHs()) * h_avg_mass
+            except Exception:
+                pass
+
+    return float(mol_weight)
 
 
 def get_num_radicals(mol):
@@ -608,9 +633,9 @@ def get_num_radicals(mol):
 
 
 def assign_charges(mol, charge='gasteiger', confId=0, opt=True, work_dir=None, tmp_dir=None, log_name='charge', qm_solver='psi4',
-    opt_method='wb97m-d3bj', opt_basis='6-31G(d,p)', opt_basis_gen={'Br':'6-31G(d,p)', 'I': 'lanl2dz'}, 
+    opt_method='wb97m-d3bj', opt_basis='def2-SVP', opt_basis_gen={'Br':'def2-SVP', 'I': 'def2-SVP'}, 
     geom_iter=50, geom_conv='QCHEM', geom_algorithm='RFO',
-    charge_method='wb97m-d3bj', charge_basis='def2-TZVP', charge_basis_gen={'Br':'def2-TZVP', 'I': 'lanl2dz'},
+    charge_method='wb97m-d3bj', charge_basis='def2-TZVP', charge_basis_gen={'Br':'def2-TZVP', 'I': 'def2-TZVP'},
     total_charge=None, total_multiplicity=None, **kwargs):
     """
     calc.assign_charges
@@ -621,7 +646,7 @@ def assign_charges(mol, charge='gasteiger', confId=0, opt=True, work_dir=None, t
         mol: RDKit Mol object
 
     Optional args:
-        charge: Select charge type of gasteiger, RESP, ESP, Mulliken, Lowdin, or zero (str, deffault:gasteiger)
+        charge: Select charge type of gasteiger, RESP, ESP, Mulliken, Lowdin, zero, CM1A, <scale>*CM1A, CM5, or <scale>*CM5 (str, default:gasteiger)
         confID: Target conformer ID (int)
         opt: Do optimization (boolean)
         work_dir: Work directory path (str)
@@ -638,6 +663,8 @@ def assign_charges(mol, charge='gasteiger', confId=0, opt=True, work_dir=None, t
         boolean
     """
 
+    quick_spec = parse_charge_model_spec(charge)
+
     if charge == 'zero':
         for p in mol.GetAtoms():
             p.SetDoubleProp('AtomicCharge', 0.0)
@@ -646,6 +673,20 @@ def assign_charges(mol, charge='gasteiger', confId=0, opt=True, work_dir=None, t
         Chem.rdPartialCharges.ComputeGasteigerCharges(mol)
         for p in mol.GetAtoms():
             p.SetDoubleProp('AtomicCharge', float(p.GetProp('_GasteigerCharge')))
+
+    elif quick_spec is not None:
+        return assign_quick_charges(
+            mol,
+            charge=charge,
+            confId=confId,
+            opt=opt,
+            work_dir=work_dir,
+            tmp_dir=tmp_dir,
+            log_name=log_name,
+            total_charge=total_charge,
+            total_multiplicity=total_multiplicity,
+            **kwargs,
+        )
 
     elif charge in ['RESP', 'ESP', 'Mulliken', 'Lowdin']:
         if not qm_avail:
@@ -693,18 +734,41 @@ def assign_charges(mol, charge='gasteiger', confId=0, opt=True, work_dir=None, t
         except Exception:
             dynamic_level = 0
 
+        # Auto-infer charge and multiplicity from SMILES/RDKit (best-effort)
+        fc = 0
+        n_rad = 0
+        for _a in mol.GetAtoms():
+            fc += int(_a.GetFormalCharge())
+            n_rad += int(_a.GetNumRadicalElectrons())
+
         if type(total_charge) is int:
-            kwargs['charge'] = total_charge
-        elif total_charge is None:
-            # For charged molecules (e.g., polyelectrolyte monomers with [O-]),
-            # Psi4 must be told the total charge; otherwise it defaults to 0.
-            fc = 0
-            for _a in mol.GetAtoms():
-                fc += int(_a.GetFormalCharge())
-            if fc != 0:
-                kwargs['charge'] = int(fc)
+            kwargs['charge'] = int(total_charge)
+            eff_charge = int(total_charge)
+        else:
+            eff_charge = int(fc)
+            if eff_charge != 0:
+                # Psi4 must be told the total charge; otherwise it defaults to 0.
+                kwargs['charge'] = int(eff_charge)
+
         if type(total_multiplicity) is int:
-            kwargs['multiplicity'] = total_multiplicity
+            kwargs['multiplicity'] = int(total_multiplicity)
+        elif total_multiplicity is None and n_rad > 0:
+            kwargs['multiplicity'] = int(n_rad + 1)
+
+        # Default level policy (2026-03): switch diffuse basis for anions.
+        if eff_charge < 0:
+            try:
+                if str(opt_basis).strip().lower() == 'def2-svp':
+                    opt_basis = 'def2-SVPD'
+                    opt_basis_gen = {'Br': 'def2-SVPD', 'I': 'def2-SVPD', **(opt_basis_gen or {})}
+            except Exception:
+                pass
+            try:
+                if str(charge_basis).strip().lower() == 'def2-tzvp':
+                    charge_basis = 'def2-TZVPD'
+                    charge_basis_gen = {'Br': 'def2-TZVPD', 'I': 'def2-TZVPD', **(charge_basis_gen or {})}
+            except Exception:
+                pass
 
         psi4mol = QMw(mol, confId=confId, work_dir=work_dir, tmp_dir=tmp_dir, qm_solver=qm_solver, method=opt_method, basis=opt_basis, basis_gen=opt_basis_gen,
                         name=log_name, **kwargs)
@@ -819,7 +883,6 @@ def charge_neutralize2(mol, tol=1e-12, retry=100):
             else:
                 charge = charge_new
 
-        c_sign = charge.as_tuple()['sign']
         c_digit = list(charge.as_tuple()['digits'])
         c_exp = charge.as_tuple()['exponent']
 
@@ -827,7 +890,6 @@ def charge_neutralize2(mol, tol=1e-12, retry=100):
             del c_digit[-1]
             c_exp += 1
 
-        num = int(''.join(c_digit))
 
 
     return mol
@@ -1092,7 +1154,7 @@ def fractional_free_volume(mol, confId=0, gridSpacing=0.2, method='grid'):
 
 
 def conformation_search(mol, ff=None, nconf=1000, dft_nconf=0, etkdg_ver=2, rmsthresh=0.5, tfdthresh=0.02, clustering='TFD',
-        qm_solver='psi4', opt_method='wb97m-d3bj', opt_basis='6-31G(d,p)', opt_basis_gen={'Br': '6-31G(d,p)', 'I': 'lanl2dz'},
+        qm_solver='psi4', opt_method='wb97m-d3bj', opt_basis='def2-SVP', opt_basis_gen={'Br': 'def2-SVP', 'I': 'def2-SVP'},
         geom_iter=50, geom_conv='QCHEM', geom_algorithm='RFO', log_name='mol', work_dir=None, tmp_dir=None,
         etkdg_omp=-1, psi4_omp=-1, psi4_mp=0, mm_mp=0, memory=1000,
         mm_solver='rdkit', gmx_refine_n=0, gmx_ntomp=None, gmx_ntmpi=None, gmx_gpu_id=None,
@@ -1502,16 +1564,34 @@ def conformation_search(mol, ff=None, nconf=1000, dft_nconf=0, etkdg_ver=2, rmst
             Chem.SanitizeMol(mol_c)
             return mol_c, re_energy
 
+        # Auto-infer charge and multiplicity from SMILES/RDKit (best-effort)
+        fc = 0
+        n_rad = 0
+        for _a in mol_c.GetAtoms():
+            fc += int(_a.GetFormalCharge())
+            n_rad += int(_a.GetNumRadicalElectrons())
+
         if type(total_charge) is int:
-            kwargs['charge'] = total_charge
-        elif total_charge is None:
-            fc = 0
-            for _a in mol_c.GetAtoms():
-                fc += int(_a.GetFormalCharge())
-            if fc != 0:
-                kwargs['charge'] = int(fc)
+            kwargs['charge'] = int(total_charge)
+            eff_charge = int(total_charge)
+        else:
+            eff_charge = int(fc)
+            if eff_charge != 0:
+                kwargs['charge'] = int(eff_charge)
+
         if type(total_multiplicity) is int:
-            kwargs['multiplicity'] = total_multiplicity
+            kwargs['multiplicity'] = int(total_multiplicity)
+        elif total_multiplicity is None and n_rad > 0:
+            kwargs['multiplicity'] = int(n_rad + 1)
+
+        # Default level policy (2026-03): switch diffuse basis for anions.
+        if eff_charge < 0:
+            try:
+                if str(opt_basis).strip().lower() == 'def2-svp':
+                    opt_basis = 'def2-SVPD'
+                    opt_basis_gen = {'Br': 'def2-SVPD', 'I': 'def2-SVPD', **(opt_basis_gen or {})}
+            except Exception:
+                pass
 
         if dft_nconf > nconf_new: dft_nconf = nconf_new
         psi4mol = QMw(mol_c, work_dir=work_dir, tmp_dir=tmp_dir, omp=psi4_omp, qm_solver=qm_solver, method=opt_method, basis=opt_basis, basis_gen=opt_basis_gen,

@@ -21,7 +21,38 @@ import time
 import hashlib
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, Optional, Sequence, Union
+from typing import Any, Callable, Dict, Optional, Sequence, Union
+
+from ..core.logging_utils import yadon_print
+
+# -----------------------------------------------------------------------------
+# Timing helpers (lightweight, no external deps)
+# -----------------------------------------------------------------------------
+_SCRIPT_T0 = time.perf_counter()
+_TIMING_REGISTERED = False
+
+def _fmt_duration(seconds: float) -> str:
+    # format as H:MM:SS (or M:SS for short runs)
+    s = max(0, int(round(seconds)))
+    h, rem = divmod(s, 3600)
+    m, sec = divmod(rem, 60)
+    if h > 0:
+        return f"{h:d}:{m:02d}:{sec:02d}"
+    return f"{m:d}:{sec:02d}"
+
+def _now_hms() -> str:
+    return time.strftime('%H:%M:%S', time.localtime())
+
+def _register_total_timer_once() -> None:
+    global _TIMING_REGISTERED
+    if _TIMING_REGISTERED:
+        return
+    _TIMING_REGISTERED = True
+    import atexit
+    def _print_total() -> None:
+        total = time.perf_counter() - _SCRIPT_T0
+        yadon_print(f"[TIME] Total elapsed: {_fmt_duration(total)} | finished_at={_now_hms()}", level=1)
+    atexit.register(_print_total)
 
 
 def _now_iso() -> str:
@@ -119,6 +150,7 @@ class ResumeManager:
         enabled: bool = True,
     ):
         self.root = Path(root).expanduser().resolve()
+        _register_total_timer_once()  # step-level timing + total runtime at exit
         self.root.mkdir(parents=True, exist_ok=True)
 
         # Backward compatible migration: if an old-style state file exists at
@@ -227,11 +259,14 @@ class ResumeManager:
         """
         if self.is_done(spec):
             if verbose:
-                print(f"[SKIP] {spec.name} (already done)")
+                total = time.perf_counter() - _SCRIPT_T0
+                yadon_print(f"[SKIP] {spec.name} | already done | total={_fmt_duration(total)} | at={_now_hms()}", level=1)
             return None
 
+        t0 = time.perf_counter()
         if verbose:
-            print(f"[RUN ] {spec.name}")
+            total = t0 - _SCRIPT_T0
+            yadon_print(f"[RUN] {spec.name} | start_at={_now_hms()} | total={_fmt_duration(total)}", level=1)
 
         try:
             out = func()
@@ -246,4 +281,8 @@ class ResumeManager:
             raise RuntimeError(err)
 
         self.mark_done(spec, meta=meta)
+        if verbose:
+            elapsed = time.perf_counter() - t0
+            total = time.perf_counter() - _SCRIPT_T0
+            yadon_print(f"[DONE] {spec.name} | elapsed={_fmt_duration(elapsed)} | total={_fmt_duration(total)} | end_at={_now_hms()}", level=1)
         return out

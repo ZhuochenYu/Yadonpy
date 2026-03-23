@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 import re
+import sys
 from itertools import permutations
+from typing import List, Optional, Tuple
+
 import numpy as np
 from rdkit import Chem
 from rdkit.Chem import AllChem
 from rdkit.Geometry import rdGeometry as Geom
-from .exceptions import YadonPyError
 from .logging_utils import radon_print
-from . import const
 
 def star2h(smiles):
     smiles = smiles.replace('[*]', '[3H]')
@@ -195,8 +196,6 @@ def mol_from_smiles(smiles, coord=True, version=3, ez='E', chiral='S', stereoche
                 # Contorol unspecified chirality
                 chiral_list = np.array(Chem.FindMolChiralCenters(isomer))
                 if len(chiral_list) > 0:
-                    chiral_centers = chiral_list[:, 0]
-
                     chirality = chiral_list[:, 1]
                     chiral_num = np.count_nonzero(chirality == chiral)
                     if chiral_num == len(chiral_list):
@@ -1025,7 +1024,7 @@ def restore_raw_charges(mol, *, props=("AtomicCharge", "RESP")):
 
     If a corresponding ``<prop>_raw`` exists, it overwrites ``<prop>``.
     This is helpful when we want to apply charge scaling for a simulation,
-    but keep the persistent library (basic_top) in an unscaled state.
+    but keep persistent caches (MolDB / artifact caches) in an unscaled state.
     """
     for a in mol.GetAtoms():
         for prop in props:
