@@ -413,18 +413,22 @@ class InterfaceProtocol:
         temperature_k: float = 300.0,
         pressure_bar: float = 1.0,
         pre_contact_ps: float = 100.0,
+        pre_contact_dt_ps: float = 0.001,
         density_relax_ps: float = 250.0,
         contact_ps: float = 250.0,
         release_ps: float = 250.0,
         exchange_ns: float = 2.0,
         production_ns: float = 5.0,
         axis: str = "Z",
+        freeze_cores_pre_contact: bool = True,
+        use_region_thermostat_early: bool = True,
     ) -> "InterfaceProtocol":
         return InterfaceProtocol(
             route="route_a",
             axis=axis,
             stage_mode="diffusion",
             pre_contact_ps=pre_contact_ps,
+            pre_contact_dt_ps=pre_contact_dt_ps,
             density_relax_ps=density_relax_ps,
             contact_ps=contact_ps,
             release_ps=release_ps,
@@ -433,6 +437,8 @@ class InterfaceProtocol:
             temperature_k=temperature_k,
             pressure_bar=pressure_bar,
             semiisotropic=True,
+            freeze_cores_pre_contact=freeze_cores_pre_contact,
+            use_region_thermostat_early=use_region_thermostat_early,
         )
 
     @staticmethod
@@ -477,6 +483,7 @@ class InterfaceProtocol:
         temperature_k: float = 300.0,
         pressure_bar: float = 1.0,
         pre_contact_ps: float = 100.0,
+        pre_contact_dt_ps: float = 0.001,
         density_relax_ps: float = 250.0,
         contact_ps: float = 250.0,
         release_ps: float = 250.0,
@@ -486,12 +493,15 @@ class InterfaceProtocol:
         wall_atomtype: Optional[str] = None,
         wall_density_nm3: Optional[float] = None,
         axis: str = "Z",
+        freeze_cores_pre_contact: bool = True,
+        use_region_thermostat_early: bool = True,
     ) -> "InterfaceProtocol":
         return InterfaceProtocol(
             route="route_b",
             axis=axis,
             stage_mode="diffusion",
             pre_contact_ps=pre_contact_ps,
+            pre_contact_dt_ps=pre_contact_dt_ps,
             density_relax_ps=density_relax_ps,
             contact_ps=contact_ps,
             release_ps=release_ps,
@@ -503,6 +513,8 @@ class InterfaceProtocol:
             wall_mode=wall_mode,
             wall_atomtype=wall_atomtype,
             wall_density_nm3=wall_density_nm3,
+            freeze_cores_pre_contact=freeze_cores_pre_contact,
+            use_region_thermostat_early=use_region_thermostat_early,
         )
 
 

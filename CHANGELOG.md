@@ -1,3 +1,9 @@
+## 0.8.54 (2026-03-23)
+
+- interface/prep + interface/protocol + interface/__init__ + tests/interface_builder: add `recommend_polymer_diffusion_interface_recipe(...)` plus the new `PolymerDiffusionInterfaceRecipe` data object, extend the diffusion protocol constructors with explicit early-stage control knobs, carry richer geometry metadata through `PolymerAnchoredInterfacePreparation`, and lock the new route-selection behavior down with focused interface-planning regressions;
+- examples/10_interface_route_a + 11_interface_route_b + 12_cmcna_interface + tests/release_sanity: rewrite the interface examples into the same linear, script-first style used by Example 02 by removing local helper wrappers, move route/protocol heuristics into the library layer, and enlarge Example 12 into a more conservative `DP=150`, `6`-chain, `1 M` LiPF6 CMC interface workflow that uses a polymer-first probe-and-resize route-B build;
+- docs/release hygiene: rewrite `README.md`, `docs/Yadonpy_manul.md`, `docs/Yaonpyd_user_guide.md`, and the versioned API reference for the current architecture, bump the package/docs version to `0.8.54`, and tighten release hygiene so cache directories plus generated `yadonpy.egg-info` artifacts are excluded from release trees.
+
 ## 0.8.53 (2026-03-23)
 
 - interface/examples/io/tests: finalize the new interface-building workflow for Examples 10-12, including polymer-first XY-matched electrolyte planning, staged diffusion protocols, release-sanity cleanup of PF6 loading style, and an export fallback that reuses packed-cell cached molecule artifacts before requiring MolDB;

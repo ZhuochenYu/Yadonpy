@@ -3,16 +3,13 @@ from __future__ import annotations
 from pathlib import Path
 
 from yadonpy.runtime import set_run_options
-from yadonpy.core import molecular_weight, poly, utils, workdir
+from yadonpy.core import as_rdkit_mol, molecular_weight, poly, utils, workdir
 from yadonpy.core.data_dir import ensure_initialized
 from yadonpy.diagnostics import doctor
 from yadonpy.ff import GAFF2, MERZ
 from yadonpy.interface import (
-    AreaMismatchPolicy,
     InterfaceBuilder,
     InterfaceDynamics,
-    InterfaceProtocol,
-    InterfaceRouteSpec,
     equilibrate_bulk_with_eq21,
     fixed_xy_semiisotropic_npt_overrides,
     format_cell_charge_audit,
@@ -21,73 +18,10 @@ from yadonpy.interface import (
     plan_probe_polymer_matched_interface_preparation,
     plan_resized_polymer_matched_interface_from_probe,
     read_equilibrated_box_nm,
+    recommend_polymer_diffusion_interface_recipe,
 )
 from yadonpy.io.mol2 import write_mol2_from_rdkit
 from yadonpy.sim import qm
-
-
-def _named(mol, name: str):
-    try:
-        mol.SetProp("_Name", name)
-    except Exception:
-        pass
-    return mol
-
-
-def _resolved(mol):
-    resolved = getattr(mol, "resolved_mol", None)
-    return resolved if resolved is not None else mol
-
-
-def prepare_template_species(ff_obj, smiles: str, name: str, *, mol2_dir: Path, bonded: str | None = None):
-    mol = ff_obj.mol(smiles, name=name)
-    kwargs = {} if bonded is None else {"bonded": bonded}
-    ok = ff_obj.ff_assign(mol, **kwargs)
-    if not ok:
-        raise RuntimeError(f"Can not assign force field parameters for {name}.")
-    mol = _named(_resolved(mol), name)
-    write_mol2_from_rdkit(mol=mol, out_dir=mol2_dir)
-    return mol
-
-
-def build_cmc(ff_obj: GAFF2, *, work_dir, mol2_dir: Path):
-    glucose = prepare_template_species(ff_obj, glucose_smiles, "glucose", mol2_dir=mol2_dir)
-    glucose_2 = prepare_template_species(ff_obj, glucose_2_smiles, "glucose_2", mol2_dir=mol2_dir)
-    glucose_3 = prepare_template_species(ff_obj, glucose_3_smiles, "glucose_3", mol2_dir=mol2_dir)
-    glucose_6 = prepare_template_species(ff_obj, glucose_6_smiles, "glucose_6", mol2_dir=mol2_dir)
-
-    ter1 = utils.mol_from_smiles(ter_smiles)
-    qm.assign_charges(
-        ter1,
-        charge="RESP",
-        opt=True,
-        work_dir=work_dir,
-        omp=omp_psi4,
-        memory=mem_mb,
-        log_name=None,
-    )
-    ter1 = _named(ter1, "ter1")
-
-    cmc_rw_dir = work_dir.child("CMC_rw")
-    cmc_term_dir = work_dir.child("CMC_term")
-    cmc = poly.random_copolymerize_rw(
-        [glucose, glucose_2, glucose_3, glucose_6],
-        dp,
-        ratio=feed_prob,
-        tacticity="atactic",
-        name="CMC",
-        work_dir=cmc_rw_dir,
-    )
-    cmc = poly.terminate_rw(cmc, ter1, name="CMC", work_dir=cmc_term_dir)
-    if not ff_obj.ff_assign(cmc):
-        raise RuntimeError("Can not assign force field parameters for CMC.")
-    cmc = _named(cmc, "CMC")
-    write_mol2_from_rdkit(mol=cmc, out_dir=mol2_dir)
-    return cmc
-
-
-def mol_formal_charge(mol) -> int:
-    return int(sum(int(atom.GetFormalCharge()) for atom in mol.GetAtoms()))
 
 
 restart = True
@@ -123,31 +57,36 @@ gpu_id = 0
 omp_psi4 = 12
 mem_mb = 20000
 
-n_CMC = 1
-dp = 36
-polymer_initial_pack_density_g_cm3 = 0.08
-polymer_initial_lateral_nm = 5.2
-polymer_initial_min_z_nm = 6.0
-cmc_flatten_npt_ns = 2.5
+# This example is intentionally larger than the neutral interface examples.
+# It targets a cluster-scale CMC phase first, then matches the electrolyte to
+# the equilibrated polymer XY footprint before assembling a vacuum-buffered
+# diffusion interface.
+n_CMC = 6
+dp = 150
+polymer_initial_pack_density_g_cm3 = 0.03
+polymer_initial_lateral_nm = 18.0
+polymer_initial_min_z_nm = 24.0
+cmc_flatten_npt_ns = 5.0
 
 solvent_mass_ratio = (3.0, 2.0, 5.0)
-salt_molarity_M = 0.6
-min_salt_pairs = 8
-electrolyte_probe_density_g_cm3 = 0.95
-electrolyte_probe_volume_scale = 1.75
-electrolyte_probe_pack_density_g_cm3 = 0.60
-electrolyte_resized_pack_density_g_cm3 = 0.45
+salt_molarity_M = 1.0
+min_salt_pairs = 20
+electrolyte_probe_density_g_cm3 = 1.00
+electrolyte_probe_volume_scale = 2.10
+electrolyte_probe_pack_density_g_cm3 = 0.55
+electrolyte_resized_pack_density_g_cm3 = 0.38
 
-electrolyte_pack_retry = 24
-electrolyte_pack_retry_step = 1500
+electrolyte_pack_retry = 40
+electrolyte_pack_retry_step = 2000
 electrolyte_pack_threshold_ang = 1.50
-electrolyte_pack_dec_rate = 0.65
+electrolyte_pack_dec_rate = 0.70
 
-interface_gap_nm = 0.60
-interface_bottom_thickness_nm = 3.2
-interface_top_thickness_nm = 3.4
-interface_surface_shell_nm = 0.8
-interface_core_guard_nm = 0.5
+interface_gap_nm = 0.80
+interface_vacuum_nm = 14.0
+interface_bottom_thickness_nm = 7.0
+interface_top_thickness_nm = 8.0
+interface_surface_shell_nm = 1.0
+interface_core_guard_nm = 0.8
 
 BASE_DIR = Path(__file__).resolve().parent
 work_dir = workdir(BASE_DIR / "work_dir", clean=not restart)
@@ -164,15 +103,101 @@ if __name__ == "__main__":
     probe_electrolyte_build_dir = probe_electrolyte_dir.child("00_build_cell")
     ac_electrolyte_dir = work_dir.child("ac_electrolyte")
     ac_electrolyte_build_dir = ac_electrolyte_dir.child("00_build_cell")
-    interface_dir = work_dir.child("interface_route_a")
-    interface_md_dir = work_dir.child("interface_route_a_md")
+    interface_dir = work_dir.child("interface_route_b")
+    interface_md_dir = work_dir.child("interface_route_b_md")
 
-    CMC = build_cmc(ff, work_dir=work_dir, mol2_dir=mol2_dir)
-    EC = prepare_template_species(ff, EC_smiles, "EC", mol2_dir=mol2_dir)
-    DEC = prepare_template_species(ff, DEC_smiles, "DEC", mol2_dir=mol2_dir)
-    EMC = prepare_template_species(ff, EMC_smiles, "EMC", mol2_dir=mol2_dir)
-    Li = prepare_template_species(ion_ff, Li_smiles, "Li", mol2_dir=mol2_dir)
-    Na = prepare_template_species(ion_ff, Na_smiles, "Na", mol2_dir=mol2_dir)
+    glucose = ff.mol(glucose_smiles, name="glucose")
+    if not ff.ff_assign(glucose):
+        raise RuntimeError("Can not assign force field parameters for glucose.")
+    glucose = as_rdkit_mol(glucose, strict=True)
+    glucose.SetProp("_Name", "glucose")
+    write_mol2_from_rdkit(mol=glucose, out_dir=mol2_dir)
+
+    glucose_2 = ff.mol(glucose_2_smiles, name="glucose_2")
+    if not ff.ff_assign(glucose_2):
+        raise RuntimeError("Can not assign force field parameters for glucose_2.")
+    glucose_2 = as_rdkit_mol(glucose_2, strict=True)
+    glucose_2.SetProp("_Name", "glucose_2")
+    write_mol2_from_rdkit(mol=glucose_2, out_dir=mol2_dir)
+
+    glucose_3 = ff.mol(glucose_3_smiles, name="glucose_3")
+    if not ff.ff_assign(glucose_3):
+        raise RuntimeError("Can not assign force field parameters for glucose_3.")
+    glucose_3 = as_rdkit_mol(glucose_3, strict=True)
+    glucose_3.SetProp("_Name", "glucose_3")
+    write_mol2_from_rdkit(mol=glucose_3, out_dir=mol2_dir)
+
+    glucose_6 = ff.mol(glucose_6_smiles, name="glucose_6")
+    if not ff.ff_assign(glucose_6):
+        raise RuntimeError("Can not assign force field parameters for glucose_6.")
+    glucose_6 = as_rdkit_mol(glucose_6, strict=True)
+    glucose_6.SetProp("_Name", "glucose_6")
+    write_mol2_from_rdkit(mol=glucose_6, out_dir=mol2_dir)
+
+    ter1 = utils.mol_from_smiles(ter_smiles)
+    qm.assign_charges(
+        ter1,
+        charge="RESP",
+        opt=True,
+        work_dir=work_dir,
+        omp=omp_psi4,
+        memory=mem_mb,
+        log_name=None,
+    )
+    ter1.SetProp("_Name", "ter1")
+
+    cmc_rw_dir = work_dir.child("CMC_rw")
+    cmc_term_dir = work_dir.child("CMC_term")
+    CMC = poly.random_copolymerize_rw(
+        [glucose, glucose_2, glucose_3, glucose_6],
+        dp,
+        ratio=feed_prob,
+        tacticity="atactic",
+        name="CMC",
+        work_dir=cmc_rw_dir,
+    )
+    CMC = poly.terminate_rw(CMC, ter1, name="CMC", work_dir=cmc_term_dir)
+    if not ff.ff_assign(CMC):
+        raise RuntimeError("Can not assign force field parameters for CMC.")
+    CMC = as_rdkit_mol(CMC, strict=True)
+    CMC.SetProp("_Name", "CMC")
+    write_mol2_from_rdkit(mol=CMC, out_dir=mol2_dir)
+
+    EC = ff.mol(EC_smiles, name="EC")
+    if not ff.ff_assign(EC):
+        raise RuntimeError("Can not assign force field parameters for EC.")
+    EC = as_rdkit_mol(EC, strict=True)
+    EC.SetProp("_Name", "EC")
+    write_mol2_from_rdkit(mol=EC, out_dir=mol2_dir)
+
+    DEC = ff.mol(DEC_smiles, name="DEC")
+    if not ff.ff_assign(DEC):
+        raise RuntimeError("Can not assign force field parameters for DEC.")
+    DEC = as_rdkit_mol(DEC, strict=True)
+    DEC.SetProp("_Name", "DEC")
+    write_mol2_from_rdkit(mol=DEC, out_dir=mol2_dir)
+
+    EMC = ff.mol(EMC_smiles, name="EMC")
+    if not ff.ff_assign(EMC):
+        raise RuntimeError("Can not assign force field parameters for EMC.")
+    EMC = as_rdkit_mol(EMC, strict=True)
+    EMC.SetProp("_Name", "EMC")
+    write_mol2_from_rdkit(mol=EMC, out_dir=mol2_dir)
+
+    Li = ion_ff.mol(Li_smiles, name="Li")
+    if not ion_ff.ff_assign(Li):
+        raise RuntimeError("Can not assign force field parameters for Li.")
+    Li = as_rdkit_mol(Li, strict=True)
+    Li.SetProp("_Name", "Li")
+    write_mol2_from_rdkit(mol=Li, out_dir=mol2_dir)
+
+    Na = ion_ff.mol(Na_smiles, name="Na")
+    if not ion_ff.ff_assign(Na):
+        raise RuntimeError("Can not assign force field parameters for Na.")
+    Na = as_rdkit_mol(Na, strict=True)
+    Na.SetProp("_Name", "Na")
+    write_mol2_from_rdkit(mol=Na, out_dir=mol2_dir)
+
     try:
         PF6 = ff.mol(PF6_smiles, name="PF6", charge="RESP", require_ready=True, prefer_db=True)
         PF6 = ff.ff_assign(PF6, bonded="DRIH")
@@ -183,10 +208,11 @@ if __name__ == "__main__":
         ) from exc
     if not PF6:
         raise RuntimeError("Can not assign force field parameters for MolDB-backed PF6.")
-    PF6 = _named(_resolved(PF6), "PF6")
+    PF6 = as_rdkit_mol(PF6, strict=True)
+    PF6.SetProp("_Name", "PF6")
     write_mol2_from_rdkit(mol=PF6, out_dir=mol2_dir)
 
-    q_poly = mol_formal_charge(CMC)
+    q_poly = int(sum(int(atom.GetFormalCharge()) for atom in CMC.GetAtoms()))
     n_Na = int(abs(q_poly) * n_CMC) if q_poly != 0 else 0
 
     mw_CMC = molecular_weight(CMC, strict=True)
@@ -203,7 +229,7 @@ if __name__ == "__main__":
         mol_weights=(mw_CMC, mw_Na),
         species_names=("CMC", "Na"),
         initial_pack_density_g_cm3=polymer_initial_pack_density_g_cm3,
-        z_padding_factor=1.10,
+        z_padding_factor=1.15,
         minimum_z_nm=polymer_initial_min_z_nm,
     )
     ac_CMC = poly.amorphous_cell(
@@ -247,10 +273,10 @@ if __name__ == "__main__":
         min_solvent_counts=(1, 1, 1),
         probe_volume_scale=electrolyte_probe_volume_scale,
         initial_pack_density_g_cm3=electrolyte_probe_pack_density_g_cm3,
-        z_padding_factor=1.15,
+        z_padding_factor=1.20,
         is_polyelectrolyte=True,
-        minimum_margin_nm=0.8,
-        fixed_xy_npt_ns=4.0,
+        minimum_margin_nm=1.0,
+        fixed_xy_npt_ns=5.0,
     )
     for note in probe_interface_prep.notes:
         print("[PLAN]", note)
@@ -292,8 +318,8 @@ if __name__ == "__main__":
         min_solvent_counts=(1, 1, 1),
         min_salt_pairs=min_salt_pairs,
         initial_pack_density_g_cm3=electrolyte_resized_pack_density_g_cm3,
-        z_padding_factor=1.20,
-        minimum_pack_z_factor=2.40,
+        z_padding_factor=1.25,
+        minimum_pack_z_factor=2.80,
         pressure_bar=press,
     )
     for note in resized_interface_prep.notes:
@@ -329,37 +355,34 @@ if __name__ == "__main__":
         final_npt_mdp_overrides=resized_interface_prep.resized_prep.relax_mdp_overrides,
     )
 
-    builder = InterfaceBuilder(work_dir=interface_dir)
-    route = InterfaceRouteSpec.route_a(
-        axis="Z",
-        gap_nm=interface_gap_nm,
-        bottom_thickness_nm=interface_bottom_thickness_nm,
-        top_thickness_nm=interface_top_thickness_nm,
-        surface_shell_nm=interface_surface_shell_nm,
+    recipe = recommend_polymer_diffusion_interface_recipe(
+        interface_plan=resized_interface_prep.interface_plan,
+        temperature_k=temp,
+        pressure_bar=press,
+        vacuum_nm=interface_vacuum_nm,
         core_guard_nm=interface_core_guard_nm,
-        area_policy=AreaMismatchPolicy(reference_side="bottom", max_lateral_strain=0.08),
+        top_lateral_shift_fraction=(0.31, 0.57),
+        wall_atomtype="OW",
+        pre_contact_ps=180.0,
+        density_relax_ps=500.0,
+        contact_ps=500.0,
+        release_ps=500.0,
+        exchange_ns=4.0,
+        production_ns=8.0,
     )
-    built = builder.build_from_bulk_workdirs(
+    for note in recipe.notes:
+        print("[ROUTE]", note)
+
+    built = InterfaceBuilder(work_dir=interface_dir).build_from_bulk_workdirs(
         name="CMC_vs_LiPF6_electrolyte",
         bottom_name="ac_CMC",
         bottom_work_dir=ac_CMC_dir,
         top_name="ac_electrolyte",
         top_work_dir=ac_electrolyte_dir,
-        route=route,
-    )
-    protocol = InterfaceProtocol.route_a_diffusion(
-        axis="Z",
-        temperature_k=temp,
-        pressure_bar=press,
-        pre_contact_ps=120.0,
-        density_relax_ps=300.0,
-        contact_ps=300.0,
-        release_ps=300.0,
-        exchange_ns=2.0,
-        production_ns=5.0,
+        route=recipe.route_spec,
     )
     final_interface_gro = InterfaceDynamics(built=built, work_dir=interface_md_dir).run(
-        protocol=protocol,
+        protocol=recipe.protocol,
         mpi=mpi,
         omp=omp,
         gpu=gpu,
@@ -367,12 +390,41 @@ if __name__ == "__main__":
     )
 
     print("[INFO] Example 12 finished.")
+    print("  CMC formal charge per chain:", q_poly)
+    print("  Na counter ions:", n_Na)
     print("  CMC box (nm):", tuple(round(float(x), 4) for x in cmc_box_nm))
-    print("  interface XY (nm):", tuple(round(float(x), 4) for x in probe_interface_prep.interface_plan.interface_xy_nm))
-    print("  probe electrolyte box (nm):", tuple(round(float(x), 4) for x in probe_interface_prep.probe_prep.probe_box_nm))
-    print("  probe electrolyte counts:", dict(zip(probe_interface_prep.probe_prep.direct_plan.species_names, probe_interface_prep.probe_prep.direct_plan.target_counts)))
-    print("  resized electrolyte counts:", dict(zip(resized_interface_prep.resized_prep.resize_plan.species_names, resized_interface_prep.resized_prep.resize_plan.target_counts)))
-    print("  staged protocol:", [stage.name for stage in protocol.stages()])
+    print(
+        "  interface XY (nm):",
+        tuple(round(float(x), 4) for x in resized_interface_prep.interface_plan.interface_xy_nm),
+    )
+    print(
+        "  probe electrolyte box (nm):",
+        tuple(round(float(x), 4) for x in probe_interface_prep.probe_prep.probe_box_nm),
+    )
+    print(
+        "  final electrolyte target box (nm):",
+        tuple(round(float(x), 4) for x in resized_interface_prep.interface_plan.electrolyte_target_box_nm),
+    )
+    print(
+        "  probe electrolyte counts:",
+        dict(
+            zip(
+                probe_interface_prep.probe_prep.direct_plan.species_names,
+                probe_interface_prep.probe_prep.direct_plan.target_counts,
+            )
+        ),
+    )
+    print(
+        "  resized electrolyte counts:",
+        dict(
+            zip(
+                resized_interface_prep.resized_prep.resize_plan.species_names,
+                resized_interface_prep.resized_prep.resize_plan.target_counts,
+            )
+        ),
+    )
+    print("  route:", recipe.route_spec.route)
+    print("  staged protocol:", [stage.name for stage in recipe.protocol.stages()])
     print("  GRO:", built.system_gro)
     print("  TOP:", built.system_top)
     print("  NDX:", built.system_ndx)

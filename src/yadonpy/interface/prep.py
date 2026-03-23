@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Sequence
+from typing import TYPE_CHECKING, Any, Sequence
 
 import math
 
@@ -25,6 +25,10 @@ from .bulk_resize import (
     recommend_electrolyte_alignment,
 )
 
+if TYPE_CHECKING:
+    from .builder import AreaMismatchPolicy, InterfaceRouteSpec
+    from .protocol import InterfaceProtocol
+
 
 @dataclass(frozen=True)
 class FixedXYElectrolytePreparation:
@@ -39,6 +43,12 @@ class FixedXYElectrolytePreparation:
 class PolymerAnchoredInterfacePreparation:
     reference_box_nm: tuple[float, float, float]
     interface_xy_nm: tuple[float, float]
+    bottom_thickness_nm: float
+    top_thickness_nm: float
+    gap_nm: float
+    surface_shell_nm: float
+    polymer_margin_nm: float
+    is_polyelectrolyte: bool
     polymer_target_box_nm: tuple[float, float, float]
     electrolyte_target_box_nm: tuple[float, float, float]
     electrolyte_alignment: ElectrolyteAlignmentPlan
@@ -96,6 +106,14 @@ class BulkEq21Outcome:
     final_cell: Any
     system_export: SystemExportResult
     raw_system_meta: Path
+
+
+@dataclass(frozen=True)
+class PolymerDiffusionInterfaceRecipe:
+    interface_plan: PolymerAnchoredInterfacePreparation
+    route_spec: "InterfaceRouteSpec"
+    protocol: "InterfaceProtocol"
+    notes: tuple[str, ...] = ()
 
 
 def _derive_isotropic_probe_box(
@@ -448,6 +466,12 @@ def plan_polymer_anchored_interface_preparation(
     return PolymerAnchoredInterfacePreparation(
         reference_box_nm=ref_box,
         interface_xy_nm=common_xy,
+        bottom_thickness_nm=float(bottom_thickness),
+        top_thickness_nm=float(top_thickness_nm),
+        gap_nm=float(gap_nm),
+        surface_shell_nm=float(surface_shell_nm),
+        polymer_margin_nm=float(polymer_margin),
+        is_polyelectrolyte=bool(is_polyelectrolyte),
         polymer_target_box_nm=polymer_target_box,
         electrolyte_target_box_nm=electrolyte_target_box,
         electrolyte_alignment=alignment,
@@ -655,10 +679,131 @@ def equilibrate_bulk_with_eq21(
     )
 
 
+def recommend_polymer_diffusion_interface_recipe(
+    *,
+    interface_plan: PolymerAnchoredInterfacePreparation,
+    temperature_k: float = 300.0,
+    pressure_bar: float = 1.0,
+    axis: str = "Z",
+    prefer_vacuum: bool | None = None,
+    vacuum_nm: float | None = None,
+    area_policy: "AreaMismatchPolicy | None" = None,
+    max_lateral_strain: float = 0.08,
+    core_guard_nm: float = 0.50,
+    top_lateral_shift_fraction: tuple[float, float] = (0.35, 0.65),
+    wall_mode: str = "12-6",
+    wall_atomtype: str | None = "OW",
+    wall_density_nm3: float | None = None,
+    pre_contact_ps: float | None = None,
+    pre_contact_dt_ps: float = 0.001,
+    density_relax_ps: float | None = None,
+    contact_ps: float | None = None,
+    release_ps: float | None = None,
+    exchange_ns: float | None = None,
+    production_ns: float | None = None,
+    freeze_cores_pre_contact: bool = True,
+    use_region_thermostat_early: bool = True,
+) -> PolymerDiffusionInterfaceRecipe:
+    from .builder import AreaMismatchPolicy, InterfaceRouteSpec
+    from .protocol import InterfaceProtocol
+
+    plan = interface_plan
+    route_axis = str(axis or "Z").strip().upper()
+    use_vacuum = bool(plan.is_polyelectrolyte) if prefer_vacuum is None else bool(prefer_vacuum)
+    if area_policy is None:
+        area_policy = AreaMismatchPolicy(reference_side="bottom", max_lateral_strain=float(max_lateral_strain))
+
+    default_pre_contact_ps = 160.0 if plan.is_polyelectrolyte else 120.0
+    default_density_relax_ps = 450.0 if plan.is_polyelectrolyte else 250.0
+    default_contact_ps = 450.0 if plan.is_polyelectrolyte else 250.0
+    default_release_ps = 450.0 if plan.is_polyelectrolyte else 250.0
+    default_exchange_ns = 4.0 if plan.is_polyelectrolyte else 2.0
+    default_production_ns = 8.0 if plan.is_polyelectrolyte else 5.0
+
+    if use_vacuum:
+        chosen_vacuum_nm = float(
+            vacuum_nm
+            if vacuum_nm is not None
+            else max(
+                10.0,
+                plan.top_thickness_nm + plan.gap_nm + plan.surface_shell_nm + 2.0,
+            )
+        )
+        route_spec = InterfaceRouteSpec.route_b(
+            axis=route_axis,
+            gap_nm=float(plan.gap_nm),
+            vacuum_nm=chosen_vacuum_nm,
+            bottom_thickness_nm=float(plan.bottom_thickness_nm),
+            top_thickness_nm=float(plan.top_thickness_nm),
+            surface_shell_nm=float(plan.surface_shell_nm),
+            core_guard_nm=float(core_guard_nm),
+            top_lateral_shift_fraction=top_lateral_shift_fraction,
+            area_policy=area_policy,
+        )
+        protocol = InterfaceProtocol.route_b_wall_diffusion(
+            axis=route_axis,
+            temperature_k=float(temperature_k),
+            pressure_bar=float(pressure_bar),
+            pre_contact_ps=float(default_pre_contact_ps if pre_contact_ps is None else pre_contact_ps),
+            pre_contact_dt_ps=float(pre_contact_dt_ps),
+            density_relax_ps=float(default_density_relax_ps if density_relax_ps is None else density_relax_ps),
+            contact_ps=float(default_contact_ps if contact_ps is None else contact_ps),
+            release_ps=float(default_release_ps if release_ps is None else release_ps),
+            exchange_ns=float(default_exchange_ns if exchange_ns is None else exchange_ns),
+            production_ns=float(default_production_ns if production_ns is None else production_ns),
+            wall_mode=wall_mode,
+            wall_atomtype=wall_atomtype,
+            wall_density_nm3=wall_density_nm3,
+            freeze_cores_pre_contact=bool(freeze_cores_pre_contact),
+            use_region_thermostat_early=bool(use_region_thermostat_early),
+        )
+        notes = (
+            "selected route_b so the assembled interface keeps an explicit gap plus an external vacuum buffer under pbc=xy",
+            "used the staged wall-backed diffusion protocol to let each phase relax density before unrestricted interdiffusion begins",
+        )
+    else:
+        route_spec = InterfaceRouteSpec.route_a(
+            axis=route_axis,
+            gap_nm=float(plan.gap_nm),
+            bottom_thickness_nm=float(plan.bottom_thickness_nm),
+            top_thickness_nm=float(plan.top_thickness_nm),
+            surface_shell_nm=float(plan.surface_shell_nm),
+            core_guard_nm=float(core_guard_nm),
+            top_lateral_shift_fraction=top_lateral_shift_fraction,
+            area_policy=area_policy,
+        )
+        protocol = InterfaceProtocol.route_a_diffusion(
+            axis=route_axis,
+            temperature_k=float(temperature_k),
+            pressure_bar=float(pressure_bar),
+            pre_contact_ps=float(default_pre_contact_ps if pre_contact_ps is None else pre_contact_ps),
+            pre_contact_dt_ps=float(pre_contact_dt_ps),
+            density_relax_ps=float(default_density_relax_ps if density_relax_ps is None else density_relax_ps),
+            contact_ps=float(default_contact_ps if contact_ps is None else contact_ps),
+            release_ps=float(default_release_ps if release_ps is None else release_ps),
+            exchange_ns=float(default_exchange_ns if exchange_ns is None else exchange_ns),
+            production_ns=float(default_production_ns if production_ns is None else production_ns),
+            freeze_cores_pre_contact=bool(freeze_cores_pre_contact),
+            use_region_thermostat_early=bool(use_region_thermostat_early),
+        )
+        notes = (
+            "selected route_a for a fully periodic diffusion interface while still preserving a staged initial gap-hold and density-relax path",
+            "used an asymmetric top lateral phase shift to avoid face-to-face registry between independently equilibrated slabs",
+        )
+
+    return PolymerDiffusionInterfaceRecipe(
+        interface_plan=plan,
+        route_spec=route_spec,
+        protocol=protocol,
+        notes=notes + tuple(plan.notes) + tuple(plan.electrolyte_alignment.notes),
+    )
+
+
 __all__ = [
     "BulkEq21Outcome",
     "DirectPolymerMatchedInterfacePreparation",
     "FixedXYElectrolytePreparation",
+    "PolymerDiffusionInterfaceRecipe",
     "PolymerAnchoredInterfacePreparation",
     "ProbePolymerMatchedInterfacePreparation",
     "ProbeElectrolytePreparation",
@@ -673,4 +818,5 @@ __all__ = [
     "plan_polymer_anchored_interface_preparation",
     "plan_resized_polymer_matched_interface_from_probe",
     "plan_resized_electrolyte_preparation_from_probe",
+    "recommend_polymer_diffusion_interface_recipe",
 ]

@@ -12,7 +12,7 @@ import yadonpy.sim.preset.eq as eqmod
 
 from yadonpy.core import workdir, workunit
 from yadonpy.gmx.topology import MoleculeType, SystemTopology, parse_system_top
-from yadonpy.interface import AreaMismatchPolicy, BuiltInterface, InterfaceBuilder, InterfaceDynamics, InterfaceProtocol, InterfaceRouteSpec, build_bulk_equilibrium_profile, build_interface_group_catalog, equilibrate_bulk_with_eq21, fixed_xy_semiisotropic_npt_overrides, format_cell_charge_audit, format_charge_meta_audit, make_orthorhombic_pack_cell, plan_direct_electrolyte_counts, plan_direct_polymer_matched_interface_preparation, plan_fixed_xy_direct_electrolyte_preparation, plan_fixed_xy_direct_pack_box, plan_polymer_anchored_interface_preparation, plan_probe_electrolyte_preparation, plan_probe_polymer_matched_interface_preparation, plan_rescaled_bulk_counts, plan_resized_electrolyte_counts, plan_resized_electrolyte_preparation_from_probe, recommend_electrolyte_alignment
+from yadonpy.interface import AreaMismatchPolicy, BuiltInterface, InterfaceBuilder, InterfaceDynamics, InterfaceProtocol, InterfaceRouteSpec, build_bulk_equilibrium_profile, build_interface_group_catalog, equilibrate_bulk_with_eq21, fixed_xy_semiisotropic_npt_overrides, format_cell_charge_audit, format_charge_meta_audit, make_orthorhombic_pack_cell, plan_direct_electrolyte_counts, plan_direct_polymer_matched_interface_preparation, plan_fixed_xy_direct_electrolyte_preparation, plan_fixed_xy_direct_pack_box, plan_polymer_anchored_interface_preparation, plan_probe_electrolyte_preparation, plan_probe_polymer_matched_interface_preparation, plan_rescaled_bulk_counts, plan_resized_electrolyte_counts, plan_resized_electrolyte_preparation_from_probe, recommend_electrolyte_alignment, recommend_polymer_diffusion_interface_recipe
 from yadonpy.interface.builder import FragmentRecord, _rebalance_fragment_selection_for_charge, _select_fragments_for_slab
 from yadonpy.io.gromacs_system import SystemExportResult
 from yadonpy.core import poly
@@ -561,6 +561,57 @@ def test_probe_polymer_matched_interface_preparation_reuses_interface_target_box
     assert any("isotropic electrolyte probe" in note for note in prep.notes)
 
 
+def test_recommend_polymer_diffusion_interface_recipe_keeps_neutral_system_periodic_by_default():
+    plan = plan_polymer_anchored_interface_preparation(
+        reference_box_nm=(5.0, 5.2, 8.8),
+        bottom_thickness_nm=3.4,
+        top_thickness_nm=3.8,
+        gap_nm=0.6,
+        surface_shell_nm=0.8,
+        is_polyelectrolyte=False,
+    )
+
+    recipe = recommend_polymer_diffusion_interface_recipe(
+        interface_plan=plan,
+        pressure_bar=1.0,
+        prefer_vacuum=False,
+        max_lateral_strain=0.07,
+    )
+
+    assert recipe.route_spec.route == "route_a"
+    assert recipe.protocol.route == "route_a"
+    assert recipe.route_spec.bottom.target_thickness_nm == pytest.approx(3.4)
+    assert recipe.route_spec.top.target_thickness_nm == pytest.approx(3.8)
+    assert recipe.route_spec.area_policy.reference_side == "bottom"
+    assert recipe.route_spec.area_policy.max_lateral_strain == pytest.approx(0.07)
+    assert recipe.protocol.pre_contact_dt_ps == pytest.approx(0.001)
+    assert recipe.protocol.freeze_cores_pre_contact is True
+    assert any("fully periodic diffusion interface" in note for note in recipe.notes)
+
+
+def test_recommend_polymer_diffusion_interface_recipe_prefers_vacuum_for_polyelectrolyte():
+    plan = plan_polymer_anchored_interface_preparation(
+        reference_box_nm=(8.0, 8.0, 16.0),
+        bottom_thickness_nm=5.0,
+        top_thickness_nm=5.5,
+        gap_nm=0.8,
+        surface_shell_nm=1.0,
+        is_polyelectrolyte=True,
+        minimum_margin_nm=1.0,
+        fixed_xy_npt_ns=4.0,
+    )
+
+    recipe = recommend_polymer_diffusion_interface_recipe(interface_plan=plan, pressure_bar=1.0)
+
+    assert recipe.route_spec.route == "route_b"
+    assert recipe.protocol.route == "route_b"
+    assert recipe.route_spec.top.vacuum_nm >= 10.0
+    assert recipe.protocol.exchange_ns == pytest.approx(4.0)
+    assert recipe.protocol.production_ns == pytest.approx(8.0)
+    assert recipe.protocol.use_region_thermostat_early is True
+    assert any("explicit gap plus an external vacuum buffer" in note for note in recipe.notes)
+
+
 def test_select_fragments_for_slab_prefers_denser_window():
     fragments = [
         FragmentRecord("A", 1, np.asarray([[0.0, 0.0, 1.0]], dtype=float), ["A"], [0.0], [10.0], 0),
@@ -990,6 +1041,11 @@ def test_plan_polymer_anchored_interface_preparation_uses_polymer_xy_for_both_si
     )
 
     assert plan.interface_xy_nm == (4.2, 5.3)
+    assert plan.bottom_thickness_nm == pytest.approx(3.6)
+    assert plan.top_thickness_nm == pytest.approx(4.2)
+    assert plan.gap_nm == pytest.approx(0.6)
+    assert plan.surface_shell_nm == pytest.approx(0.8)
+    assert plan.is_polyelectrolyte is True
     assert plan.polymer_target_box_nm[:2] == (4.2, 5.3)
     assert plan.electrolyte_target_box_nm[:2] == (4.2, 5.3)
     assert plan.electrolyte_target_box_nm[2] > 4.2

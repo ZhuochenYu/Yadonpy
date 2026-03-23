@@ -38,7 +38,7 @@ from .postprocess import export_interface_group_catalog
 Axis = Literal["X", "Y", "Z"]
 Route = Literal["route_a", "route_b"]
 _AXIS_TO_INDEX = {"X": 0, "Y": 1, "Z": 2}
-_INTERFACE_BUILD_SCHEMA_VERSION = "0.8.39-interface-build-v2"
+_INTERFACE_BUILD_SCHEMA_VERSION = "0.8.54-interface-build-v3"
 _PARAMETER_SECTION_ORDER = [
     "defaults",
     "atomtypes",

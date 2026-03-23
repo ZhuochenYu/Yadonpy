@@ -33,6 +33,7 @@ from .prep import (
     DirectPolymerMatchedInterfacePreparation,
     FixedXYElectrolytePreparation,
     PolymerAnchoredInterfacePreparation,
+    PolymerDiffusionInterfaceRecipe,
     ProbePolymerMatchedInterfacePreparation,
     ProbeElectrolytePreparation,
     ResizedPolymerMatchedInterfacePreparation,
@@ -46,6 +47,7 @@ from .prep import (
     plan_probe_electrolyte_preparation,
     plan_resized_polymer_matched_interface_from_probe,
     plan_resized_electrolyte_preparation_from_probe,
+    recommend_polymer_diffusion_interface_recipe,
 )
 from .protocol import InterfaceDynamics, InterfaceProtocol, InterfaceStageSpec
 
@@ -59,6 +61,7 @@ __all__ = [
     "ElectrolyteAlignmentPlan",
     "FixedXYElectrolytePreparation",
     "PolymerAnchoredInterfacePreparation",
+    "PolymerDiffusionInterfaceRecipe",
     "ProbePolymerMatchedInterfacePreparation",
     "ProbeElectrolytePreparation",
     "ResizedPolymerMatchedInterfacePreparation",
@@ -84,6 +87,7 @@ __all__ = [
     "plan_probe_electrolyte_preparation",
     "plan_resized_polymer_matched_interface_from_probe",
     "plan_resized_electrolyte_preparation_from_probe",
+    "recommend_polymer_diffusion_interface_recipe",
     "format_cell_charge_audit",
     "format_charge_meta_audit",
     "fixed_xy_semiisotropic_npt_overrides",

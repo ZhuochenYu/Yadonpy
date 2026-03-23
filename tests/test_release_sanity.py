@@ -36,6 +36,7 @@ def test_release_manifest_excludes_cached_and_temp_artifacts():
 
     assert 'prune .pytest_cache' in manifest
     assert 'prune .yadonpy_cache' in manifest
+    assert 'prune src/yadonpy.egg-info' in manifest
     assert 'prune tmp_workdir_smoke' in manifest
     assert 'global-exclude __pycache__' in manifest
 
@@ -84,5 +85,27 @@ def test_examples_do_not_wrap_pf6_moldb_loading_in_helpers():
         text = path.read_text(encoding='utf-8')
         if 'def load_pf6_from_moldb' in text or 'def prepare_pf6(' in text:
             offenders.append(str(path.relative_to(root)))
+
+    assert offenders == []
+
+
+def test_interface_examples_keep_linear_script_style():
+    root = Path(__file__).resolve().parents[1]
+    helper_patterns = (
+        'def _named(',
+        'def _resolved(',
+        'def assign_template_species(',
+        'def prepare_template_species(',
+        'def build_cmc(',
+    )
+    offenders: list[str] = []
+    for rel in (
+        'examples/10_interface_route_a/run_interface_route_a.py',
+        'examples/11_interface_route_b/run_interface_route_b.py',
+        'examples/12_cmcna_interface/run_cmcna_interface.py',
+    ):
+        text = (root / rel).read_text(encoding='utf-8')
+        if any(pattern in text for pattern in helper_patterns):
+            offenders.append(rel)
 
     assert offenders == []

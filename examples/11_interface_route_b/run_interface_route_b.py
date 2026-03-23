@@ -3,47 +3,21 @@ from __future__ import annotations
 from pathlib import Path
 
 from yadonpy.runtime import set_run_options
-from yadonpy.core import molecular_weight, poly, utils, workdir
+from yadonpy.core import as_rdkit_mol, molecular_weight, poly, utils, workdir
 from yadonpy.core.data_dir import ensure_initialized
 from yadonpy.diagnostics import doctor
 from yadonpy.ff import GAFF2_mod, MERZ
 from yadonpy.interface import (
-    AreaMismatchPolicy,
     InterfaceBuilder,
     InterfaceDynamics,
-    InterfaceProtocol,
-    InterfaceRouteSpec,
     equilibrate_bulk_with_eq21,
     make_orthorhombic_pack_cell,
     plan_direct_polymer_matched_interface_preparation,
     read_equilibrated_box_nm,
+    recommend_polymer_diffusion_interface_recipe,
 )
 from yadonpy.io.mol2 import write_mol2_from_rdkit
 from yadonpy.sim import qm
-
-
-def _named(mol, name: str):
-    try:
-        mol.SetProp("_Name", name)
-    except Exception:
-        pass
-    return mol
-
-
-def _resolved(mol):
-    resolved = getattr(mol, "resolved_mol", None)
-    return resolved if resolved is not None else mol
-
-
-def assign_template_species(ff_obj, smiles: str, name: str, *, mol2_dir: Path, bonded: str | None = None):
-    mol = ff_obj.mol(smiles, name=name)
-    kwargs = {} if bonded is None else {"bonded": bonded}
-    ok = ff_obj.ff_assign(mol, **kwargs)
-    if not ok:
-        raise RuntimeError(f"Can not assign force field parameters for {name}.")
-    mol = _named(_resolved(mol), name)
-    write_mol2_from_rdkit(mol=mol, out_dir=mol2_dir)
-    return mol
 
 
 restart = True
@@ -80,11 +54,11 @@ electrolyte_target_density_g_cm3 = 1.32
 electrolyte_pack_density_g_cm3 = 0.85
 
 interface_gap_nm = 0.60
-interface_vacuum_nm = 10.0
-interface_bottom_thickness_nm = 4.5
-interface_top_thickness_nm = 5.0
 interface_surface_shell_nm = 0.8
 interface_core_guard_nm = 0.5
+interface_bottom_thickness_nm = 4.5
+interface_top_thickness_nm = 5.0
+interface_vacuum_nm = 10.0
 
 BASE_DIR = Path(__file__).resolve().parent
 work_dir = workdir(BASE_DIR / "work_dir", clean=not restart)
@@ -104,7 +78,12 @@ if __name__ == "__main__":
     interface_dir = work_dir.child("interface_route_b")
     interface_md_dir = work_dir.child("interface_route_b_md")
 
-    monomer_P = assign_template_species(ff, polymer_smiles, "monomer_P", mol2_dir=mol2_dir)
+    monomer_P = ff.mol(polymer_smiles, name="monomer_P")
+    if not ff.ff_assign(monomer_P):
+        raise RuntimeError("Can not assign force field parameters for monomer_P.")
+    monomer_P = as_rdkit_mol(monomer_P, strict=True)
+    monomer_P.SetProp("_Name", "monomer_P")
+    write_mol2_from_rdkit(mol=monomer_P, out_dir=mol2_dir)
 
     ter1 = utils.mol_from_smiles(ter_smiles)
     qm.assign_charges(
@@ -116,20 +95,45 @@ if __name__ == "__main__":
         memory=mem_mb,
         log_name=None,
     )
-    ter1 = _named(ter1, "ter1")
+    ter1.SetProp("_Name", "ter1")
 
     dp = max(1, int(poly.calc_n_from_num_atoms(monomer_P, polymer_num_atoms, terminal1=ter1)))
     poly_P = poly.polymerize_rw(monomer_P, dp, tacticity="atactic", work_dir=poly_P_dir)
     poly_P = poly.terminate_rw(poly_P, ter1, name="poly_P", work_dir=poly_P_term_dir)
     if not ff.ff_assign(poly_P):
         raise RuntimeError("Can not assign force field parameters for poly_P.")
-    poly_P = _named(poly_P, "poly_P")
+    poly_P = as_rdkit_mol(poly_P, strict=True)
+    poly_P.SetProp("_Name", "poly_P")
     write_mol2_from_rdkit(mol=poly_P, out_dir=mol2_dir)
 
-    EC = assign_template_species(ff, EC_smiles, "EC", mol2_dir=mol2_dir)
-    DEC = assign_template_species(ff, DEC_smiles, "DEC", mol2_dir=mol2_dir)
-    EMC = assign_template_species(ff, EMC_smiles, "EMC", mol2_dir=mol2_dir)
-    Li = assign_template_species(ion_ff, Li_smiles, "Li", mol2_dir=mol2_dir)
+    EC = ff.mol(EC_smiles, name="EC")
+    if not ff.ff_assign(EC):
+        raise RuntimeError("Can not assign force field parameters for EC.")
+    EC = as_rdkit_mol(EC, strict=True)
+    EC.SetProp("_Name", "EC")
+    write_mol2_from_rdkit(mol=EC, out_dir=mol2_dir)
+
+    DEC = ff.mol(DEC_smiles, name="DEC")
+    if not ff.ff_assign(DEC):
+        raise RuntimeError("Can not assign force field parameters for DEC.")
+    DEC = as_rdkit_mol(DEC, strict=True)
+    DEC.SetProp("_Name", "DEC")
+    write_mol2_from_rdkit(mol=DEC, out_dir=mol2_dir)
+
+    EMC = ff.mol(EMC_smiles, name="EMC")
+    if not ff.ff_assign(EMC):
+        raise RuntimeError("Can not assign force field parameters for EMC.")
+    EMC = as_rdkit_mol(EMC, strict=True)
+    EMC.SetProp("_Name", "EMC")
+    write_mol2_from_rdkit(mol=EMC, out_dir=mol2_dir)
+
+    Li = ion_ff.mol(Li_smiles, name="Li")
+    if not ion_ff.ff_assign(Li):
+        raise RuntimeError("Can not assign force field parameters for Li.")
+    Li = as_rdkit_mol(Li, strict=True)
+    Li.SetProp("_Name", "Li")
+    write_mol2_from_rdkit(mol=Li, out_dir=mol2_dir)
+
     try:
         PF6 = ff.mol(PF6_smiles, name="PF6", charge="RESP", require_ready=True, prefer_db=True)
         PF6 = ff.ff_assign(PF6, bonded="DRIH")
@@ -140,7 +144,8 @@ if __name__ == "__main__":
         ) from exc
     if not PF6:
         raise RuntimeError("Can not assign force field parameters for MolDB-backed PF6.")
-    PF6 = _named(_resolved(PF6), "PF6")
+    PF6 = as_rdkit_mol(PF6, strict=True)
+    PF6.SetProp("_Name", "PF6")
     write_mol2_from_rdkit(mol=PF6, out_dir=mol2_dir)
 
     ac_poly = poly.amorphous_cell(
@@ -151,7 +156,7 @@ if __name__ == "__main__":
         neutralize=False,
         work_dir=ac_poly_build_dir,
     )
-    poly_eq = equilibrate_bulk_with_eq21(
+    equilibrate_bulk_with_eq21(
         label="Polymer",
         ac=ac_poly,
         work_dir=ac_poly_dir,
@@ -171,7 +176,11 @@ if __name__ == "__main__":
         gap_nm=interface_gap_nm,
         surface_shell_nm=interface_surface_shell_nm,
         target_density_g_cm3=electrolyte_target_density_g_cm3,
-        solvent_mol_weights=[molecular_weight(EC, strict=True), molecular_weight(DEC, strict=True), molecular_weight(EMC, strict=True)],
+        solvent_mol_weights=[
+            molecular_weight(EC, strict=True),
+            molecular_weight(DEC, strict=True),
+            molecular_weight(EMC, strict=True),
+        ],
         solvent_mass_ratio=solvent_mass_ratio,
         salt_mol_weights=[molecular_weight(Li, strict=True), molecular_weight(PF6, strict=True)],
         salt_molarity_M=salt_molarity_M,
@@ -210,40 +219,30 @@ if __name__ == "__main__":
         final_npt_mdp_overrides=interface_prep.electrolyte_prep.relax_mdp_overrides,
     )
 
-    builder = InterfaceBuilder(work_dir=interface_dir)
-    route = InterfaceRouteSpec.route_b(
-        axis="Z",
-        gap_nm=interface_gap_nm,
+    recipe = recommend_polymer_diffusion_interface_recipe(
+        interface_plan=interface_prep.interface_plan,
+        temperature_k=temp,
+        pressure_bar=press,
+        prefer_vacuum=True,
         vacuum_nm=interface_vacuum_nm,
-        bottom_thickness_nm=interface_bottom_thickness_nm,
-        top_thickness_nm=interface_top_thickness_nm,
-        surface_shell_nm=interface_surface_shell_nm,
         core_guard_nm=interface_core_guard_nm,
-        area_policy=AreaMismatchPolicy(reference_side="bottom", max_lateral_strain=0.08),
+        max_lateral_strain=0.08,
+        top_lateral_shift_fraction=(0.35, 0.65),
+        wall_atomtype="OW",
     )
-    built = builder.build_from_bulk_workdirs(
+    for note in recipe.notes:
+        print("[ROUTE]", note)
+
+    built = InterfaceBuilder(work_dir=interface_dir).build_from_bulk_workdirs(
         name="polymer_vs_electrolyte_wall_ready",
         bottom_name="ac_poly",
         bottom_work_dir=ac_poly_dir,
         top_name="ac_electrolyte",
         top_work_dir=ac_electrolyte_dir,
-        route=route,
-    )
-    protocol = InterfaceProtocol.route_b_wall_diffusion(
-        axis="Z",
-        temperature_k=temp,
-        pressure_bar=press,
-        pre_contact_ps=120.0,
-        density_relax_ps=250.0,
-        contact_ps=250.0,
-        release_ps=250.0,
-        exchange_ns=2.0,
-        production_ns=5.0,
-        wall_mode="12-6",
-        wall_atomtype="OW",
+        route=recipe.route_spec,
     )
     final_interface_gro = InterfaceDynamics(built=built, work_dir=interface_md_dir).run(
-        protocol=protocol,
+        protocol=recipe.protocol,
         mpi=mpi,
         omp=omp,
         gpu=gpu,
@@ -253,8 +252,12 @@ if __name__ == "__main__":
     print("[INFO] Example 11 finished.")
     print("  polymer box (nm):", tuple(round(float(x), 4) for x in poly_box_nm))
     print("  interface XY (nm):", tuple(round(float(x), 4) for x in interface_prep.interface_plan.interface_xy_nm))
-    print("  electrolyte target box (nm):", tuple(round(float(x), 4) for x in interface_prep.interface_plan.electrolyte_target_box_nm))
-    print("  staged protocol:", [stage.name for stage in protocol.stages()])
+    print(
+        "  electrolyte target box (nm):",
+        tuple(round(float(x), 4) for x in interface_prep.interface_plan.electrolyte_target_box_nm),
+    )
+    print("  route:", recipe.route_spec.route)
+    print("  staged protocol:", [stage.name for stage in recipe.protocol.stages()])
     print("  GRO:", built.system_gro)
     print("  TOP:", built.system_top)
     print("  NDX:", built.system_ndx)

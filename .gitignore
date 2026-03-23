@@ -1,11 +1,6 @@
 __pycache__/
-*.pyc
-*.pyo
-*.pyd
-*.egg-info/
-dist/
-build/
-.eggs/
-*.egg
+*.py[cod]
 .pytest_cache/
 .yadonpy_cache/
+src/yadonpy.egg-info/
+*.tar
