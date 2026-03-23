@@ -184,6 +184,22 @@ def test_merz_ion_molwt_works_without_manual_cache_update():
     assert float(Descriptors.MolWt(ion)) == pytest.approx(22.99, rel=1.0e-6)
 
 
+def test_merz_mol_accepts_modern_name_and_ignores_moldb_style_kwargs():
+    ion_ff = MERZ()
+    ion = ion_ff.mol('[Li+]', name='Li', charge='RESP', prefer_db=True, require_ready=False)
+
+    assert ion.GetNumAtoms() == 1
+    assert ion.HasProp('name')
+    assert ion.GetProp('name') == 'Li'
+    assert ion.HasProp('_Name')
+    assert ion.GetProp('_Name') == 'Li'
+    assert ion.HasProp('mol_name')
+    assert ion.GetProp('mol_name') == 'Li'
+    assert ion.HasProp('merz_molecule_type')
+    assert ion_ff.ff_assign(ion, report=False) is ion
+    assert ion.GetProp('ff_name') == 'merz'
+
+
 def test_mol_net_charge_recognizes_resp_only_atoms():
     mol = Chem.MolFromSmiles('CC')
     atom0 = mol.GetAtomWithIdx(0)

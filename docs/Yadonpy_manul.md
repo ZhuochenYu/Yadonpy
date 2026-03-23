@@ -1,4 +1,4 @@
-# YadonPy Manual (v0.8.54)
+# YadonPy Manual (v0.8.55)
 
 YadonPy is a script-oriented molecular workflow package for polymer, solvent, salt, bulk, and interface studies. This manual explains how the package is organized, what the stable architectural rules are, and how the current release expects real workflows to be staged.
 
@@ -6,7 +6,7 @@ Python requirement: Python 3.11+
 
 Related documents:
 
-- API reference: `docs/Yadonpy_API_v0.8.54.md`
+- API reference: `docs/Yadonpy_API_v0.8.55.md`
 - user guide: `docs/Yaonpyd_user_guide.md`
 
 ## 1. Why this manual exists

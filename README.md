@@ -1,6 +1,6 @@
 # YadonPy
 
-Current release: **v0.8.54**
+Current release: **v0.8.55**
 
 YadonPy is a Python package for building polymer, solvent, salt, bulk, and interface workflows directly from SMILES or PSMILES. It is designed for script-driven molecular simulation studies where the user wants to keep the real workflow visible in code instead of hiding it behind a monolithic project file.
 
@@ -20,14 +20,13 @@ The package is built around two stable ideas:
 - **script first**: the study logic should remain understandable from the user script;
 - **MolDB first**: reusable expensive assets are molecular geometry, charge variants, and bonded-patch metadata, not old `.top/.gro/.itp` exports.
 
-## What changed in v0.8.54
+## What changed in v0.8.55
 
-This release tightens the interface workflow and the release workflow together.
+This release fixes a compatibility regression in the mixed-forcefield path used by Example 12 and similar workflows.
 
-- Examples 10 to 12 are now written in the same linear style as Example 02. The scripts no longer define private helper mini-frameworks such as `_named(...)`, `prepare_template_species(...)`, or `build_cmc(...)`.
-- `yadonpy.interface.recommend_polymer_diffusion_interface_recipe(...)` now centralizes route and staged-protocol selection for polymer/electrolyte interfaces. The examples use that helper instead of hand-assembling route and protocol settings in every script.
-- Example 12 now targets a much larger CMC interface study: degree of polymerization `150`, `6` chains, `1 M` LiPF6, polymer-first XY anchoring, electrolyte probe-and-resize, then a vacuum-buffered staged diffusion interface.
-- Release hygiene is stricter: cache directories such as `__pycache__` and generated `yadonpy.egg-info` folders are treated as disposable output and should not remain in the release tree.
+- `MERZ().mol(...)` now accepts modern keyword arguments such as `name`, `prefer_db`, `require_ready`, and `charge` without failing, while still constructing monoatomic ions from the built-in Merz registry instead of MolDB.
+- Explicit `name=` values are now propagated onto YadonPy's standard molecule naming properties for Merz ions, so mixed `GAFF2_mod` plus `MERZ` scripts can keep using the same naming style across species.
+- A regression test now covers the exact compatibility pattern used by the interface examples: `MERZ().mol('[Li+]', name='Li', ...)` followed by `ff_assign(...)`.
 
 ## Installation
 
@@ -155,7 +154,7 @@ What the interface examples now demonstrate:
 
 ## Documentation map
 
-- API reference: `docs/Yadonpy_API_v0.8.54.md`
+- API reference: `docs/Yadonpy_API_v0.8.55.md`
 - Manual: `docs/Yadonpy_manul.md`
 - User guide: `docs/Yaonpyd_user_guide.md`
 

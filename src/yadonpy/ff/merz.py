@@ -30,7 +30,7 @@ Typical use case in YadonPy:
 import json
 from rdkit import Chem
 from rdkit import Geometry as Geom
-from ..core import utils
+from ..core import naming, utils
 from ..core.resources import ff_data_path
 from .report import print_ff_assignment_report
 
@@ -98,17 +98,29 @@ class MERZ():
             return f"{symbol}{'+' if q > 0 else '-'}"
         return f"{symbol}{abs(q)}{'+' if q > 0 else '-'}"
 
-    def mol(self, ion_smiles_or_name: str, confId: int = 0):
+    def mol(self, ion_smiles_or_name: str, confId: int = 0, *, name: str | None = None, **kwargs):
         """Create a monoatomic ion Mol from either SMILES ("[Li+]") or name ("Li+").
 
         This mirrors the RadonPy user experience:
             ion = MERZ().mol("[Li+]")
+
+        Compatibility notes:
+            - MERZ predates the MolDB-style `ff.mol(...)` interface used by the
+              newer force fields in YadonPy.
+            - We therefore accept modern keyword arguments such as `name`,
+              `prefer_db`, `require_ready`, or `charge` and ignore the ones that
+              do not apply to built-in monoatomic ions.
 
         Notes:
             - Only monoatomic ions are supported in MERZ.
             - Multi-atom ions (e.g. quaternary ammonium, TFSI-) should be treated
               as normal molecules and parameterized by GAFF2_mod.
         """
+        if name is None:
+            alias_name = kwargs.get('mol_name', None)
+            if alias_name is not None and str(alias_name).strip():
+                name = str(alias_name).strip()
+
         s = str(ion_smiles_or_name).strip()
         # Try SMILES first
         try:
@@ -125,9 +137,9 @@ class MERZ():
             # IMPORTANT: mol() only constructs geometry + charges.
             # Force-field parameters are assigned by an explicit ff_assign(mol)
             # call, mirroring RadonPy's TIP3P().mol() + ff_assign() usage.
-            return self.create_ion_mol(ion=ion, confId=confId)
+            return self.create_ion_mol(ion=ion, confId=confId, name=name)
         # Fall back: treat as ion name / alias
-        return self.create_ion_mol(ion=s, confId=confId)
+        return self.create_ion_mol(ion=s, confId=confId, name=name)
 
     # -------------------------------------------------------------------------
     # Public API
@@ -148,13 +160,17 @@ class MERZ():
             print_ff_assignment_report(mol, ff_obj=self)
         return mol if result else False
 
-    def create_ion_mol(self, ion='Na+', confId=0):
+    def create_ion_mol(self, ion='Na+', confId=0, *, name: str | None = None):
         """Create a monoatomic ion RDKit Mol with Merz charges + 3D coordinates.
 
         Args:
             ion: ion identifier string.
                  Recommended forms: 'Na+', 'Cl-', 'Ca2+', 'Mg2+', ...
                  Also accepts: 'NA', 'CL', ... (molecule type names from ions.itp)
+            name: optional user-facing molecule name. When provided, YadonPy's
+                  standard naming properties are populated for downstream export
+                  and cache naming, while the original Merz molecule type is
+                  preserved in `merz_molecule_type`.
 
         Returns:
             RDKit Mol (with one atom and one conformer at origin).
@@ -220,12 +236,21 @@ class MERZ():
         mol.GetAtomWithIdx(0).SetDoubleProp('AtomicCharge', q)
 
         # Helpful metadata
-        mol.SetProp('mol_name', molname)
+        resolved_name = str(name).strip() if name is not None else ''
+        mol.SetProp('mol_name', resolved_name or molname)
+        mol.SetProp('merz_molecule_type', molname)
         mol.GetAtomWithIdx(0).SetProp('ion_name', molname)
 
         # RDKit descriptor calls such as MolWt() expect the implicit-valence
         # cache to be initialized even for single-atom charged species.
         mol.UpdatePropertyCache(strict=False)
+
+        if resolved_name:
+            try:
+                naming.ensure_name(mol, name=resolved_name, depth=2)
+            except Exception:
+                mol.SetProp('_Name', resolved_name)
+                mol.SetProp('name', resolved_name)
 
         return mol
 

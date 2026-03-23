@@ -1,3 +1,9 @@
+## 0.8.55 (2026-03-23)
+
+- ff/merz + tests/workdir_and_molspec: make `MERZ().mol(...)` accept the modern keyword shape used by the rest of YadonPy, including `name`, `prefer_db`, `require_ready`, and other passthrough kwargs, while still constructing monoatomic ions directly from the built-in Merz registry instead of MolDB;
+- ff/merz + tests/workdir_and_molspec: propagate explicit Merz ion names onto YadonPy's standard molecule naming properties so mixed-forcefield scripts such as Example 12 can keep a uniform `ff.mol(..., name=...)` style without breaking downstream export naming;
+- docs/release metadata: publish the Merz compatibility fix as `0.8.55`, refresh the package/docs version references, and keep the versioned API reference path aligned with `docs/Yadonpy_API_v0.8.55.md`.
+
 ## 0.8.54 (2026-03-23)
 
 - interface/prep + interface/protocol + interface/__init__ + tests/interface_builder: add `recommend_polymer_diffusion_interface_recipe(...)` plus the new `PolymerDiffusionInterfaceRecipe` data object, extend the diffusion protocol constructors with explicit early-stage control knobs, carry richer geometry metadata through `PolymerAnchoredInterfacePreparation`, and lock the new route-selection behavior down with focused interface-planning regressions;
