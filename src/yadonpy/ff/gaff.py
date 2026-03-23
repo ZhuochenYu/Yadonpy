@@ -147,6 +147,16 @@ class GAFF():
                 except Exception:
                     pass
 
+        if naming is not None:
+            try:
+                current_name = naming.get_name(mol, default=None)
+            except Exception:
+                current_name = None
+            try:
+                naming.ensure_name(mol, name=current_name, depth=2, prefer_var=(current_name is None))
+            except Exception:
+                pass
+
         if useMDL:
             Chem.rdmolops.Kekulize(mol, clearAromaticFlags=True)
             Chem.rdmolops.SetAromaticity(mol, model=Chem.rdmolops.AromaticityModel.AROMATICITY_MDL)

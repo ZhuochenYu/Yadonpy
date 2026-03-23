@@ -1,6 +1,6 @@
 # YadonPy
 
-Current release: **v0.8.55**
+Current release: **v0.8.56**
 
 YadonPy is a Python package for building polymer, solvent, salt, bulk, and interface workflows directly from SMILES or PSMILES. It is designed for script-driven molecular simulation studies where the user wants to keep the real workflow visible in code instead of hiding it behind a monolithic project file.
 
@@ -20,13 +20,13 @@ The package is built around two stable ideas:
 - **script first**: the study logic should remain understandable from the user script;
 - **MolDB first**: reusable expensive assets are molecular geometry, charge variants, and bonded-patch metadata, not old `.top/.gro/.itp` exports.
 
-## What changed in v0.8.55
+## What changed in v0.8.56
 
-This release fixes a compatibility regression in the mixed-forcefield path used by Example 12 and similar workflows.
+This release shifts example naming back to the intended YadonPy style: ordinary scripts should rely on variable names by default instead of manually threading `name=` through every `ff.mol(...)` call.
 
-- `MERZ().mol(...)` now accepts modern keyword arguments such as `name`, `prefer_db`, `require_ready`, and `charge` without failing, while still constructing monoatomic ions from the built-in Merz registry instead of MolDB.
-- Explicit `name=` values are now propagated onto YadonPy's standard molecule naming properties for Merz ions, so mixed `GAFF2_mod` plus `MERZ` scripts can keep using the same naming style across species.
-- A regression test now covers the exact compatibility pattern used by the interface examples: `MERZ().mol('[Li+]', name='Li', ...)` followed by `ff_assign(...)`.
+- `GAFF`, `MERZ`, and `OPLSAA` force-field assignment now persist a stable molecule name automatically when a named Python variable is passed into `ff_assign(...)`, even if the molecule was created without an explicit `name=...`.
+- Examples 02, 05, 06, 09, 10, 11, and 12 now drop manual `name=` on `ff.mol(...)` and remove script-side `.SetProp(...)` naming noise. The examples keep the linear script style, but the naming logic now lives in the library where it belongs.
+- Release sanity checks now forbid reintroducing manual example naming through `ff.mol(..., name=...)` or `.SetProp("_Name", ...)` in shipped scripts.
 
 ## Installation
 
@@ -75,7 +75,7 @@ Typical patterns are:
 import yadonpy as yp
 
 ff = yp.get_ff("gaff2_mod")
-mol = ff.mol("O=C1OCCO1", name="EC")
+mol = ff.mol("O=C1OCCO1")
 ok = ff.ff_assign(mol)
 ```
 
@@ -154,7 +154,7 @@ What the interface examples now demonstrate:
 
 ## Documentation map
 
-- API reference: `docs/Yadonpy_API_v0.8.55.md`
+- API reference: `docs/Yadonpy_API_v0.8.56.md`
 - Manual: `docs/Yadonpy_manul.md`
 - User guide: `docs/Yaonpyd_user_guide.md`
 

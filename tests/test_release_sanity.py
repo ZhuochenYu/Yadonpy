@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 
 import yadonpy
 
@@ -107,5 +108,19 @@ def test_interface_examples_keep_linear_script_style():
         text = (root / rel).read_text(encoding='utf-8')
         if any(pattern in text for pattern in helper_patterns):
             offenders.append(rel)
+
+    assert offenders == []
+
+
+def test_examples_do_not_manually_set_names_or_pass_name_into_ff_mol():
+    root = Path(__file__).resolve().parents[1]
+    offenders: list[str] = []
+    ff_mol_name = re.compile(r"\b(?:ff|ion_ff|cation_ff)\.mol\([\s\S]{0,160}?name\s*=", re.MULTILINE)
+    manual_setprop = re.compile(r"\.SetProp\(\s*['\"](?:_Name|name|_yadonpy_name|_yadonpy_resname)['\"]")
+
+    for path in sorted((root / 'examples').rglob('*.py')):
+        text = path.read_text(encoding='utf-8')
+        if ff_mol_name.search(text) or manual_setprop.search(text):
+            offenders.append(str(path.relative_to(root)))
 
     assert offenders == []

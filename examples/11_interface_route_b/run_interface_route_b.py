@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from yadonpy.runtime import set_run_options
-from yadonpy.core import as_rdkit_mol, molecular_weight, poly, utils, workdir
+from yadonpy.core import molecular_weight, poly, utils, workdir
 from yadonpy.core.data_dir import ensure_initialized
 from yadonpy.diagnostics import doctor
 from yadonpy.ff import GAFF2_mod, MERZ
@@ -16,7 +16,7 @@ from yadonpy.interface import (
     read_equilibrated_box_nm,
     recommend_polymer_diffusion_interface_recipe,
 )
-from yadonpy.io.mol2 import write_mol2_from_rdkit
+from yadonpy.io.mol2 import write_mol2
 from yadonpy.sim import qm
 
 
@@ -78,12 +78,11 @@ if __name__ == "__main__":
     interface_dir = work_dir.child("interface_route_b")
     interface_md_dir = work_dir.child("interface_route_b_md")
 
-    monomer_P = ff.mol(polymer_smiles, name="monomer_P")
-    if not ff.ff_assign(monomer_P):
+    monomer_P = ff.mol(polymer_smiles)
+    monomer_P = ff.ff_assign(monomer_P)
+    if not monomer_P:
         raise RuntimeError("Can not assign force field parameters for monomer_P.")
-    monomer_P = as_rdkit_mol(monomer_P, strict=True)
-    monomer_P.SetProp("_Name", "monomer_P")
-    write_mol2_from_rdkit(mol=monomer_P, out_dir=mol2_dir)
+    write_mol2(mol=monomer_P, out_dir=mol2_dir)
 
     ter1 = utils.mol_from_smiles(ter_smiles)
     qm.assign_charges(
@@ -95,47 +94,40 @@ if __name__ == "__main__":
         memory=mem_mb,
         log_name=None,
     )
-    ter1.SetProp("_Name", "ter1")
-
     dp = max(1, int(poly.calc_n_from_num_atoms(monomer_P, polymer_num_atoms, terminal1=ter1)))
     poly_P = poly.polymerize_rw(monomer_P, dp, tacticity="atactic", work_dir=poly_P_dir)
     poly_P = poly.terminate_rw(poly_P, ter1, name="poly_P", work_dir=poly_P_term_dir)
-    if not ff.ff_assign(poly_P):
+    poly_P = ff.ff_assign(poly_P)
+    if not poly_P:
         raise RuntimeError("Can not assign force field parameters for poly_P.")
-    poly_P = as_rdkit_mol(poly_P, strict=True)
-    poly_P.SetProp("_Name", "poly_P")
-    write_mol2_from_rdkit(mol=poly_P, out_dir=mol2_dir)
+    write_mol2(mol=poly_P, out_dir=mol2_dir)
 
-    EC = ff.mol(EC_smiles, name="EC")
-    if not ff.ff_assign(EC):
+    EC = ff.mol(EC_smiles)
+    EC = ff.ff_assign(EC)
+    if not EC:
         raise RuntimeError("Can not assign force field parameters for EC.")
-    EC = as_rdkit_mol(EC, strict=True)
-    EC.SetProp("_Name", "EC")
-    write_mol2_from_rdkit(mol=EC, out_dir=mol2_dir)
+    write_mol2(mol=EC, out_dir=mol2_dir)
 
-    DEC = ff.mol(DEC_smiles, name="DEC")
-    if not ff.ff_assign(DEC):
+    DEC = ff.mol(DEC_smiles)
+    DEC = ff.ff_assign(DEC)
+    if not DEC:
         raise RuntimeError("Can not assign force field parameters for DEC.")
-    DEC = as_rdkit_mol(DEC, strict=True)
-    DEC.SetProp("_Name", "DEC")
-    write_mol2_from_rdkit(mol=DEC, out_dir=mol2_dir)
+    write_mol2(mol=DEC, out_dir=mol2_dir)
 
-    EMC = ff.mol(EMC_smiles, name="EMC")
-    if not ff.ff_assign(EMC):
+    EMC = ff.mol(EMC_smiles)
+    EMC = ff.ff_assign(EMC)
+    if not EMC:
         raise RuntimeError("Can not assign force field parameters for EMC.")
-    EMC = as_rdkit_mol(EMC, strict=True)
-    EMC.SetProp("_Name", "EMC")
-    write_mol2_from_rdkit(mol=EMC, out_dir=mol2_dir)
+    write_mol2(mol=EMC, out_dir=mol2_dir)
 
-    Li = ion_ff.mol(Li_smiles, name="Li")
-    if not ion_ff.ff_assign(Li):
+    Li = ion_ff.mol(Li_smiles)
+    Li = ion_ff.ff_assign(Li)
+    if not Li:
         raise RuntimeError("Can not assign force field parameters for Li.")
-    Li = as_rdkit_mol(Li, strict=True)
-    Li.SetProp("_Name", "Li")
-    write_mol2_from_rdkit(mol=Li, out_dir=mol2_dir)
+    write_mol2(mol=Li, out_dir=mol2_dir)
 
     try:
-        PF6 = ff.mol(PF6_smiles, name="PF6", charge="RESP", require_ready=True, prefer_db=True)
+        PF6 = ff.mol(PF6_smiles, charge="RESP", require_ready=True, prefer_db=True)
         PF6 = ff.ff_assign(PF6, bonded="DRIH")
     except Exception as exc:
         raise RuntimeError(
@@ -144,9 +136,7 @@ if __name__ == "__main__":
         ) from exc
     if not PF6:
         raise RuntimeError("Can not assign force field parameters for MolDB-backed PF6.")
-    PF6 = as_rdkit_mol(PF6, strict=True)
-    PF6.SetProp("_Name", "PF6")
-    write_mol2_from_rdkit(mol=PF6, out_dir=mol2_dir)
+    write_mol2(mol=PF6, out_dir=mol2_dir)
 
     ac_poly = poly.amorphous_cell(
         [poly_P],

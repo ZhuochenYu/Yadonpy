@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from yadonpy.runtime import set_run_options
-from yadonpy.core import as_rdkit_mol, molecular_weight, poly, utils, workdir
+from yadonpy.core import molecular_weight, poly, utils, workdir
 from yadonpy.core.data_dir import ensure_initialized
 from yadonpy.diagnostics import doctor
 from yadonpy.ff import GAFF2, MERZ
@@ -20,7 +20,7 @@ from yadonpy.interface import (
     read_equilibrated_box_nm,
     recommend_polymer_diffusion_interface_recipe,
 )
-from yadonpy.io.mol2 import write_mol2_from_rdkit
+from yadonpy.io.mol2 import write_mol2
 from yadonpy.sim import qm
 
 
@@ -106,33 +106,29 @@ if __name__ == "__main__":
     interface_dir = work_dir.child("interface_route_b")
     interface_md_dir = work_dir.child("interface_route_b_md")
 
-    glucose = ff.mol(glucose_smiles, name="glucose")
-    if not ff.ff_assign(glucose):
+    glucose = ff.mol(glucose_smiles)
+    glucose = ff.ff_assign(glucose)
+    if not glucose:
         raise RuntimeError("Can not assign force field parameters for glucose.")
-    glucose = as_rdkit_mol(glucose, strict=True)
-    glucose.SetProp("_Name", "glucose")
-    write_mol2_from_rdkit(mol=glucose, out_dir=mol2_dir)
+    write_mol2(mol=glucose, out_dir=mol2_dir)
 
-    glucose_2 = ff.mol(glucose_2_smiles, name="glucose_2")
-    if not ff.ff_assign(glucose_2):
+    glucose_2 = ff.mol(glucose_2_smiles)
+    glucose_2 = ff.ff_assign(glucose_2)
+    if not glucose_2:
         raise RuntimeError("Can not assign force field parameters for glucose_2.")
-    glucose_2 = as_rdkit_mol(glucose_2, strict=True)
-    glucose_2.SetProp("_Name", "glucose_2")
-    write_mol2_from_rdkit(mol=glucose_2, out_dir=mol2_dir)
+    write_mol2(mol=glucose_2, out_dir=mol2_dir)
 
-    glucose_3 = ff.mol(glucose_3_smiles, name="glucose_3")
-    if not ff.ff_assign(glucose_3):
+    glucose_3 = ff.mol(glucose_3_smiles)
+    glucose_3 = ff.ff_assign(glucose_3)
+    if not glucose_3:
         raise RuntimeError("Can not assign force field parameters for glucose_3.")
-    glucose_3 = as_rdkit_mol(glucose_3, strict=True)
-    glucose_3.SetProp("_Name", "glucose_3")
-    write_mol2_from_rdkit(mol=glucose_3, out_dir=mol2_dir)
+    write_mol2(mol=glucose_3, out_dir=mol2_dir)
 
-    glucose_6 = ff.mol(glucose_6_smiles, name="glucose_6")
-    if not ff.ff_assign(glucose_6):
+    glucose_6 = ff.mol(glucose_6_smiles)
+    glucose_6 = ff.ff_assign(glucose_6)
+    if not glucose_6:
         raise RuntimeError("Can not assign force field parameters for glucose_6.")
-    glucose_6 = as_rdkit_mol(glucose_6, strict=True)
-    glucose_6.SetProp("_Name", "glucose_6")
-    write_mol2_from_rdkit(mol=glucose_6, out_dir=mol2_dir)
+    write_mol2(mol=glucose_6, out_dir=mol2_dir)
 
     ter1 = utils.mol_from_smiles(ter_smiles)
     qm.assign_charges(
@@ -144,8 +140,6 @@ if __name__ == "__main__":
         memory=mem_mb,
         log_name=None,
     )
-    ter1.SetProp("_Name", "ter1")
-
     cmc_rw_dir = work_dir.child("CMC_rw")
     cmc_term_dir = work_dir.child("CMC_term")
     CMC = poly.random_copolymerize_rw(
@@ -157,49 +151,43 @@ if __name__ == "__main__":
         work_dir=cmc_rw_dir,
     )
     CMC = poly.terminate_rw(CMC, ter1, name="CMC", work_dir=cmc_term_dir)
-    if not ff.ff_assign(CMC):
+    CMC = ff.ff_assign(CMC)
+    if not CMC:
         raise RuntimeError("Can not assign force field parameters for CMC.")
-    CMC = as_rdkit_mol(CMC, strict=True)
-    CMC.SetProp("_Name", "CMC")
-    write_mol2_from_rdkit(mol=CMC, out_dir=mol2_dir)
+    write_mol2(mol=CMC, out_dir=mol2_dir)
 
-    EC = ff.mol(EC_smiles, name="EC")
-    if not ff.ff_assign(EC):
+    EC = ff.mol(EC_smiles)
+    EC = ff.ff_assign(EC)
+    if not EC:
         raise RuntimeError("Can not assign force field parameters for EC.")
-    EC = as_rdkit_mol(EC, strict=True)
-    EC.SetProp("_Name", "EC")
-    write_mol2_from_rdkit(mol=EC, out_dir=mol2_dir)
+    write_mol2(mol=EC, out_dir=mol2_dir)
 
-    DEC = ff.mol(DEC_smiles, name="DEC")
-    if not ff.ff_assign(DEC):
+    DEC = ff.mol(DEC_smiles)
+    DEC = ff.ff_assign(DEC)
+    if not DEC:
         raise RuntimeError("Can not assign force field parameters for DEC.")
-    DEC = as_rdkit_mol(DEC, strict=True)
-    DEC.SetProp("_Name", "DEC")
-    write_mol2_from_rdkit(mol=DEC, out_dir=mol2_dir)
+    write_mol2(mol=DEC, out_dir=mol2_dir)
 
-    EMC = ff.mol(EMC_smiles, name="EMC")
-    if not ff.ff_assign(EMC):
+    EMC = ff.mol(EMC_smiles)
+    EMC = ff.ff_assign(EMC)
+    if not EMC:
         raise RuntimeError("Can not assign force field parameters for EMC.")
-    EMC = as_rdkit_mol(EMC, strict=True)
-    EMC.SetProp("_Name", "EMC")
-    write_mol2_from_rdkit(mol=EMC, out_dir=mol2_dir)
+    write_mol2(mol=EMC, out_dir=mol2_dir)
 
-    Li = ion_ff.mol(Li_smiles, name="Li")
-    if not ion_ff.ff_assign(Li):
+    Li = ion_ff.mol(Li_smiles)
+    Li = ion_ff.ff_assign(Li)
+    if not Li:
         raise RuntimeError("Can not assign force field parameters for Li.")
-    Li = as_rdkit_mol(Li, strict=True)
-    Li.SetProp("_Name", "Li")
-    write_mol2_from_rdkit(mol=Li, out_dir=mol2_dir)
+    write_mol2(mol=Li, out_dir=mol2_dir)
 
-    Na = ion_ff.mol(Na_smiles, name="Na")
-    if not ion_ff.ff_assign(Na):
+    Na = ion_ff.mol(Na_smiles)
+    Na = ion_ff.ff_assign(Na)
+    if not Na:
         raise RuntimeError("Can not assign force field parameters for Na.")
-    Na = as_rdkit_mol(Na, strict=True)
-    Na.SetProp("_Name", "Na")
-    write_mol2_from_rdkit(mol=Na, out_dir=mol2_dir)
+    write_mol2(mol=Na, out_dir=mol2_dir)
 
     try:
-        PF6 = ff.mol(PF6_smiles, name="PF6", charge="RESP", require_ready=True, prefer_db=True)
+        PF6 = ff.mol(PF6_smiles, charge="RESP", require_ready=True, prefer_db=True)
         PF6 = ff.ff_assign(PF6, bonded="DRIH")
     except Exception as exc:
         raise RuntimeError(
@@ -208,9 +196,7 @@ if __name__ == "__main__":
         ) from exc
     if not PF6:
         raise RuntimeError("Can not assign force field parameters for MolDB-backed PF6.")
-    PF6 = as_rdkit_mol(PF6, strict=True)
-    PF6.SetProp("_Name", "PF6")
-    write_mol2_from_rdkit(mol=PF6, out_dir=mol2_dir)
+    write_mol2(mol=PF6, out_dir=mol2_dir)
 
     q_poly = int(sum(int(atom.GetFormalCharge()) for atom in CMC.GetAtoms()))
     n_Na = int(abs(q_poly) * n_CMC) if q_poly != 0 else 0

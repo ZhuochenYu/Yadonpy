@@ -200,6 +200,28 @@ def test_merz_mol_accepts_modern_name_and_ignores_moldb_style_kwargs():
     assert ion.GetProp('ff_name') == 'merz'
 
 
+def test_merz_ff_assign_infers_variable_name_without_explicit_name():
+    from yadonpy.core import naming
+
+    ion_ff = MERZ()
+    Li = ion_ff.mol('[Li+]')
+    Li = ion_ff.ff_assign(Li, report=False)
+
+    assert Li is not False
+    assert naming.get_name(Li) == 'Li'
+
+
+def test_gaff_ff_assign_infers_variable_name_for_direct_rdkit_mol():
+    from yadonpy.core import naming
+
+    ff = GAFF2_mod()
+    solvent_A = utils.mol_from_smiles('CCO')
+    solvent_A = ff.ff_assign(solvent_A, report=False)
+
+    assert solvent_A is not False
+    assert naming.get_name(solvent_A) == 'solvent_A'
+
+
 def test_mol_net_charge_recognizes_resp_only_atoms():
     mol = Chem.MolFromSmiles('CC')
     atom0 = mol.GetAtomWithIdx(0)

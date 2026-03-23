@@ -915,9 +915,17 @@ class OPLSAA(GAFF):
                 - other: delegate to calc.assign_charges (same as GAFF)
             retryMDL/useMDL: same behavior as GAFF
         """
-        from ..core import calc
+        from ..core import calc, naming
 
         mol = self._resolve_spec(mol)
+        try:
+            current_name = naming.get_name(mol, default=None)
+        except Exception:
+            current_name = None
+        try:
+            naming.ensure_name(mol, name=current_name, depth=2, prefer_var=(current_name is None))
+        except Exception:
+            pass
         effective_charge = self._normalize_charge_mode(charge)
         fallback_to_opls = False
         if effective_charge is None and not self._has_complete_atomic_charges(mol):

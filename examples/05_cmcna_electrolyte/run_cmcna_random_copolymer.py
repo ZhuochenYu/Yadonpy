@@ -147,8 +147,6 @@ if __name__ == "__main__":
     )
 
     # random copolymerization (self-avoiding RW), then terminate
-    # IMPORTANT: set an explicit polymer name for stable moltype / RDF outputs.
-    # Without this, the polymer can inherit a monomer-like placeholder name.
     CMC = poly.random_copolymerize_rw(
         [glucose, glucose_2, glucose_3, glucose_6],
         int(dp),
@@ -212,7 +210,7 @@ if __name__ == "__main__":
     write_gmx(mol=Na, out_dir=work_dir / '90_Na_gmx')
 
     try:
-        PF6 = ff.mol(PF6_smiles, name='PF6', charge='RESP', require_ready=True, prefer_db=True)
+        PF6 = ff.mol(PF6_smiles, charge='RESP', require_ready=True, prefer_db=True)
         PF6 = ff.ff_assign(PF6, bonded='DRIH')
     except Exception as exc:
         raise RuntimeError(

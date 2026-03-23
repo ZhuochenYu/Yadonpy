@@ -153,6 +153,14 @@ class MERZ():
             - For Merz ions, we only set particle type + LJ + charge.
             - 'charge' argument is ignored; charges are fixed by ion definitions.
         """
+        try:
+            current_name = naming.get_name(mol, default=None)
+        except Exception:
+            current_name = None
+        try:
+            naming.ensure_name(mol, name=current_name, depth=2, prefer_var=(current_name is None))
+        except Exception:
+            pass
         mol.SetProp('ff_name', str(self.name))
         mol.SetProp('ff_class', str(self.ff_class))
         result = self.assign_ptypes(mol)

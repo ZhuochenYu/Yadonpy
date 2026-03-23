@@ -180,7 +180,7 @@ if __name__ == '__main__':
 
     # anion_A#######################################################################################################
     try:
-        anion_A = ff.mol(anion_smiles_A, name='anion_A', charge='RESP', require_ready=True, prefer_db=True)
+        anion_A = ff.mol(anion_smiles_A, charge='RESP', require_ready=True, prefer_db=True)
         anion_A = ff.ff_assign(anion_A, bonded='DRIH')
     except Exception as exc:
         raise RuntimeError(

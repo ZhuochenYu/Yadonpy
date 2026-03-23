@@ -1,3 +1,9 @@
+## 0.8.56 (2026-03-23)
+
+- ff/gaff + ff/merz + ff/oplsaa + tests/workdir_and_molspec: teach force-field assignment to persist variable-name-derived molecule names automatically when no explicit `name=` was provided, covering both MolSpec-backed `ff.mol(...)` handles and direct RDKit molecules passed into `ff_assign(...)`;
+- examples/02 + 05 + 06 + 09 + 10 + 11 + 12 + tests/release_sanity: remove manual `name=` arguments from `ff.mol(...)` calls and delete script-side `.SetProp(...)` naming boilerplate so shipped examples follow the intended variable-name-driven style, and lock that rule down with a release regression;
+- docs/release metadata: publish the automatic-naming cleanup as `0.8.56`, refresh the package/docs version references, and keep the versioned API reference path aligned with `docs/Yadonpy_API_v0.8.56.md`.
+
 ## 0.8.55 (2026-03-23)
 
 - ff/merz + tests/workdir_and_molspec: make `MERZ().mol(...)` accept the modern keyword shape used by the rest of YadonPy, including `name`, `prefer_db`, `require_ready`, and other passthrough kwargs, while still constructing monoatomic ions directly from the built-in Merz registry instead of MolDB;

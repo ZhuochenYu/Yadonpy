@@ -14,17 +14,16 @@ def main():
     from rdkit import Chem
 
     EC = Chem.AddHs(Chem.MolFromSmiles(smiles_ec))
-    EC.SetProp("_Name", "EC")
 
     ff = OPLSAA()
-    result = ff.ff_assign(EC, charge="opls")
-    if not result:
+    EC = ff.ff_assign(EC, charge="opls")
+    if not EC:
         raise RuntimeError("OPLS-AA assignment failed for ethylene carbonate (EC)")
 
     from yadonpy.io.gmx import write_gmx
 
     out_dir = Path(__file__).resolve().parent / "work_dir" / "90_EC_gmx"
-    gro_path, itp_path, top_path = write_gmx(mol=EC, out_dir=out_dir, mol_name="EC")
+    gro_path, itp_path, top_path = write_gmx(mol=EC, out_dir=out_dir)
 
     print("[DONE] OPLS-AA assignment completed for EC.\n")
     print(f"  gro : {gro_path}")
