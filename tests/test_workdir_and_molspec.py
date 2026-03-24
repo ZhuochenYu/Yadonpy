@@ -11,11 +11,13 @@ from yadonpy.core import as_rdkit_mol, molecular_weight, workdir, utils, poly
 from yadonpy.ff.gaff2_mod import GAFF2_mod
 from yadonpy.ff.merz import MERZ
 from yadonpy.interface.charge_audit import format_cell_charge_audit
+from yadonpy.io.molecule_cache import ensure_cached_artifacts
 from yadonpy.io.gromacs_molecule import _format_gro_atom_line as format_single_gro_atom_line
 from yadonpy.io.gromacs_system import _format_gro_atom_line as format_system_gro_atom_line
 from yadonpy.io.gromacs_system import _load_gro_species_templates
 from yadonpy.io.gromacs_system import export_system_from_cell_meta
 from yadonpy.io.mol2 import write_mol2_from_rdkit
+from yadonpy.core.data_dir import ensure_initialized
 import yadonpy.sim.qm as qm_mod
 
 
@@ -351,6 +353,51 @@ def test_pf6_can_roundtrip_through_moldb_and_direct_molspec_api_with_gasteiger_f
     assert loaded.HasProp('_YADONPY_KEY')
     assert loaded.GetProp('_YADONPY_KEY') == record.key
     assert loaded.GetAtomWithIdx(0).HasProp('AtomicCharge')
+
+
+def test_ensure_cached_artifacts_preserves_pf6_charge_sum_when_formal_charge_is_wrong(tmp_path: Path, monkeypatch):
+    ensure_initialized()
+    monkeypatch.setenv('YADONPY_MOL_CACHE_DIR', str(tmp_path / 'mol_cache'))
+
+    ff = GAFF2_mod()
+    pf6 = ff.ff_assign(
+        ff.mol('F[P-](F)(F)(F)(F)F', charge='RESP', require_ready=True, prefer_db=True),
+        bonded='DRIH',
+        report=False,
+    )
+
+    q_before = sum(float(atom.GetDoubleProp('AtomicCharge')) for atom in pf6.GetAtoms() if atom.HasProp('AtomicCharge'))
+    formal_q = sum(int(atom.GetFormalCharge()) for atom in pf6.GetAtoms())
+
+    assert q_before == pytest.approx(-1.0, abs=1.0e-6)
+    assert formal_q == 1
+
+    ensure_cached_artifacts(pf6, mol_name='PF6')
+
+    q_after = sum(float(atom.GetDoubleProp('AtomicCharge')) for atom in pf6.GetAtoms() if atom.HasProp('AtomicCharge'))
+    assert q_after == pytest.approx(q_before, abs=1.0e-6)
+
+
+def test_ensure_cached_artifacts_still_cleans_small_neutral_charge_drift(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv('YADONPY_MOL_CACHE_DIR', str(tmp_path / 'mol_cache'))
+
+    ff = GAFF2_mod()
+    mol = ff.ff_assign(ff.mol('CCO', require_ready=False, prefer_db=False), report=False)
+    assert mol is not False
+
+    seeded = [0.10, -0.03, -0.04, -0.01, -0.01, -0.01, 0.02, -0.01, -0.008]
+    assert len(seeded) == mol.GetNumAtoms()
+    for atom, q in zip(mol.GetAtoms(), seeded):
+        atom.SetDoubleProp('AtomicCharge', float(q))
+
+    q_before = sum(float(atom.GetDoubleProp('AtomicCharge')) for atom in mol.GetAtoms())
+    assert q_before == pytest.approx(0.0, abs=0.1)
+    assert abs(q_before) > 1.0e-3
+
+    ensure_cached_artifacts(mol, mol_name='ethanol_like')
+
+    q_after = sum(float(atom.GetDoubleProp('AtomicCharge')) for atom in mol.GetAtoms())
+    assert q_after == pytest.approx(0.0, abs=1.0e-6)
 
 
 def test_amorphous_cell_explicit_cell_keeps_charge_meta_when_density_is_none(tmp_path: Path):

@@ -13,7 +13,8 @@ import yadonpy.sim.preset.eq as eqmod
 from yadonpy.core import workdir, workunit
 from yadonpy.gmx.topology import MoleculeType, SystemTopology, parse_system_top
 from yadonpy.interface import AreaMismatchPolicy, BuiltInterface, InterfaceBuilder, InterfaceDynamics, InterfaceProtocol, InterfaceRouteSpec, build_bulk_equilibrium_profile, build_interface_group_catalog, equilibrate_bulk_with_eq21, fixed_xy_semiisotropic_npt_overrides, format_cell_charge_audit, format_charge_meta_audit, make_orthorhombic_pack_cell, plan_direct_electrolyte_counts, plan_direct_polymer_matched_interface_preparation, plan_fixed_xy_direct_electrolyte_preparation, plan_fixed_xy_direct_pack_box, plan_polymer_anchored_interface_preparation, plan_probe_electrolyte_preparation, plan_probe_polymer_matched_interface_preparation, plan_rescaled_bulk_counts, plan_resized_electrolyte_counts, plan_resized_electrolyte_preparation_from_probe, recommend_electrolyte_alignment, recommend_polymer_diffusion_interface_recipe
-from yadonpy.interface.builder import FragmentRecord, _rebalance_fragment_selection_for_charge, _select_fragments_for_slab
+from yadonpy.interface.builder import FragmentRecord, _compress_molecule_sequence, _rebalance_fragment_selection_for_charge, _select_fragments_for_slab, _write_local_top
+from yadonpy.interface.protocol import _resolve_route_b_wall_atomtype
 from yadonpy.io.gromacs_system import SystemExportResult
 from yadonpy.core import poly
 
@@ -79,6 +80,76 @@ def test_workunit_child_path(tmp_path: Path):
     assert child.path_obj.parent == wd.path_obj
 
 
+def test_equilibrate_bulk_with_eq21_forwards_exec_kwargs(tmp_path: Path, monkeypatch):
+    calls: dict[str, object] = {}
+
+    class _FakeAnalyze:
+        def get_all_prop(self, temp, press, save=True):
+            calls["analyze"] = {"temp": temp, "press": press, "save": save}
+            return {}
+
+        def check_eq(self):
+            return True
+
+    class _FakeEQ21:
+        def __init__(self, ac, work_dir):
+            self.ac = ac
+            self.work_dir = Path(work_dir)
+
+        def ensure_system_exported(self):
+            sys_dir = self.work_dir / "02_system"
+            mol_dir = sys_dir / "molecules"
+            mol_dir.mkdir(parents=True, exist_ok=True)
+            _write_text(mol_dir / "ff_parameters.itp", "[ defaults ]\n1 2 yes 0.5 0.5\n")
+            _write_text(mol_dir / "SOL.itp", "[ moleculetype ]\nSOL 3\n\n[ atoms ]\n1 C 1 SOL C1 1 0.0 12.011\n")
+            _write_text(sys_dir / "system.top", '#include "molecules/ff_parameters.itp"\n#include "molecules/SOL.itp"\n\n[ system ]\nmock\n\n[ molecules ]\nSOL 1\n')
+            _write_text(sys_dir / "system.gro", "mock\n    1\n    1SOL     C1    1   0.100   0.100   0.100\n   1.00000   1.00000   1.00000\n")
+            _write_text(sys_dir / "system.ndx", "[ System ]\n1\n")
+            raw_dir = sys_dir / "01_raw_non_scaled"
+            raw_dir.mkdir(parents=True, exist_ok=True)
+            _write_text(raw_dir / "system.top", '#include "../molecules/ff_parameters.itp"\n#include "../molecules/SOL.itp"\n\n[ system ]\nmock\n\n[ molecules ]\nSOL 1\n')
+            _write_text(raw_dir / "system.gro", "mock\n    1\n    1SOL     C1    1   0.100   0.100   0.100\n   1.00000   1.00000   1.00000\n")
+            _write_text(raw_dir / "system.ndx", "[ System ]\n1\n")
+            _write_text(raw_dir / "system_meta.json", "{}\n")
+            return SystemExportResult(
+                system_gro=sys_dir / "system.gro",
+                system_top=sys_dir / "system.top",
+                system_ndx=sys_dir / "system.ndx",
+                molecules_dir=mol_dir,
+                system_meta=raw_dir / "system_meta.json",
+                box_nm=(1.0, 1.0, 1.0),
+                species=[],
+            )
+
+        def exec(self, **kwargs):
+            calls["exec"] = kwargs
+            return self.ac
+
+        def analyze(self):
+            return _FakeAnalyze()
+
+    monkeypatch.setattr(eqmod, "EQ21step", _FakeEQ21)
+
+    out = equilibrate_bulk_with_eq21(
+        label="mock",
+        ac={"cell": "mock"},
+        work_dir=tmp_path / "bulk",
+        temp=300.0,
+        press=1.0,
+        mpi=1,
+        omp=8,
+        gpu=1,
+        gpu_id=0,
+        additional_loops=0,
+        eq21_exec_kwargs={"eq21_tmax": 600.0, "eq21_pre_nvt_ps": 2.5},
+    )
+
+    assert calls["exec"]["eq21_tmax"] == 600.0
+    assert calls["exec"]["eq21_pre_nvt_ps"] == 2.5
+    assert calls["exec"]["omp"] == 8
+    assert out.raw_system_meta.name == "system_meta.json"
+
+
 def test_interface_builder_route_a_and_b(tmp_path: Path):
     bulk_bottom = _make_bulk_fixture(tmp_path / "ac_poly", lx=1.0, ly=1.0, lz=1.6)
     bulk_top = _make_bulk_fixture(tmp_path / "ac_electrolyte", lx=1.2, ly=1.1, lz=1.6)
@@ -141,6 +212,11 @@ def test_interface_builder_route_a_and_b(tmp_path: Path):
     meta_b = json.loads(built_b.system_meta.read_text(encoding="utf-8"))
     assert meta_b["route"] == "route_b"
     assert meta_b["box_nm"][2] > meta["box_nm"][2]
+    gro_lines = built_b.system_gro.read_text(encoding="utf-8").splitlines()
+    natoms = int(gro_lines[1].strip())
+    z_values = [float(line[36:44]) for line in gro_lines[2:2 + natoms]]
+    assert min(z_values) >= 0.05 - 1.0e-6
+    assert any("shifted away from the z-wall" in note for note in meta_b["notes"])
 
 
 def test_interface_builder_merges_parameter_include_files(tmp_path: Path):
@@ -503,8 +579,81 @@ def test_interface_diffusion_protocol_definitions():
     assert "tc-grps                   = System" in stages_a[5].mdp.render()
     assert "pcoupl                    = C-rescale" in stages_a[6].mdp.render()
     assert "pbc                      = xy" in stages_b[2].mdp.render()
+    assert "periodic-molecules       = yes" in stages_b[2].mdp.render()
+    assert "ewald-geometry           = 3dc" in stages_b[2].mdp.render()
+    assert "wall-r-linpot            = 0.05" in stages_b[2].mdp.render()
+    assert "wall_atomtype            = OW OW" in stages_b[3].mdp.render()
     assert stages_b[3].mdp.params["wall_type"] == "12-6"
     assert stages_b[3].mdp.params["wall_atomtype"] == "OW"
+
+
+def test_resolve_route_b_wall_atomtype_falls_back_to_defined_heavy_type(tmp_path: Path):
+    mol_dir = tmp_path / "molecules"
+    mol_dir.mkdir(parents=True, exist_ok=True)
+    _write_text(
+        mol_dir / "ff_parameters.itp",
+        (
+            "[ defaults ]\n"
+            "1 2 yes 0.5 0.5\n\n"
+            "[ atomtypes ]\n"
+            "o    15.999  0.0 A  0.30  0.61\n"
+            "os   15.999  0.0 A  0.31  0.30\n"
+            "c3   12.011  0.0 A  0.34  0.45\n"
+            "h1    1.008  0.0 A  0.24  0.08\n"
+        ),
+    )
+    _write_text(
+        mol_dir / "SOL.itp",
+        (
+            "[ moleculetype ]\n"
+            "SOL   3\n\n"
+            "[ atoms ]\n"
+            "1  c3   1  SOL  C1  1  0.0  12.011\n"
+            "2  h1   1  SOL  H1  1  0.0   1.008\n"
+        ),
+    )
+    _write_text(
+        tmp_path / "system.top",
+        '#include "molecules/ff_parameters.itp"\n#include "molecules/SOL.itp"\n\n[ system ]\nmock\n\n[ molecules ]\nSOL 1\n',
+    )
+
+    resolved, available = _resolve_route_b_wall_atomtype(tmp_path / "system.top", "OW")
+
+    assert resolved == "o"
+    assert available[:3] == ("o", "os", "c3")
+
+
+def test_write_local_top_preserves_actual_fragment_sequence(tmp_path: Path):
+    mol_dir = tmp_path / "molecules"
+    mol_dir.mkdir(parents=True, exist_ok=True)
+    _write_text(mol_dir / "Li.itp", "[ moleculetype ]\nLi 3\n\n[ atoms ]\n1 Li 1 Li Li1 1 1.0 6.94\n")
+    _write_text(
+        mol_dir / "PF6.itp",
+        (
+            "[ moleculetype ]\nPF6 3\n\n"
+            "[ atoms ]\n"
+            "1 f 1 PF6 F1 1 -0.3 18.998\n"
+            "2 p5 1 PF6 P2 2 1.8 30.974\n"
+            "3 f 1 PF6 F3 3 -0.3 18.998\n"
+            "4 f 1 PF6 F4 4 -0.3 18.998\n"
+            "5 f 1 PF6 F5 5 -0.3 18.998\n"
+            "6 f 1 PF6 F6 6 -0.3 18.998\n"
+            "7 f 1 PF6 F7 7 -0.3 18.998\n\n"
+            "[ bonds ]\n1 2\n2 3\n2 4\n2 5\n2 6\n2 7\n"
+        ),
+    )
+    top_path = tmp_path / "system.top"
+    sequence = ["Li", "PF6", "Li", "Li", "PF6"]
+    _write_local_top(
+        top_path,
+        ['#include "molecules/Li.itp"', '#include "molecules/PF6.itp"'],
+        _compress_molecule_sequence(sequence),
+        "ordered",
+    )
+
+    topo = parse_system_top(top_path)
+
+    assert topo.molecules == [("Li", 1), ("PF6", 1), ("Li", 2), ("PF6", 1)]
 
 
 def test_direct_polymer_matched_interface_preparation_wraps_shared_helpers():
@@ -1081,9 +1230,37 @@ def test_make_orthorhombic_pack_cell_sets_expected_cell_lengths():
     cell = make_orthorhombic_pack_cell((3.2, 3.8, 7.5))
 
     assert hasattr(cell, 'cell')
-    assert cell.cell.xhi == 3.2
-    assert cell.cell.yhi == 3.8
-    assert cell.cell.zhi == 7.5
+    assert cell.cell.xhi == 32.0
+    assert cell.cell.yhi == 38.0
+    assert cell.cell.zhi == 75.0
+
+
+def test_wrap_gro_atoms_into_primary_box_wraps_lateral_coordinates(tmp_path: Path):
+    gro = tmp_path / "system.gro"
+    gro.write_text(
+        "\n".join(
+            [
+                "wrapped",
+                "    2",
+                "    1SOL     C1    1  -0.200   1.100   0.300",
+                "    1SOL     H1    2   1.250  -0.150   0.450",
+                "   1.00000   1.00000   2.00000",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    result = builder_mod._wrap_gro_atoms_into_primary_box(gro, dims=(0, 1))
+    frame = builder_mod._read_gro_frame(gro)
+
+    assert result["applied"] is True
+    assert result["wrapped_components"] == 4
+    assert frame.atoms[0].xyz_nm[2] == pytest.approx(0.300)
+    assert frame.atoms[1].xyz_nm[2] == pytest.approx(0.450)
+    for atom in frame.atoms:
+        assert 0.0 <= float(atom.xyz_nm[0]) < 1.0
+        assert 0.0 <= float(atom.xyz_nm[1]) < 1.0
 
 
 def test_amorphous_pack_order_prefers_larger_species_first():

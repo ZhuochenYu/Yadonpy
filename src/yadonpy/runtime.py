@@ -33,6 +33,17 @@ class RunOptions:
     strict_inputs: bool = False
 
 
+@dataclass(frozen=True)
+class RecommendedResources:
+    mpi: int = 1
+    omp: int = 1
+    gpu: int = 1
+    gpu_id: int | None = 0
+    omp_psi4: int = 1
+    cpu_total: int = 1
+    cpu_cap: int | None = None
+
+
 def _default_run_options() -> RunOptions:
     opt = RunOptions()
     env_restart = os.getenv("YADONPY_RESTART")
@@ -74,6 +85,66 @@ def resolve_strict_inputs(strict_inputs: Optional[bool]) -> bool:
     return get_run_options().strict_inputs if strict_inputs is None else bool(strict_inputs)
 
 
+def _parse_int(value: object, *, default: int) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return int(default)
+
+
+def recommend_local_resources(
+    *,
+    cpu_cap: int | None = None,
+    mpi_default: int = 1,
+    gpu_default: int = 1,
+    gpu_id_default: int | None = 0,
+    omp_psi4_cap: int | None = 8,
+) -> RecommendedResources:
+    """Recommend a conservative local resource layout for example scripts.
+
+    The recommendation is intentionally simple:
+      - default to one thread-MPI rank;
+      - keep OpenMP within the visible CPU budget;
+      - allow env vars to override the defaults;
+      - cap the optional QM thread count more aggressively than MD threads.
+    """
+
+    detected_cpu_total = max(1, _parse_int(os.cpu_count(), default=1))
+    cap = None if cpu_cap is None else max(1, _parse_int(cpu_cap, default=detected_cpu_total))
+    visible_cpu_total = min(detected_cpu_total, cap) if cap is not None else detected_cpu_total
+
+    mpi = max(1, _parse_int(os.environ.get("YADONPY_MPI"), default=mpi_default))
+    omp_default = max(1, visible_cpu_total // max(1, mpi))
+    omp = max(1, _parse_int(os.environ.get("YADONPY_OMP"), default=omp_default))
+    omp = min(omp, visible_cpu_total)
+
+    gpu_env = os.environ.get("YADONPY_GPU")
+    if gpu_env is None:
+        gpu = int(bool(gpu_default))
+    else:
+        gpu = 1 if _parse_bool(gpu_env, default=bool(gpu_default)) else 0
+
+    gpu_id_env = os.environ.get("YADONPY_GPU_ID")
+    if gpu and gpu_id_env is not None and str(gpu_id_env).strip() != "":
+        gpu_id = _parse_int(gpu_id_env, default=(gpu_id_default if gpu_id_default is not None else 0))
+    else:
+        gpu_id = int(gpu_id_default) if (gpu and gpu_id_default is not None) else None
+
+    omp_psi4_default = min(omp, max(1, _parse_int(omp_psi4_cap, default=omp)))
+    omp_psi4 = max(1, _parse_int(os.environ.get("YADONPY_OMP_PSI4"), default=omp_psi4_default))
+    omp_psi4 = min(omp_psi4, omp)
+
+    return RecommendedResources(
+        mpi=int(mpi),
+        omp=int(omp),
+        gpu=int(gpu),
+        gpu_id=(int(gpu_id) if gpu_id is not None else None),
+        omp_psi4=int(omp_psi4),
+        cpu_total=int(detected_cpu_total),
+        cpu_cap=(int(cap) if cap is not None else None),
+    )
+
+
 @contextmanager
 def run_options(*, restart: Optional[bool] = None, strict_inputs: Optional[bool] = None) -> Iterator[RunOptions]:
     """Temporarily override run options within a `with` block."""
@@ -91,8 +162,10 @@ def run_options(*, restart: Optional[bool] = None, strict_inputs: Optional[bool]
 
 
 __all__ = [
+    "RecommendedResources",
     "RunOptions",
     "get_run_options",
+    "recommend_local_resources",
     "run_options",
     "resolve_restart",
     "resolve_strict_inputs",

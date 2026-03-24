@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 
 @dataclass
@@ -150,3 +150,53 @@ def parse_system_top(top_path: Path) -> SystemTopology:
             moleculetypes[mt.name] = mt
 
     return SystemTopology(moleculetypes=moleculetypes, molecules=molecules)
+
+
+def parse_defined_atomtypes_from_itp(itp_path: Path) -> List[str]:
+    """Parse [ atomtypes ] names from an .itp file."""
+
+    lines = itp_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    section = None
+    atomtypes: List[str] = []
+
+    for raw in lines:
+        line = _strip_comment(raw)
+        if not line:
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            section = line.strip("[]").strip().lower()
+            continue
+        if section != "atomtypes":
+            continue
+        parts = line.split()
+        if not parts:
+            continue
+        token = parts[0].strip()
+        if not token or token.lower() == "name":
+            continue
+        atomtypes.append(token)
+
+    return atomtypes
+
+
+def parse_defined_atomtypes_from_system_top(top_path: Path) -> List[str]:
+    """Collect unique atomtypes defined by includes referenced from system.top."""
+
+    base = top_path.parent
+    txt = top_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    seen: Set[str] = set()
+    ordered: List[str] = []
+
+    for raw in txt:
+        line = _strip_comment(raw)
+        if not line or not line.lower().startswith("#include"):
+            continue
+        inc_rel = line.split(None, 1)[1].strip().strip('"')
+        inc = (base / inc_rel).resolve()
+        if not inc.exists():
+            continue
+        for atomtype in parse_defined_atomtypes_from_itp(inc):
+            if atomtype not in seen:
+                seen.add(atomtype)
+                ordered.append(atomtype)
+    return ordered

@@ -46,6 +46,41 @@ def test_default_run_options_reads_environment(monkeypatch):
         importlib.reload(mod)
 
 
+def test_recommend_local_resources_respects_cpu_cap_and_defaults(monkeypatch):
+    monkeypatch.delenv('YADONPY_MPI', raising=False)
+    monkeypatch.delenv('YADONPY_OMP', raising=False)
+    monkeypatch.delenv('YADONPY_GPU', raising=False)
+    monkeypatch.delenv('YADONPY_GPU_ID', raising=False)
+    monkeypatch.delenv('YADONPY_OMP_PSI4', raising=False)
+    monkeypatch.setattr(runtime.os, 'cpu_count', lambda: 24)
+
+    res = runtime.recommend_local_resources(cpu_cap=12, gpu_default=1, gpu_id_default=0, omp_psi4_cap=8)
+
+    assert res.cpu_total == 24
+    assert res.cpu_cap == 12
+    assert res.mpi == 1
+    assert res.omp == 12
+    assert res.gpu == 1
+    assert res.gpu_id == 0
+    assert res.omp_psi4 == 8
+
+
+def test_recommend_local_resources_honors_environment_overrides(monkeypatch):
+    monkeypatch.setenv('YADONPY_MPI', '2')
+    monkeypatch.setenv('YADONPY_OMP', '6')
+    monkeypatch.setenv('YADONPY_GPU', '0')
+    monkeypatch.setenv('YADONPY_OMP_PSI4', '4')
+    monkeypatch.setattr(runtime.os, 'cpu_count', lambda: 12)
+
+    res = runtime.recommend_local_resources(cpu_cap=12, gpu_default=1, gpu_id_default=3, omp_psi4_cap=8)
+
+    assert res.mpi == 2
+    assert res.omp == 6
+    assert res.gpu == 0
+    assert res.gpu_id is None
+    assert res.omp_psi4 == 4
+
+
 def test_tqdm_is_enabled_by_default_and_can_be_disabled_via_environment(monkeypatch):
     monkeypatch.delenv('YADONPY_DISABLE_TQDM', raising=False)
     mod = importlib.reload(const)

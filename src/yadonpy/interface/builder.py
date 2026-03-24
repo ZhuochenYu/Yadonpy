@@ -39,6 +39,7 @@ Axis = Literal["X", "Y", "Z"]
 Route = Literal["route_a", "route_b"]
 _AXIS_TO_INDEX = {"X": 0, "Y": 1, "Z": 2}
 _INTERFACE_BUILD_SCHEMA_VERSION = "0.8.54-interface-build-v3"
+_ROUTE_B_WALL_CLEARANCE_NM = 0.05
 _PARAMETER_SECTION_ORDER = [
     "defaults",
     "atomtypes",
@@ -373,6 +374,52 @@ def _write_gro_frame(path: Path, title: str, atoms: Iterable[_GroAtom], box_nm: 
     lines.append(f"{box_nm[0]:10.5f}{box_nm[1]:10.5f}{box_nm[2]:10.5f}")
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _wrap_gro_atoms_into_primary_box(
+    gro_path: Path,
+    *,
+    dims: Iterable[int] | None = None,
+) -> dict[str, Any]:
+    frame = _read_gro_frame(gro_path)
+    target_dims = tuple(int(d) for d in (dims if dims is not None else (0, 1, 2)))
+    wrapped_atoms: list[_GroAtom] = []
+    wrapped_components = 0
+    max_shift = 0.0
+    for atom in frame.atoms:
+        xyz = np.asarray(atom.xyz_nm, dtype=float).copy()
+        for dim in target_dims:
+            if dim < 0 or dim >= 3:
+                continue
+            box_len = float(frame.box_nm[dim])
+            if box_len <= 0.0:
+                continue
+            original = float(xyz[dim])
+            wrapped = original - box_len * math.floor(original / box_len)
+            if abs(wrapped - original) > 1.0e-9:
+                wrapped_components += 1
+                max_shift = max(max_shift, abs(wrapped - original))
+                xyz[dim] = wrapped
+        wrapped_atoms.append(
+            _GroAtom(
+                resnr=atom.resnr,
+                resname=atom.resname,
+                atomname=atom.atomname,
+                atomnr=atom.atomnr,
+                xyz_nm=xyz,
+            )
+        )
+    if wrapped_components > 0:
+        title = frame.title
+        if "yadonpy_boxwrap" not in title:
+            title = f"{title[:62]} | yadonpy_boxwrap"
+        _write_gro_frame(gro_path, title, wrapped_atoms, frame.box_nm)
+    return {
+        "applied": bool(wrapped_components > 0),
+        "wrapped_components": int(wrapped_components),
+        "max_shift_nm": float(max_shift),
+        "dims": target_dims,
+    }
 
 
 def _read_include_lines(top_path: Path) -> list[str]:
@@ -1422,15 +1469,25 @@ def _recenter_fragments_lateral(fragments: list[FragmentRecord], *, box_nm: tupl
     return _wrap_fragments_lateral(shifted, box_nm=box_nm, axis=axis)
 
 
-def _build_slab_groups(fragments: list[FragmentRecord], *, start_atom: int, axis: Axis, thickness_nm: float, surface_shell_nm: float, core_guard_nm: float) -> tuple[list[_GroAtom], dict[str, list[int]], Counter[str]]:
+def _build_slab_groups(
+    fragments: list[FragmentRecord],
+    *,
+    start_atom: int,
+    axis: Axis,
+    thickness_nm: float,
+    surface_shell_nm: float,
+    core_guard_nm: float,
+) -> tuple[list[_GroAtom], dict[str, list[int]], Counter[str], list[str]]:
     ai = _AXIS_TO_INDEX[str(axis)]
     atoms: list[_GroAtom] = []
     groups: dict[str, list[int]] = {"SYSTEM": [], "SURFACE": [], "CORE": []}
     mol_counts: Counter[str] = Counter()
+    mol_sequence: list[str] = []
     atomnr = int(start_atom)
     resnr = 1
     for frag in fragments:
         mol_counts[frag.moltype] += 1
+        mol_sequence.append(str(frag.moltype))
         frag_min = float(np.min(frag.coords_nm[:, ai]))
         frag_max = float(np.max(frag.coords_nm[:, ai]))
         surface = (frag_min <= float(surface_shell_nm)) or (frag_max >= float(thickness_nm - surface_shell_nm))
@@ -1444,7 +1501,7 @@ def _build_slab_groups(fragments: list[FragmentRecord], *, start_atom: int, axis
                 groups["CORE"].append(atomnr)
             atomnr += 1
         resnr += 1
-    return atoms, groups, mol_counts
+    return atoms, groups, mol_counts, mol_sequence
 
 
 def _merge_topology_molecule_counts(*topologies: SystemTopology) -> Counter[str]:
@@ -1455,11 +1512,32 @@ def _merge_topology_molecule_counts(*topologies: SystemTopology) -> Counter[str]
     return counts
 
 
-def _write_local_top(path: Path, include_lines: list[str], mol_counts: Counter[str], system_name: str) -> None:
+def _compress_molecule_sequence(sequence: Iterable[str]) -> list[tuple[str, int]]:
+    entries: list[tuple[str, int]] = []
+    current_name: str | None = None
+    current_count = 0
+    for raw_name in sequence:
+        name = str(raw_name)
+        if current_name is None:
+            current_name = name
+            current_count = 1
+            continue
+        if name == current_name:
+            current_count += 1
+            continue
+        entries.append((current_name, int(current_count)))
+        current_name = name
+        current_count = 1
+    if current_name is not None and current_count > 0:
+        entries.append((current_name, int(current_count)))
+    return entries
+
+
+def _write_local_top(path: Path, include_lines: list[str], molecule_entries: list[tuple[str, int]], system_name: str) -> None:
     lines = ["; yadonpy generated system.top"]
     lines.extend(_ordered_include_lines(list(include_lines), base_dir=path.parent))
     lines += ["", "[ system ]", system_name, "", "[ molecules ]"]
-    for name, count in mol_counts.items():
+    for name, count in molecule_entries:
         lines.append(f"{name} {int(count)}")
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -1523,7 +1601,7 @@ def _prepare_slab(*, source: BulkSource, spec: SlabBuildSpec, route: Route, name
     print_stat(f"{name}_recenter_elapsed", _format_elapsed_seconds(time.perf_counter() - phase_t0))
 
     phase_t0 = time.perf_counter()
-    slab_atoms, groups, mol_counts = _build_slab_groups(shifted, start_atom=1, axis=spec.axis, thickness_nm=actual_thickness, surface_shell_nm=float(spec.surface_shell_nm), core_guard_nm=float(spec.core_guard_nm))
+    slab_atoms, groups, mol_counts, mol_sequence = _build_slab_groups(shifted, start_atom=1, axis=spec.axis, thickness_nm=actual_thickness, surface_shell_nm=float(spec.surface_shell_nm), core_guard_nm=float(spec.core_guard_nm))
     gro_path = out_dir / f"{name}.gro"
     top_path = out_dir / f"{name}.top"
     ndx_path = out_dir / f"{name}.ndx"
@@ -1531,7 +1609,7 @@ def _prepare_slab(*, source: BulkSource, spec: SlabBuildSpec, route: Route, name
     mol_dir = out_dir / "molecules"
     include_lines = _copy_include_tree(source.system_top, mol_dir)
     _write_gro_frame(gro_path, f"prepared slab {name}", slab_atoms, tuple(lengths))
-    _write_local_top(top_path, include_lines, mol_counts, f"prepared slab {name}")
+    _write_local_top(top_path, include_lines, _compress_molecule_sequence(mol_sequence), f"prepared slab {name}")
     _write_ndx(ndx_path, [(name.upper(), groups["SYSTEM"]), (f"{name.upper()}_CORE", groups["CORE"]), (f"{name.upper()}_SURFACE", groups["SURFACE"])])
     print_stat(f"{name}_write_elapsed", _format_elapsed_seconds(time.perf_counter() - phase_t0))
     print_stat(f"{name}_prepare_total_elapsed", _format_elapsed_seconds(time.perf_counter() - slab_t0))
@@ -1806,16 +1884,38 @@ def _assemble_interface(*, name: str, out_dir: Path, route_spec: InterfaceRouteS
     bottom_z = [float(atom_by_id[idx].xyz_nm[ai]) for idx in groups["BOTTOM"] if int(idx) in atom_by_id]
     top_z = [float(atom_by_id[idx].xyz_nm[ai]) for idx in groups["TOP"] if int(idx) in atom_by_id]
     assembled_gap_nm = float(min(top_z) - max(bottom_z)) if bottom_z and top_z else None
+    route_b_wall_clearance_note: str | None = None
+    if route_spec.route == "route_b" and atoms:
+        axis_coords = [float(atom.xyz_nm[ai]) for atom in atoms]
+        min_axis = min(axis_coords)
+        max_axis = max(axis_coords)
+        lower_shift = max(0.0, float(_ROUTE_B_WALL_CLEARANCE_NM) - min_axis)
+        upper_padding = max(0.0, float(_ROUTE_B_WALL_CLEARANCE_NM) - (float(box[ai]) - max_axis))
+        if lower_shift > 0.0 or upper_padding > 0.0:
+            for atom in atoms:
+                atom.xyz_nm[ai] = float(atom.xyz_nm[ai]) + lower_shift
+            box[ai] = float(box[ai]) + lower_shift + upper_padding
+            route_b_wall_clearance_note = (
+                "route_b interface geometry was shifted away from the z-wall before MD "
+                f"(lower_shift_nm={lower_shift:.4f}, upper_padding_nm={upper_padding:.4f})"
+            )
 
     system_gro = interface_dir / "system.gro"
     _write_gro_frame(system_gro, f"interface {name}", atoms, tuple(box))
 
     bottom_meta = json.loads(bottom.meta_path.read_text(encoding="utf-8"))
     top_meta = json.loads(top.meta_path.read_text(encoding="utf-8"))
-    mol_counts = _merge_topology_molecule_counts(bottom_topology, top_topology)
+    molecule_entries = _compress_molecule_sequence(
+        [name for name, count in bottom_topology.molecules for _ in range(int(count))]
+        + [name for name, count in top_topology.molecules for _ in range(int(count))]
+    )
+    mol_counts: Counter[str] = Counter()
+    for molname, count in molecule_entries:
+        mol_counts[str(molname)] += int(count)
     system_top = interface_dir / "system.top"
-    _write_local_top(system_top, include_lines, mol_counts, f"interface {name}")
+    _write_local_top(system_top, include_lines, molecule_entries, f"interface {name}")
     whole_fix = normalize_gro_molecules_inplace(top=system_top, gro=system_gro)
+    primary_box_wrap = _wrap_gro_atoms_into_primary_box(system_gro, dims=lateral)
     geometry_validation = _validate_assembled_interface_geometry(
         gro_path=system_gro,
         box_nm=tuple(box),
@@ -1867,10 +1967,18 @@ def _assemble_interface(*, name: str, out_dir: Path, route_spec: InterfaceRouteS
         )
     elif whole_fix.get("error"):
         notes.append(f"assembled interface canonicalization skipped: {whole_fix['error']}")
+    if primary_box_wrap.get("applied"):
+        notes.append(
+            "final interface GRO was wrapped back into the primary box along lateral dimensions "
+            f"{tuple(int(d) for d in lateral)} after whole-molecule canonicalization; "
+            f"wrapped_components={int(primary_box_wrap.get('wrapped_components', 0))}"
+        )
     if geometry_validation.get("assembled_gap_nm") is not None:
         notes.append(
             f"assembled interface validation: atoms_outside_primary_box={int(geometry_validation.get('atoms_outside_primary_box', 0))}, assembled_gap_nm={float(geometry_validation['assembled_gap_nm']):.6f}"
         )
+    if route_b_wall_clearance_note:
+        notes.append(route_b_wall_clearance_note)
     if route_spec.route == "route_b":
         notes.append("route_b geometry adds vacuum padding only; wall settings belong to the MD protocol stage")
     total_charge = 0.0

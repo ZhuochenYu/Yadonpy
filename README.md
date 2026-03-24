@@ -1,6 +1,6 @@
 # YadonPy
 
-Current release: **v0.8.59**
+Current release: **v0.8.60**
 
 YadonPy is a Python package for building polymer, solvent, salt, bulk, and interface workflows directly from SMILES or PSMILES. It is designed for script-driven molecular simulation studies where the user wants to keep the real workflow visible in code instead of hiding it behind a monolithic project file.
 
@@ -20,15 +20,16 @@ The package is built around two stable ideas:
 - **script first**: the study logic should remain understandable from the user script;
 - **MolDB first**: reusable expensive assets are molecular geometry, charge variants, and bonded-patch metadata, not old `.top/.gro/.itp` exports.
 
-## What changed in v0.8.59
+## What changed in v0.8.60
 
-This release does two structural things for real workflows: it turns your `yd_moldb.tar` into a first-class auto-imported bundle, and it adds a large-system packing mode for six-figure atom counts.
+This release finishes the local GROMACS wiring for Example 12 and fixes the route-B interface workflow against real runtime failures observed on a `12`-core Windows machine with CUDA and a local GPU.
 
-- `yd_moldb.tar` can now live at the repository root beside `examples`, or be pointed to explicitly with `YADONPY_MOLDB_ARCHIVE`. On `ensure_initialized()`, YadonPy discovers the bundle, imports only `moldb/objects/...`, and records the imported keys as managed bundle content.
-- Bundle updates now replace only previously managed bundle records. Unrelated user-created MolDB entries under the same data root are left untouched, so your package-shipped bundle can evolve without wiping personal additions.
-- `poly.amorphous_cell()` now auto-enables a large-system packing path when the target system exceeds `99,999` atoms. That path keeps an incremental spatial hash of packed atoms and uses local neighbor checks instead of re-scanning the whole cell for every placement attempt.
-- The fast path also tightens periodic clash detection at box boundaries, which matters more once the system is large enough that false accepts become expensive to clean up later.
-- The earlier bridge-oxygen typing fix for `eg12` remains in this release.
+- `examples/12_cmcna_interface/run_eg12_local_cuda.bat` and `examples/12_cmcna_interface/run_eg12_remote_cuda.sh` are now the supported one-click entry points for EG12. The local wrapper defaults to `mpi=1`, `omp=12`, `gpu=1`, `gpu_id=0`, which matches the current workstation assumption.
+- The EG12 smoke profile now shortens the bulk EQ21 tail and the fixed-XY electrolyte relax stage so the full local debug path can be rerun in practical time while still exercising the complete interface workflow.
+- Route-B interface MDP generation now renders the actual intended settings: `pbc = xy`, `periodic-molecules = yes`, `ewald-geometry = 3dc`, and a topology-resolved wall atomtype instead of the old hard-coded water-model `OW`.
+- Route-B assembly now pads the interface away from the `z` walls and adds `wall-r-linpot`, which fixes the previous failure where atoms placed exactly on the wall caused `01_pre_contact_em` to abort before real relaxation began.
+- Slab and interface topologies now preserve the real fragment sequence in `[ molecules ]` instead of aggregating counts purely by species. This fixes a deeper ordering bug where charge-rebalancing could append `Li` or `PF6` fragments to the end of the slab, leaving `system.gro` and `system.top` out of sync and later causing impossible excluded-atom distances during `grompp`.
+- This release was validated by actually running `eg12 --profile smoke` on native Windows GROMACS through all seven interface stages up to `07_production`.
 
 ## Installation
 
@@ -156,7 +157,7 @@ What the interface examples now demonstrate:
 
 ## Documentation map
 
-- API reference: `docs/Yadonpy_API_v0.8.59.md`
+- API reference: `docs/Yadonpy_API_v0.8.60.md`
 - Manual: `docs/Yadonpy_manul.md`
 - User guide: `docs/Yaonpyd_user_guide.md`
 

@@ -17,6 +17,7 @@ from ..gmx.mdp_templates import (
     MdpSpec,
     default_mdp_params,
 )
+from ..gmx.topology import parse_defined_atomtypes_from_system_top
 from ..gmx.workflows._util import RunResources
 from ..gmx.workflows.eq import EqStage, EquilibrationJob
 from ..runtime import resolve_restart
@@ -25,6 +26,38 @@ from .builder import BuiltInterface, validate_topology_include_order
 from .postprocess import read_ndx_groups
 
 _AXIS_TO_INDEX = {"X": 0, "Y": 1, "Z": 2}
+_ROUTE_B_WALL_ATOMTYPE_PRIORITY = (
+    "OW",
+    "o",
+    "os",
+    "oh",
+    "op",
+    "oa",
+    "c3",
+    "c",
+    "ca",
+    "p5",
+    "f",
+    "Na",
+    "Li",
+)
+
+
+def _resolve_route_b_wall_atomtype(top_path: Path, preferred: Optional[str]) -> tuple[Optional[str], tuple[str, ...]]:
+    available = tuple(parse_defined_atomtypes_from_system_top(top_path))
+    if not available:
+        return None, ()
+    if preferred is not None and str(preferred).strip():
+        preferred_token = str(preferred).strip()
+        if preferred_token in available:
+            return preferred_token, available
+    for token in _ROUTE_B_WALL_ATOMTYPE_PRIORITY:
+        if token in available:
+            return token, available
+    for token in available:
+        if not str(token).lower().startswith("h"):
+            return token, available
+    return available[0], available
 
 
 @dataclass(frozen=True)
@@ -52,6 +85,7 @@ class InterfaceProtocol:
     semiisotropic: bool = True
     wall_mode: Optional[str] = None
     wall_atomtype: Optional[str] = None
+    wall_r_linpot_nm: Optional[float] = 0.05
     wall_density_nm3: Optional[float] = None
     freeze_cores_pre_contact: bool = True
     use_region_thermostat_early: bool = True
@@ -130,7 +164,9 @@ class InterfaceProtocol:
         p["gen_temp"] = float(self.temperature_k)
         p["gen_seed"] = -1
         p["extra_mdp"] = ""
+        p["periodic_molecules"] = "yes"
         p["periodic-molecules"] = "yes"
+        p["wall_mdp"] = ""
         if self.semiisotropic:
             p["pcoupltype"] = "semiisotropic"
             p["compressibility"] = "4.5e-5 4.5e-5"
@@ -141,10 +177,25 @@ class InterfaceProtocol:
             p["pbc"] = "xy"
             p["nwall"] = 2
             p["wall_type"] = str(self.wall_mode)
+            wall_lines = [
+                "nwall                    = 2",
+                f"wall_type                = {str(self.wall_mode)}",
+                "ewald-geometry           = 3dc",
+            ]
             if self.wall_atomtype is not None:
                 p["wall_atomtype"] = str(self.wall_atomtype)
+                wall_lines.append(
+                    f"wall_atomtype            = {str(self.wall_atomtype)} {str(self.wall_atomtype)}"
+                )
+            if self.wall_r_linpot_nm is not None:
+                p["wall_r_linpot_nm"] = float(self.wall_r_linpot_nm)
+                wall_lines.append(f"wall-r-linpot            = {float(self.wall_r_linpot_nm):.6g}")
             if self.wall_density_nm3 is not None:
                 p["wall_density"] = float(self.wall_density_nm3)
+                wall_lines.append(
+                    f"wall_density             = {float(self.wall_density_nm3):.6g} {float(self.wall_density_nm3):.6g}"
+                )
+            p["wall_mdp"] = self._extra_mdp_lines(*wall_lines)
         return p, p["compressibility"]
 
     def _simple_stages(self) -> list[InterfaceStageSpec]:
@@ -452,6 +503,7 @@ class InterfaceProtocol:
         production_ns: float = 5.0,
         wall_mode: str = "12-6",
         wall_atomtype: Optional[str] = None,
+        wall_r_linpot_nm: Optional[float] = 0.05,
         wall_density_nm3: Optional[float] = None,
         contact_barostat: str = "Berendsen",
         exchange_barostat: str = "Berendsen",
@@ -471,6 +523,7 @@ class InterfaceProtocol:
             semiisotropic=True,
             wall_mode=wall_mode,
             wall_atomtype=wall_atomtype,
+            wall_r_linpot_nm=wall_r_linpot_nm,
             wall_density_nm3=wall_density_nm3,
             contact_barostat=contact_barostat,
             exchange_barostat=exchange_barostat,
@@ -491,6 +544,7 @@ class InterfaceProtocol:
         production_ns: float = 5.0,
         wall_mode: str = "12-6",
         wall_atomtype: Optional[str] = None,
+        wall_r_linpot_nm: Optional[float] = 0.05,
         wall_density_nm3: Optional[float] = None,
         axis: str = "Z",
         freeze_cores_pre_contact: bool = True,
@@ -512,6 +566,7 @@ class InterfaceProtocol:
             semiisotropic=True,
             wall_mode=wall_mode,
             wall_atomtype=wall_atomtype,
+            wall_r_linpot_nm=wall_r_linpot_nm,
             wall_density_nm3=wall_density_nm3,
             freeze_cores_pre_contact=freeze_cores_pre_contact,
             use_region_thermostat_early=use_region_thermostat_early,
@@ -557,6 +612,30 @@ class InterfaceDynamics:
             notes.append(
                 f"Aligned interface protocol axis to built interface axis: {protocol.axis} -> {effective.axis}"
             )
+        if effective.route == "route_b" and effective.wall_mode:
+            requested_wall_atomtype = effective.wall_atomtype
+            resolved_wall_atomtype, available_wall_atomtypes = _resolve_route_b_wall_atomtype(
+                top_path,
+                requested_wall_atomtype,
+            )
+            if resolved_wall_atomtype is None:
+                raise ValueError(
+                    "Interface route_b protocol requires a valid wall atomtype, but the merged topology "
+                    f"does not define any [ atomtypes ] entries: {top_path}"
+                )
+            if resolved_wall_atomtype != requested_wall_atomtype:
+                effective = replace(effective, wall_atomtype=resolved_wall_atomtype)
+                if requested_wall_atomtype:
+                    notes.append(
+                        "Replaced unavailable route_b wall atomtype "
+                        f"{requested_wall_atomtype!r} with {resolved_wall_atomtype!r} based on the merged topology."
+                    )
+                else:
+                    notes.append(
+                        "Auto-selected route_b wall atomtype "
+                        f"{resolved_wall_atomtype!r} from merged topology atomtypes: "
+                        + ", ".join(available_wall_atomtypes[:12])
+                    )
         try:
             system_meta = json.loads(Path(self.built.system_meta).read_text(encoding="utf-8"))
         except Exception:

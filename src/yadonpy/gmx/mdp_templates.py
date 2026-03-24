@@ -37,7 +37,10 @@ pme-order                = {pme_order}
 ewald-rtol               = {ewald_rtol}
 DispCorr                 = {dispcorr}
 
-pbc                      = xyz
+pbc                      = {pbc}
+periodic-molecules       = {periodic_molecules}
+
+{wall_mdp}
 
 constraints              = none
 
@@ -66,7 +69,10 @@ pme-order                = {pme_order}
 ewald-rtol               = {ewald_rtol}
 DispCorr                 = {dispcorr}
 
-pbc                      = xyz
+pbc                      = {pbc}
+periodic-molecules       = {periodic_molecules}
+
+{wall_mdp}
 
 constraints              = h-bonds
 constraint_algorithm     = lincs
@@ -101,7 +107,10 @@ pme-order                = {pme_order}
 ewald-rtol               = {ewald_rtol}
 DispCorr                 = {dispcorr}
 
-pbc                      = xyz
+pbc                      = {pbc}
+periodic-molecules       = {periodic_molecules}
+
+{wall_mdp}
 
 constraints              = h-bonds
 constraint_algorithm     = lincs
@@ -139,7 +148,10 @@ pme-order                = {pme_order}
 ewald-rtol               = {ewald_rtol}
 DispCorr                 = {dispcorr}
 
-pbc                      = xyz
+pbc                      = {pbc}
+periodic-molecules       = {periodic_molecules}
+
+{wall_mdp}
 
 constraints              = h-bonds
 constraint_algorithm     = lincs
@@ -188,7 +200,10 @@ pme-order                = {pme_order}
 ewald-rtol               = {ewald_rtol}
 DispCorr                 = {dispcorr}
 
-pbc                      = xyz
+pbc                      = {pbc}
+periodic-molecules       = {periodic_molecules}
+
+{wall_mdp}
 
 constraints              = h-bonds
 constraint_algorithm     = lincs
@@ -244,7 +259,10 @@ pme-order                = {pme_order}
 ewald-rtol               = {ewald_rtol}
 DispCorr                 = {dispcorr}
 
-pbc                      = xyz
+pbc                      = {pbc}
+periodic-molecules       = {periodic_molecules}
+
+{wall_mdp}
 
 constraints              = none
 
@@ -290,7 +308,10 @@ pme-order                = {pme_order}
 ewald-rtol               = {ewald_rtol}
 DispCorr                 = {dispcorr}
 
-pbc                      = xyz
+pbc                      = {pbc}
+periodic-molecules       = {periodic_molecules}
+
+{wall_mdp}
 
 constraints              = none
 
@@ -336,7 +357,10 @@ rvdw                      = {rvdw}
 
 coulombtype               = PME
 vdwtype                   = Cut-off
-pbc                       = xyz
+pbc                       = {pbc}
+periodic-molecules        = {periodic_molecules}
+
+{wall_mdp}
 
 constraints               = h-bonds
 constraint_algorithm      = lincs
@@ -383,6 +407,8 @@ class MdpSpec:
         # We enforce this here (close to the final mdp text) so that even
         # user-provided overrides cannot accidentally re-enable PR.
         params = dict(self.params)
+        if "periodic-molecules" in params and "periodic_molecules" not in params:
+            params["periodic_molecules"] = params["periodic-molecules"]
         pc = params.get("pcoupl")
         if isinstance(pc, str):
             s = pc.strip().lower().replace("_", "-")
@@ -450,4 +476,7 @@ def default_mdp_params() -> Dict[str, object]:
         "nstenergy": 10000,
         "nstlog": 10000,
         "extra_mdp": "",
+        "pbc": "xyz",
+        "periodic_molecules": "no",
+        "wall_mdp": "",
     }

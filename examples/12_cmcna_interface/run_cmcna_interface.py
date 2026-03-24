@@ -1,8 +1,24 @@
 from __future__ import annotations
 
+import argparse
+import os
 from pathlib import Path
 
-from yadonpy.runtime import set_run_options
+import yadonpy as yp
+
+
+BASE_DIR = Path(__file__).resolve().parent
+REPO_ROOT = BASE_DIR.parents[1]
+EXPECTED_SRC_ROOT = (REPO_ROOT / "src").resolve()
+IMPORTED_SRC_ROOT = Path(yp.__file__).resolve().parents[1]
+if IMPORTED_SRC_ROOT != EXPECTED_SRC_ROOT:
+    raise RuntimeError(
+        "Example 12 must run against the current source tree under "
+        f"{EXPECTED_SRC_ROOT}. Use run_eg12_local_cuda.bat or run_eg12_remote_cuda.sh, "
+        "or set PYTHONPATH=<repo>/src before running this script."
+    )
+
+from yadonpy.runtime import recommend_local_resources, set_run_options
 from yadonpy.core import molecular_weight, poly, utils, workdir
 from yadonpy.core.data_dir import ensure_initialized
 from yadonpy.diagnostics import doctor
@@ -22,7 +38,36 @@ from yadonpy.io.mol2 import write_mol2
 from yadonpy.sim import qm
 
 
-restart = True
+profile_default = str(os.environ.get("YADONPY_EG12_PROFILE", "full")).strip().lower() or "full"
+restart_default = str(os.environ.get("YADONPY_RESTART", "1")).strip().lower() not in {"0", "false", "no", "off"}
+term_qm_default = str(os.environ.get("YADONPY_EG12_TERM_QM", "0")).strip().lower() in {"1", "true", "yes", "on"}
+cpu_cap_default = os.environ.get("YADONPY_CPU_CAP")
+
+parser = argparse.ArgumentParser(
+    description="Example 12: CMC-Na vs 1 M LiPF6 interface workflow.",
+)
+parser.add_argument("--profile", choices=("full", "smoke"), default=profile_default)
+parser.add_argument(
+    "--stop-after",
+    choices=("full", "polymer_bulk", "probe_bulk", "electrolyte_bulk", "interface_build"),
+    default="full",
+)
+parser.add_argument("--cpu-cap", type=int, default=(int(cpu_cap_default) if cpu_cap_default else None))
+parser.add_argument("--mpi", type=int, default=None)
+parser.add_argument("--omp", type=int, default=None)
+parser.add_argument("--gpu", type=int, choices=(0, 1), default=None)
+parser.add_argument("--gpu-id", type=int, default=None)
+parser.add_argument("--omp-psi4", type=int, default=None)
+parser.add_argument("--restart", dest="restart", action="store_true")
+parser.add_argument("--fresh", dest="restart", action="store_false")
+parser.add_argument("--with-term-qm", dest="term_qm", action="store_true")
+parser.add_argument("--without-term-qm", dest="term_qm", action="store_false")
+parser.set_defaults(restart=restart_default, term_qm=term_qm_default)
+args = parser.parse_args()
+
+resources = recommend_local_resources(cpu_cap=args.cpu_cap, gpu_default=1, gpu_id_default=0, omp_psi4_cap=8)
+
+restart = bool(args.restart)
 set_run_options(restart=restart)
 
 ff = GAFF2()
@@ -47,18 +92,13 @@ Na_smiles = "[Na+]"
 
 temp = 300.0
 press = 1.0
-mpi = 1
-omp = 14
-gpu = 1
-gpu_id = 0
-
-omp_psi4 = 12
+mpi = int(args.mpi if args.mpi is not None else resources.mpi)
+omp = int(args.omp if args.omp is not None else resources.omp)
+gpu = int(args.gpu if args.gpu is not None else resources.gpu)
+gpu_id = int(args.gpu_id if args.gpu_id is not None else (resources.gpu_id if resources.gpu_id is not None else 0))
+omp_psi4 = int(args.omp_psi4 if args.omp_psi4 is not None else resources.omp_psi4)
 mem_mb = 20000
 
-# This example is intentionally larger than the neutral interface examples.
-# It builds a free bulk CMC phase first, learns the relaxed polymer XY footprint
-# from that bulk, then matches the electrolyte to the polymer XY footprint
-# before assembling a vacuum-buffered diffusion interface.
 n_CMC = 6
 dp = 150
 polymer_initial_pack_density_g_cm3 = 0.015
@@ -72,13 +112,16 @@ salt_molarity_M = 1.0
 min_salt_pairs = 20
 electrolyte_probe_density_g_cm3 = 1.00
 electrolyte_probe_volume_scale = 2.30
-electrolyte_probe_pack_density_g_cm3 = 0.48
-electrolyte_resized_pack_density_g_cm3 = 0.32
+electrolyte_probe_pack_density_g_cm3 = 0.42
+electrolyte_probe_z_padding_factor = 1.25
+electrolyte_resized_pack_density_g_cm3 = 0.22
+electrolyte_resized_z_padding_factor = 1.35
+electrolyte_resized_minimum_pack_z_factor = 3.50
 
-electrolyte_pack_retry = 60
-electrolyte_pack_retry_step = 2500
-electrolyte_pack_threshold_ang = 1.45
-electrolyte_pack_dec_rate = 0.75
+electrolyte_pack_retry = 80
+electrolyte_pack_retry_step = 4000
+electrolyte_pack_threshold_ang = 1.55
+electrolyte_pack_dec_rate = 0.70
 
 interface_gap_nm = 0.80
 interface_vacuum_nm = 14.0
@@ -87,13 +130,68 @@ interface_top_thickness_nm = 8.0
 interface_surface_shell_nm = 1.0
 interface_core_guard_nm = 0.8
 
-BASE_DIR = Path(__file__).resolve().parent
-work_dir = workdir(BASE_DIR / "work_dir", clean=not restart)
+bulk_additional_loops = 4
+bulk_eq21_exec_kwargs: dict[str, float] = {}
+probe_fixed_xy_npt_ns = 5.0
+recipe_pre_contact_ps = 180.0
+recipe_density_relax_ps = 500.0
+recipe_contact_ps = 500.0
+recipe_release_ps = 500.0
+recipe_exchange_ns = 4.0
+recipe_production_ns = 8.0
+
+if args.profile == "smoke":
+    n_CMC = 2
+    dp = 40
+    polymer_initial_pack_density_g_cm3 = 0.020
+    polymer_pack_retry = 40
+    polymer_pack_retry_step = 2000
+    polymer_pack_threshold_ang = 1.55
+    min_salt_pairs = 2
+    electrolyte_probe_volume_scale = 1.55
+    electrolyte_probe_pack_density_g_cm3 = 0.30
+    electrolyte_probe_z_padding_factor = 1.30
+    electrolyte_resized_pack_density_g_cm3 = 0.16
+    electrolyte_resized_z_padding_factor = 1.45
+    electrolyte_resized_minimum_pack_z_factor = 4.00
+    electrolyte_pack_retry = 40
+    electrolyte_pack_retry_step = 1200
+    electrolyte_pack_threshold_ang = 1.60
+    electrolyte_pack_dec_rate = 0.65
+    interface_gap_nm = 0.60
+    interface_vacuum_nm = 8.0
+    interface_bottom_thickness_nm = 4.0
+    interface_top_thickness_nm = 4.5
+    interface_surface_shell_nm = 0.8
+    interface_core_guard_nm = 0.5
+    bulk_additional_loops = 0
+    bulk_eq21_exec_kwargs = {
+        "eq21_tmax": 600.0,
+        "eq21_pmax": 10000.0,
+        "eq21_pre_nvt_ps": 2.0,
+        "sim_time": 0.05,
+    }
+    probe_fixed_xy_npt_ns = 0.1
+    recipe_pre_contact_ps = 10.0
+    recipe_density_relax_ps = 20.0
+    recipe_contact_ps = 20.0
+    recipe_release_ps = 20.0
+    recipe_exchange_ns = 0.02
+    recipe_production_ns = 0.02
+
+work_dir_name = "work_dir_smoke" if args.profile == "smoke" else "work_dir"
+work_dir = workdir(BASE_DIR / work_dir_name, clean=not restart)
 
 
 if __name__ == "__main__":
     doctor(print_report=True)
     ensure_initialized()
+
+    print("[CONFIG] profile:", args.profile)
+    print("[CONFIG] stop_after:", args.stop_after)
+    print("[CONFIG] restart:", restart)
+    print("[CONFIG] resources:", {"mpi": mpi, "omp": omp, "gpu": gpu, "gpu_id": gpu_id, "omp_psi4": omp_psi4})
+    print("[CONFIG] cpu_budget:", {"detected": resources.cpu_total, "cap": resources.cpu_cap})
 
     mol2_dir = work_dir / "00_molecules"
     ac_CMC_dir = work_dir.child("ac_CMC")
@@ -130,15 +228,20 @@ if __name__ == "__main__":
     write_mol2(mol=glucose_6, out_dir=mol2_dir)
 
     ter1 = utils.mol_from_smiles(ter_smiles)
-    qm.assign_charges(
-        ter1,
-        charge="RESP",
-        opt=True,
-        work_dir=work_dir,
-        omp=omp_psi4,
-        memory=mem_mb,
-        log_name=None,
-    )
+    if args.term_qm:
+        qm.assign_charges(
+            ter1,
+            charge="RESP",
+            opt=True,
+            work_dir=work_dir,
+            omp=omp_psi4,
+            memory=mem_mb,
+            log_name=None,
+        )
+        print("[CONFIG] terminal_charge_mode: RESP via QM")
+    else:
+        print("[CONFIG] terminal_charge_mode: skipped QM for [H][*] termination")
+
     cmc_rw_dir = work_dir.child("CMC_rw")
     cmc_term_dir = work_dir.child("CMC_term")
     CMC = poly.random_copolymerize_rw(
@@ -231,8 +334,14 @@ if __name__ == "__main__":
         omp=omp,
         gpu=gpu,
         gpu_id=gpu_id,
+        additional_loops=bulk_additional_loops,
+        eq21_exec_kwargs=bulk_eq21_exec_kwargs,
     )
     cmc_box_nm = read_equilibrated_box_nm(work_dir=ac_CMC_dir)
+
+    if args.stop_after == "polymer_bulk":
+        print("[INFO] stop_after=polymer_bulk reached.")
+        raise SystemExit(0)
 
     probe_interface_prep = plan_probe_polymer_matched_interface_preparation(
         reference_box_nm=cmc_box_nm,
@@ -251,10 +360,10 @@ if __name__ == "__main__":
         min_solvent_counts=(1, 1, 1),
         probe_volume_scale=electrolyte_probe_volume_scale,
         initial_pack_density_g_cm3=electrolyte_probe_pack_density_g_cm3,
-        z_padding_factor=1.20,
+        z_padding_factor=electrolyte_probe_z_padding_factor,
         is_polyelectrolyte=True,
         minimum_margin_nm=1.0,
-        fixed_xy_npt_ns=5.0,
+        fixed_xy_npt_ns=probe_fixed_xy_npt_ns,
     )
     for note in probe_interface_prep.notes:
         print("[PLAN]", note)
@@ -282,7 +391,13 @@ if __name__ == "__main__":
         omp=omp,
         gpu=gpu,
         gpu_id=gpu_id,
+        additional_loops=bulk_additional_loops,
+        eq21_exec_kwargs=bulk_eq21_exec_kwargs,
     )
+
+    if args.stop_after == "probe_bulk":
+        print("[INFO] stop_after=probe_bulk reached.")
+        raise SystemExit(0)
 
     resized_interface_prep = plan_resized_polymer_matched_interface_from_probe(
         reference_box_nm=cmc_box_nm,
@@ -296,8 +411,8 @@ if __name__ == "__main__":
         min_solvent_counts=(1, 1, 1),
         min_salt_pairs=min_salt_pairs,
         initial_pack_density_g_cm3=electrolyte_resized_pack_density_g_cm3,
-        z_padding_factor=1.25,
-        minimum_pack_z_factor=2.80,
+        z_padding_factor=electrolyte_resized_z_padding_factor,
+        minimum_pack_z_factor=electrolyte_resized_minimum_pack_z_factor,
         pressure_bar=press,
     )
     for note in resized_interface_prep.notes:
@@ -327,11 +442,17 @@ if __name__ == "__main__":
         omp=omp,
         gpu=gpu,
         gpu_id=gpu_id,
+        additional_loops=bulk_additional_loops,
         eq21_npt_mdp_overrides=resized_interface_prep.resized_prep.relax_mdp_overrides,
         additional_mdp_overrides=resized_interface_prep.resized_prep.relax_mdp_overrides,
         final_npt_ns=probe_interface_prep.interface_plan.electrolyte_alignment.fixed_xy_npt_ns,
         final_npt_mdp_overrides=resized_interface_prep.resized_prep.relax_mdp_overrides,
+        eq21_exec_kwargs=bulk_eq21_exec_kwargs,
     )
+
+    if args.stop_after == "electrolyte_bulk":
+        print("[INFO] stop_after=electrolyte_bulk reached.")
+        raise SystemExit(0)
 
     recipe = recommend_polymer_diffusion_interface_recipe(
         interface_plan=resized_interface_prep.interface_plan,
@@ -340,13 +461,12 @@ if __name__ == "__main__":
         vacuum_nm=interface_vacuum_nm,
         core_guard_nm=interface_core_guard_nm,
         top_lateral_shift_fraction=(0.31, 0.57),
-        wall_atomtype="OW",
-        pre_contact_ps=180.0,
-        density_relax_ps=500.0,
-        contact_ps=500.0,
-        release_ps=500.0,
-        exchange_ns=4.0,
-        production_ns=8.0,
+        pre_contact_ps=recipe_pre_contact_ps,
+        density_relax_ps=recipe_density_relax_ps,
+        contact_ps=recipe_contact_ps,
+        release_ps=recipe_release_ps,
+        exchange_ns=recipe_exchange_ns,
+        production_ns=recipe_production_ns,
     )
     for note in recipe.notes:
         print("[ROUTE]", note)
@@ -359,6 +479,14 @@ if __name__ == "__main__":
         top_work_dir=ac_electrolyte_dir,
         route=recipe.route_spec,
     )
+
+    if args.stop_after == "interface_build":
+        print("[INFO] stop_after=interface_build reached.")
+        print("  GRO:", built.system_gro)
+        print("  TOP:", built.system_top)
+        print("  NDX:", built.system_ndx)
+        raise SystemExit(0)
+
     final_interface_gro = InterfaceDynamics(built=built, work_dir=interface_md_dir).run(
         protocol=recipe.protocol,
         mpi=mpi,

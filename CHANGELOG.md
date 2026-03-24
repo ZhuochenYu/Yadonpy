@@ -1,3 +1,10 @@
+## 0.8.60 (2026-03-24)
+
+- runtime + interface/prep + examples/12_cmcna_interface: add conservative local resource recommendation plus one-click local and remote EG12 wrapper scripts, default the local path to a `12`-core / `1`-GPU Windows machine, and shorten the smoke profile so real GROMACS regression runs finish fast enough for iterative debugging;
+- io/artifacts + interface/builder + interface/protocol + gmx/mdp_templates + gmx/topology + tests/interface_builder + tests/runtime + tests/workdir_and_molspec: harden the route-B interface workflow by preserving PF6 charge sums during artifact caching, fixing explicit-cell box-unit conversion, wrapping assembled interface slabs back into the primary box, rendering `pbc=xy` and `periodic-molecules=yes` correctly in MDP files, auto-resolving a valid wall atomtype from the merged topology, enabling `ewald-geometry = 3dc`, and protecting the route-B wall stages with both wall clearance padding and `wall-r-linpot`;
+- interface/builder + tests/interface_builder: stop collapsing slab and interface `[ molecules ]` tables into type-aggregated counts, and instead write them in the actual fragment sequence so charge-rebalancing fragments such as late-added `Li` / `PF6` molecules do not desynchronize `system.top` from `system.gro` during interface MD;
+- examples/12_cmcna_interface: remove the explicit route-B wall atomtype from Example 12, keep the smoke path aligned with the new automatic wall resolution, and verify the full local smoke workflow all the way through `07_production` against native Windows GROMACS.
+
 ## 0.8.59 (2026-03-24)
 
 - core/data_dir + diagnostics + tests/test_data_dir + packaging: teach `ensure_initialized()` to discover a user-supplied `yd_moldb.tar`, import only its `moldb/objects/...` content into the active data root, track the imported keys as managed bundle state, and replace only those managed records on later bundle updates; also ship the archive at the repository root beside `examples` and include it in the source package manifest;

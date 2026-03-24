@@ -276,16 +276,24 @@ def plan_resized_electrolyte_preparation_from_probe(
 
 
 def make_orthorhombic_pack_cell(box_nm: tuple[float, float, float]):
+    """Build a poly.amorphous_cell-compatible orthorhombic cell from nm input.
+
+    High-level interface planning is expressed in nm, while the legacy
+    ``poly.amorphous_cell`` packer uses Angstrom cell lengths and coordinates.
+    Convert here so explicit ``cell=...`` packing follows the same internal
+    unit convention as the density-driven path.
+    """
+    box_ang = tuple(float(x) * 10.0 for x in box_nm)
     cell = Chem.Mol()
     setattr(
         cell,
         "cell",
         utils.Cell(
-            float(box_nm[0]),
+            float(box_ang[0]),
             0.0,
-            float(box_nm[1]),
+            float(box_ang[1]),
             0.0,
-            float(box_nm[2]),
+            float(box_ang[2]),
             0.0,
         ),
     )
@@ -614,6 +622,7 @@ def equilibrate_bulk_with_eq21(
     additional_mdp_overrides=None,
     final_npt_ns: float = 0.0,
     final_npt_mdp_overrides=None,
+    eq21_exec_kwargs: dict[str, Any] | None = None,
 ) -> BulkEq21Outcome:
     eqmd_job = eq.EQ21step(ac, work_dir=work_dir)
     export = eqmd_job.ensure_system_exported()
@@ -625,6 +634,7 @@ def equilibrate_bulk_with_eq21(
     if raw_export_issues:
         raise RuntimeError(f"{label} raw export topology is invalid before EQ21: {'; '.join(raw_export_issues)}")
 
+    exec_kwargs = dict(eq21_exec_kwargs or {})
     ac = eqmd_job.exec(
         temp=temp,
         press=press,
@@ -633,6 +643,7 @@ def equilibrate_bulk_with_eq21(
         gpu=gpu,
         gpu_id=gpu_id,
         eq21_npt_mdp_overrides=eq21_npt_mdp_overrides,
+        **exec_kwargs,
     )
     analy = eqmd_job.analyze()
     _ = analy.get_all_prop(temp=temp, press=press, save=True)
@@ -692,7 +703,7 @@ def recommend_polymer_diffusion_interface_recipe(
     core_guard_nm: float = 0.50,
     top_lateral_shift_fraction: tuple[float, float] = (0.35, 0.65),
     wall_mode: str = "12-6",
-    wall_atomtype: str | None = "OW",
+    wall_atomtype: str | None = None,
     wall_density_nm3: float | None = None,
     pre_contact_ps: float | None = None,
     pre_contact_dt_ps: float = 0.001,

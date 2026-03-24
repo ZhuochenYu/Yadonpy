@@ -89,7 +89,7 @@ Before finalizing a change, quickly verify:
 
 ## Update rules
 
-1. 确认当前目录下有 `history_version` 文件夹。每次更新后自动增加一个小版本号，并把旧版本移动到 `history_version` 中。
-2. 保证当前目录下只保留当前版本文件夹，以及一个以 `.tar` 结尾的当前版本压缩包。
+1. 确认当前目录下有 `history_version` 文件夹。每次进行更新后自动增加一个小版本编号，并把旧版本移动到 `history_version` 里。
+2. 保证当前目录下只保留当前版本的文件夹，以及一个以 `.tar` 结尾的当前版本压缩包。
 3. 每次代码更新完成后，把当前版本自动同步上传到云端 GitHub 仓库。默认自动完成提交、推送，并把更新合并到远端主分支。
 4. 每次更新前后都检查是否存在 `__pycache__`、`.pytest_cache`、`.yadonpy_cache`、`yadonpy.egg-info` 等生成物；如果存在，不要保留在当前发布目录里，只保留有用的源码、文档和发布产物。

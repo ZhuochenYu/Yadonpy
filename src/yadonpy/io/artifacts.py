@@ -220,7 +220,49 @@ def write_molecule_artifacts(
         try:
             from ..core.chem_utils import correct_total_charge
 
-            corr = correct_total_charge(mol, target_q=total_charge)
+            target_q = total_charge
+            # IMPORTANT:
+            #   If the caller did not provide an explicit target charge, preserve
+            #   the current per-atom charge sum instead of falling back to RDKit
+            #   formal charges. Hypervalent species such as PF6- can round-trip
+            #   through RDKit with an unreliable formal charge, and using that as
+            #   the target would silently mutate a correct RESP charge set.
+            if target_q is None:
+                current_q = 0.0
+                has_charge_props = False
+                for atom in mol.GetAtoms():
+                    try:
+                        if atom.HasProp('AtomicCharge'):
+                            current_q += float(atom.GetDoubleProp('AtomicCharge'))
+                            has_charge_props = True
+                            continue
+                        if atom.HasProp('RESP'):
+                            current_q += float(atom.GetDoubleProp('RESP'))
+                            has_charge_props = True
+                            continue
+                        if atom.HasProp('_GasteigerCharge'):
+                            current_q += float(atom.GetProp('_GasteigerCharge'))
+                            has_charge_props = True
+                    except Exception:
+                        continue
+                if has_charge_props:
+                    formal_q = 0.0
+                    try:
+                        for atom in mol.GetAtoms():
+                            formal_q += float(atom.GetFormalCharge())
+                    except Exception:
+                        formal_q = float(current_q)
+
+                    # Small RESP / round-trip drift on ordinary neutral or ionic
+                    # molecules should still be cleaned up to the intended formal
+                    # charge. But if the formal charge strongly disagrees with the
+                    # existing charge set, keep the current charge sum instead.
+                    if abs(float(current_q) - float(formal_q)) <= 0.25:
+                        target_q = float(formal_q)
+                    else:
+                        target_q = float(current_q)
+
+            corr = correct_total_charge(mol, target_q=target_q)
             if corr is not None:
                 meta["charge_correction"] = corr
                 # Update charge fingerprint after correction
