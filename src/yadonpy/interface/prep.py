@@ -22,6 +22,7 @@ from .bulk_resize import (
     plan_direct_electrolyte_counts,
     plan_fixed_xy_direct_pack_box,
     plan_resized_electrolyte_counts,
+    recommend_fixed_xy_pack_parameters,
     recommend_electrolyte_alignment,
 )
 
@@ -216,10 +217,12 @@ def plan_resized_electrolyte_preparation_from_probe(
     min_solvent_counts: Sequence[int] | None = None,
     min_solvent_group_counts: Sequence[Sequence[int]] | None = None,
     min_salt_pairs: int | Sequence[int] = 1,
-    initial_pack_density_g_cm3: float = 0.70,
-    z_padding_factor: float = 1.15,
-    minimum_pack_z_factor: float = 1.0,
+    initial_pack_density_g_cm3: float | None = None,
+    z_padding_factor: float | None = None,
+    minimum_pack_z_factor: float | None = None,
     minimum_pack_z_nm: float | None = None,
+    maximum_pack_z_factor: float | None = None,
+    maximum_pack_z_nm: float | None = None,
     pressure_bar: float = 1.0,
 ) -> ResizedElectrolytePreparation:
     ref_box = tuple(float(x) for x in reference_box_nm)
@@ -242,24 +245,51 @@ def plan_resized_electrolyte_preparation_from_probe(
         min_solvent_group_counts=min_solvent_group_counts,
         min_salt_pairs=min_salt_pairs,
     )
+    (
+        recommended_pack_density,
+        recommended_z_padding_factor,
+        recommended_minimum_pack_z_factor,
+        recommended_maximum_pack_z_factor,
+    ) = recommend_fixed_xy_pack_parameters(target_density_g_cm3=float(resize_plan.target_density_g_cm3))
+    pack_density = float(initial_pack_density_g_cm3) if initial_pack_density_g_cm3 is not None else recommended_pack_density
+    z_padding = float(z_padding_factor) if z_padding_factor is not None else recommended_z_padding_factor
+    min_pack_z_factor = float(minimum_pack_z_factor) if minimum_pack_z_factor is not None else recommended_minimum_pack_z_factor
+    max_pack_z_factor = (
+        float(maximum_pack_z_factor)
+        if maximum_pack_z_factor is not None
+        else recommended_maximum_pack_z_factor
+    )
     min_pack_z_nm = max(
-        float(target_box[2]) * float(minimum_pack_z_factor),
+        float(target_box[2]) * float(min_pack_z_factor),
         float(minimum_pack_z_nm) if minimum_pack_z_nm is not None else 0.0,
     )
+    max_pack_z_candidates = []
+    if max_pack_z_factor is not None:
+        max_pack_z_candidates.append(float(target_box[2]) * float(max_pack_z_factor))
+    if maximum_pack_z_nm is not None:
+        max_pack_z_candidates.append(float(maximum_pack_z_nm))
+    max_pack_z_nm = max(max_pack_z_candidates) if max_pack_z_candidates else None
     pack_plan = plan_fixed_xy_direct_pack_box(
         reference_box_nm=(float(target_box[0]), float(target_box[1]), float(target_box[2])),
         target_counts=resize_plan.target_counts,
         mol_weights=mol_weights,
         species_names=species_names,
-        initial_pack_density_g_cm3=float(initial_pack_density_g_cm3),
-        z_padding_factor=float(z_padding_factor),
+        initial_pack_density_g_cm3=pack_density,
+        z_padding_factor=z_padding,
         minimum_z_nm=min_pack_z_nm,
+        maximum_z_nm=max_pack_z_nm,
     )
     note_list = [
         "resized the electrolyte from the equilibrated probe bulk to the polymer-anchored target box instead of planning counts directly in the final fixed-XY box",
         f"probe_density_g_cm3={profile.density_g_cm3:.4f} from probe box {tuple(round(x, 4) for x in profile.box_nm)} -> target_box_nm={tuple(round(x, 4) for x in target_box)}",
-        f"final fixed-XY pack uses initial_pack_density_g_cm3={float(initial_pack_density_g_cm3):.4f} with minimum initial Z={min_pack_z_nm:.4f} nm",
+        f"final fixed-XY pack uses initial_pack_density_g_cm3={pack_density:.4f} with minimum initial Z={min_pack_z_nm:.4f} nm",
     ]
+    if initial_pack_density_g_cm3 is None or z_padding_factor is None or minimum_pack_z_factor is None or maximum_pack_z_factor is None:
+        note_list.append(
+            "auto-selected the fixed-XY initial pack density and Z guards from the probe-equilibrated target density to avoid rebuilding the final electrolyte from an excessively dilute box"
+        )
+    if max_pack_z_nm is not None:
+        note_list.append(f"capped the initial fixed-XY pack box to a maximum Z of {max_pack_z_nm:.4f} nm before standalone electrolyte relaxation")
     if tuple(round(x, 6) for x in ref_box[:2]) != tuple(round(x, 6) for x in target_box[:2]):
         note_list.append(
             f"reference polymer XY={tuple(round(x, 4) for x in ref_box[:2])} while final electrolyte XY is locked to {tuple(round(x, 4) for x in target_box[:2])}"
@@ -313,21 +343,16 @@ def plan_fixed_xy_direct_electrolyte_preparation(
     solvent_species_names: Sequence[str] | None = None,
     salt_species_names: Sequence[str] | None = None,
     min_solvent_counts: Sequence[int] | None = None,
-    initial_pack_density_g_cm3: float = 0.85,
-    z_padding_factor: float = 1.05,
-    minimum_pack_z_factor: float = 1.0,
+    initial_pack_density_g_cm3: float | None = None,
+    z_padding_factor: float | None = None,
+    minimum_pack_z_factor: float | None = None,
     minimum_pack_z_nm: float | None = None,
+    maximum_pack_z_factor: float | None = None,
+    maximum_pack_z_nm: float | None = None,
     pressure_bar: float = 1.0,
 ) -> FixedXYElectrolytePreparation:
     ref_box = tuple(float(x) for x in reference_box_nm)
     target_box = tuple(float(x) for x in (target_box_nm or reference_box_nm))
-    min_pack_z_factor = float(minimum_pack_z_factor)
-    if min_pack_z_factor < 1.0:
-        raise ValueError("minimum_pack_z_factor must be >= 1.0")
-    min_pack_z_nm = max(
-        float(target_box[2]) * min_pack_z_factor,
-        float(minimum_pack_z_nm) if minimum_pack_z_nm is not None else 0.0,
-    )
     direct_plan = plan_direct_electrolyte_counts(
         target_box_nm=target_box,
         target_density_g_cm3=float(target_density_g_cm3),
@@ -340,22 +365,57 @@ def plan_fixed_xy_direct_electrolyte_preparation(
         salt_species_names=salt_species_names,
         min_solvent_counts=min_solvent_counts,
     )
+    (
+        recommended_pack_density,
+        recommended_z_padding_factor,
+        recommended_minimum_pack_z_factor,
+        recommended_maximum_pack_z_factor,
+    ) = recommend_fixed_xy_pack_parameters(target_density_g_cm3=float(direct_plan.estimated_density_g_cm3))
+    pack_density = float(initial_pack_density_g_cm3) if initial_pack_density_g_cm3 is not None else recommended_pack_density
+    z_padding = float(z_padding_factor) if z_padding_factor is not None else recommended_z_padding_factor
+    min_pack_z_factor = float(minimum_pack_z_factor) if minimum_pack_z_factor is not None else recommended_minimum_pack_z_factor
+    if min_pack_z_factor < 1.0:
+        raise ValueError("minimum_pack_z_factor must be >= 1.0")
+    min_pack_z_nm = max(
+        float(target_box[2]) * min_pack_z_factor,
+        float(minimum_pack_z_nm) if minimum_pack_z_nm is not None else 0.0,
+    )
+    max_pack_z_candidates = []
+    resolved_max_pack_z_factor = (
+        float(maximum_pack_z_factor)
+        if maximum_pack_z_factor is not None
+        else recommended_maximum_pack_z_factor
+    )
+    if resolved_max_pack_z_factor is not None:
+        max_pack_z_candidates.append(float(target_box[2]) * float(resolved_max_pack_z_factor))
+    if maximum_pack_z_nm is not None:
+        max_pack_z_candidates.append(float(maximum_pack_z_nm))
+    max_pack_z_nm = max(max_pack_z_candidates) if max_pack_z_candidates else None
     pack_plan = plan_fixed_xy_direct_pack_box(
         reference_box_nm=(float(ref_box[0]), float(ref_box[1]), float(target_box[2])),
         target_counts=direct_plan.target_counts,
         mol_weights=tuple(float(x) for x in solvent_mol_weights) + tuple(float(x) for x in salt_mol_weights),
         species_names=direct_plan.species_names,
-        initial_pack_density_g_cm3=float(initial_pack_density_g_cm3),
-        z_padding_factor=float(z_padding_factor),
+        initial_pack_density_g_cm3=pack_density,
+        z_padding_factor=z_padding,
         minimum_z_nm=min_pack_z_nm,
+        maximum_z_nm=max_pack_z_nm,
     )
     note_list = [
         "planned electrolyte counts against a compact polymer-anchored target box, then derived an XY-locked initial pack box for robust explicit-cell packing",
         "use pack_plan.initial_pack_box_nm for the first amorphous_cell build and keep relax_mdp_overrides through standalone electrolyte relaxation",
     ]
+    if initial_pack_density_g_cm3 is None or z_padding_factor is None or minimum_pack_z_factor is None or maximum_pack_z_factor is None:
+        note_list.append(
+            "auto-selected the fixed-XY initial pack density and Z guards from the target electrolyte density so the standalone electrolyte bulk starts close enough to its expected compact box"
+        )
     if min_pack_z_nm > float(target_box[2]) + 1.0e-12:
         note_list.append(
             f"forced the initial electrolyte pack box Z to be at least {min_pack_z_nm:.4f} nm before fixed-XY semiisotropic relaxation"
+        )
+    if max_pack_z_nm is not None:
+        note_list.append(
+            f"capped the initial electrolyte pack box Z to at most {max_pack_z_nm:.4f} nm to avoid an excessively dilute fixed-XY relaxation box"
         )
     notes = tuple(note_list)
     return FixedXYElectrolytePreparation(
@@ -383,10 +443,12 @@ def plan_direct_polymer_matched_interface_preparation(
     solvent_species_names: Sequence[str] | None = None,
     salt_species_names: Sequence[str] | None = None,
     min_solvent_counts: Sequence[int] | None = None,
-    initial_pack_density_g_cm3: float = 0.85,
-    z_padding_factor: float = 1.05,
-    minimum_pack_z_factor: float = 1.0,
+    initial_pack_density_g_cm3: float | None = None,
+    z_padding_factor: float | None = None,
+    minimum_pack_z_factor: float | None = None,
     minimum_pack_z_nm: float | None = None,
+    maximum_pack_z_factor: float | None = None,
+    maximum_pack_z_nm: float | None = None,
     pressure_bar: float = 1.0,
     is_polyelectrolyte: bool = False,
     minimum_margin_nm: float = 1.0,
@@ -417,10 +479,12 @@ def plan_direct_polymer_matched_interface_preparation(
         solvent_species_names=solvent_species_names,
         salt_species_names=salt_species_names,
         min_solvent_counts=min_solvent_counts,
-        initial_pack_density_g_cm3=float(initial_pack_density_g_cm3),
-        z_padding_factor=float(z_padding_factor),
-        minimum_pack_z_factor=float(minimum_pack_z_factor),
+        initial_pack_density_g_cm3=initial_pack_density_g_cm3,
+        z_padding_factor=z_padding_factor,
+        minimum_pack_z_factor=minimum_pack_z_factor,
         minimum_pack_z_nm=minimum_pack_z_nm,
+        maximum_pack_z_factor=maximum_pack_z_factor,
+        maximum_pack_z_nm=maximum_pack_z_nm,
         pressure_bar=float(pressure_bar),
     )
     notes = (
@@ -568,10 +632,12 @@ def plan_resized_polymer_matched_interface_from_probe(
     min_solvent_counts: Sequence[int] | None = None,
     min_solvent_group_counts: Sequence[Sequence[int]] | None = None,
     min_salt_pairs: int | Sequence[int] = 1,
-    initial_pack_density_g_cm3: float = 0.70,
-    z_padding_factor: float = 1.15,
-    minimum_pack_z_factor: float = 1.0,
+    initial_pack_density_g_cm3: float | None = None,
+    z_padding_factor: float | None = None,
+    minimum_pack_z_factor: float | None = None,
     minimum_pack_z_nm: float | None = None,
+    maximum_pack_z_factor: float | None = 2.5,
+    maximum_pack_z_nm: float | None = None,
     pressure_bar: float = 1.0,
 ) -> ResizedPolymerMatchedInterfacePreparation:
     ref_box = tuple(float(x) for x in reference_box_nm)
@@ -589,10 +655,12 @@ def plan_resized_polymer_matched_interface_from_probe(
         min_solvent_counts=min_solvent_counts,
         min_solvent_group_counts=min_solvent_group_counts,
         min_salt_pairs=min_salt_pairs,
-        initial_pack_density_g_cm3=float(initial_pack_density_g_cm3),
-        z_padding_factor=float(z_padding_factor),
-        minimum_pack_z_factor=float(minimum_pack_z_factor),
+        initial_pack_density_g_cm3=initial_pack_density_g_cm3,
+        z_padding_factor=z_padding_factor,
+        minimum_pack_z_factor=minimum_pack_z_factor,
         minimum_pack_z_nm=minimum_pack_z_nm,
+        maximum_pack_z_factor=maximum_pack_z_factor,
+        maximum_pack_z_nm=maximum_pack_z_nm,
         pressure_bar=float(pressure_bar),
     )
     notes = (

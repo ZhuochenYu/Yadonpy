@@ -37,9 +37,21 @@ def test_release_manifest_excludes_cached_and_temp_artifacts():
 
     assert 'prune .pytest_cache' in manifest
     assert 'prune .yadonpy_cache' in manifest
+    assert 'prune examples/12_cmcna_interface/.yadonpy_cache' in manifest
+    assert 'prune examples/12_cmcna_interface/work_dir_smoke' in manifest
     assert 'prune src/yadonpy.egg-info' in manifest
     assert 'prune tmp_workdir_smoke' in manifest
     assert 'global-exclude __pycache__' in manifest
+
+
+def test_oplsaa_rule_table_is_externalized():
+    root = Path(__file__).resolve().parents[1]
+    opls_py = (root / 'src' / 'yadonpy' / 'ff' / 'oplsaa.py').read_text(encoding='utf-8')
+    opls_rules = root / 'src' / 'yadonpy' / 'ff' / 'ff_dat' / 'oplsaa_rules.json'
+
+    assert opls_rules.is_file()
+    assert 'RULES = [' not in opls_py
+    assert 'oplsaa_rules.json' in opls_py
 
 
 def test_examples_do_not_fallback_to_local_src_injection():

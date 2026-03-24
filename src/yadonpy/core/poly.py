@@ -369,8 +369,27 @@ def _rw_save_state(work_dir, kind: str, payload: dict, data: dict):
 
 
 def _cache_mol_smiles(mol):
+    if mol is None:
+        return None
+    prop_keys = (
+        '_yadonpy_molid',
+        '_yadonpy_source_smiles',
+        'smiles',
+        'input_smiles',
+        'mol_name',
+        'name',
+        '_Name',
+    )
+    for key in prop_keys:
+        try:
+            if mol.HasProp(key):
+                value = str(mol.GetProp(key)).strip()
+                if value:
+                    return f'{key}:{value}'
+        except Exception:
+            continue
     try:
-        return Chem.MolToSmiles(mol, isomericSmiles=True)
+        return f"smiles:{Chem.MolToSmiles(mol, isomericSmiles=True)}"
     except Exception:
         return None
 
@@ -559,8 +578,23 @@ def _set_atom_residue(mol, atom_idx: int, residue_name: str, residue_number: int
 
 def _rw_load_sdf(path: Path, kind: str):
     try:
-        sup = Chem.SDMolSupplier(str(path), removeHs=False)
-        mol = sup[0] if sup and len(sup) > 0 else None
+        mol = None
+        try:
+            sup = Chem.SDMolSupplier(str(path), removeHs=False)
+            mol = sup[0] if sup and len(sup) > 0 else None
+        except Exception:
+            mol = None
+        if mol is None:
+            sup = Chem.SDMolSupplier(str(path), removeHs=False, sanitize=False)
+            mol = sup[0] if sup and len(sup) > 0 else None
+            if mol is not None:
+                try:
+                    Chem.SanitizeMol(
+                        mol,
+                        sanitizeOps=Chem.SanitizeFlags.SANITIZE_ALL ^ Chem.SanitizeFlags.SANITIZE_PROPERTIES,
+                    )
+                except Exception:
+                    pass
         if mol is not None:
             _ensure_mol_residue_info(mol)
             utils.radon_print(f'[RESTART] Reusing cached {kind}: {path.name}', level=1)
@@ -3079,6 +3113,11 @@ def amorphous_cell(
 
     mols, n = _normalize_mol_counts(mols, n)
 
+    # Stamp stable molecule identities before generating restart/cache payloads.
+    # Otherwise the first run sees pre-stamp identities while later runs see
+    # stamped `_yadonpy_molid` values, which defeats cache reuse.
+    _cache_artifacts_best_effort(mols, prefer_var=True)
+
     cache_payload = _cell_cache_payload(
         'amorphous_cell',
         mols=mols,
@@ -3111,12 +3150,6 @@ def amorphous_cell(
         _cell_log_restart_miss('amorphous_cell', work_dir=work_dir)
 
     utils.radon_print('[PACK] Building amorphous cell by random molecular placement.', level=1)
-
-    # ------------------------------------------------------------------
-    # yadonpy: cache per-molecule GROMACS artifacts early.
-    # ------------------------------------------------------------------
-    _cache_artifacts_best_effort(mols, prefer_var=True)
-
 
     # ------------------------------------------------------------------
     # yadonpy extension: per-species charge scaling specification.

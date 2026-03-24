@@ -998,8 +998,8 @@ class GAFF():
 
     def empirical_angle_param(self, mol, a, b, c):
 
-        param_C = {'H':0.000, 'C':1.339, 'N':1.300, 'O':1.249, 'F':0.000, 'Cl':0.000, 'Br':0.000, 'I':0.000, 'P':0.906, 'S':1.448}
-        param_Z = {'H':0.784, 'C':1.183, 'N':1.212, 'O':1.219, 'F':1.166, 'Cl':1.272, 'Br':1.378, 'I':1.398, 'P':1.620, 'S':1.280}
+        param_C = {'H':0.000, 'C':1.339, 'N':1.300, 'O':1.249, 'F':0.000, 'Cl':0.000, 'Br':0.000, 'I':0.000, 'P':0.906, 'S':1.448, 'Si':0.894}
+        param_Z = {'H':0.784, 'C':1.183, 'N':1.212, 'O':1.219, 'F':1.166, 'Cl':1.272, 'Br':1.378, 'I':1.398, 'P':1.620, 'S':1.280, 'Si':1.016}
 
         emp_theta = None
         emp_k_ang = None
@@ -1017,6 +1017,11 @@ class GAFF():
         if b.GetSymbol() in ['H', 'F', 'Cl', 'Br', 'I']:
             utils.radon_print(('Can not estimate parameters of this angle %s,%s,%s' % (pt1, pt, pt2)), level=2)
             return False
+
+        for atom in (a, b, c):
+            if atom.GetSymbol() not in param_C or atom.GetSymbol() not in param_Z:
+                utils.radon_print(('Can not estimate parameters of this angle %s,%s,%s' % (pt1, pt, pt2)), level=2)
+                return False
 
         # Estimate theta0
         if at1 not in self.param.at or at2 not in self.param.at or bt1 not in self.param.bt or bt2 not in self.param.bt:

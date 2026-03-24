@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 from pathlib import Path
 
@@ -26,6 +27,7 @@ from yadonpy.ff import GAFF2, MERZ
 from yadonpy.interface import (
     InterfaceBuilder,
     InterfaceDynamics,
+    build_bulk_equilibrium_profile,
     equilibrate_bulk_with_eq21,
     format_cell_charge_audit,
     make_orthorhombic_pack_cell,
@@ -114,9 +116,6 @@ electrolyte_probe_density_g_cm3 = 1.00
 electrolyte_probe_volume_scale = 2.30
 electrolyte_probe_pack_density_g_cm3 = 0.42
 electrolyte_probe_z_padding_factor = 1.25
-electrolyte_resized_pack_density_g_cm3 = 0.22
-electrolyte_resized_z_padding_factor = 1.35
-electrolyte_resized_minimum_pack_z_factor = 3.50
 
 electrolyte_pack_retry = 80
 electrolyte_pack_retry_step = 4000
@@ -151,9 +150,6 @@ if args.profile == "smoke":
     electrolyte_probe_volume_scale = 1.55
     electrolyte_probe_pack_density_g_cm3 = 0.30
     electrolyte_probe_z_padding_factor = 1.30
-    electrolyte_resized_pack_density_g_cm3 = 0.16
-    electrolyte_resized_z_padding_factor = 1.45
-    electrolyte_resized_minimum_pack_z_factor = 4.00
     electrolyte_pack_retry = 40
     electrolyte_pack_retry_step = 1200
     electrolyte_pack_threshold_ang = 1.60
@@ -171,7 +167,7 @@ if args.profile == "smoke":
         "eq21_pre_nvt_ps": 2.0,
         "sim_time": 0.05,
     }
-    probe_fixed_xy_npt_ns = 0.1
+    probe_fixed_xy_npt_ns = 0.5
     recipe_pre_contact_ps = 10.0
     recipe_density_relax_ps = 20.0
     recipe_contact_ps = 20.0
@@ -194,6 +190,45 @@ if __name__ == "__main__":
     print("[CONFIG] cpu_budget:", {"detected": resources.cpu_total, "cap": resources.cpu_cap})
 
     mol2_dir = work_dir / "00_molecules"
+    workflow_summary_path = work_dir / "workflow_summary.json"
+    workflow_summary = {
+        "profile": args.profile,
+        "restart": restart,
+        "stop_after": args.stop_after,
+        "status": "running",
+        "resources": {"mpi": mpi, "omp": omp, "gpu": gpu, "gpu_id": gpu_id, "omp_psi4": omp_psi4},
+        "cpu_budget": {"detected": resources.cpu_total, "cap": resources.cpu_cap},
+        "targets": {
+            "n_CMC": n_CMC,
+            "dp": dp,
+            "salt_molarity_M": salt_molarity_M,
+            "solvent_mass_ratio": solvent_mass_ratio,
+            "min_salt_pairs": min_salt_pairs,
+            "interface_gap_nm": interface_gap_nm,
+            "interface_vacuum_nm": interface_vacuum_nm,
+            "interface_bottom_thickness_nm": interface_bottom_thickness_nm,
+            "interface_top_thickness_nm": interface_top_thickness_nm,
+        },
+    }
+    if restart and workflow_summary_path.exists():
+        try:
+            existing_summary = json.loads(workflow_summary_path.read_text(encoding="utf-8"))
+            if isinstance(existing_summary, dict):
+                existing_summary.update(workflow_summary)
+                workflow_summary = existing_summary
+        except Exception:
+            pass
+    workflow_summary["work_dirs"] = {
+        "molecules": str(work_dir / "00_molecules"),
+        "polymer_bulk": str(work_dir / "ac_CMC"),
+        "probe_bulk": str(work_dir / "probe_electrolyte"),
+        "electrolyte_bulk": str(work_dir / "ac_electrolyte"),
+        "interface_build": str(work_dir / "interface_route_b"),
+        "interface_md": str(work_dir / "interface_route_b_md"),
+    }
+    workflow_summary.setdefault("phases", {})
+    workflow_summary_path.write_text(json.dumps(workflow_summary, indent=2) + "\n", encoding="utf-8")
+
     ac_CMC_dir = work_dir.child("ac_CMC")
     ac_CMC_build_dir = ac_CMC_dir.child("00_build_cell")
     probe_electrolyte_dir = work_dir.child("probe_electrolyte")
@@ -204,25 +239,25 @@ if __name__ == "__main__":
     interface_md_dir = work_dir.child("interface_route_b_md")
 
     glucose = ff.mol(glucose_smiles)
-    glucose = ff.ff_assign(glucose)
+    glucose = ff.ff_assign(glucose, report=False)
     if not glucose:
         raise RuntimeError("Can not assign force field parameters for glucose.")
     write_mol2(mol=glucose, out_dir=mol2_dir)
 
     glucose_2 = ff.mol(glucose_2_smiles)
-    glucose_2 = ff.ff_assign(glucose_2)
+    glucose_2 = ff.ff_assign(glucose_2, report=False)
     if not glucose_2:
         raise RuntimeError("Can not assign force field parameters for glucose_2.")
     write_mol2(mol=glucose_2, out_dir=mol2_dir)
 
     glucose_3 = ff.mol(glucose_3_smiles)
-    glucose_3 = ff.ff_assign(glucose_3)
+    glucose_3 = ff.ff_assign(glucose_3, report=False)
     if not glucose_3:
         raise RuntimeError("Can not assign force field parameters for glucose_3.")
     write_mol2(mol=glucose_3, out_dir=mol2_dir)
 
     glucose_6 = ff.mol(glucose_6_smiles)
-    glucose_6 = ff.ff_assign(glucose_6)
+    glucose_6 = ff.ff_assign(glucose_6, report=False)
     if not glucose_6:
         raise RuntimeError("Can not assign force field parameters for glucose_6.")
     write_mol2(mol=glucose_6, out_dir=mol2_dir)
@@ -253,44 +288,44 @@ if __name__ == "__main__":
         work_dir=cmc_rw_dir,
     )
     CMC = poly.terminate_rw(CMC, ter1, name="CMC", work_dir=cmc_term_dir)
-    CMC = ff.ff_assign(CMC)
+    CMC = ff.ff_assign(CMC, report=False)
     if not CMC:
         raise RuntimeError("Can not assign force field parameters for CMC.")
     write_mol2(mol=CMC, out_dir=mol2_dir)
 
     EC = ff.mol(EC_smiles)
-    EC = ff.ff_assign(EC)
+    EC = ff.ff_assign(EC, report=False)
     if not EC:
         raise RuntimeError("Can not assign force field parameters for EC.")
     write_mol2(mol=EC, out_dir=mol2_dir)
 
     DEC = ff.mol(DEC_smiles)
-    DEC = ff.ff_assign(DEC)
+    DEC = ff.ff_assign(DEC, report=False)
     if not DEC:
         raise RuntimeError("Can not assign force field parameters for DEC.")
     write_mol2(mol=DEC, out_dir=mol2_dir)
 
     EMC = ff.mol(EMC_smiles)
-    EMC = ff.ff_assign(EMC)
+    EMC = ff.ff_assign(EMC, report=False)
     if not EMC:
         raise RuntimeError("Can not assign force field parameters for EMC.")
     write_mol2(mol=EMC, out_dir=mol2_dir)
 
     Li = ion_ff.mol(Li_smiles)
-    Li = ion_ff.ff_assign(Li)
+    Li = ion_ff.ff_assign(Li, report=False)
     if not Li:
         raise RuntimeError("Can not assign force field parameters for Li.")
     write_mol2(mol=Li, out_dir=mol2_dir)
 
     Na = ion_ff.mol(Na_smiles)
-    Na = ion_ff.ff_assign(Na)
+    Na = ion_ff.ff_assign(Na, report=False)
     if not Na:
         raise RuntimeError("Can not assign force field parameters for Na.")
     write_mol2(mol=Na, out_dir=mol2_dir)
 
     try:
         PF6 = ff.mol(PF6_smiles, charge="RESP", require_ready=True, prefer_db=True)
-        PF6 = ff.ff_assign(PF6, bonded="DRIH")
+        PF6 = ff.ff_assign(PF6, bonded="DRIH", report=False)
     except Exception as exc:
         raise RuntimeError(
             "PF6 is expected to be precomputed in MolDB for Example 12. "
@@ -338,8 +373,24 @@ if __name__ == "__main__":
         eq21_exec_kwargs=bulk_eq21_exec_kwargs,
     )
     cmc_box_nm = read_equilibrated_box_nm(work_dir=ac_CMC_dir)
+    cmc_profile = build_bulk_equilibrium_profile(
+        counts=[n_CMC, n_Na],
+        mol_weights=[mw_CMC, mw_Na],
+        species_names=["CMC", "Na"],
+        work_dir=ac_CMC_dir,
+    )
+    workflow_summary["polymer_bulk"] = {
+        "work_dir": str(ac_CMC_dir),
+        "box_nm": tuple(round(float(x), 6) for x in cmc_box_nm),
+        "density_g_cm3": round(float(cmc_profile.density_g_cm3), 6),
+        "counts": {"CMC": int(n_CMC), "Na": int(n_Na)},
+    }
+    workflow_summary["phases"]["polymer_bulk"] = "done"
+    workflow_summary_path.write_text(json.dumps(workflow_summary, indent=2) + "\n", encoding="utf-8")
 
     if args.stop_after == "polymer_bulk":
+        workflow_summary["status"] = "stopped_after_polymer_bulk"
+        workflow_summary_path.write_text(json.dumps(workflow_summary, indent=2) + "\n", encoding="utf-8")
         print("[INFO] stop_after=polymer_bulk reached.")
         raise SystemExit(0)
 
@@ -367,6 +418,13 @@ if __name__ == "__main__":
     )
     for note in probe_interface_prep.notes:
         print("[PLAN]", note)
+    workflow_summary["probe_plan"] = {
+        "probe_box_nm": tuple(round(float(x), 6) for x in probe_interface_prep.probe_prep.probe_box_nm),
+        "target_box_nm": tuple(round(float(x), 6) for x in probe_interface_prep.interface_plan.electrolyte_target_box_nm),
+        "counts": dict(zip(probe_interface_prep.probe_prep.direct_plan.species_names, probe_interface_prep.probe_prep.direct_plan.target_counts)),
+        "notes": list(probe_interface_prep.notes),
+    }
+    workflow_summary_path.write_text(json.dumps(workflow_summary, indent=2) + "\n", encoding="utf-8")
 
     ac_electrolyte_probe = poly.amorphous_cell(
         [EC, DEC, EMC, Li, PF6],
@@ -394,8 +452,23 @@ if __name__ == "__main__":
         additional_loops=bulk_additional_loops,
         eq21_exec_kwargs=bulk_eq21_exec_kwargs,
     )
+    probe_profile = build_bulk_equilibrium_profile(
+        counts=list(probe_interface_prep.probe_prep.direct_plan.target_counts),
+        mol_weights=[mw_EC, mw_DEC, mw_EMC, mw_Li, mw_PF6],
+        species_names=list(probe_interface_prep.probe_prep.direct_plan.species_names),
+        work_dir=probe_electrolyte_dir,
+    )
+    workflow_summary["probe_bulk"] = {
+        "work_dir": str(probe_electrolyte_dir),
+        "box_nm": tuple(round(float(x), 6) for x in probe_profile.box_nm),
+        "density_g_cm3": round(float(probe_profile.density_g_cm3), 6),
+    }
+    workflow_summary["phases"]["probe_bulk"] = "done"
+    workflow_summary_path.write_text(json.dumps(workflow_summary, indent=2) + "\n", encoding="utf-8")
 
     if args.stop_after == "probe_bulk":
+        workflow_summary["status"] = "stopped_after_probe_bulk"
+        workflow_summary_path.write_text(json.dumps(workflow_summary, indent=2) + "\n", encoding="utf-8")
         print("[INFO] stop_after=probe_bulk reached.")
         raise SystemExit(0)
 
@@ -410,13 +483,17 @@ if __name__ == "__main__":
         salt_pair_indices=(3, 4),
         min_solvent_counts=(1, 1, 1),
         min_salt_pairs=min_salt_pairs,
-        initial_pack_density_g_cm3=electrolyte_resized_pack_density_g_cm3,
-        z_padding_factor=electrolyte_resized_z_padding_factor,
-        minimum_pack_z_factor=electrolyte_resized_minimum_pack_z_factor,
         pressure_bar=press,
     )
     for note in resized_interface_prep.notes:
         print("[PLAN]", note)
+    workflow_summary["resized_plan"] = {
+        "target_box_nm": tuple(round(float(x), 6) for x in resized_interface_prep.interface_plan.electrolyte_target_box_nm),
+        "initial_pack_box_nm": tuple(round(float(x), 6) for x in resized_interface_prep.resized_prep.pack_plan.initial_pack_box_nm),
+        "counts": dict(zip(resized_interface_prep.resized_prep.resize_plan.species_names, resized_interface_prep.resized_prep.resize_plan.target_counts)),
+        "notes": list(resized_interface_prep.notes),
+    }
+    workflow_summary_path.write_text(json.dumps(workflow_summary, indent=2) + "\n", encoding="utf-8")
 
     ac_electrolyte = poly.amorphous_cell(
         [EC, DEC, EMC, Li, PF6],
@@ -449,8 +526,23 @@ if __name__ == "__main__":
         final_npt_mdp_overrides=resized_interface_prep.resized_prep.relax_mdp_overrides,
         eq21_exec_kwargs=bulk_eq21_exec_kwargs,
     )
+    electrolyte_profile = build_bulk_equilibrium_profile(
+        counts=list(resized_interface_prep.resized_prep.resize_plan.target_counts),
+        mol_weights=[mw_EC, mw_DEC, mw_EMC, mw_Li, mw_PF6],
+        species_names=list(resized_interface_prep.resized_prep.resize_plan.species_names),
+        work_dir=ac_electrolyte_dir,
+    )
+    workflow_summary["electrolyte_bulk"] = {
+        "work_dir": str(ac_electrolyte_dir),
+        "box_nm": tuple(round(float(x), 6) for x in electrolyte_profile.box_nm),
+        "density_g_cm3": round(float(electrolyte_profile.density_g_cm3), 6),
+    }
+    workflow_summary["phases"]["electrolyte_bulk"] = "done"
+    workflow_summary_path.write_text(json.dumps(workflow_summary, indent=2) + "\n", encoding="utf-8")
 
     if args.stop_after == "electrolyte_bulk":
+        workflow_summary["status"] = "stopped_after_electrolyte_bulk"
+        workflow_summary_path.write_text(json.dumps(workflow_summary, indent=2) + "\n", encoding="utf-8")
         print("[INFO] stop_after=electrolyte_bulk reached.")
         raise SystemExit(0)
 
@@ -470,6 +562,12 @@ if __name__ == "__main__":
     )
     for note in recipe.notes:
         print("[ROUTE]", note)
+    workflow_summary["interface_recipe"] = {
+        "route": recipe.route_spec.route,
+        "notes": list(recipe.notes),
+        "stages": [stage.name for stage in recipe.protocol.stages()],
+    }
+    workflow_summary_path.write_text(json.dumps(workflow_summary, indent=2) + "\n", encoding="utf-8")
 
     built = InterfaceBuilder(work_dir=interface_dir).build_from_bulk_workdirs(
         name="CMC_vs_LiPF6_electrolyte",
@@ -479,8 +577,18 @@ if __name__ == "__main__":
         top_work_dir=ac_electrolyte_dir,
         route=recipe.route_spec,
     )
+    workflow_summary["interface_build"] = {
+        "system_gro": str(built.system_gro),
+        "system_top": str(built.system_top),
+        "system_ndx": str(built.system_ndx),
+        "system_meta": str(built.system_meta),
+    }
+    workflow_summary["phases"]["interface_build"] = "done"
+    workflow_summary_path.write_text(json.dumps(workflow_summary, indent=2) + "\n", encoding="utf-8")
 
     if args.stop_after == "interface_build":
+        workflow_summary["status"] = "stopped_after_interface_build"
+        workflow_summary_path.write_text(json.dumps(workflow_summary, indent=2) + "\n", encoding="utf-8")
         print("[INFO] stop_after=interface_build reached.")
         print("  GRO:", built.system_gro)
         print("  TOP:", built.system_top)
@@ -494,6 +602,13 @@ if __name__ == "__main__":
         gpu=gpu,
         gpu_id=gpu_id,
     )
+    workflow_summary["interface_md"] = {
+        "work_dir": str(interface_md_dir),
+        "final_interface_gro": str(final_interface_gro),
+    }
+    workflow_summary["phases"]["interface_md"] = "done"
+    workflow_summary["status"] = "done"
+    workflow_summary_path.write_text(json.dumps(workflow_summary, indent=2) + "\n", encoding="utf-8")
 
     print("[INFO] Example 12 finished.")
     print("  CMC formal charge per chain:", q_poly)

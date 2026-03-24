@@ -32,6 +32,16 @@ from ..mdp_templates import (
 from ._util import RunResources, atomic_write_json, load_json, normalize_gro_molecules_inplace, pbc_mol_fix_inplace, safe_mkdir
 
 
+def _file_signature(path: Path | None) -> dict | None:
+    if path is None:
+        return None
+    try:
+        st = Path(path).stat()
+        return {"path": str(path), "size": int(st.st_size), "mtime": float(st.st_mtime)}
+    except FileNotFoundError:
+        return {"path": str(path), "missing": True}
+
+
 @dataclass(frozen=True)
 class EqStage:
     """One stage in a multi-stage equilibration."""
@@ -55,6 +65,7 @@ class EquilibrationJob:
         gro: Path,
         top: Path,
         ndx: Optional[Path] = None,
+        provenance_ndx: Optional[Path] = None,
         out_dir: Path,
         stages: Sequence[EqStage],
         runner: Optional[GromacsRunner] = None,
@@ -64,6 +75,7 @@ class EquilibrationJob:
         self.gro = gro
         self.top = top
         self.ndx = ndx
+        self.provenance_ndx = provenance_ndx if provenance_ndx is not None else ndx
         self.out_dir = out_dir
         self.stages = list(stages)
         self.runner = runner or GromacsRunner()
@@ -115,6 +127,27 @@ class EquilibrationJob:
         if len(vals) >= 3:
             return (vals[0], vals[1], vals[2])
         return None
+
+    @staticmethod
+    def _gro_atom_count(gro: Path) -> int | None:
+        try:
+            lines = Path(gro).read_text(encoding="utf-8", errors="replace").splitlines()
+        except Exception:
+            return None
+        if len(lines) < 2:
+            return None
+        try:
+            return int(lines[1].strip())
+        except Exception:
+            return None
+
+    @staticmethod
+    def _cleanup_stage_backups(stage_dir: Path, *, deffnm: str = "md") -> None:
+        for artifact in stage_dir.glob(f"#{deffnm}*#"):
+            try:
+                artifact.unlink()
+            except Exception:
+                pass
 
     @staticmethod
     def _apply_box_safe_cutoffs(mdp: MdpSpec, *, gro: Path) -> tuple[MdpSpec, dict[str, object] | None]:
@@ -325,6 +358,17 @@ class EquilibrationJob:
         self._item("resources", f"ntmpi={self.resources.ntmpi} | ntomp={self.resources.ntomp} | gpu={bool(self.resources.use_gpu)} | gpu_id={self.resources.gpu_id}")
         summary_path = out / "summary.json"
         summary: dict = load_json(summary_path) or {"job": "EquilibrationJob", "out_dir": str(out), "stages": []}
+        summary["provenance"] = {
+            "input_gro_sig": _file_signature(self.gro),
+            "input_top_sig": _file_signature(self.top),
+            "input_ndx_sig": _file_signature(self.provenance_ndx),
+            "resources": {
+                "ntmpi": self.resources.ntmpi,
+                "ntomp": self.resources.ntomp,
+                "gpu": bool(self.resources.use_gpu),
+                "gpu_id": self.resources.gpu_id,
+            },
+        }
 
         current_gro = self.gro
         current_cpt: Optional[Path] = None
@@ -447,6 +491,19 @@ class EquilibrationJob:
                 return prepared_mdp.write(stage_dir / filename)
 
             stage_has_outputs = bool(out_gro.exists())
+            if not rst_flag:
+                # Fresh rebuild requested: do not reuse any per-stage artifacts.
+                # Clear the whole stage directory up front so GROMACS will not create
+                # #md.log.# backups against outputs generated from stale inputs.
+                for p in list(stage_dir.iterdir()):
+                    try:
+                        if p.is_dir():
+                            shutil.rmtree(p, ignore_errors=True)
+                        else:
+                            p.unlink()
+                    except Exception:
+                        pass
+                stage_has_outputs = False
 
             # ----------------------
             # GPU policy per stage
@@ -735,12 +792,21 @@ class EquilibrationJob:
             # ----------------------
             # For visualization/interoperability, convert the final stage gro to mol2 using the stage topology.
             # This is best-effort and will not fail the workflow if conversion is unavailable.
-            mol2_path = write_mol2_from_top_gro_parmed(
-                top_path=self.top,
-                gro_path=out_gro,
-                out_mol2=stage_dir / f"{deffnm}.mol2",
-                overwrite=True,
-            )
+            mol2_path = None
+            mol2_skipped = None
+            atom_count = self._gro_atom_count(out_gro)
+            if atom_count is not None and atom_count > 99999:
+                mol2_skipped = f"skipped stage mol2 export for large system ({atom_count} atoms)"
+                self._log(f"[INFO] {mol2_skipped}")
+            else:
+                mol2_path = write_mol2_from_top_gro_parmed(
+                    top_path=self.top,
+                    gro_path=out_gro,
+                    out_mol2=stage_dir / f"{deffnm}.mol2",
+                    overwrite=True,
+                )
+
+            self._cleanup_stage_backups(stage_dir, deffnm=deffnm)
 
 
 
@@ -752,6 +818,7 @@ class EquilibrationJob:
                 "gro": str(current_gro),
                 "edr": str(stage_dir / f"{deffnm}.edr") if (stage_dir / f"{deffnm}.edr").exists() else None,
                 "mol2": str(mol2_path) if mol2_path else None,
+                "mol2_skipped": mol2_skipped,
                 "pbc_mol": {
                     "gro": pbc_gro,
                     "xtc": pbc_xtc,

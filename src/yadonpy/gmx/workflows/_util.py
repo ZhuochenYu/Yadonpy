@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
@@ -258,13 +259,7 @@ def pbc_mol_fix_inplace(
     if (not tpr.exists()) or (not traj_or_gro.exists()):
         return {"applied": False, "error": "missing tpr or input file"}
 
-    # Keep a copy of the PBC-corrected file *alongside* the original.
-    # Users often want to run post-analysis (e.g., MSD) on the corrected
-    # trajectory while keeping the raw output for debugging.
-    #
-    # Example:
-    #   md.xtc -> md.xtc.pbc_tmp.xtc
-    #   md.gro -> md.gro.pbc_tmp.gro
+    keep_copy = str(os.environ.get("YADONPY_KEEP_PBC_COPY", "")).strip().lower() in {"1", "true", "yes", "on"}
     tmp = traj_or_gro.with_name(traj_or_gro.name + ".pbc_tmp" + traj_or_gro.suffix)
     try:
         runner.trjconv(
@@ -296,7 +291,13 @@ def pbc_mol_fix_inplace(
         except Exception:
             # Best-effort: keep tmp even if in-place overwrite fails.
             pass
-        return {"applied": True, "error": None, "pbc_copy": str(tmp)}
+        pbc_copy = str(tmp) if keep_copy else None
+        if not keep_copy:
+            try:
+                tmp.unlink()
+            except Exception:
+                pass
+        return {"applied": True, "error": None, "pbc_copy": pbc_copy}
     except Exception as e:
         try:
             if tmp.exists():

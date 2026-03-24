@@ -322,6 +322,7 @@ class SystemExportResult:
     system_meta: Path
     box_nm: float
     species: list[dict]
+    box_lengths_nm: tuple[float, float, float] | None = None
 
 
 @dataclass(frozen=True)
@@ -358,6 +359,64 @@ def _flush_gro_lines(handle, line_buffer: list[str]) -> None:
     if line_buffer:
         handle.write(''.join(line_buffer))
         line_buffer.clear()
+
+
+def _normalize_box_lengths_nm(values: Any) -> tuple[float, float, float] | None:
+    if values is None:
+        return None
+    if isinstance(values, (list, tuple)) and len(values) >= 3:
+        try:
+            return (float(values[0]), float(values[1]), float(values[2]))
+        except Exception:
+            return None
+    try:
+        edge = float(values)
+    except Exception:
+        return None
+    if edge <= 0.0:
+        return None
+    return (edge, edge, edge)
+
+
+def _read_gro_box_lengths_nm(path: Path) -> tuple[float, float, float] | None:
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        if len(lines) < 3:
+            return None
+        parts = lines[-1].split()
+        if len(parts) < 3:
+            return None
+        return (float(parts[0]), float(parts[1]), float(parts[2]))
+    except Exception:
+        return None
+
+
+def _cell_box_lengths_nm_from_rdkit(cell_mol) -> tuple[float, float, float] | None:
+    try:
+        cell = getattr(cell_mol, "cell", None)
+        if cell is None:
+            return None
+        return (
+            0.1 * (float(cell.xhi) - float(cell.xlo)),
+            0.1 * (float(cell.yhi) - float(cell.ylo)),
+            0.1 * (float(cell.zhi) - float(cell.zlo)),
+        )
+    except Exception:
+        return None
+
+
+def _cell_box_origin_nm_from_rdkit(cell_mol) -> tuple[float, float, float] | None:
+    try:
+        cell = getattr(cell_mol, "cell", None)
+        if cell is None:
+            return None
+        return (
+            0.1 * float(cell.xlo),
+            0.1 * float(cell.ylo),
+            0.1 * float(cell.zlo),
+        )
+    except Exception:
+        return None
 
 
 def _read_gro_single_molecule(gro_path: Path) -> Tuple[List[str], np.ndarray]:
@@ -926,13 +985,29 @@ def export_system_from_cell_meta(
 
     # Optionally leverage molecules embedded in the cell itself as artifacts, when they
     # already carry force-field typing (e.g., pre-parameterized polymer chains).
+    #
+    # Important for large mixed cells:
+    #   `Chem.GetMolFrags(..., asMols=True)` duplicates every fragment molecule and can
+    #   dominate the export cost. Most modern restart/export paths already have cached
+    #   per-species artifacts in metadata, so fragment extraction should stay lazy and
+    #   only run when those cached artifacts are unavailable.
     frag_mols = None
+    frag_mols_loaded = False
     frag_cursor = 0
-    if Chem is not None:
+
+    def _ensure_frag_mols() -> list[Chem.Mol] | None:
+        nonlocal frag_mols, frag_mols_loaded
+        if frag_mols_loaded:
+            return frag_mols
+        frag_mols_loaded = True
+        if Chem is None:
+            frag_mols = None
+            return frag_mols
         try:
             frag_mols = list(Chem.GetMolFrags(cell_mol, asMols=True, sanitizeFrags=False))
         except Exception:
             frag_mols = None
+        return frag_mols
 
     species: list[dict] = []
     # Resolve/create per-species artifacts
@@ -941,6 +1016,8 @@ def export_system_from_cell_meta(
         n = int(sp.get("n", 0))
         if not smiles or n <= 0:
             continue
+        frag_start = frag_cursor
+        frag_cursor += n
 
         species_ff_name = str(sp.get("ff_name") or ff_name).strip() or str(ff_name)
 
@@ -1042,17 +1119,17 @@ def export_system_from_cell_meta(
         # Representative fragment molecule from the cell (if available), to preserve atom ordering
         # and reuse pre-typed FF information.
         rep_mol = None
-        if frag_mols is not None:
-            if frag_cursor + n <= len(frag_mols):
-                cand = frag_mols[frag_cursor]
+        frag_list = _ensure_frag_mols()
+        if frag_list is not None:
+            if frag_start + n <= len(frag_list):
+                cand = frag_list[frag_start]
                 ok = True
                 for j in range(n):
-                    if frag_mols[frag_cursor + j].GetNumAtoms() != cand.GetNumAtoms():
+                    if frag_list[frag_start + j].GetNumAtoms() != cand.GetNumAtoms():
                         ok = False
                         break
                 if ok and (natoms_meta <= 0 or cand.GetNumAtoms() == natoms_meta):
                     rep_mol = cand
-            frag_cursor += n
 
         rep_has_ff = False
         if rep_mol is not None:
@@ -1392,6 +1469,9 @@ def export_system_from_cell_meta(
     # possible, and only fall back to synthetic packing when the cell lacks usable
     # 3D coordinates.
     box_nm = _estimate_box_nm(species, density_g_cm3)
+    box_lengths_nm = _cell_box_lengths_nm_from_rdkit(cell_mol) or (float(box_nm), float(box_nm), float(box_nm))
+    box_vec_nm = np.asarray(box_lengths_nm, dtype=float)
+    cell_origin_nm = _cell_box_origin_nm_from_rdkit(cell_mol)
     system_gro = out_dir / "system.gro"
     species_templates, nat_total = _load_gro_species_templates(species, mol_names, mol_gro_paths)
     if system_gro_template is not None and system_gro_template.is_file():
@@ -1460,8 +1540,9 @@ def export_system_from_cell_meta(
                         mn = big_min * to_nm
                         mx = big_max * to_nm
                         span = mx - mn
-                        span_max = float(np.max(span)) if float(np.max(span)) > 1e-9 else 1.0
-                        scale = float(box_nm) / span_max
+                        have_explicit_box = cell_origin_nm is not None and np.all(box_vec_nm > 0.0)
+                        span_safe = np.where(span > 1.0e-9, span, 1.0)
+                        scale_vec = np.where(span > 1.0e-9, box_vec_nm / span_safe, 1.0)
 
                         for tpl in species_templates:
                             sp = tpl.species
@@ -1495,8 +1576,11 @@ def export_system_from_cell_meta(
                                     raise RuntimeError(
                                         f"Packed cell coordinates mismatch for {name}: got {c.shape[0]} atoms, expect {nat_expect}."
                                     )
-                                coords = (c * to_nm - mn) * scale
-                                coords = coords % box_nm
+                                if have_explicit_box:
+                                    coords = (c * to_nm) - np.asarray(cell_origin_nm, dtype=float)
+                                else:
+                                    coords = (c * to_nm - mn) * scale_vec
+                                coords = np.mod(coords, box_vec_nm)
                                 resname = (name[:5] if name else "MOL")
                                 for a_name, (x, y, z) in zip(tpl.atom_names, coords):
                                     _buffer_line(
@@ -1525,8 +1609,14 @@ def export_system_from_cell_meta(
 
                         ok = False
                         for _t in range(max_place_trials):
-                            shift = np.array([random.random() * box_nm, random.random() * box_nm, random.random() * box_nm])
-                            coords_try = (coords + shift) % box_nm
+                            shift = np.array(
+                                [
+                                    random.random() * float(box_vec_nm[0]),
+                                    random.random() * float(box_vec_nm[1]),
+                                    random.random() * float(box_vec_nm[2]),
+                                ]
+                            )
+                            coords_try = np.mod(coords + shift, box_vec_nm)
                             if placed_xyz.shape[0] == 0:
                                 ok = True
                                 coords = coords_try
@@ -1537,7 +1627,17 @@ def export_system_from_cell_meta(
                                 coords = coords_try
                                 break
                         if not ok:
-                            coords = (coords + np.array([random.random() * box_nm, random.random() * box_nm, random.random() * box_nm])) % box_nm
+                            coords = np.mod(
+                                coords
+                                + np.array(
+                                    [
+                                        random.random() * float(box_vec_nm[0]),
+                                        random.random() * float(box_vec_nm[1]),
+                                        random.random() * float(box_vec_nm[2]),
+                                    ]
+                                ),
+                                box_vec_nm,
+                            )
 
                         placed_xyz = np.vstack([placed_xyz, coords])
                         resname = (name[:5] if name else "MOL")
@@ -1550,7 +1650,7 @@ def export_system_from_cell_meta(
                         res_counter += 1
 
             _flush_gro_lines(f, line_buffer)
-            f.write(f"{box_nm:10.5f}{box_nm:10.5f}{box_nm:10.5f}\n")
+            f.write(f"{float(box_vec_nm[0]):10.5f}{float(box_vec_nm[1]):10.5f}{float(box_vec_nm[2]):10.5f}\n")
 
     # ---------------
     # Best-effort: write a **system-level** MOL2 for the packed box (visualization/interoperability)
@@ -1596,7 +1696,12 @@ def export_system_from_cell_meta(
 
     # system meta (for robust SMILES<->moltype mapping in analysis)
     system_meta = out_dir / "system_meta.json"
-    payload = {"species": species, "box_nm": float(box_nm)}
+    actual_box_lengths_nm = _read_gro_box_lengths_nm(system_gro) or tuple(float(x) for x in box_vec_nm)
+    payload = {
+        "species": species,
+        "box_nm": float(max(actual_box_lengths_nm)),
+        "box_lengths_nm": [float(x) for x in actual_box_lengths_nm],
+    }
     if charge_fix_info is not None:
         payload["export_charge_correction"] = charge_fix_info
     system_meta.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
@@ -1607,6 +1712,7 @@ def export_system_from_cell_meta(
         system_ndx=system_ndx,
         molecules_dir=molecules_dir,
         system_meta=system_meta,
-        box_nm=float(box_nm),
+        box_nm=float(max(actual_box_lengths_nm)),
         species=species,
+        box_lengths_nm=tuple(float(x) for x in actual_box_lengths_nm),
     )

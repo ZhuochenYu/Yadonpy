@@ -200,27 +200,38 @@ class ResumeManager:
     def _outputs_exist(outputs: Sequence[Path]) -> bool:
         return all(Path(p).exists() for p in outputs)
 
-    def is_done(self, spec: StepSpec) -> bool:
+    def reuse_status(self, spec: StepSpec) -> str:
+        """Return a small status label describing whether a step can be reused."""
         outputs_ok = self._outputs_exist(spec.outputs)
         if not outputs_ok:
-            return False
-        # If resume is disabled programmatically, treat as not done.
+            return "missing_outputs"
         if not self.enabled:
-            return False
-        # If resume is disabled by env var, treat as not done.
+            return "resume_disabled"
         if self.disable_resume():
-            return False
+            return "resume_env_disabled"
         rec = self._state.get("steps", {}).get(spec.name)
         if not rec:
-            # outputs exist but no record: accept as done unless strict_inputs.
-            return not self.strict_inputs
+            return "done" if not self.strict_inputs else "no_record"
         if rec.get("status") != "done":
-            return False
+            return "not_done"
         if self.strict_inputs:
             want = inputs_hash(spec.inputs)
-            return rec.get("inputs_hash") == want
-        # Non-strict: only check outputs.
-        return True
+            have = rec.get("inputs_hash")
+            if have != want:
+                return "inputs_mismatch"
+        return "done"
+
+    def needs_fresh_run(self, spec: StepSpec) -> bool:
+        """Whether stale artifacts exist and the step should rebuild from scratch."""
+        status = self.reuse_status(spec)
+        if status == "done":
+            return False
+        rec = self._state.get("steps", {}).get(spec.name)
+        outputs_ok = self._outputs_exist(spec.outputs)
+        return bool(rec or outputs_ok)
+
+    def is_done(self, spec: StepSpec) -> bool:
+        return self.reuse_status(spec) == "done"
 
     def mark_done(self, spec: StepSpec, *, meta: Optional[Dict[str, Any]] = None) -> None:
         self._state.setdefault("steps", {})
@@ -244,6 +255,33 @@ class ResumeManager:
             "meta": meta or {},
         }
         self._save_state()
+
+    def invalidate_steps(
+        self,
+        *,
+        names: Sequence[str] = (),
+        prefixes: Sequence[str] = (),
+    ) -> list[str]:
+        """Forget cached step records so downstream stages must rebuild.
+
+        This only mutates the lightweight resume state; it intentionally does
+        not delete any scientific artifacts on disk. Callers can decide whether
+        stale folders should also be cleaned when the invalidated step reruns.
+        """
+        wanted_names = {str(name) for name in names}
+        wanted_prefixes = tuple(str(prefix) for prefix in prefixes if str(prefix))
+        if not wanted_names and not wanted_prefixes:
+            return []
+
+        steps = self._state.setdefault("steps", {})
+        removed: list[str] = []
+        for key in list(steps.keys()):
+            if key in wanted_names or any(key.startswith(prefix) for prefix in wanted_prefixes):
+                steps.pop(key, None)
+                removed.append(key)
+        if removed:
+            self._save_state()
+        return removed
 
     def run(
         self,

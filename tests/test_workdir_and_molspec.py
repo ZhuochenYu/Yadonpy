@@ -454,7 +454,37 @@ def test_export_system_accepts_explicit_cell_density_none(tmp_path: Path):
 
     assert out.system_top.exists()
     assert out.system_gro.exists()
-    assert out.box_nm >= 2.0
+    assert out.box_nm == pytest.approx(0.3, abs=1.0e-6)
+    assert out.box_lengths_nm == pytest.approx((0.3, 0.3, 0.3), abs=1.0e-6)
+    system_meta = json.loads(out.system_meta.read_text(encoding='utf-8'))
+    assert tuple(system_meta['box_lengths_nm']) == pytest.approx((0.3, 0.3, 0.3), abs=1.0e-6)
+
+
+def test_export_system_skips_fragment_materialization_when_cached_artifacts_exist(tmp_path: Path, monkeypatch):
+    import yadonpy.io.gromacs_system as gsys
+
+    ff = GAFF2_mod()
+    solvent = ff.mol('CCO', require_ready=False, prefer_db=False, name='solvent_A')
+    assert ff.ff_assign(solvent, report=False)
+
+    ac = poly.amorphous_cell([solvent], [3], density=0.2, retry=1, retry_step=20, work_dir=tmp_path / 'cell')
+
+    def _unexpected_get_fragments(*args, **kwargs):
+        raise AssertionError('fragment materialization should stay lazy when cached artifacts are available')
+
+    monkeypatch.setattr(gsys.Chem, 'GetMolFrags', _unexpected_get_fragments)
+
+    out = gsys.export_system_from_cell_meta(
+        cell_mol=ac,
+        out_dir=tmp_path / 'sys',
+        ff_name=ff.name,
+        charge_method='RESP',
+        write_system_mol2=False,
+    )
+
+    assert out.system_top.exists()
+    assert out.system_gro.exists()
+    assert (out.molecules_dir / 'solvent_A' / 'solvent_A.itp').exists()
 
 
 def test_gaff_bonded_override_default_cache_avoids_legacy_workdir_folder(tmp_path: Path, monkeypatch):
@@ -883,6 +913,36 @@ def test_eq21_rebuilds_invalid_cached_system_export(tmp_path: Path, monkeypatch)
     assert exp.system_top.read_text(encoding='utf-8').startswith('[ defaults ]')
 
 
+def test_eq21_forces_fresh_stage_rebuild_when_resume_inputs_change(tmp_path: Path):
+    import yadonpy.sim.preset.eq as eqmod
+
+    ff = GAFF2_mod()
+    solvent = ff.mol('CCO', require_ready=False, prefer_db=False)
+    assert ff.ff_assign(solvent, report=False)
+    ac = poly.amorphous_cell([solvent], [1], density=0.2, retry=1, retry_step=20)
+
+    job = eqmod.EQ21step(ac, work_dir=tmp_path / 'eq')
+    final_gro = tmp_path / 'eq' / '03_EQ21' / '03_EQ21' / 'step_21' / 'md.gro'
+    final_gro.parent.mkdir(parents=True, exist_ok=True)
+    final_gro.write_text('mock\n', encoding='utf-8')
+
+    old_spec = eqmod.StepSpec(
+        name='equilibration_eq21',
+        outputs=[final_gro],
+        inputs={'input_gro_sig': {'path': 'old.gro', 'size': 1, 'mtime': 1.0}},
+    )
+    new_spec = eqmod.StepSpec(
+        name='equilibration_eq21',
+        outputs=[final_gro],
+        inputs={'input_gro_sig': {'path': 'new.gro', 'size': 2, 'mtime': 2.0}},
+    )
+    job._resume.mark_done(old_spec)
+
+    assert job._resume.needs_fresh_run(new_spec) is True
+    assert job._job_restart_flag(new_spec, True) is False
+    assert job._job_restart_flag(new_spec, False) is False
+
+
 def test_exported_system_charge_correction_rewrites_copied_itp(tmp_path: Path):
     from yadonpy.io.gromacs_system import _itp_total_charge, _neutralize_exported_system_charge
 
@@ -978,6 +1038,28 @@ def test_amorphous_cell_uses_stable_cache_when_hashed_restart_cache_misses(tmp_p
 
     def _unexpected_check(*args, **kwargs):
         raise AssertionError('placement should be skipped when stable amorphous_cell cache is reused')
+
+    monkeypatch.setattr(poly, 'check_3d_structure_cell', _unexpected_check)
+    ac2 = poly.amorphous_cell([spec], [2], density=0.2, retry=1, retry_step=20, work_dir=wd)
+
+    assert ac1.GetNumAtoms() == ac2.GetNumAtoms()
+    assert hasattr(ac2, 'cell')
+
+
+def test_amorphous_cell_cache_uses_stable_molecule_identity_when_smiles_renderer_changes(tmp_path: Path, monkeypatch):
+    ff = GAFF2_mod()
+    spec = ff.mol('CCO', require_ready=False, prefer_db=False)
+    assert ff.ff_assign(spec, report=False)
+    spec.SetProp('_yadonpy_molid', 'demo-ethanol')
+
+    wd = workdir(tmp_path / 'cell_cache_stable_id', restart=True)
+    ac1 = poly.amorphous_cell([spec], [2], density=0.2, retry=1, retry_step=20, work_dir=wd)
+
+    monkeypatch.setattr(poly, '_rw_load', lambda *args, **kwargs: None)
+    monkeypatch.setattr(poly.Chem, 'MolToSmiles', lambda *args, **kwargs: 'changed-between-runs')
+
+    def _unexpected_check(*args, **kwargs):
+        raise AssertionError('placement should be skipped when stable molecule identity is available')
 
     monkeypatch.setattr(poly, 'check_3d_structure_cell', _unexpected_check)
     ac2 = poly.amorphous_cell([spec], [2], density=0.2, retry=1, retry_step=20, work_dir=wd)

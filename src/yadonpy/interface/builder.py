@@ -38,7 +38,7 @@ from .postprocess import export_interface_group_catalog
 Axis = Literal["X", "Y", "Z"]
 Route = Literal["route_a", "route_b"]
 _AXIS_TO_INDEX = {"X": 0, "Y": 1, "Z": 2}
-_INTERFACE_BUILD_SCHEMA_VERSION = "0.8.54-interface-build-v3"
+_INTERFACE_BUILD_SCHEMA_VERSION = "0.8.61-interface-build-v4"
 _ROUTE_B_WALL_CLEARANCE_NM = 0.05
 _PARAMETER_SECTION_ORDER = [
     "defaults",
@@ -1196,6 +1196,105 @@ def _fragment_distance_to_window(frag: FragmentRecord, *, axis: Axis, zmin: floa
     return float(min(abs(com - zmin), abs(com - zmax)))
 
 
+def _pick_charge_add_candidate(
+    *,
+    charges: np.ndarray,
+    coms: np.ndarray,
+    natoms: np.ndarray,
+    used_mask: np.ndarray,
+    total_charge: float,
+    zmin: float,
+    zmax: float,
+) -> tuple[int, float, float, float]:
+    best_idx = -1
+    best_abs_total = 1.0e300
+    best_distance = 1.0e300
+    best_natoms = 1.0e300
+    best_abs_charge = -1.0e300
+    for idx in range(charges.shape[0]):
+        if bool(used_mask[idx]):
+            continue
+        frag_charge = float(charges[idx])
+        if abs(frag_charge) <= 1.0e-8:
+            continue
+        if total_charge * frag_charge >= 0.0:
+            continue
+        new_total = float(total_charge + frag_charge)
+        improvement = abs(total_charge) - abs(new_total)
+        if improvement <= 1.0e-8:
+            continue
+        com = float(coms[idx])
+        distance = 0.0
+        if com < zmin:
+            distance = zmin - com
+        elif com > zmax:
+            distance = com - zmax
+        abs_total = abs(new_total)
+        frag_natoms = float(natoms[idx])
+        abs_charge = abs(frag_charge)
+        if (
+            abs_total < best_abs_total
+            or (abs_total == best_abs_total and distance < best_distance)
+            or (abs_total == best_abs_total and distance == best_distance and frag_natoms < best_natoms)
+            or (abs_total == best_abs_total and distance == best_distance and frag_natoms == best_natoms and abs_charge > best_abs_charge)
+        ):
+            best_idx = idx
+            best_abs_total = abs_total
+            best_distance = distance
+            best_natoms = frag_natoms
+            best_abs_charge = abs_charge
+    return best_idx, float(best_abs_total), float(best_distance), float(best_natoms)
+
+
+def _pick_charge_remove_candidate(
+    *,
+    charges: np.ndarray,
+    coms: np.ndarray,
+    natoms: np.ndarray,
+    used_mask: np.ndarray,
+    total_charge: float,
+    zmin: float,
+    zmax: float,
+) -> tuple[int, float, float, float]:
+    selected_count = int(np.count_nonzero(used_mask))
+    if selected_count <= 1:
+        return -1, float("inf"), float("inf"), float("inf")
+    center = 0.5 * (float(zmin) + float(zmax))
+    best_idx = -1
+    best_abs_total = 1.0e300
+    best_natoms = 1.0e300
+    best_abs_charge = 1.0e300
+    best_center_distance = -1.0e300
+    for idx in range(charges.shape[0]):
+        if not bool(used_mask[idx]):
+            continue
+        frag_charge = float(charges[idx])
+        if abs(frag_charge) <= 1.0e-8:
+            continue
+        if total_charge * frag_charge <= 0.0:
+            continue
+        new_total = float(total_charge - frag_charge)
+        improvement = abs(total_charge) - abs(new_total)
+        if improvement <= 1.0e-8:
+            continue
+        abs_total = abs(new_total)
+        frag_natoms = float(natoms[idx])
+        abs_charge = abs(frag_charge)
+        center_distance = abs(float(coms[idx]) - center)
+        if (
+            abs_total < best_abs_total
+            or (abs_total == best_abs_total and frag_natoms < best_natoms)
+            or (abs_total == best_abs_total and frag_natoms == best_natoms and abs_charge < best_abs_charge)
+            or (abs_total == best_abs_total and frag_natoms == best_natoms and abs_charge == best_abs_charge and center_distance > best_center_distance)
+        ):
+            best_idx = idx
+            best_abs_total = abs_total
+            best_natoms = frag_natoms
+            best_abs_charge = abs_charge
+            best_center_distance = center_distance
+    return best_idx, float(best_abs_total), float(best_natoms), float(best_abs_charge)
+
+
 def _rebalance_fragment_selection_for_charge(
     selected: list[FragmentRecord],
     *,
@@ -1214,6 +1313,7 @@ def _rebalance_fragment_selection_for_charge(
     if charges.size == 0:
         return selected, 0.0, []
     coms = np.asarray([float(frag.com(_AXIS_TO_INDEX[str(axis)])) for frag in all_fragments], dtype=float)
+    natoms = np.asarray([int(frag.natoms) for frag in all_fragments], dtype=int)
     ai = _AXIS_TO_INDEX[str(axis)]
     frag_mins = np.asarray([float(np.min(frag.coords_nm[:, ai])) for frag in all_fragments], dtype=float)
     frag_maxs = np.asarray([float(np.max(frag.coords_nm[:, ai])) for frag in all_fragments], dtype=float)
@@ -1226,49 +1326,81 @@ def _rebalance_fragment_selection_for_charge(
     zmin = float(np.min(frag_mins[selected_indices]))
     zmax = float(np.max(frag_maxs[selected_indices]))
     added = 0
+    removed = 0
 
-    while abs(total_charge) > float(charge_tol) and added < int(max_extra_fragments):
-        if _HAS_NUMBA:
-            best_idx = int(_pick_charge_rebalance_candidate_numba(charges, coms, used_mask, float(total_charge), float(zmin), float(zmax)))
+    while abs(total_charge) > float(charge_tol) and (added + removed) < int(max_extra_fragments):
+        add_idx, add_abs_total, add_distance, add_natoms = _pick_charge_add_candidate(
+            charges=charges,
+            coms=coms,
+            natoms=natoms,
+            used_mask=used_mask,
+            total_charge=float(total_charge),
+            zmin=float(zmin),
+            zmax=float(zmax),
+        )
+        remove_idx, remove_abs_total, remove_natoms, remove_abs_charge = _pick_charge_remove_candidate(
+            charges=charges,
+            coms=coms,
+            natoms=natoms,
+            used_mask=used_mask,
+            total_charge=float(total_charge),
+            zmin=float(zmin),
+            zmax=float(zmax),
+        )
+
+        use_add = False
+        use_remove = False
+        if add_idx >= 0 and remove_idx >= 0:
+            if add_abs_total < remove_abs_total:
+                use_add = True
+            elif remove_abs_total < add_abs_total:
+                use_remove = True
+            elif add_natoms < remove_natoms:
+                use_add = True
+            elif remove_natoms < add_natoms:
+                use_remove = True
+            else:
+                use_add = True
+        elif add_idx >= 0:
+            use_add = True
+        elif remove_idx >= 0:
+            use_remove = True
         else:
-            candidate_mask = ~used_mask
-            candidate_mask &= np.abs(charges) > 1.0e-8
-            candidate_mask &= (total_charge * charges) < 0.0
-            if not np.any(candidate_mask):
-                break
-
-            new_total = total_charge + charges
-            improvement = abs(total_charge) - np.abs(new_total)
-            candidate_mask &= improvement > 1.0e-8
-            if not np.any(candidate_mask):
-                break
-
-            distances = np.where(coms < zmin, zmin - coms, np.where(coms > zmax, coms - zmax, 0.0))
-            candidate_idx = np.flatnonzero(candidate_mask)
-            order = np.lexsort(
-                (
-                    -np.abs(charges[candidate_idx]),
-                    -improvement[candidate_idx],
-                    distances[candidate_idx],
-                    np.abs(new_total[candidate_idx]),
-                )
-            )
-            best_idx = int(candidate_idx[int(order[0])])
-        if best_idx < 0:
             break
 
-        used_mask[best_idx] = True
-        frag = all_fragments[best_idx]
-        selected.append(frag)
-        total_charge += float(charges[best_idx])
-        zmin = min(zmin, float(frag_mins[best_idx]))
-        zmax = max(zmax, float(frag_maxs[best_idx]))
-        added += 1
+        if use_add:
+            used_mask[add_idx] = True
+            total_charge += float(charges[add_idx])
+            zmin = min(zmin, float(frag_mins[add_idx]))
+            zmax = max(zmax, float(frag_maxs[add_idx]))
+            added += 1
+            continue
+
+        if use_remove:
+            used_mask[remove_idx] = False
+            total_charge -= float(charges[remove_idx])
+            selected_indices = [idx for idx, used in enumerate(used_mask) if bool(used)]
+            if not selected_indices:
+                used_mask[remove_idx] = True
+                total_charge += float(charges[remove_idx])
+                break
+            zmin = float(np.min(frag_mins[selected_indices]))
+            zmax = float(np.max(frag_maxs[selected_indices]))
+            removed += 1
+            continue
 
     notes: list[str] = []
-    if added > 0:
+    selected = [all_fragments[idx] for idx, used in enumerate(used_mask) if bool(used)]
+    if added > 0 or removed > 0:
+        action_bits: list[str] = []
+        if removed > 0:
+            action_bits.append(f"removed {removed} overrepresented same-sign fragments")
+        if added > 0:
+            action_bits.append(f"added {added} nearby counter-fragments")
         notes.append(
-            f"charge-balanced slab selection by adding {added} nearby counter-fragments; effective_net_charge_e={total_charge:.6f}"
+            "charge-balanced slab selection by "
+            + " and ".join(action_bits)
+            + f"; effective_net_charge_e={total_charge:.6f}"
         )
     elif abs(total_charge) > float(charge_tol):
         notes.append(f"slab selection remained charge-imbalanced; effective_net_charge_e={total_charge:.6f}")

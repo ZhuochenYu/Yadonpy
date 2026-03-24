@@ -866,6 +866,30 @@ def test_rebalance_fragment_selection_for_charge_uses_scaled_effective_charge():
     assert any("effective_net_charge_e=0.000000" in note for note in notes)
 
 
+def test_rebalance_fragment_selection_for_charge_removes_excess_same_sign_fragments():
+    fragments = [
+        FragmentRecord("CMC", 1, np.asarray([[0.0, 0.0, 1.00]], dtype=float), ["A"], [-35.0], [100.0], 0),
+        FragmentRecord("CMC", 1, np.asarray([[0.0, 0.0, 4.00]], dtype=float), ["A"], [-35.0], [100.0], 1),
+    ]
+    for idx in range(70):
+        z = 1.10 + 0.01 * idx
+        fragments.append(FragmentRecord("Na", 1, np.asarray([[0.0, 0.0, z]], dtype=float), ["Na"], [1.0], [23.0], idx + 2))
+
+    selected = [fragments[0]] + fragments[2:53]
+    balanced, net_charge, notes = _rebalance_fragment_selection_for_charge(
+        selected,
+        all_fragments=fragments,
+        axis="Z",
+        charge_tol=0.1,
+        charge_scale=4.0,
+    )
+
+    assert abs(net_charge) < 1.0e-9
+    assert sum(1 for frag in balanced if frag.moltype == "CMC") == 1
+    assert sum(1 for frag in balanced if frag.moltype == "Na") == 35
+    assert any("removed" in note for note in notes)
+
+
 def test_read_gro_frame_recovers_coordinates_from_overflowed_atom_number_columns(tmp_path: Path):
     gro = tmp_path / "overflow.gro"
     gro.write_text(
@@ -1177,6 +1201,91 @@ def test_plan_resized_electrolyte_preparation_from_probe_bundles_resize_and_fixe
     assert any("equilibrated probe bulk" in note for note in prep.notes)
 
 
+def test_plan_fixed_xy_direct_pack_box_can_cap_excessive_z():
+    pack = plan_fixed_xy_direct_pack_box(
+        reference_box_nm=(5.2, 5.2, 5.6),
+        target_counts=(298, 149, 420, 103, 103),
+        mol_weights=(88.0, 118.0, 104.0, 6.94, 144.96),
+        species_names=("EC", "DEC", "EMC", "Li", "PF6"),
+        initial_pack_density_g_cm3=0.16,
+        z_padding_factor=1.45,
+        minimum_z_nm=10.0,
+        maximum_z_nm=14.0,
+    )
+
+    assert pack.initial_pack_box_nm == (5.2, 5.2, 14.0)
+    assert any("capped initial pack Z" in note for note in pack.notes)
+
+
+def test_plan_resized_electrolyte_preparation_from_probe_caps_dilute_fixed_xy_box(tmp_path: Path):
+    gro = tmp_path / "probe_resize_cap.gro"
+    gro.write_text(
+        "probe\n"
+        "    1\n"
+        "    1SOL     C1    1   0.100   0.200   0.300\n"
+        "   5.81848   5.81848   5.81848\n",
+        encoding="utf-8",
+    )
+    probe_dir = tmp_path / "probe_bulk" / "03_EQ21" / "03_EQ21" / "step_21"
+    probe_dir.mkdir(parents=True)
+    (probe_dir / "md.gro").write_text(gro.read_text(encoding="utf-8"), encoding="utf-8")
+
+    prep = plan_resized_electrolyte_preparation_from_probe(
+        reference_box_nm=(5.13392, 5.13392, 5.13392),
+        target_box_nm=(5.13392, 5.13392, 5.6),
+        probe_work_dir=tmp_path / "probe_bulk",
+        probe_counts=(398, 198, 561, 138, 138),
+        mol_weights=(88.0, 118.0, 104.0, 6.94, 144.96),
+        species_names=("EC", "DEC", "EMC", "Li", "PF6"),
+        solvent_indices=(0, 1, 2),
+        salt_pair_indices=(3, 4),
+        min_solvent_counts=(1, 1, 1),
+        min_salt_pairs=2,
+        initial_pack_density_g_cm3=0.16,
+        z_padding_factor=1.45,
+        minimum_pack_z_factor=1.8,
+        maximum_pack_z_factor=2.5,
+        pressure_bar=1.0,
+    )
+
+    assert prep.pack_plan.initial_pack_box_nm[:2] == (5.13392, 5.13392)
+    assert prep.pack_plan.initial_pack_box_nm[2] == pytest.approx(14.0)
+    assert any("maximum Z of 14.0000 nm" in note for note in prep.notes)
+
+
+def test_plan_resized_electrolyte_preparation_from_probe_auto_selects_compact_pack_defaults(tmp_path: Path):
+    gro = tmp_path / "probe_resize_auto_defaults.gro"
+    gro.write_text(
+        "probe\n"
+        "    1\n"
+        "    1SOL     C1    1   0.100   0.200   0.300\n"
+        "   5.98053   5.98053   5.98053\n",
+        encoding="utf-8",
+    )
+    probe_dir = tmp_path / "probe_bulk" / "03_EQ21" / "03_EQ21" / "step_21"
+    probe_dir.mkdir(parents=True)
+    (probe_dir / "md.gro").write_text(gro.read_text(encoding="utf-8"), encoding="utf-8")
+
+    prep = plan_resized_electrolyte_preparation_from_probe(
+        reference_box_nm=(5.08879, 5.08879, 5.08879),
+        target_box_nm=(5.08879, 5.08879, 5.6),
+        probe_work_dir=tmp_path / "probe_bulk",
+        probe_counts=(391, 194, 552, 135, 135),
+        mol_weights=(88.0, 118.0, 104.0, 6.94, 144.96),
+        species_names=("EC", "DEC", "EMC", "Li", "PF6"),
+        solvent_indices=(0, 1, 2),
+        salt_pair_indices=(3, 4),
+        min_solvent_counts=(1, 1, 1),
+        min_salt_pairs=2,
+        pressure_bar=1.0,
+    )
+
+    assert prep.resize_plan.target_density_g_cm3 == pytest.approx(1.05, rel=0.1)
+    assert prep.pack_plan.initial_pack_density_g_cm3 > 0.65
+    assert prep.pack_plan.initial_pack_box_nm[2] < 9.0
+    assert any("auto-selected the fixed-XY initial pack density" in note for note in prep.notes)
+
+
 def test_plan_polymer_anchored_interface_preparation_uses_polymer_xy_for_both_sides():
     plan = plan_polymer_anchored_interface_preparation(
         reference_box_nm=(4.2, 5.3, 10.5),
@@ -1343,6 +1452,19 @@ def test_find_latest_equilibrated_gro_prefers_npt_production(tmp_path: Path):
     assert latest == prod / "md.gro"
 
 
+def test_find_latest_equilibrated_gro_can_exclude_current_production_dir(tmp_path: Path):
+    prod = tmp_path / "05_npt_production" / "01_npt"
+    prod.mkdir(parents=True, exist_ok=True)
+    (prod / "md.gro").write_text("prod\n", encoding="utf-8")
+    eq21 = tmp_path / "03_EQ21" / "03_EQ21" / "step_21"
+    eq21.mkdir(parents=True, exist_ok=True)
+    (eq21 / "md.gro").write_text("eq21\n", encoding="utf-8")
+
+    latest = eqmod._find_latest_equilibrated_gro(tmp_path, exclude_dirs=[tmp_path / "05_npt_production"])
+
+    assert latest == eq21 / "md.gro"
+
+
 def test_npt_exec_applies_mdp_overrides(tmp_path: Path, monkeypatch):
     system_dir = tmp_path / "02_system"
     system_dir.mkdir(parents=True, exist_ok=True)
@@ -1362,9 +1484,10 @@ def test_npt_exec_applies_mdp_overrides(tmp_path: Path, monkeypatch):
     class _FakeJob:
         default_stages = staticmethod(eqmod.EquilibrationJob.default_stages)
 
-        def __init__(self, *, gro, top, out_dir, stages, resources):
+        def __init__(self, *, gro, top, ndx=None, provenance_ndx=None, out_dir, stages, resources):
             captured["stages"] = stages
             captured["out_dir"] = out_dir
+            captured["provenance_ndx"] = provenance_ndx
 
         def run(self, *, restart=False):
             out_dir = Path(captured["out_dir"]) / "01_npt"
@@ -1374,7 +1497,7 @@ def test_npt_exec_applies_mdp_overrides(tmp_path: Path, monkeypatch):
             return out_dir / "md.gro"
 
     monkeypatch.setattr(eqmod.NPT, "_ensure_system_exported", lambda self: exp)
-    monkeypatch.setattr(eqmod, "_find_latest_equilibrated_gro", lambda work_dir: None)
+    monkeypatch.setattr(eqmod, "_find_latest_equilibrated_gro", lambda work_dir, exclude_dirs=None: None)
     monkeypatch.setattr(eqmod, "EquilibrationJob", _FakeJob)
 
     npt = eqmod.NPT(ac=object(), work_dir=tmp_path)
@@ -1391,6 +1514,7 @@ def test_npt_exec_applies_mdp_overrides(tmp_path: Path, monkeypatch):
     )
 
     mdp_text = captured["stages"][0].mdp.render()
+    assert captured["provenance_ndx"] == exp.system_ndx
     assert "pcoupltype                = semiisotropic" in mdp_text
     assert "ref_p                     = 1 1" in mdp_text
     assert "compressibility           = 0 4.5e-05" in mdp_text
@@ -1415,9 +1539,10 @@ def test_eq21_exec_applies_npt_stage_overrides(tmp_path: Path, monkeypatch):
     class _FakeJob:
         default_stages = staticmethod(eqmod.EquilibrationJob.default_stages)
 
-        def __init__(self, *, gro, top, out_dir, stages, resources):
+        def __init__(self, *, gro, top, ndx=None, provenance_ndx=None, out_dir, stages, resources):
             captured["stages"] = stages
             captured["out_dir"] = out_dir
+            captured["provenance_ndx"] = provenance_ndx
 
         def run(self, *, restart=False):
             out_dir = Path(captured["out_dir"]) / "step_21"
@@ -1447,8 +1572,58 @@ def test_eq21_exec_applies_npt_stage_overrides(tmp_path: Path, monkeypatch):
 
     npt_like = [stage for stage in captured["stages"] if stage.kind == "npt"]
     assert npt_like
+    assert captured["provenance_ndx"] == exp.system_ndx
     assert all("pcoupltype                = semiisotropic" in stage.mdp.render() for stage in npt_like)
     assert all("ref_p                     = 1 1" in stage.mdp.render() for stage in npt_like)
+
+
+def test_eq21_exec_invalidates_downstream_resume_steps_when_rebuilding(tmp_path: Path, monkeypatch):
+    system_dir = tmp_path / "02_system"
+    system_dir.mkdir(parents=True, exist_ok=True)
+    for name in ("system.gro", "system.top", "system.ndx", "system_meta.json"):
+        (system_dir / name).write_text("x\n", encoding="utf-8")
+    exp = SystemExportResult(
+        system_gro=system_dir / "system.gro",
+        system_top=system_dir / "system.top",
+        system_ndx=system_dir / "system.ndx",
+        molecules_dir=system_dir / "molecules",
+        system_meta=system_dir / "system_meta.json",
+        box_nm=1.0,
+        species=[],
+    )
+    captured: dict[str, object] = {}
+
+    class _FakeJob:
+        default_stages = staticmethod(eqmod.EquilibrationJob.default_stages)
+
+        def __init__(self, *, gro, top, ndx=None, provenance_ndx=None, out_dir, stages, resources):
+            captured["out_dir"] = out_dir
+
+        def run(self, *, restart=False):
+            out_dir = Path(captured["out_dir"]) / "step_21"
+            out_dir.mkdir(parents=True, exist_ok=True)
+            for suffix in ("md.tpr", "md.xtc", "md.edr", "md.gro"):
+                (out_dir / suffix).write_text("x\n", encoding="utf-8")
+            return out_dir / "md.gro"
+
+    monkeypatch.setattr(eqmod.EQ21step, "_ensure_system_exported", lambda self: exp)
+    monkeypatch.setattr(eqmod, "EquilibrationJob", _FakeJob)
+    monkeypatch.setattr(eqmod, "_write_eq21_schedule", lambda *args, **kwargs: None)
+    monkeypatch.setattr(eqmod, "_print_eq21_schedule", lambda *args, **kwargs: None)
+    monkeypatch.setattr(eqmod, "_write_eq21_overview_plot", lambda *args, **kwargs: None)
+
+    eq21 = eqmod.EQ21step(ac=object(), work_dir=tmp_path)
+    invalidations: list[tuple[tuple[str, ...], tuple[str, ...]]] = []
+    monkeypatch.setattr(
+        eq21._resume,
+        "invalidate_steps",
+        lambda *, names=(), prefixes=(): invalidations.append((tuple(names), tuple(prefixes))) or [],
+    )
+    monkeypatch.setattr(eq21._resume, "run", lambda spec, fn: fn())
+
+    eq21.exec(temp=300.0, press=1.0, mpi=1, omp=1, gpu=0, time=0.1)
+
+    assert invalidations == [(("npt_production", "nvt_production"), ("equilibration_additional_",))]
 
 
 def test_additional_exec_applies_mdp_overrides_to_relaxation_stages(tmp_path: Path, monkeypatch):
@@ -1470,9 +1645,10 @@ def test_additional_exec_applies_mdp_overrides_to_relaxation_stages(tmp_path: Pa
     class _FakeJob:
         default_stages = staticmethod(eqmod.EquilibrationJob.default_stages)
 
-        def __init__(self, *, gro, top, out_dir, stages, resources):
+        def __init__(self, *, gro, top, ndx=None, provenance_ndx=None, out_dir, stages, resources):
             captured["stages"] = stages
             captured["out_dir"] = out_dir
+            captured["provenance_ndx"] = provenance_ndx
 
         def run(self, *, restart=False):
             out_dir = Path(captured["out_dir"]) / captured["stages"][-1].name
@@ -1482,7 +1658,7 @@ def test_additional_exec_applies_mdp_overrides_to_relaxation_stages(tmp_path: Pa
             return out_dir / "md.gro"
 
     monkeypatch.setattr(eqmod.Additional, "_ensure_system_exported", lambda self: exp)
-    monkeypatch.setattr(eqmod, "_find_latest_equilibrated_gro", lambda work_dir: None)
+    monkeypatch.setattr(eqmod, "_find_latest_equilibrated_gro", lambda work_dir, exclude_dirs=None: None)
     monkeypatch.setattr(eqmod, "EquilibrationJob", _FakeJob)
 
     add = eqmod.Additional(ac=object(), work_dir=tmp_path)
@@ -1500,7 +1676,55 @@ def test_additional_exec_applies_mdp_overrides_to_relaxation_stages(tmp_path: Pa
 
     npt_like = [stage for stage in captured["stages"] if stage.kind in ("npt", "md")]
     assert npt_like
+    assert captured["provenance_ndx"] == exp.system_ndx
     assert any("pcoupltype                = semiisotropic" in stage.mdp.render() for stage in npt_like)
+
+
+def test_npt_exec_invalidates_nvt_resume_state_when_rebuilding(tmp_path: Path, monkeypatch):
+    system_dir = tmp_path / "02_system"
+    system_dir.mkdir(parents=True, exist_ok=True)
+    for name in ("system.gro", "system.top", "system.ndx", "system_meta.json"):
+        (system_dir / name).write_text("x\n", encoding="utf-8")
+    exp = SystemExportResult(
+        system_gro=system_dir / "system.gro",
+        system_top=system_dir / "system.top",
+        system_ndx=system_dir / "system.ndx",
+        molecules_dir=system_dir / "molecules",
+        system_meta=system_dir / "system_meta.json",
+        box_nm=1.0,
+        species=[],
+    )
+    captured: dict[str, object] = {}
+
+    class _FakeJob:
+        default_stages = staticmethod(eqmod.EquilibrationJob.default_stages)
+
+        def __init__(self, *, gro, top, ndx=None, provenance_ndx=None, out_dir, stages, resources):
+            captured["out_dir"] = out_dir
+
+        def run(self, *, restart=False):
+            out_dir = Path(captured["out_dir"]) / "01_npt"
+            out_dir.mkdir(parents=True, exist_ok=True)
+            for suffix in ("md.tpr", "md.xtc", "md.edr", "md.gro"):
+                (out_dir / suffix).write_text("x\n", encoding="utf-8")
+            return out_dir / "md.gro"
+
+    monkeypatch.setattr(eqmod.NPT, "_ensure_system_exported", lambda self: exp)
+    monkeypatch.setattr(eqmod, "_find_latest_equilibrated_gro", lambda work_dir, exclude_dirs=None: None)
+    monkeypatch.setattr(eqmod, "EquilibrationJob", _FakeJob)
+
+    npt = eqmod.NPT(ac=object(), work_dir=tmp_path)
+    invalidations: list[tuple[tuple[str, ...], tuple[str, ...]]] = []
+    monkeypatch.setattr(
+        npt._resume,
+        "invalidate_steps",
+        lambda *, names=(), prefixes=(): invalidations.append((tuple(names), tuple(prefixes))) or [],
+    )
+    monkeypatch.setattr(npt._resume, "run", lambda spec, fn: fn())
+
+    npt.exec(temp=300.0, press=1.0, mpi=1, omp=1, gpu=0, time=0.1)
+
+    assert invalidations == [(("nvt_production",), ())]
 
 
 def test_equilibrate_bulk_with_eq21_helper_runs_eq_additional_and_optional_npt(tmp_path: Path, monkeypatch):

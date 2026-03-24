@@ -49,7 +49,7 @@ class GAFF2_mod(GAFF2):
         self.name = 'gaff2_mod'
 
         # Added atomic types in GAFF2_mod
-        alt_ptype_gaff2_mod = {'c3f': 'c3'}
+        alt_ptype_gaff2_mod = {'c3f': 'c3', 'ci': 'c3', 'ng': 'n3'}
         self.alt_ptype.update(alt_ptype_gaff2_mod)
 
 
@@ -91,6 +91,9 @@ class GAFF2_mod(GAFF2):
                 
             elif nb_sym == 'S':
                 self.set_ptype(p, 'hs')
+
+            elif nb_sym == 'Si':
+                self.set_ptype(p, 'hi')
                 
             elif nb_sym == 'C':
                 for pb in p.GetNeighbors():
@@ -143,10 +146,12 @@ class GAFF2_mod(GAFF2):
 
             if hyb == 'SP3':
                 fluoro = False
+                silicon_flag = 0
                 for pb in p.GetNeighbors():
                     if pb.GetSymbol() == 'F':
                         fluoro = True
-                        break
+                    elif pb.GetSymbol() == 'Si':
+                        silicon_flag += 1
 
                 if p.IsInRingSize(3):
                     self.set_ptype(p, 'cx')
@@ -154,6 +159,8 @@ class GAFF2_mod(GAFF2):
                     self.set_ptype(p, 'cy')
                 elif fluoro:
                     self.set_ptype(p, 'c3f')
+                elif silicon_flag >= 1:
+                    self.set_ptype(p, 'ci')
                 else:
                     self.set_ptype(p, 'c3')
                 
@@ -273,6 +280,7 @@ class GAFF2_mod(GAFF2):
                 aromatic_ring = False
                 no2 = 0
                 sp2 = 0
+                silicon_flag = 0
                 for pb in p.GetNeighbors():
                     pb_sym = pb.GetSymbol()
                     pb_hyb = str(pb.GetHybridization())
@@ -286,6 +294,8 @@ class GAFF2_mod(GAFF2):
                                 amide = True
                     elif pb_sym == 'O':
                         no2 += 1
+                    elif pb_sym == 'Si':
+                        silicon_flag += 1
                     if pb_hyb == 'SP2' or pb_hyb == 'SP':
                         sp2 += 1
                 if no2 >= 2:
@@ -313,15 +323,18 @@ class GAFF2_mod(GAFF2):
                         self.set_ptype(p, 'nh')
                     
                 else:
-                    numHs = p.GetTotalNumHs(includeNeighbors=True)
-                    if numHs == 1:
-                        self.set_ptype(p, 'n7')
-                    elif numHs == 2:
-                        self.set_ptype(p, 'n8')
-                    elif numHs == 3:
-                        self.set_ptype(p, 'n9') # NH3
+                    if silicon_flag >= 1:
+                        self.set_ptype(p, 'ng')
                     else:
-                        self.set_ptype(p, 'n3')
+                        numHs = p.GetTotalNumHs(includeNeighbors=True)
+                        if numHs == 1:
+                            self.set_ptype(p, 'n7')
+                        elif numHs == 2:
+                            self.set_ptype(p, 'n8')
+                        elif numHs == 3:
+                            self.set_ptype(p, 'n9') # NH3
+                        else:
+                            self.set_ptype(p, 'n3')
                     
                     
             elif degree == 4:
@@ -353,9 +366,23 @@ class GAFF2_mod(GAFF2):
             elif p.GetTotalNumHs(includeNeighbors=True) == 2:
                 self.set_ptype(p, 'ow')
             elif p.GetTotalNumHs(includeNeighbors=True) == 1:
-                self.set_ptype(p, 'oh')
+                si_flag = 0
+                for pb in p.GetNeighbors():
+                    if pb.GetSymbol() == 'Si':
+                        si_flag += 1
+                if si_flag == 1:
+                    self.set_ptype(p, 'oi')
+                else:
+                    self.set_ptype(p, 'oh')
             else:
-                self.set_ptype(p, 'os')
+                si_flag = 0
+                for pb in p.GetNeighbors():
+                    if pb.GetSymbol() == 'Si':
+                        si_flag += 1
+                if si_flag == 2:
+                    self.set_ptype(p, 'oss')
+                else:
+                    self.set_ptype(p, 'os')
 
 
 
@@ -488,6 +515,20 @@ class GAFF2_mod(GAFF2):
                             % (p.GetIdx(), p.GetSymbol(), p.GetTotalDegree(), str(p.GetHybridization())), level=2 )
                 result_flag = False
 
+        ######################################
+        # Assignment routine of Si
+        ######################################
+        elif p.GetSymbol() == 'Si':
+            degree = p.GetTotalDegree()
+
+            if degree == 4:
+                self.set_ptype(p, 'si')
+
+            else:
+                utils.radon_print('Cannot assignment index %i, element %s, num. of bonds %i, hybridization %s'
+                            % (p.GetIdx(), p.GetSymbol(), p.GetTotalDegree(), str(p.GetHybridization())), level=2 )
+                result_flag = False
+
 
         elif p.GetSymbol() == '*':
             p.SetProp('ff_type', '*')
@@ -503,4 +544,3 @@ class GAFF2_mod(GAFF2):
             result_flag = False
         
         return result_flag
-

@@ -12,11 +12,14 @@ Key design goals
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional, Union
+from typing import Any, Optional, Sequence, Union
+
+import numpy as np
 
 from ...core import utils
 from ...gmx.workflows._util import RunResources
@@ -24,10 +27,11 @@ from ...gmx.workflows.eq import EqStage, EquilibrationJob
 from ...io.gromacs_system import SystemExportResult, export_system_from_cell_meta, validate_exported_system_dir
 from ...runtime import resolve_restart
 from ...workflow import ResumeManager, StepSpec
+from ...workflow.resume import file_signature
 from ..analyzer import AnalyzeResult
 
 
-_EXPORT_SYSTEM_SCHEMA_VERSION = "0.8.26-export-v1"
+_EXPORT_SYSTEM_SCHEMA_VERSION = "0.8.61-export-v2"
 
 
 def _preset_log(message: str, *, level: int = 1) -> None:
@@ -78,6 +82,60 @@ def _write_export_manifest(sys_dir: Path, *, schema_version: str, ff_name: str, 
     manifest.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     return manifest
     _preset_log('=' * 88)
+
+
+def _cell_resume_signature(ac) -> dict[str, Any]:
+    sig: dict[str, Any] = {}
+    try:
+        sig["num_atoms"] = int(ac.GetNumAtoms())
+    except Exception:
+        sig["num_atoms"] = None
+    try:
+        if hasattr(ac, "HasProp") and ac.HasProp("_yadonpy_cell_meta"):
+            cell_meta = ac.GetProp("_yadonpy_cell_meta")
+            sig["cell_meta_sha256"] = hashlib.sha256(str(cell_meta).encode("utf-8", errors="replace")).hexdigest()
+    except Exception:
+        sig["cell_meta_sha256"] = None
+    try:
+        cell = getattr(ac, "cell", None)
+        if cell is not None:
+            sig["cell"] = {
+                "xhi": float(cell.xhi),
+                "xlo": float(cell.xlo),
+                "yhi": float(cell.yhi),
+                "ylo": float(cell.ylo),
+                "zhi": float(cell.zhi),
+                "zlo": float(cell.zlo),
+            }
+    except Exception:
+        sig["cell"] = None
+    try:
+        conf = ac.GetConformer()
+        coords = np.asarray(conf.GetPositions(), dtype=np.float32)
+        rounded = np.round(coords, 3)
+        sig["coord_sha256"] = hashlib.sha256(rounded.tobytes()).hexdigest()
+    except Exception:
+        sig["coord_sha256"] = None
+    return sig
+
+
+def _workflow_summary_matches(summary_path: Path, *, input_gro_sig: dict[str, Any], input_top_sig: dict[str, Any], input_ndx_sig: dict[str, Any] | None = None) -> bool:
+    if not summary_path.exists():
+        return False
+    try:
+        data = json.loads(summary_path.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    provenance = data.get("provenance")
+    if not isinstance(provenance, dict):
+        return False
+    if provenance.get("input_gro_sig") != input_gro_sig:
+        return False
+    if provenance.get("input_top_sig") != input_top_sig:
+        return False
+    if provenance.get("input_ndx_sig") != input_ndx_sig:
+        return False
+    return True
 
 
 def _parse_gpu_args(gpu: int, gpu_id: Optional[int]) -> tuple[bool, Optional[str]]:
@@ -141,7 +199,18 @@ def _next_additional_round(work_dir: Path, *, restart: bool) -> tuple[int, Path]
     return idx + 1, base / f"round_{idx + 1:02d}"
 
 
-def _find_latest_equilibrated_gro(work_dir: Path) -> Optional[Path]:
+def _is_within_any(path: Path, roots: Sequence[Path]) -> bool:
+    candidate = Path(path)
+    for root in roots:
+        try:
+            candidate.relative_to(Path(root))
+            return True
+        except Exception:
+            continue
+    return False
+
+
+def _find_latest_equilibrated_gro(work_dir: Path, *, exclude_dirs: Sequence[Path] | None = None) -> Optional[Path]:
     """Find the latest equilibrated coordinate file under work_dir.
 
     Priority:
@@ -151,8 +220,9 @@ def _find_latest_equilibrated_gro(work_dir: Path) -> Optional[Path]:
             4) Legacy main EQ run (03_eq/04_md/md.gro)
     """
     wd = Path(work_dir)
+    excluded = tuple(Path(p) for p in (exclude_dirs or ()))
     prod = wd / "05_npt_production" / "01_npt" / "md.gro"
-    if prod.exists():
+    if prod.exists() and not _is_within_any(prod, excluded):
         return prod
 
     add_base = wd / "04_eq_additional"
@@ -167,7 +237,7 @@ def _find_latest_equilibrated_gro(work_dir: Path) -> Optional[Path]:
                 continue
             candidates = sorted([p for p in d.glob('*/md.gro') if p.is_file()])
             gro = candidates[-1] if candidates else (d / "04_md" / "md.gro")
-            if gro.exists():
+            if gro.exists() and not _is_within_any(gro, excluded):
                 rounds.append((idx, gro))
         if rounds:
             rounds.sort(key=lambda x: x[0])
@@ -175,7 +245,7 @@ def _find_latest_equilibrated_gro(work_dir: Path) -> Optional[Path]:
 
     eq21_root = wd / "03_EQ21"
     if eq21_root.exists():
-        candidates = [p for p in eq21_root.glob('03_EQ21/step_*/md.gro') if p.is_file()]
+        candidates = [p for p in eq21_root.glob('03_EQ21/step_*/md.gro') if p.is_file() and not _is_within_any(p, excluded)]
         if candidates:
             def _step_key(path: Path) -> int:
                 try:
@@ -186,9 +256,23 @@ def _find_latest_equilibrated_gro(work_dir: Path) -> Optional[Path]:
             return candidates[-1]
 
     gro = wd / "03_eq" / "04_md" / "md.gro"
-    if gro.exists():
+    if gro.exists() and not _is_within_any(gro, excluded):
         return gro
     return None
+
+
+def _invalidate_downstream_resume_steps(
+    resume: ResumeManager,
+    *,
+    names: Sequence[str] = (),
+    prefixes: Sequence[str] = (),
+) -> None:
+    removed = resume.invalidate_steps(names=names, prefixes=prefixes)
+    if removed:
+        _preset_log(
+            "[RESTART] Invalidated downstream cached steps: " + ", ".join(sorted(removed)),
+            level=1,
+        )
 
 
 @dataclass(frozen=True)
@@ -861,18 +945,26 @@ class EQ21step:
         self._export: Optional[SystemExportResult] = None  # scaled
         self._export_raw: Optional[SystemExportResult] = None
         self._job: Optional[EquilibrationJob] = None
-        self._resume = ResumeManager(self.work_dir, enabled=True)
+        self._resume = ResumeManager(self.work_dir, enabled=True, strict_inputs=True)
 
     def _load_export_from_disk(self, sys_dir: Path) -> SystemExportResult:
         meta_path = sys_dir / "system_meta.json"
         box_nm = 0.0
+        box_lengths_nm = None
         species: list[dict] = []
         if meta_path.exists():
             try:
                 import json
 
                 meta = json.loads(meta_path.read_text(encoding="utf-8"))
-                box_nm = float(meta.get("box_nm") or 0.0)
+                raw_box = meta.get("box_lengths_nm", meta.get("box_nm"))
+                if isinstance(raw_box, (list, tuple)) and len(raw_box) >= 3:
+                    box_lengths_nm = (float(raw_box[0]), float(raw_box[1]), float(raw_box[2]))
+                    box_nm = float(max(box_lengths_nm))
+                else:
+                    box_nm = float(meta.get("box_nm") or 0.0)
+                    if box_nm > 0.0:
+                        box_lengths_nm = (box_nm, box_nm, box_nm)
                 species = list(meta.get("species") or [])
             except Exception:
                 pass
@@ -884,6 +976,7 @@ class EQ21step:
             system_meta=meta_path,
             box_nm=box_nm,
             species=species,
+            box_lengths_nm=box_lengths_nm,
         )
 
     def _ensure_system_exported(self) -> SystemExportResult:
@@ -916,6 +1009,7 @@ class EQ21step:
                 "charge_method": self.charge_method,
                 "charge_scale": str(self.charge_scale),
                 "include_h_atomtypes": bool(self.include_h_atomtypes),
+                "cell_signature": _cell_resume_signature(self.ac),
             },
             description="Export mixed system into GROMACS gro/top/ndx (scaled + raw)",
         )
@@ -989,6 +1083,18 @@ class EQ21step:
 
     def ensure_system_exported(self) -> SystemExportResult:
         return self._ensure_system_exported()
+
+    def _job_restart_flag(self, spec: StepSpec, requested_restart: bool) -> bool:
+        rst_flag = bool(requested_restart)
+        if not rst_flag:
+            return False
+        if self._resume.needs_fresh_run(spec):
+            _preset_log(
+                f"[RESTART] {spec.name} inputs changed or cached outputs are stale; rebuilding stage workflow from scratch.",
+                level=1,
+            )
+            return False
+        return True
 
     def exec(
         self,
@@ -1082,13 +1188,15 @@ class EQ21step:
 
         use_gpu, gid = _parse_gpu_args(gpu, gpu_id)
         res = RunResources(ntmpi=int(mpi), ntomp=int(omp), use_gpu=use_gpu, gpu_id=gid)
-        job = EquilibrationJob(gro=exp.system_gro, top=exp.system_top, out_dir=run_dir, stages=stages, resources=res)
+        job = EquilibrationJob(gro=exp.system_gro, top=exp.system_top, provenance_ndx=exp.system_ndx, out_dir=run_dir, stages=stages, resources=res)
 
         final_dir = run_dir / stages[-1].name if stages else run_dir
         eq_spec = StepSpec(
             name="equilibration_eq21",
             outputs=[final_dir / "md.tpr", final_dir / "md.xtc", final_dir / "md.edr", final_dir / "md.gro"],
             inputs={
+                "input_gro_sig": file_signature(exp.system_gro),
+                "input_top_sig": file_signature(exp.system_top),
                 "temp": float(temp),
                 "press": float(press),
                 "final_ns": float(final_ns),
@@ -1114,7 +1222,30 @@ class EQ21step:
             description="EQ21step pre-EM + pre-NVT + 21-step equilibration",
         )
 
-        self._resume.run(eq_spec, lambda: job.run(restart=bool(rst_flag)))
+        expected_gro_sig = file_signature(exp.system_gro)
+        expected_top_sig = file_signature(exp.system_top)
+        expected_ndx_sig = file_signature(exp.system_ndx)
+        if self._resume.is_done(eq_spec) and not _workflow_summary_matches(
+            run_dir / "summary.json",
+            input_gro_sig=expected_gro_sig,
+            input_top_sig=expected_top_sig,
+            input_ndx_sig=expected_ndx_sig,
+        ):
+            _preset_log(
+                "[RESTART] Cached EQ21 workflow summary does not match the current exported system. Rebuilding from scratch.",
+                level=1,
+            )
+            self._resume.mark_failed(eq_spec, error="stale EQ21 workflow summary", meta={"auto_rebuild": True})
+        if self._resume.reuse_status(eq_spec) != "done":
+            _invalidate_downstream_resume_steps(
+                self._resume,
+                names=("npt_production", "nvt_production"),
+                prefixes=("equilibration_additional_",),
+            )
+        job_restart = self._job_restart_flag(eq_spec, bool(rst_flag))
+        if not job_restart and run_dir.exists():
+            shutil.rmtree(run_dir, ignore_errors=True)
+        self._resume.run(eq_spec, lambda: job.run(restart=job_restart))
         overview_svg = _write_eq21_overview_plot(run_dir, stage_records, params)
         if overview_svg is not None:
             print(f"[EQ21] Overview plot written: {overview_svg}")
@@ -1210,13 +1341,15 @@ class Additional(EQ21step):
 
         use_gpu, gid = _parse_gpu_args(gpu, gpu_id)
         res = RunResources(ntmpi=int(mpi), ntomp=int(omp), use_gpu=use_gpu, gpu_id=gid)
-        job = EquilibrationJob(gro=start_gro, top=exp.system_top, out_dir=run_dir, stages=stages, resources=res)
+        job = EquilibrationJob(gro=start_gro, top=exp.system_top, provenance_ndx=exp.system_ndx, out_dir=run_dir, stages=stages, resources=res)
 
         final_dir = run_dir / stages[-1].name if stages else run_dir
         spec = StepSpec(
             name=f"equilibration_additional_{round_idx:02d}",
             outputs=[final_dir / "md.tpr", final_dir / "md.xtc", final_dir / "md.edr", final_dir / "md.gro"],
             inputs={
+                "start_gro_sig": file_signature(Path(start_gro)),
+                "input_top_sig": file_signature(exp.system_top),
                 "temp": float(temp),
                 "press": float(press),
                 "sim_time": float(sim_time),
@@ -1229,7 +1362,30 @@ class Additional(EQ21step):
             description="Additional equilibration round",
         )
 
-        self._resume.run(spec, lambda: job.run(restart=bool(rst_flag)))
+        expected_gro_sig = file_signature(Path(start_gro))
+        expected_top_sig = file_signature(exp.system_top)
+        expected_ndx_sig = file_signature(exp.system_ndx)
+        if self._resume.is_done(spec) and not _workflow_summary_matches(
+            run_dir / "summary.json",
+            input_gro_sig=expected_gro_sig,
+            input_top_sig=expected_top_sig,
+            input_ndx_sig=expected_ndx_sig,
+        ):
+            _preset_log(
+                f"[RESTART] Cached additional equilibration summary for round {round_idx:02d} does not match current inputs. Rebuilding from scratch.",
+                level=1,
+            )
+            self._resume.mark_failed(spec, error="stale additional equilibration summary", meta={"auto_rebuild": True})
+        if self._resume.reuse_status(spec) != "done":
+            _invalidate_downstream_resume_steps(
+                self._resume,
+                names=("npt_production", "nvt_production"),
+                prefixes=("equilibration_additional_",),
+            )
+        job_restart = self._job_restart_flag(spec, bool(rst_flag))
+        if not job_restart and run_dir.exists():
+            shutil.rmtree(run_dir, ignore_errors=True)
+        self._resume.run(spec, lambda: job.run(restart=job_restart))
         self._job = job
         _preset_done("Additional equilibration preset", t_all, detail=f"output={run_dir}")
         return self.ac
@@ -1257,10 +1413,9 @@ class NPT(EQ21step):
         self._resume.enabled = bool(rst_flag)
         exp = self._ensure_system_exported()
 
-        # Start from the latest equilibrated structure if available.
-        start_gro = _find_latest_equilibrated_gro(self.work_dir) or exp.system_gro
-
         run_dir = self.work_dir / "05_npt_production"
+        # Production must restart from upstream equilibration, not from its own prior output.
+        start_gro = _find_latest_equilibrated_gro(self.work_dir, exclude_dirs=[run_dir]) or exp.system_gro
         _preset_item("run_dir", run_dir)
         _preset_item("start_gro", start_gro)
         _preset_item("temperature_K", float(temp))
@@ -1303,13 +1458,15 @@ class NPT(EQ21step):
 
         use_gpu, gid = _parse_gpu_args(gpu, gpu_id)
         res = RunResources(ntmpi=int(mpi), ntomp=int(omp), use_gpu=use_gpu, gpu_id=gid)
-        job = EquilibrationJob(gro=start_gro, top=exp.system_top, out_dir=run_dir, stages=stages, resources=res)
+        job = EquilibrationJob(gro=start_gro, top=exp.system_top, provenance_ndx=exp.system_ndx, out_dir=run_dir, stages=stages, resources=res)
 
         final_dir = run_dir / stages[-1].name
         spec = StepSpec(
             name="npt_production",
             outputs=[final_dir / "md.tpr", final_dir / "md.xtc", final_dir / "md.edr", final_dir / "md.gro"],
             inputs={
+                "start_gro_sig": file_signature(Path(start_gro)),
+                "input_top_sig": file_signature(exp.system_top),
                 "temp": float(temp),
                 "press": float(press),
                 "time": float(time),
@@ -1322,7 +1479,26 @@ class NPT(EQ21step):
             description="NPT production run",
         )
 
-        self._resume.run(spec, lambda: job.run(restart=bool(rst_flag)))
+        expected_gro_sig = file_signature(Path(start_gro))
+        expected_top_sig = file_signature(exp.system_top)
+        expected_ndx_sig = file_signature(exp.system_ndx)
+        if self._resume.is_done(spec) and not _workflow_summary_matches(
+            run_dir / "summary.json",
+            input_gro_sig=expected_gro_sig,
+            input_top_sig=expected_top_sig,
+            input_ndx_sig=expected_ndx_sig,
+        ):
+            _preset_log(
+                "[RESTART] Cached NPT production summary does not match current inputs. Rebuilding from scratch.",
+                level=1,
+            )
+            self._resume.mark_failed(spec, error="stale NPT production summary", meta={"auto_rebuild": True})
+        if self._resume.reuse_status(spec) != "done":
+            _invalidate_downstream_resume_steps(self._resume, names=("nvt_production",))
+        job_restart = self._job_restart_flag(spec, bool(rst_flag))
+        if not job_restart and run_dir.exists():
+            shutil.rmtree(run_dir, ignore_errors=True)
+        self._resume.run(spec, lambda: job.run(restart=job_restart))
         self._job = job
         _preset_done("NPT production preset", t_all, detail=f"output={run_dir}")
         return self.ac
@@ -1369,10 +1545,10 @@ class NVT(EQ21step):
         self._resume.enabled = bool(rst_flag)
         exp = self._ensure_system_exported()
 
-        # Start from the latest equilibrated structure if available.
-        start_gro = _find_latest_equilibrated_gro(self.work_dir) or exp.system_gro
-
         run_dir = self.work_dir / "05_nvt_production"
+        # NVT production can reuse upstream NPT production, but must never point at
+        # its own stale output when a rebuild is required.
+        start_gro = _find_latest_equilibrated_gro(self.work_dir, exclude_dirs=[run_dir]) or exp.system_gro
         _preset_item("run_dir", run_dir)
         _preset_item("start_gro", start_gro)
         _preset_item("temperature_K", float(temp))
@@ -1395,6 +1571,8 @@ class NVT(EQ21step):
 
             runner = GromacsRunner()
             tmp = None
+            scale_root = self.work_dir / ".yadonpy" / "scratch"
+            scale_root.mkdir(parents=True, exist_ok=True)
 
             # Try to locate the previous edr (same directory as start_gro).
             prev_dir = Path(start_gro).parent
@@ -1475,7 +1653,7 @@ class NVT(EQ21step):
                         if rho_tail > 0 and rho_mean > 0:
                             # After scaling with factor s, density becomes rho_tail / s^3 == rho_mean
                             s = float((rho_tail / rho_mean) ** (1.0 / 3.0))
-                            scaled_gro = run_dir / "start_scaled_to_eq_density.gro"
+                            scaled_gro = scale_root / "nvt_start_scaled_to_eq_density.gro"
                             runner.run(
                                 [
                                     "editconf",
@@ -1528,13 +1706,15 @@ class NVT(EQ21step):
 
         use_gpu, gid = _parse_gpu_args(gpu, gpu_id)
         res = RunResources(ntmpi=int(mpi), ntomp=int(omp), use_gpu=use_gpu, gpu_id=gid)
-        job = EquilibrationJob(gro=scaled_gro, top=exp.system_top, out_dir=run_dir, stages=stages, resources=res)
+        job = EquilibrationJob(gro=scaled_gro, top=exp.system_top, provenance_ndx=exp.system_ndx, out_dir=run_dir, stages=stages, resources=res)
 
         final_dir = run_dir / stages[-1].name
         spec = StepSpec(
             name="nvt_production",
             outputs=[final_dir / "md.tpr", final_dir / "md.xtc", final_dir / "md.edr", final_dir / "md.gro"],
             inputs={
+                "start_gro_sig": file_signature(Path(scaled_gro)),
+                "input_top_sig": file_signature(exp.system_top),
                 "temp": float(temp),
                 "time": float(time),
                 "mpi": int(mpi),
@@ -1547,7 +1727,24 @@ class NVT(EQ21step):
             description="NVT production run (density fixed to equilibrium mean)",
         )
 
-        self._resume.run(spec, lambda: job.run(restart=bool(rst_flag)))
+        expected_gro_sig = file_signature(Path(scaled_gro))
+        expected_top_sig = file_signature(exp.system_top)
+        expected_ndx_sig = file_signature(exp.system_ndx)
+        if self._resume.is_done(spec) and not _workflow_summary_matches(
+            run_dir / "summary.json",
+            input_gro_sig=expected_gro_sig,
+            input_top_sig=expected_top_sig,
+            input_ndx_sig=expected_ndx_sig,
+        ):
+            _preset_log(
+                "[RESTART] Cached NVT production summary does not match current inputs. Rebuilding from scratch.",
+                level=1,
+            )
+            self._resume.mark_failed(spec, error="stale NVT production summary", meta={"auto_rebuild": True})
+        job_restart = self._job_restart_flag(spec, bool(rst_flag))
+        if not job_restart and run_dir.exists():
+            shutil.rmtree(run_dir, ignore_errors=True)
+        self._resume.run(spec, lambda: job.run(restart=job_restart))
         self._job = job
         _preset_done("NVT production preset", t_all, detail=f"output={run_dir}")
         return self.ac

@@ -1,6 +1,6 @@
 # YadonPy
 
-Current release: **v0.8.60**
+Current release: **v0.8.61**
 
 YadonPy is a Python package for building polymer, solvent, salt, bulk, and interface workflows directly from SMILES or PSMILES. It is designed for script-driven molecular simulation studies where the user wants to keep the real workflow visible in code instead of hiding it behind a monolithic project file.
 
@@ -20,16 +20,14 @@ The package is built around two stable ideas:
 - **script first**: the study logic should remain understandable from the user script;
 - **MolDB first**: reusable expensive assets are molecular geometry, charge variants, and bonded-patch metadata, not old `.top/.gro/.itp` exports.
 
-## What changed in v0.8.60
+## What changed in v0.8.61
 
-This release finishes the local GROMACS wiring for Example 12 and fixes the route-B interface workflow against real runtime failures observed on a `12`-core Windows machine with CUDA and a local GPU.
+This release updates the force-field layer rather than the interface workflow.
 
-- `examples/12_cmcna_interface/run_eg12_local_cuda.bat` and `examples/12_cmcna_interface/run_eg12_remote_cuda.sh` are now the supported one-click entry points for EG12. The local wrapper defaults to `mpi=1`, `omp=12`, `gpu=1`, `gpu_id=0`, which matches the current workstation assumption.
-- The EG12 smoke profile now shortens the bulk EQ21 tail and the fixed-XY electrolyte relax stage so the full local debug path can be rerun in practical time while still exercising the complete interface workflow.
-- Route-B interface MDP generation now renders the actual intended settings: `pbc = xy`, `periodic-molecules = yes`, `ewald-geometry = 3dc`, and a topology-resolved wall atomtype instead of the old hard-coded water-model `OW`.
-- Route-B assembly now pads the interface away from the `z` walls and adds `wall-r-linpot`, which fixes the previous failure where atoms placed exactly on the wall caused `01_pre_contact_em` to abort before real relaxation began.
-- Slab and interface topologies now preserve the real fragment sequence in `[ molecules ]` instead of aggregating counts purely by species. This fixes a deeper ordering bug where charge-rebalancing could append `Li` or `PF6` fragments to the end of the slab, leaving `system.gro` and `system.top` out of sync and later causing impossible excluded-atom distances during `grompp`.
-- This release was validated by actually running `eg12 --profile smoke` on native Windows GROMACS through all seven interface stages up to `07_production`.
+- `ff/gaff2_mod.py` and `ff/ff_dat/gaff2_mod.json` now absorb the newer RadonPy silicon-family extension for GAFF2_mod. YadonPy now recognizes `si`, `ci`, `hi`, `oi`, `oss`, and `ng`, and ships the corresponding bonded parameters in GROMACS units (`kJ/mol`, `nm`).
+- `ff/gaff.py` now carries the RadonPy `Si` empirical-angle coefficients as a guarded fallback path, so Si-containing angle estimation no longer relies on incomplete element tables.
+- `ff/oplsaa.py` no longer hardcodes the `OPLS-AA` SMARTS table inline. The rule table now lives in `ff/ff_dat/oplsaa_rules.json`, and the matcher layer loads and validates it explicitly. That keeps rule data separate from code and makes future rule maintenance much less brittle.
+- New force-field regression tests cover both paths: GAFF2_mod silicon typing on silanol/disiloxane probes, and OPLS-AA rule-table consistency plus external-rule assignment on a small alcohol.
 
 ## Installation
 
@@ -157,7 +155,7 @@ What the interface examples now demonstrate:
 
 ## Documentation map
 
-- API reference: `docs/Yadonpy_API_v0.8.60.md`
+- API reference: `docs/Yadonpy_API_v0.8.61.md`
 - Manual: `docs/Yadonpy_manul.md`
 - User guide: `docs/Yaonpyd_user_guide.md`
 

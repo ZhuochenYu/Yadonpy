@@ -1,3 +1,9 @@
+## 0.8.61 (2026-03-24)
+
+- ff/gaff2_mod + ff/ff_dat/gaff2_mod.json + tests/test_forcefields: import the newer RadonPy GAFF2_mod silicon extension into YadonPy, add `si`, `ci`, `hi`, `oi`, `oss`, and `ng` typing support plus their bonded parameter records, and convert the imported RadonPy Amber/LAMMPS-style values into YadonPy's GROMACS-unit JSON format (`kJ/mol`, `nm`);
+- ff/gaff: extend the empirical angle-estimation constants with `Si` and guard the fallback path against unsupported elements so Si-containing angle estimation does not trip over missing element coefficients;
+- ff/oplsaa + ff/ff_dat/oplsaa_rules.json + tests/test_forcefields: move the OPLS-AA SMARTS rule table out of the Python source into packaged JSON, add a typed loader plus rule-table validation summary, preserve existing rule-order precedence, and cover the externalized rule table with regression tests.
+
 ## 0.8.60 (2026-03-24)
 
 - runtime + interface/prep + examples/12_cmcna_interface: add conservative local resource recommendation plus one-click local and remote EG12 wrapper scripts, default the local path to a `12`-core / `1`-GPU Windows machine, and shorten the smoke profile so real GROMACS regression runs finish fast enough for iterative debugging;

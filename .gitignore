@@ -3,4 +3,10 @@ __pycache__/
 .pytest_cache/
 .yadonpy_cache/
 src/yadonpy.egg-info/
+examples/12_cmcna_interface/.yadonpy_cache/
+examples/12_cmcna_interface/work_dir_smoke/
+tmp_export_check/
+tmp_export_check2/
+tmp_export_debug*
+tmp_run_targeted_tests.bat
 *.tar

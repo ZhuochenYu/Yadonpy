@@ -246,6 +246,43 @@ def test_equilibration_job_smoke_run_and_restart_skip(tmp_path, monkeypatch):
     assert runner.mdrun_calls == 1
 
 
+def test_equilibration_job_skips_stage_mol2_export_for_large_systems(tmp_path, monkeypatch):
+    import yadonpy.gmx.workflows.eq as eqmod
+
+    monkeypatch.setattr(eqmod, 'pbc_mol_fix_inplace', lambda *args, **kwargs: {'applied': False, 'error': None})
+    monkeypatch.setattr(eqmod, 'normalize_gro_molecules_inplace', lambda *args, **kwargs: {'applied': False, 'error': None, 'normalized_molecules': 0})
+    mol2_calls = []
+    monkeypatch.setattr(eqmod, 'write_mol2_from_top_gro_parmed', lambda **kwargs: mol2_calls.append(kwargs) or None)
+    monkeypatch.setattr(eqmod.EquilibrationJob, '_gro_atom_count', staticmethod(lambda gro: 100000))
+
+    gro = tmp_path / 'input.gro'
+    top = tmp_path / 'input.top'
+    gro.write_text('fake input gro\n', encoding='utf-8')
+    top.write_text('fake input top\n', encoding='utf-8')
+
+    params = default_mdp_params()
+    params.update(
+        {
+            'nsteps': 1000,
+            'dt': 0.001,
+            'ref_t': 300.0,
+            'gen_vel': 'yes',
+            'gen_temp': 300.0,
+            'gen_seed': -1,
+        }
+    )
+    stage = EqStage(name='01_nvt', kind='nvt', mdp=MdpSpec(NVT_MDP, params))
+    runner = FakeRunner()
+    job = EquilibrationJob(gro=gro, top=top, out_dir=tmp_path / 'eq_job_large', stages=[stage], runner=runner)
+
+    summary_path = job.run(restart=False)
+    summary = json.loads(summary_path.read_text(encoding='utf-8'))
+
+    assert not mol2_calls
+    assert summary['stages'][0]['mol2'] is None
+    assert 'large system' in str(summary['stages'][0]['mol2_skipped'])
+
+
 def test_equilibration_job_minim_bridge_lincs_failure_falls_back_cleanly(tmp_path, monkeypatch):
     import yadonpy.gmx.workflows.eq as eqmod
 

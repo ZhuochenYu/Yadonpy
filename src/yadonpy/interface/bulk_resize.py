@@ -70,6 +70,35 @@ class FixedXYDirectPackPlan:
     notes: tuple[str, ...] = ()
 
 
+def recommend_fixed_xy_pack_parameters(
+    *,
+    target_density_g_cm3: float,
+) -> tuple[float, float, float, float]:
+    """Recommend a compact but still packable fixed-XY starting box.
+
+    The fixed-XY electrolyte rebuild should start slightly looser than the
+    target density, but not from a dramatically dilute slab-like box. The
+    returned tuple is:
+
+      (initial_pack_density_g_cm3, z_padding_factor, minimum_pack_z_factor, maximum_pack_z_factor)
+    """
+    density = float(target_density_g_cm3)
+    if density <= 0.0:
+        return (0.75, 1.15, 1.15, 1.45)
+
+    pack_density = max(0.65, min(0.92, density * 0.82))
+    z_padding_factor = 1.12 if density >= 0.9 else 1.15
+    density_ratio = max(density / max(pack_density, 1.0e-12), 1.0)
+    minimum_pack_z_factor = max(1.12, min(1.28, density_ratio * 1.02))
+    maximum_pack_z_factor = max(minimum_pack_z_factor + 0.12, min(1.55, density_ratio * 1.20))
+    return (
+        float(pack_density),
+        float(z_padding_factor),
+        float(minimum_pack_z_factor),
+        float(maximum_pack_z_factor),
+    )
+
+
 def _largest_remainder_allocate(raw_counts: np.ndarray, *, target_total: int, min_counts: np.ndarray) -> np.ndarray:
     if raw_counts.ndim != 1:
         raise ValueError("raw_counts must be a 1D array")
@@ -574,6 +603,7 @@ def plan_fixed_xy_direct_pack_box(
     species_names: Sequence[str] | None = None,
     z_padding_factor: float = 1.05,
     minimum_z_nm: float | None = None,
+    maximum_z_nm: float | None = None,
 ) -> FixedXYDirectPackPlan:
     ref_box = tuple(float(x) for x in reference_box_nm)
     if len(ref_box) != 3 or min(ref_box) <= 0.0:
@@ -595,13 +625,19 @@ def plan_fixed_xy_direct_pack_box(
         raise ValueError("initial_pack_density_g_cm3 must be positive")
     if z_padding_factor < 1.0:
         raise ValueError("z_padding_factor must be >= 1.0")
+    if maximum_z_nm is not None and float(maximum_z_nm) <= 0.0:
+        raise ValueError("maximum_z_nm must be positive when provided")
 
     total_mass_amu = float(np.dot(np.asarray(counts, dtype=float), np.asarray(mol_weights_f, dtype=float)))
     required_volume_nm3 = float((total_mass_amu / _AVOGADRO) / (pack_density * 1.0e-21)) if total_mass_amu > 0.0 else 0.0
     xy_area_nm2 = float(ref_box[0] * ref_box[1])
     required_z_nm = float(required_volume_nm3 / max(xy_area_nm2, 1.0e-30)) if required_volume_nm3 > 0.0 else 0.0
     lower_bound_z_nm = max(float(ref_box[2]), float(minimum_z_nm) if minimum_z_nm is not None else 0.0)
-    pack_z_nm = max(lower_bound_z_nm, float(required_z_nm * float(z_padding_factor)))
+    density_padded_z_nm = max(lower_bound_z_nm, float(required_z_nm * float(z_padding_factor)))
+    upper_bound_z_nm = None
+    if maximum_z_nm is not None:
+        upper_bound_z_nm = max(lower_bound_z_nm, float(maximum_z_nm))
+    pack_z_nm = min(density_padded_z_nm, upper_bound_z_nm) if upper_bound_z_nm is not None else density_padded_z_nm
     pack_box_nm = (float(ref_box[0]), float(ref_box[1]), float(pack_z_nm))
     pack_volume_nm3 = float(pack_box_nm[0] * pack_box_nm[1] * pack_box_nm[2])
     estimated_density = float((total_mass_amu / _AVOGADRO) / (pack_volume_nm3 * 1.0e-21)) if pack_volume_nm3 > 0.0 else 0.0
@@ -611,6 +647,10 @@ def plan_fixed_xy_direct_pack_box(
         f"reference box Z={ref_box[2]:.4f} nm, density-derived Z={required_z_nm:.4f} nm, z_padding_factor={float(z_padding_factor):.3f}, selected initial pack Z={pack_z_nm:.4f} nm",
         f"initial pack density target={pack_density:.4f} g/cm^3, estimated density in the selected pack box={estimated_density:.4f} g/cm^3",
     ]
+    if upper_bound_z_nm is not None and density_padded_z_nm > upper_bound_z_nm + 1.0e-12:
+        notes.append(
+            f"capped initial pack Z from {density_padded_z_nm:.4f} to {upper_bound_z_nm:.4f} nm to avoid an excessively dilute fixed-XY box before semiisotropic relaxation"
+        )
 
     return FixedXYDirectPackPlan(
         reference_box_nm=ref_box,
