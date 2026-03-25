@@ -1,4 +1,4 @@
-# YadonPy Manual (v0.8.66)
+# YadonPy Manual (v0.8.67)
 
 YadonPy is a script-oriented molecular workflow package for polymer, solvent, salt, bulk, and interface studies. This manual explains how the package is organized, what the stable architectural rules are, and how the current release expects real workflows to be staged.
 
@@ -6,7 +6,7 @@ Python requirement: Python 3.11+
 
 Related documents:
 
-- API reference: `docs/Yadonpy_API_v0.8.66.md`
+- API reference: `docs/Yadonpy_API_v0.8.67.md`
 - user guide: `docs/Yaonpyd_user_guide.md`
 
 ## 1. Why this manual exists
@@ -69,6 +69,7 @@ For difficult systems this usually means:
 - fixed-XY or semiisotropic relaxation;
 - separate equilibration of components before final interface assembly;
 - staged interface release instead of immediate unrestricted contact.
+- explicit substrates such as graphite are treated as reusable construction blocks and stacked into the final cell before export, instead of being repaired afterward in coordinate files.
 
 ## 3. Conceptual layers
 

@@ -1,3 +1,9 @@
+## 0.8.67 (2026-03-26)
+
+- core/graphite + core/__init__ + api + tests/test_graphite: add `build_graphite(...)`, `stack_cell_blocks(...)`, and explicit cell-metadata registration helpers so YadonPy can build finite AB-stacked graphite basal or edge substrates with GAFF assignment, multi-layer stacking, configurable edge saturation (`H`, `OH`, `CHO`, `COOH`, or random mixtures), and export-ready metadata for downstream GROMACS system generation;
+- examples/13_graphite_cmc_electrolyte + graphite docs: add a new linear example that builds a graphite basal substrate, packs a CMC slab above it, packs a LiPF6 carbonate-electrolyte slab above the CMC, stacks the three blocks into one explicit cell, and exports the combined system;
+- examples/10_interface_route_a + 11_interface_route_b + 12_cmcna_interface: reduce repeated solvent and ion preparation boilerplate by switching the script bodies to short data-driven loops while keeping the examples linear and directly readable.
+
 ## 0.8.66 (2026-03-25)
 
 - examples/12_cmcna_interface/run_cmcna_interface.py + run_eg12_remote_quick.sh: retune the `quick` EG12 profile around the remotely validated `work_dir_quick_v6` settings so the small-system route-B interface workflow still reaches `interface_build` in about 25 minutes on the Linux RTX 4080 SUPER node while shrinking the 2-chain CMC bulk from the earlier `0.284 g/cm^3` quick path to about `0.352 g/cm^3`; the remote helper now defaults to the same extra compaction loop and `0.8 ns` final NPT segment.

@@ -1,4 +1,4 @@
-# YadonPy API (v0.8.66)
+# YadonPy API (v0.8.67)
 
 This document describes the public, script-facing API for the current release. It focuses on entry points that users are expected to call directly from study scripts.
 
@@ -44,6 +44,7 @@ yp.mol_from_smiles
 yp.conformation_search
 yp.assign_charges
 yp.assign_forcefield
+yp.build_graphite
 yp.parameterize_smiles
 yp.load_from_moldb
 yp.InterfaceBuilder
@@ -90,6 +91,18 @@ Use this when you want a concrete molecule immediately instead of a force-field 
 
 Thin wrapper around `yadonpy.sim.qm.conformation_search`.
 
+### `build_graphite(**kwargs)`
+
+Build a GAFF-typed finite graphite substrate from ideal AB-stacked graphite.
+
+Key controls:
+
+- `nx`, `ny`: in-plane replication of the graphene patch;
+- `n_layers`: number of graphite layers;
+- `orientation="basal"` or `orientation="edge"`;
+- `edge_cap="H" | "OH" | "CHO" | "COOH" | "random"`;
+- `random_cap_probs`: optional weighted cap selection for random edge termination.
+
 ### `assign_charges(mol, charge="RESP", **kwargs)`
 
 Thin wrapper around `yadonpy.sim.qm.assign_charges`.
@@ -131,7 +144,7 @@ Most serious scripts use this style:
 import yadonpy as yp
 
 ff = yp.get_ff("gaff2_mod")
-mol = ff.mol("O=C1OCCO1", name="EC")
+mol = ff.mol("O=C1OCCO1")
 ok = ff.ff_assign(mol)
 ```
 

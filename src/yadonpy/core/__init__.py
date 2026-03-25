@@ -12,7 +12,21 @@ knowledge, this project does not raise copyright issues.
 
 from .molspec import MolSpec, as_rdkit_mol, molecular_weight  # noqa: F401
 from .workdir import WorkDir, workdir, workunit  # noqa: F401
+from .graphite import GraphiteBuildResult, StackedCellResult, build_graphite, register_cell_species_metadata, stack_cell_blocks  # noqa: F401
 from ..interface import build_interface, build_interface_from_workdirs  # noqa: F401
 
-__all__ = ["MolSpec", "as_rdkit_mol", "molecular_weight", "WorkDir", "workdir", "workunit", "build_interface", "build_interface_from_workdirs"]
-
+__all__ = [
+    "MolSpec",
+    "as_rdkit_mol",
+    "molecular_weight",
+    "WorkDir",
+    "workdir",
+    "workunit",
+    "GraphiteBuildResult",
+    "StackedCellResult",
+    "build_graphite",
+    "register_cell_species_metadata",
+    "stack_cell_blocks",
+    "build_interface",
+    "build_interface_from_workdirs",
+]

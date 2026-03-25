@@ -40,6 +40,13 @@ def mol_from_smiles(smiles: str, *, coord: bool = True, name: str | None = None)
     return utils.mol_from_smiles(smiles, coord=coord, name=name)
 
 
+def build_graphite(**kwargs):
+    """Thin wrapper around :func:`yadonpy.core.graphite.build_graphite`."""
+    from .core.graphite import build_graphite as _build_graphite
+
+    return _build_graphite(**kwargs)
+
+
 def conformation_search(mol, **kwargs):
     """Thin wrapper around :func:`yadonpy.sim.qm.conformation_search`."""
     from .sim import qm
@@ -157,6 +164,7 @@ def parameterize_smiles(
 __all__ = [
     'assign_charges',
     'assign_forcefield',
+    'build_graphite',
     'conformation_search',
     'get_ff',
     'list_charge_methods',

@@ -1,4 +1,4 @@
-# YadonPy User Guide (v0.8.66)
+# YadonPy User Guide (v0.8.67)
 
 This guide is for users who want to run YadonPy productively without reading the whole implementation first.
 
@@ -6,7 +6,7 @@ Python requirement: Python 3.11+
 
 Related documents:
 
-- API reference: `docs/Yadonpy_API_v0.8.66.md`
+- API reference: `docs/Yadonpy_API_v0.8.67.md`
 - manual: `docs/Yadonpy_manul.md`
 
 ## 1. Start with the right mindset
@@ -104,8 +104,11 @@ Recommended example order:
 6. `examples/10_interface_route_a`
 7. `examples/11_interface_route_b`
 8. `examples/12_cmcna_interface`
+9. `examples/13_graphite_cmc_electrolyte`
 
 That order is intentional. It moves from reusable chemistry to bulk systems and only then to interface workflows.
+
+Use `example 13` when you need an explicit solid substrate workflow instead of a polymer-vs-electrolyte two-phase interface.
 
 ## 5. Work directories
 

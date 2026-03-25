@@ -102,26 +102,17 @@ if __name__ == "__main__":
         raise RuntimeError("Can not assign force field parameters for poly_P.")
     write_mol2(mol=poly_P, out_dir=mol2_dir)
 
-    EC = ff.mol(EC_smiles)
-    EC = ff.ff_assign(EC)
-    if not EC:
-        raise RuntimeError("Can not assign force field parameters for EC.")
-    write_mol2(mol=EC, out_dir=mol2_dir)
+    solvents = {
+        label: ff.ff_assign(ff.mol(smiles), report=False)
+        for label, smiles in (("EC", EC_smiles), ("DEC", DEC_smiles), ("EMC", EMC_smiles))
+    }
+    if any(mol is False for mol in solvents.values()):
+        raise RuntimeError("Can not assign force field parameters for the carbonate solvents.")
+    for mol in solvents.values():
+        write_mol2(mol=mol, out_dir=mol2_dir)
+    EC, DEC, EMC = solvents["EC"], solvents["DEC"], solvents["EMC"]
 
-    DEC = ff.mol(DEC_smiles)
-    DEC = ff.ff_assign(DEC)
-    if not DEC:
-        raise RuntimeError("Can not assign force field parameters for DEC.")
-    write_mol2(mol=DEC, out_dir=mol2_dir)
-
-    EMC = ff.mol(EMC_smiles)
-    EMC = ff.ff_assign(EMC)
-    if not EMC:
-        raise RuntimeError("Can not assign force field parameters for EMC.")
-    write_mol2(mol=EMC, out_dir=mol2_dir)
-
-    Li = ion_ff.mol(Li_smiles)
-    Li = ion_ff.ff_assign(Li)
+    Li = ion_ff.ff_assign(ion_ff.mol(Li_smiles), report=False)
     if not Li:
         raise RuntimeError("Can not assign force field parameters for Li.")
     write_mol2(mol=Li, out_dir=mol2_dir)

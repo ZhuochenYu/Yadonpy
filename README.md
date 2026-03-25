@@ -1,6 +1,6 @@
 ﻿# YadonPy
 
-Current release: **v0.8.66**
+Current release: **v0.8.67**
 
 YadonPy is a Python package for building polymer, solvent, salt, bulk, and interface workflows directly from SMILES or PSMILES. It is designed for script-driven molecular simulation studies where the user wants to keep the real workflow visible in code instead of hiding it behind a monolithic project file.
 
@@ -20,13 +20,14 @@ The package is built around two stable ideas:
 - **script first**: the study logic should remain understandable from the user script;
 - **MolDB first**: reusable expensive assets are molecular geometry, charge variants, and bonded-patch metadata, not old `.top/.gro/.itp` exports.
 
-## What changed in v0.8.66
+## What changed in v0.8.67
 
-This release hardens the fast remote validation path for `example 12`.
+This release adds graphitic substrate construction and cleans up the interface-example surface.
 
-- The `quick` EG12 profile is now tuned to the remotely validated `work_dir_quick_v6` settings: `2` CMC chains, `DP=40`, one extra bulk compaction loop, and a `0.8 ns` final polymer/electrolyte NPT segment before interface assembly.
-- On the Linux RTX 4080 SUPER server this profile reached `route_b/interface_build` in about `24.5` minutes and produced a smaller interface test system of about `9,900` atoms.
-- The same tuning lifted the small CMC bulk density from the earlier quick-path `~0.284 g/cm^3` result to `~0.352 g/cm^3`, which is still not a production-density target but is a better fast validation starting point with less obvious free volume.
+- New `build_graphite(...)` support builds finite AB-stacked graphite slabs directly inside YadonPy, with GAFF assignment, configurable basal or edge orientation, layer count control, and edge saturation options (`H`, `OH`, `CHO`, `COOH`, or random mixtures).
+- New stacking helpers support graphite-at-bottom workflows without forcing the user to hand-edit coordinates in example scripts.
+- New `examples/13_graphite_cmc_electrolyte` shows a linear build path for `graphite basal plane -> CMC slab -> electrolyte slab -> GROMACS export`.
+- Examples `10-12` now use more compact data-driven species preparation for the carbonate solvents and ions, reducing repeated boilerplate while keeping the scripts linear and easy to follow.
 
 ## Installation
 

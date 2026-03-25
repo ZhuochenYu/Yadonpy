@@ -335,29 +335,23 @@ if __name__ == "__main__":
     interface_dir = work_dir.child("interface_route_b")
     interface_md_dir = work_dir.child("interface_route_b_md")
 
-    glucose = ff.mol(glucose_smiles)
-    glucose = ff.ff_assign(glucose, report=False)
-    if not glucose:
-        raise RuntimeError("Can not assign force field parameters for glucose.")
-    write_mol2(mol=glucose, out_dir=mol2_dir)
-
-    glucose_2 = ff.mol(glucose_2_smiles)
-    glucose_2 = ff.ff_assign(glucose_2, report=False)
-    if not glucose_2:
-        raise RuntimeError("Can not assign force field parameters for glucose_2.")
-    write_mol2(mol=glucose_2, out_dir=mol2_dir)
-
-    glucose_3 = ff.mol(glucose_3_smiles)
-    glucose_3 = ff.ff_assign(glucose_3, report=False)
-    if not glucose_3:
-        raise RuntimeError("Can not assign force field parameters for glucose_3.")
-    write_mol2(mol=glucose_3, out_dir=mol2_dir)
-
-    glucose_6 = ff.mol(glucose_6_smiles)
-    glucose_6 = ff.ff_assign(glucose_6, report=False)
-    if not glucose_6:
-        raise RuntimeError("Can not assign force field parameters for glucose_6.")
-    write_mol2(mol=glucose_6, out_dir=mol2_dir)
+    cmc_monomers = {
+        label: ff.ff_assign(ff.mol(smiles), report=False)
+        for label, smiles in (
+            ("glucose", glucose_smiles),
+            ("glucose_2", glucose_2_smiles),
+            ("glucose_3", glucose_3_smiles),
+            ("glucose_6", glucose_6_smiles),
+        )
+    }
+    if any(mol is False for mol in cmc_monomers.values()):
+        raise RuntimeError("Can not assign force field parameters for the CMC monomer set.")
+    for mol in cmc_monomers.values():
+        write_mol2(mol=mol, out_dir=mol2_dir)
+    glucose = cmc_monomers["glucose"]
+    glucose_2 = cmc_monomers["glucose_2"]
+    glucose_3 = cmc_monomers["glucose_3"]
+    glucose_6 = cmc_monomers["glucose_6"]
 
     ter1 = utils.mol_from_smiles(ter_smiles)
     if args.term_qm:
@@ -390,35 +384,25 @@ if __name__ == "__main__":
         raise RuntimeError("Can not assign force field parameters for CMC.")
     write_mol2(mol=CMC, out_dir=mol2_dir)
 
-    EC = ff.mol(EC_smiles)
-    EC = ff.ff_assign(EC, report=False)
-    if not EC:
-        raise RuntimeError("Can not assign force field parameters for EC.")
-    write_mol2(mol=EC, out_dir=mol2_dir)
+    solvents = {
+        label: ff.ff_assign(ff.mol(smiles), report=False)
+        for label, smiles in (("EC", EC_smiles), ("DEC", DEC_smiles), ("EMC", EMC_smiles))
+    }
+    if any(mol is False for mol in solvents.values()):
+        raise RuntimeError("Can not assign force field parameters for the carbonate solvents.")
+    EC, DEC, EMC = solvents["EC"], solvents["DEC"], solvents["EMC"]
+    for mol in solvents.values():
+        write_mol2(mol=mol, out_dir=mol2_dir)
 
-    DEC = ff.mol(DEC_smiles)
-    DEC = ff.ff_assign(DEC, report=False)
-    if not DEC:
-        raise RuntimeError("Can not assign force field parameters for DEC.")
-    write_mol2(mol=DEC, out_dir=mol2_dir)
-
-    EMC = ff.mol(EMC_smiles)
-    EMC = ff.ff_assign(EMC, report=False)
-    if not EMC:
-        raise RuntimeError("Can not assign force field parameters for EMC.")
-    write_mol2(mol=EMC, out_dir=mol2_dir)
-
-    Li = ion_ff.mol(Li_smiles)
-    Li = ion_ff.ff_assign(Li, report=False)
-    if not Li:
-        raise RuntimeError("Can not assign force field parameters for Li.")
-    write_mol2(mol=Li, out_dir=mol2_dir)
-
-    Na = ion_ff.mol(Na_smiles)
-    Na = ion_ff.ff_assign(Na, report=False)
-    if not Na:
-        raise RuntimeError("Can not assign force field parameters for Na.")
-    write_mol2(mol=Na, out_dir=mol2_dir)
+    ions = {
+        "Li": ion_ff.ff_assign(ion_ff.mol(Li_smiles), report=False),
+        "Na": ion_ff.ff_assign(ion_ff.mol(Na_smiles), report=False),
+    }
+    if any(mol is False for mol in ions.values()):
+        raise RuntimeError("Can not assign force field parameters for the monatomic ions.")
+    Li, Na = ions["Li"], ions["Na"]
+    for mol in ions.values():
+        write_mol2(mol=mol, out_dir=mol2_dir)
 
     try:
         PF6 = ff.mol(PF6_smiles, charge="RESP", require_ready=True, prefer_db=True)
