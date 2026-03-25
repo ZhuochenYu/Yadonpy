@@ -1,3 +1,7 @@
+## 0.8.64 (2026-03-25)
+
+- moldb/store + tests/test_workdir_and_molspec: detect known hypervalent / inorganic MolDB entries such as `PF6-` before RDKit MOL2 reload, prefer the unsanitized load path first, then apply only selective sanitization; this removes the repeated `Explicit valence for atom P, 6` noise and stabilizes `ff.mol(...)->ff.ff_assign(..., bonded='DRIH')` reuse from MolDB.
+
 ## 0.8.63 (2026-03-25)
 
 - ff/gaff2_mod + ff/ff_dat/gaff2_mod.json + docs/si_h_qm_probe_20260325.md + docs/si_h_qm_probe_20260325_typed_summary.json + tests/test_forcefields: replace the provisional surrogate-copied `si,hi` / `hi,si,hi` / `ci,si,hi` / `oi,si,hi` / `oss,si,hi` values with Linux-side `Psi4 + modified Seminario` parameters obtained at `wB97M-D3BJ/def2-SVP`, record the exact probe-set provenance in the repository, and lock the new source metadata and numeric values down with regression coverage;

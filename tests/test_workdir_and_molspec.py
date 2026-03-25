@@ -356,6 +356,36 @@ def test_pf6_can_roundtrip_through_moldb_and_direct_molspec_api_with_gasteiger_f
     assert loaded.GetAtomWithIdx(0).HasProp('AtomicCharge')
 
 
+def test_pf6_moldb_load_prefers_unsanitized_mol2_for_hypervalent_ions(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv('YADONPY_MOLDB', str(tmp_path / 'moldb'))
+
+    ff = GAFF2_mod()
+    pf6_smiles = 'F[P-](F)(F)(F)(F)F'
+    built = utils.mol_from_smiles(pf6_smiles, coord=False, name='PF6')
+    utils.ensure_3d_coords(built, smiles_hint=pf6_smiles, engine='openbabel')
+    built = ff.ff_assign(built, charge='gasteiger', bonded='DRIH', report=False)
+    assert built is not False
+
+    ff.store_to_db(built, smiles_or_psmiles=pf6_smiles, name='PF6', charge='gasteiger')
+
+    from yadonpy.moldb import store as storemod
+
+    real = storemod.rdmolfiles.MolFromMol2File
+    calls = []
+
+    def _wrapped(*args, **kwargs):
+        calls.append(bool(kwargs.get('sanitize', True)))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(storemod.rdmolfiles, 'MolFromMol2File', _wrapped)
+
+    loaded = ff.ff_assign(ff.mol(pf6_smiles, charge='gasteiger'), bonded='DRIH', report=False)
+
+    assert loaded is not False
+    assert calls
+    assert calls[0] is False
+
+
 def test_ensure_cached_artifacts_preserves_pf6_charge_sum_when_formal_charge_is_wrong(tmp_path: Path, monkeypatch):
     ensure_initialized()
     monkeypatch.setenv('YADONPY_MOL_CACHE_DIR', str(tmp_path / 'mol_cache'))

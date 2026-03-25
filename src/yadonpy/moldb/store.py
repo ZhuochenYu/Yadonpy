@@ -11,6 +11,10 @@ from typing import Optional, Tuple, Dict, Any, List
 
 from rdkit import Chem
 from rdkit.Chem import rdmolfiles
+try:
+    from rdkit import RDLogger
+except Exception:  # pragma: no cover - optional on some stripped RDKit builds
+    RDLogger = None
 
 from ..core import chem_utils as utils
 from ..io.mol2 import write_mol2
@@ -119,7 +123,57 @@ def _restore_connectors(mol: Chem.Mol, connectors: Optional[List[Dict[str, int]]
                 a.SetIsotope(iso)
 
 
-def _load_mol2_candidate(mol2_path: Path) -> Optional[Chem.Mol]:
+def _prefer_unsanitized_mol2(smiles_hint: str | None) -> bool:
+    if not smiles_hint:
+        return False
+    try:
+        probe = Chem.MolFromSmiles(str(smiles_hint), sanitize=False)
+    except Exception:
+        probe = None
+    if probe is None:
+        return False
+    try:
+        probe.UpdatePropertyCache(strict=False)
+    except Exception:
+        pass
+    try:
+        if utils.is_high_symmetry_polyhedral_ion(probe, smiles_hint=str(smiles_hint)):
+            return True
+        if utils.is_inorganic_ion_like(probe, smiles_hint=str(smiles_hint)):
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _load_mol2_candidate(mol2_path: Path, *, smiles_hint: str | None = None) -> Optional[Chem.Mol]:
+    prefer_unsanitized = _prefer_unsanitized_mol2(smiles_hint)
+
+    if prefer_unsanitized:
+        try:
+            if RDLogger is not None:
+                RDLogger.DisableLog('rdApp.*')
+            mol = rdmolfiles.MolFromMol2File(str(mol2_path), sanitize=False, removeHs=False)
+        except Exception:
+            mol = None
+        finally:
+            if RDLogger is not None:
+                RDLogger.EnableLog('rdApp.*')
+        if mol is None:
+            return None
+        try:
+            mol.UpdatePropertyCache(strict=False)
+        except Exception:
+            pass
+        try:
+            Chem.SanitizeMol(
+                mol,
+                sanitizeOps=Chem.SanitizeFlags.SANITIZE_ALL ^ Chem.SanitizeFlags.SANITIZE_PROPERTIES,
+            )
+        except Exception:
+            pass
+        return mol
+
     try:
         mol = rdmolfiles.MolFromMol2File(str(mol2_path), sanitize=True, removeHs=False)
     except Exception:
@@ -432,7 +486,7 @@ class MolDB:
         mol = None
         failed_mol2: list[Path] = []
         for mol2p in mol2_candidates:
-            mol = _load_mol2_candidate(mol2p)
+            mol = _load_mol2_candidate(mol2p, smiles_hint=rec.canonical)
             if mol is not None:
                 break
             failed_mol2.append(mol2p)
