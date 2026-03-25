@@ -1,6 +1,6 @@
 ﻿# YadonPy
 
-Current release: **v0.8.65**
+Current release: **v0.8.66**
 
 YadonPy is a Python package for building polymer, solvent, salt, bulk, and interface workflows directly from SMILES or PSMILES. It is designed for script-driven molecular simulation studies where the user wants to keep the real workflow visible in code instead of hiding it behind a monolithic project file.
 
@@ -20,13 +20,13 @@ The package is built around two stable ideas:
 - **script first**: the study logic should remain understandable from the user script;
 - **MolDB first**: reusable expensive assets are molecular geometry, charge variants, and bonded-patch metadata, not old `.top/.gro/.itp` exports.
 
-## What changed in v0.8.65
+## What changed in v0.8.66
 
-This release fixes an example-script regression that broke `example 05` at startup.
+This release hardens the fast remote validation path for `example 12`.
 
-- `examples/05_cmcna_electrolyte/run_cmcna_random_copolymer.py` now imports `workdir` from `yadonpy.core`, so the script no longer fails immediately with `NameError: name 'workdir' is not defined`.
-- I also re-checked every example that calls `workdir()` and verified that the corresponding import is present.
-- The earlier `0.8.64` MolDB hypervalent-ion fix remains unchanged in this release.
+- The `quick` EG12 profile is now tuned to the remotely validated `work_dir_quick_v6` settings: `2` CMC chains, `DP=40`, one extra bulk compaction loop, and a `0.8 ns` final polymer/electrolyte NPT segment before interface assembly.
+- On the Linux RTX 4080 SUPER server this profile reached `route_b/interface_build` in about `24.5` minutes and produced a smaller interface test system of about `9,900` atoms.
+- The same tuning lifted the small CMC bulk density from the earlier quick-path `~0.284 g/cm^3` result to `~0.352 g/cm^3`, which is still not a production-density target but is a better fast validation starting point with less obvious free volume.
 
 ## Installation
 
@@ -154,7 +154,7 @@ What the interface examples now demonstrate:
 
 ## Documentation map
 
-- API reference: `docs/Yadonpy_API_v0.8.65.md`
+- API reference: `docs/Yadonpy_API_v0.8.66.md`
 - Manual: `docs/Yadonpy_manul.md`
 - User guide: `docs/Yaonpyd_user_guide.md`
 

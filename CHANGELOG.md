@@ -1,3 +1,7 @@
+## 0.8.66 (2026-03-25)
+
+- examples/12_cmcna_interface/run_cmcna_interface.py + run_eg12_remote_quick.sh: retune the `quick` EG12 profile around the remotely validated `work_dir_quick_v6` settings so the small-system route-B interface workflow still reaches `interface_build` in about 25 minutes on the Linux RTX 4080 SUPER node while shrinking the 2-chain CMC bulk from the earlier `0.284 g/cm^3` quick path to about `0.352 g/cm^3`; the remote helper now defaults to the same extra compaction loop and `0.8 ns` final NPT segment.
+
 ## 0.8.65 (2026-03-25)
 
 - examples/05_cmcna_electrolyte/run_cmcna_random_copolymer.py: restore the missing `workdir` import from `yadonpy.core` so the script no longer crashes at startup with `NameError: name 'workdir' is not defined`;

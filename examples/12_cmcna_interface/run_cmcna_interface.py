@@ -57,7 +57,7 @@ work_dir_name_default = str(os.environ.get("YADONPY_EG12_WORKDIR", "")).strip()
 parser = argparse.ArgumentParser(
     description="Example 12: CMC-Na vs 1 M LiPF6 interface workflow.",
 )
-parser.add_argument("--profile", choices=("full", "smoke"), default=profile_default)
+parser.add_argument("--profile", choices=("full", "quick", "smoke"), default=profile_default)
 parser.add_argument(
     "--stop-after",
     choices=("full", "polymer_bulk", "probe_bulk", "electrolyte_bulk", "interface_build"),
@@ -214,6 +214,44 @@ if args.profile == "smoke":
     recipe_release_ps = 20.0
     recipe_exchange_ns = 0.02
     recipe_production_ns = 0.02
+elif args.profile == "quick":
+    n_CMC = 2
+    dp = 40
+    polymer_initial_pack_density_g_cm3 = 0.022
+    polymer_pack_retry = 44
+    polymer_pack_retry_step = 2200
+    polymer_pack_threshold_ang = 1.56
+    polymer_pack_dec_rate = 0.70
+    min_salt_pairs = 2
+    electrolyte_probe_density_g_cm3 = 1.00
+    electrolyte_probe_volume_scale = 1.60
+    electrolyte_probe_pack_density_g_cm3 = 0.32
+    electrolyte_probe_z_padding_factor = 1.28
+    electrolyte_pack_retry = 44
+    electrolyte_pack_retry_step = 1400
+    electrolyte_pack_threshold_ang = 1.60
+    electrolyte_pack_dec_rate = 0.65
+    interface_gap_nm = 0.60
+    interface_vacuum_nm = 8.0
+    interface_bottom_thickness_nm = 4.0
+    interface_top_thickness_nm = 4.5
+    interface_surface_shell_nm = 0.8
+    interface_core_guard_nm = 0.50
+    bulk_additional_loops = 1
+    bulk_final_npt_ns = 0.8
+    bulk_eq21_exec_kwargs = {
+        "eq21_tmax": 650.0,
+        "eq21_pmax": 12000.0,
+        "eq21_pre_nvt_ps": 3.0,
+        "sim_time": 0.08,
+    }
+    probe_fixed_xy_npt_ns = 0.6
+    recipe_pre_contact_ps = 15.0
+    recipe_density_relax_ps = 30.0
+    recipe_contact_ps = 30.0
+    recipe_release_ps = 30.0
+    recipe_exchange_ns = 0.05
+    recipe_production_ns = 0.05
 
 if args.n_cmc is not None:
     n_CMC = int(args.n_cmc)
