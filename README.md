@@ -1,6 +1,6 @@
 ﻿# YadonPy
 
-Current release: **v0.8.64**
+Current release: **v0.8.65**
 
 YadonPy is a Python package for building polymer, solvent, salt, bulk, and interface workflows directly from SMILES or PSMILES. It is designed for script-driven molecular simulation studies where the user wants to keep the real workflow visible in code instead of hiding it behind a monolithic project file.
 
@@ -20,13 +20,13 @@ The package is built around two stable ideas:
 - **script first**: the study logic should remain understandable from the user script;
 - **MolDB first**: reusable expensive assets are molecular geometry, charge variants, and bonded-patch metadata, not old `.top/.gro/.itp` exports.
 
-## What changed in v0.8.64
+## What changed in v0.8.65
 
-This release fixes one concrete MolDB reuse bug for hypervalent ions such as `PF6-`.
+This release fixes an example-script regression that broke `example 05` at startup.
 
-- `moldb/store.py` now detects known inorganic / hypervalent MolDB entries early and loads their MOL2 geometry with the unsanitized RDKit path first, followed by selective sanitization. That prevents repeated `Explicit valence for atom P, 6` noise every time `PF6` is reloaded from MolDB.
-- The `PF6` path `ff.mol(...)->ff.ff_assign(..., bonded='DRIH')` now has a dedicated regression in `tests/test_workdir_and_molspec.py`, which verifies that MolDB reload starts with `sanitize=False` for the cached `PF6` MOL2.
-- The earlier `0.8.63` Si-H QM source files and parameters remain unchanged in this release.
+- `examples/05_cmcna_electrolyte/run_cmcna_random_copolymer.py` now imports `workdir` from `yadonpy.core`, so the script no longer fails immediately with `NameError: name 'workdir' is not defined`.
+- I also re-checked every example that calls `workdir()` and verified that the corresponding import is present.
+- The earlier `0.8.64` MolDB hypervalent-ion fix remains unchanged in this release.
 
 ## Installation
 
@@ -154,7 +154,7 @@ What the interface examples now demonstrate:
 
 ## Documentation map
 
-- API reference: `docs/Yadonpy_API_v0.8.64.md`
+- API reference: `docs/Yadonpy_API_v0.8.65.md`
 - Manual: `docs/Yadonpy_manul.md`
 - User guide: `docs/Yaonpyd_user_guide.md`
 

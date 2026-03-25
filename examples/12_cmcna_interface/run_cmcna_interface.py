@@ -44,6 +44,15 @@ profile_default = str(os.environ.get("YADONPY_EG12_PROFILE", "full")).strip().lo
 restart_default = str(os.environ.get("YADONPY_RESTART", "1")).strip().lower() not in {"0", "false", "no", "off"}
 term_qm_default = str(os.environ.get("YADONPY_EG12_TERM_QM", "0")).strip().lower() in {"1", "true", "yes", "on"}
 cpu_cap_default = os.environ.get("YADONPY_CPU_CAP")
+n_cmc_default = os.environ.get("YADONPY_EG12_N_CMC")
+dp_default = os.environ.get("YADONPY_EG12_DP")
+bulk_loops_default = os.environ.get("YADONPY_EG12_BULK_LOOPS")
+bulk_final_npt_default = os.environ.get("YADONPY_EG12_BULK_FINAL_NPT_NS")
+bottom_thickness_default = os.environ.get("YADONPY_EG12_BOTTOM_THICKNESS_NM")
+top_thickness_default = os.environ.get("YADONPY_EG12_TOP_THICKNESS_NM")
+gap_default = os.environ.get("YADONPY_EG12_INTERFACE_GAP_NM")
+vacuum_default = os.environ.get("YADONPY_EG12_INTERFACE_VACUUM_NM")
+work_dir_name_default = str(os.environ.get("YADONPY_EG12_WORKDIR", "")).strip()
 
 parser = argparse.ArgumentParser(
     description="Example 12: CMC-Na vs 1 M LiPF6 interface workflow.",
@@ -54,6 +63,35 @@ parser.add_argument(
     choices=("full", "polymer_bulk", "probe_bulk", "electrolyte_bulk", "interface_build"),
     default="full",
 )
+parser.add_argument("--n-cmc", type=int, default=(int(n_cmc_default) if n_cmc_default else None))
+parser.add_argument("--dp", type=int, default=(int(dp_default) if dp_default else None))
+parser.add_argument("--bulk-loops", type=int, default=(int(bulk_loops_default) if bulk_loops_default else None))
+parser.add_argument(
+    "--bulk-final-npt-ns",
+    type=float,
+    default=(float(bulk_final_npt_default) if bulk_final_npt_default else None),
+)
+parser.add_argument(
+    "--bottom-thickness-nm",
+    type=float,
+    default=(float(bottom_thickness_default) if bottom_thickness_default else None),
+)
+parser.add_argument(
+    "--top-thickness-nm",
+    type=float,
+    default=(float(top_thickness_default) if top_thickness_default else None),
+)
+parser.add_argument(
+    "--interface-gap-nm",
+    type=float,
+    default=(float(gap_default) if gap_default else None),
+)
+parser.add_argument(
+    "--interface-vacuum-nm",
+    type=float,
+    default=(float(vacuum_default) if vacuum_default else None),
+)
+parser.add_argument("--work-dir-name", default=(work_dir_name_default or None))
 parser.add_argument("--cpu-cap", type=int, default=(int(cpu_cap_default) if cpu_cap_default else None))
 parser.add_argument("--mpi", type=int, default=None)
 parser.add_argument("--omp", type=int, default=None)
@@ -130,6 +168,7 @@ interface_surface_shell_nm = 1.0
 interface_core_guard_nm = 0.8
 
 bulk_additional_loops = 4
+bulk_final_npt_ns = 0.0
 bulk_eq21_exec_kwargs: dict[str, float] = {}
 probe_fixed_xy_npt_ns = 5.0
 recipe_pre_contact_ps = 180.0
@@ -161,6 +200,7 @@ if args.profile == "smoke":
     interface_surface_shell_nm = 0.8
     interface_core_guard_nm = 0.5
     bulk_additional_loops = 0
+    bulk_final_npt_ns = 0.25
     bulk_eq21_exec_kwargs = {
         "eq21_tmax": 600.0,
         "eq21_pmax": 10000.0,
@@ -175,7 +215,24 @@ if args.profile == "smoke":
     recipe_exchange_ns = 0.02
     recipe_production_ns = 0.02
 
-work_dir_name = "work_dir_smoke" if args.profile == "smoke" else "work_dir"
+if args.n_cmc is not None:
+    n_CMC = int(args.n_cmc)
+if args.dp is not None:
+    dp = int(args.dp)
+if args.bulk_loops is not None:
+    bulk_additional_loops = int(args.bulk_loops)
+if args.bulk_final_npt_ns is not None:
+    bulk_final_npt_ns = float(args.bulk_final_npt_ns)
+if args.bottom_thickness_nm is not None:
+    interface_bottom_thickness_nm = float(args.bottom_thickness_nm)
+if args.top_thickness_nm is not None:
+    interface_top_thickness_nm = float(args.top_thickness_nm)
+if args.interface_gap_nm is not None:
+    interface_gap_nm = float(args.interface_gap_nm)
+if args.interface_vacuum_nm is not None:
+    interface_vacuum_nm = float(args.interface_vacuum_nm)
+
+work_dir_name = args.work_dir_name or ("work_dir_smoke" if args.profile == "smoke" else "work_dir")
 work_dir = workdir(BASE_DIR / work_dir_name, clean=not restart)
 
 
@@ -201,6 +258,8 @@ if __name__ == "__main__":
         "targets": {
             "n_CMC": n_CMC,
             "dp": dp,
+            "bulk_additional_loops": bulk_additional_loops,
+            "bulk_final_npt_ns": bulk_final_npt_ns,
             "salt_molarity_M": salt_molarity_M,
             "solvent_mass_ratio": solvent_mass_ratio,
             "min_salt_pairs": min_salt_pairs,
@@ -370,6 +429,7 @@ if __name__ == "__main__":
         gpu=gpu,
         gpu_id=gpu_id,
         additional_loops=bulk_additional_loops,
+        final_npt_ns=bulk_final_npt_ns,
         eq21_exec_kwargs=bulk_eq21_exec_kwargs,
     )
     cmc_box_nm = read_equilibrated_box_nm(work_dir=ac_CMC_dir)
@@ -450,6 +510,7 @@ if __name__ == "__main__":
         gpu=gpu,
         gpu_id=gpu_id,
         additional_loops=bulk_additional_loops,
+        final_npt_ns=bulk_final_npt_ns,
         eq21_exec_kwargs=bulk_eq21_exec_kwargs,
     )
     probe_profile = build_bulk_equilibrium_profile(
@@ -522,7 +583,10 @@ if __name__ == "__main__":
         additional_loops=bulk_additional_loops,
         eq21_npt_mdp_overrides=resized_interface_prep.resized_prep.relax_mdp_overrides,
         additional_mdp_overrides=resized_interface_prep.resized_prep.relax_mdp_overrides,
-        final_npt_ns=probe_interface_prep.interface_plan.electrolyte_alignment.fixed_xy_npt_ns,
+        final_npt_ns=max(
+            float(probe_interface_prep.interface_plan.electrolyte_alignment.fixed_xy_npt_ns),
+            float(bulk_final_npt_ns),
+        ),
         final_npt_mdp_overrides=resized_interface_prep.resized_prep.relax_mdp_overrides,
         eq21_exec_kwargs=bulk_eq21_exec_kwargs,
     )

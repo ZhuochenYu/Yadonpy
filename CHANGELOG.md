@@ -1,3 +1,8 @@
+## 0.8.65 (2026-03-25)
+
+- examples/05_cmcna_electrolyte/run_cmcna_random_copolymer.py: restore the missing `workdir` import from `yadonpy.core` so the script no longer crashes at startup with `NameError: name 'workdir' is not defined`;
+- examples regression check: re-scan all shipped example scripts that call `workdir()` and confirm they carry an explicit `workdir` import in the header.
+
 ## 0.8.64 (2026-03-25)
 
 - moldb/store + tests/test_workdir_and_molspec: detect known hypervalent / inorganic MolDB entries such as `PF6-` before RDKit MOL2 reload, prefer the unsanitized load path first, then apply only selective sanitization; this removes the repeated `Explicit valence for atom P, 6` noise and stabilizes `ff.mol(...)->ff.ff_assign(..., bonded='DRIH')` reuse from MolDB.

@@ -13,7 +13,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from yadonpy.runtime import set_run_options
-from yadonpy.core import molecular_weight, utils, poly
+from yadonpy.core import molecular_weight, utils, poly, workdir
 from yadonpy.core.data_dir import ensure_initialized
 from yadonpy.diagnostics import doctor
 from yadonpy.ff import GAFF2_mod, MERZ
