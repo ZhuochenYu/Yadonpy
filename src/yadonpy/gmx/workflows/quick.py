@@ -238,7 +238,14 @@ class QuickRelaxJob:
             try:
                 plots_dir = out / "plots"
                 plots_dir.mkdir(parents=True, exist_ok=True)
-                summary.setdefault("plots", {}).update(plot_thermo_stage(xvg, out_dir=plots_dir, title_prefix="quick"))
+                summary.setdefault("plots", {}).update(
+                    plot_thermo_stage(
+                        xvg,
+                        out_dir=plots_dir,
+                        title_prefix="quick",
+                        frac_last=self.frac_last,
+                    )
+                )
             except Exception as _pe:
                 summary["thermo_plot_warning"] = str(_pe)
 

@@ -6707,6 +6707,13 @@
       "r0": 0.1674
     },
     {
+      "tag": "si,hi",
+      "name": "si,hi",
+      "rname": "hi,si",
+      "k": 314569.85599999997,
+      "r0": 0.1097
+    },
+    {
       "tag": "oi,ho",
       "name": "oi,ho",
       "rname": "ho,oi",
@@ -39056,6 +39063,20 @@
       "theta0": 106.42
     },
     {
+      "tag": "ci,si,hi",
+      "name": "ci,si,hi",
+      "rname": "hi,si,ci",
+      "k": 528.623296,
+      "theta0": 110.133
+    },
+    {
+      "tag": "oi,si,hi",
+      "name": "oi,si,hi",
+      "rname": "hi,si,oi",
+      "k": 525.142208,
+      "theta0": 109.5
+    },
+    {
       "tag": "si,oi,ho",
       "name": "si,oi,ho",
       "rname": "ho,oi,si",
@@ -39068,6 +39089,13 @@
       "rname": "ci,si,ci",
       "k": 379.806784,
       "theta0": 109.696
+    },
+    {
+      "tag": "hi,si,hi",
+      "name": "hi,si,hi",
+      "rname": "hi,si,hi",
+      "k": 326.01728,
+      "theta0": 107.58
     },
     {
       "tag": "hc,ci,hc",
@@ -39089,6 +39117,13 @@
       "rname": "oss,si,ci",
       "k": 553.71056,
       "theta0": 107.558
+    },
+    {
+      "tag": "oss,si,hi",
+      "name": "oss,si,hi",
+      "rname": "hi,si,oss",
+      "k": 524.556448,
+      "theta0": 108.7
     },
     {
       "tag": "oss,si,oss",
@@ -54587,6 +54622,21 @@
       ],
       "k": [
         0.0
+      ],
+      "m": 1,
+      "n": [
+        3
+      ]
+    },
+    {
+      "tag": "hi,si,oss,si",
+      "name": "hi,si,oss,si",
+      "rname": "si,oss,si,hi",
+      "d": [
+        0
+      ],
+      "k": [
+        1.6038666666666666
       ],
       "m": 1,
       "n": [

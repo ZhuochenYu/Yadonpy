@@ -1,3 +1,9 @@
+## 0.8.62 (2026-03-25)
+
+- ff/gaff2_mod + ff/ff_dat/gaff2_mod.json + tests/test_forcefields: convert the earlier silicon-hydride fallback path into packaged explicit bonded parameters by adding direct `si,hi` bond terms, direct `ci,si,hi` / `oi,si,hi` / `oss,si,hi` / `hi,si,hi` angle terms, and the common `hi,si,oss,si` torsion; regression coverage now checks that silane and hydride-terminated siloxane probes resolve to those exact Si-H labels instead of surrogate `c3/hc/os` types;
+- gmx/analysis/auto_plot + gmx/workflows/eq + gmx/workflows/quick + tests/test_auto_plot: automatically emit `plots/npt_convergence.svg` for NPT thermo outputs, overlaying density, volume, and box lengths on a shared relative-to-final-plateau convergence scale;
+- workflow/resume + gmx/workflows/eq + tests/test_workdir_and_molspec: switch resume file signatures from mtime-based metadata to SHA-256 content hashes and make the signature regression Windows-safe so restart reuse survives timestamp-only rewrites across copied worktrees.
+
 ## 0.8.61 (2026-03-24)
 
 - ff/gaff2_mod + ff/ff_dat/gaff2_mod.json + tests/test_forcefields: import the newer RadonPy GAFF2_mod silicon extension into YadonPy, add `si`, `ci`, `hi`, `oi`, `oss`, and `ng` typing support plus their bonded parameter records, and convert the imported RadonPy Amber/LAMMPS-style values into YadonPy's GROMACS-unit JSON format (`kJ/mol`, `nm`);

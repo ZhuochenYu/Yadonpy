@@ -49,7 +49,23 @@ class GAFF2_mod(GAFF2):
         self.name = 'gaff2_mod'
 
         # Added atomic types in GAFF2_mod
-        alt_ptype_gaff2_mod = {'c3f': 'c3', 'ci': 'c3', 'ng': 'n3'}
+        #
+        # Important compatibility note:
+        # RadonPy's gaff2_mod dataset adds Si-family nonbonded types (`si`, `hi`,
+        # `oi`, `oss`, `ci`, `ng`), but its bonded tables remain sparse compared
+        # with the core GAFF2 matrix. YadonPy now ships explicit Si-H bond/angle
+        # terms plus the common `hi,si,oss,si` torsion in the packaged JSON, but
+        # we still keep a conservative surrogate map here for the remaining
+        # silicon-family edge cases that are still absent upstream.
+        alt_ptype_gaff2_mod = {
+            'c3f': 'c3',
+            'ci': 'c3',
+            'ng': 'n3',
+            'si': 'c3',
+            'hi': 'hc',
+            'oi': 'oh',
+            'oss': 'os',
+        }
         self.alt_ptype.update(alt_ptype_gaff2_mod)
 
 

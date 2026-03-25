@@ -18,6 +18,7 @@ from yadonpy.io.gromacs_system import _load_gro_species_templates
 from yadonpy.io.gromacs_system import export_system_from_cell_meta
 from yadonpy.io.mol2 import write_mol2_from_rdkit
 from yadonpy.core.data_dir import ensure_initialized
+from yadonpy.workflow.resume import file_signature as resume_file_signature
 import yadonpy.sim.qm as qm_mod
 
 
@@ -929,18 +930,34 @@ def test_eq21_forces_fresh_stage_rebuild_when_resume_inputs_change(tmp_path: Pat
     old_spec = eqmod.StepSpec(
         name='equilibration_eq21',
         outputs=[final_gro],
-        inputs={'input_gro_sig': {'path': 'old.gro', 'size': 1, 'mtime': 1.0}},
+        inputs={'input_gro_sig': {'path': 'old.gro', 'size': 1, 'sha256': 'old'}},
     )
     new_spec = eqmod.StepSpec(
         name='equilibration_eq21',
         outputs=[final_gro],
-        inputs={'input_gro_sig': {'path': 'new.gro', 'size': 2, 'mtime': 2.0}},
+        inputs={'input_gro_sig': {'path': 'new.gro', 'size': 2, 'sha256': 'new'}},
     )
     job._resume.mark_done(old_spec)
 
     assert job._resume.needs_fresh_run(new_spec) is True
     assert job._job_restart_flag(new_spec, True) is False
     assert job._job_restart_flag(new_spec, False) is False
+
+
+def test_file_signature_is_stable_across_mtime_only_rewrites(tmp_path: Path):
+    payload = tmp_path / 'system.gro'
+    payload.write_text('same-content\n', encoding='utf-8')
+    sig1 = resume_file_signature(payload)
+
+    original = payload.stat().st_mtime
+    payload.write_text('same-content\n', encoding='utf-8')
+    payload.touch()
+    sig2 = resume_file_signature(payload)
+
+    assert sig1 == sig2
+    assert sig1['size'] == payload.stat().st_size
+    assert sig1['sha256'] == sig2['sha256']
+    assert payload.stat().st_mtime >= original
 
 
 def test_exported_system_charge_correction_rewrites_copied_itp(tmp_path: Path):
@@ -1063,6 +1080,33 @@ def test_amorphous_cell_cache_uses_stable_molecule_identity_when_smiles_renderer
 
     monkeypatch.setattr(poly, 'check_3d_structure_cell', _unexpected_check)
     ac2 = poly.amorphous_cell([spec], [2], density=0.2, retry=1, retry_step=20, work_dir=wd)
+
+    assert ac1.GetNumAtoms() == ac2.GetNumAtoms()
+    assert hasattr(ac2, 'cell')
+
+
+def test_amorphous_cell_stable_cache_ignores_changed_runtime_molid(tmp_path: Path, monkeypatch):
+    ff = GAFF2_mod()
+    spec1 = ff.mol('CCO', require_ready=False, prefer_db=False)
+    assert ff.ff_assign(spec1, report=False)
+    spec1.SetProp('_yadonpy_source_smiles', 'CCO')
+    spec1.SetProp('_yadonpy_molid', 'runtime-a')
+
+    wd = workdir(tmp_path / 'cell_cache_molid_drift', restart=True)
+    ac1 = poly.amorphous_cell([spec1], [2], density=0.2, retry=1, retry_step=20, work_dir=wd)
+
+    spec2 = ff.mol('CCO', require_ready=False, prefer_db=False)
+    assert ff.ff_assign(spec2, report=False)
+    spec2.SetProp('_yadonpy_source_smiles', 'CCO')
+    spec2.SetProp('_yadonpy_molid', 'runtime-b')
+
+    monkeypatch.setattr(poly, '_rw_load', lambda *args, **kwargs: None)
+
+    def _unexpected_check(*args, **kwargs):
+        raise AssertionError('placement should be skipped when only runtime molid changes')
+
+    monkeypatch.setattr(poly, 'check_3d_structure_cell', _unexpected_check)
+    ac2 = poly.amorphous_cell([spec2], [2], density=0.2, retry=1, retry_step=20, work_dir=wd)
 
     assert ac1.GetNumAtoms() == ac2.GetNumAtoms()
     assert hasattr(ac2, 'cell')
@@ -1302,6 +1346,85 @@ def test_terminate_rw_recovers_missing_residue_info_from_cached_polymer(monkeypa
     assert head_info.GetResidueNumber() == 3
     assert tail_info.GetResidueNumber() == 4
     assert out.GetIntProp('num_units') == 4
+
+
+def test_rw_cache_restores_atom_charge_props_and_residue_info(tmp_path: Path):
+    mol = utils.mol_from_smiles('CO', coord=True, name='cache_probe')
+    assert mol is not None
+    mol.SetIntProp('head_idx', 0)
+    mol.SetIntProp('tail_idx', mol.GetNumAtoms() - 1)
+    mol.SetIntProp('num_units', 3)
+
+    seeded = np.linspace(-0.3, 0.3, mol.GetNumAtoms())
+    for idx, (atom, q) in enumerate(zip(mol.GetAtoms(), seeded)):
+        atom.SetDoubleProp('AtomicCharge', float(q))
+        atom.SetDoubleProp('RESP', float(q))
+        atom.SetProp('ff_type', 'c3' if atom.GetSymbol() == 'C' else 'oh')
+        atom.SetIntProp('mol_id', 7)
+        atom.SetBoolProp('head', idx == 0)
+        atom.SetBoolProp('tail', idx == mol.GetNumAtoms() - 1)
+        atom.SetMonomerInfo(
+            Chem.AtomPDBResidueInfo(
+                f'{atom.GetSymbol():>4s}',
+                residueName='TST',
+                residueNumber=11,
+                isHeteroAtom=False,
+            )
+        )
+
+    wd = workdir(tmp_path / 'rw_cache_props', restart=True)
+    payload = poly._rw_payload('cache_probe', smiles='CO')
+    poly._rw_save(wd, 'cache_probe', payload, mol)
+    cached = poly._rw_load(wd, 'cache_probe', payload)
+
+    assert cached is not None
+    assert poly._mol_net_charge(cached) == pytest.approx(poly._mol_net_charge(mol), abs=1.0e-12)
+    assert cached.GetAtomWithIdx(0).HasProp('AtomicCharge')
+    assert cached.GetAtomWithIdx(0).GetProp('ff_type') == 'c3'
+    assert cached.GetAtomWithIdx(0).GetIntProp('mol_id') == 7
+    assert cached.GetAtomWithIdx(0).GetBoolProp('head') is True
+    assert cached.GetAtomWithIdx(cached.GetNumAtoms() - 1).GetBoolProp('tail') is True
+    assert cached.GetAtomWithIdx(0).GetPDBResidueInfo() is not None
+    assert cached.GetAtomWithIdx(0).GetPDBResidueInfo().GetResidueName().strip() == 'TST'
+    assert cached.GetIntProp('head_idx') == 0
+    assert cached.GetIntProp('tail_idx') == cached.GetNumAtoms() - 1
+    assert cached.GetIntProp('num_units') == 3
+
+
+def test_cell_cache_save_handles_large_cell_meta_and_restores_charge_props(tmp_path: Path):
+    mol = utils.mol_from_smiles('O', coord=True, name='cell_cache_probe')
+    assert mol is not None
+    setattr(mol, 'cell', utils.Cell(4.0, 0.0, 5.0, 0.0, 6.0, 0.0))
+    mol.SetProp(
+        '_yadonpy_cell_meta',
+        json.dumps(
+            {
+                'species': [{'name': 'probe', 'n': 1, 'charge_scale': 0.8}] * 40,
+                'net_charge_raw': -1.0,
+                'net_charge_scaled': -0.8,
+            },
+            ensure_ascii=False,
+        ),
+    )
+    for idx, atom in enumerate(mol.GetAtoms()):
+        atom.SetDoubleProp('AtomicCharge', -0.2 if idx == 0 else 0.1)
+        atom.SetDoubleProp('RESP', -0.2 if idx == 0 else 0.1)
+        atom.SetProp('ff_type', 'oh' if atom.GetSymbol() == 'O' else 'ho')
+
+    wd = workdir(tmp_path / 'cell_cache_props', restart=True)
+    payload = poly._rw_payload('amorphous_cell', demo=True)
+    state = poly._cell_state_from_mol(mol)
+    poly._cell_cache_save(wd, 'amorphous_cell', payload, mol, state=state)
+    cached, cached_state = poly._cell_cache_load(wd, 'amorphous_cell', payload)
+    cached = poly._restore_cached_cell_state(cached, cached_state)
+
+    assert cached is not None
+    assert (Path(wd) / '.yadonpy' / 'cell_cache' / 'amorphous_cell.sdf').exists()
+    assert cached.HasProp('_yadonpy_cell_meta')
+    assert cached.GetAtomWithIdx(0).HasProp('AtomicCharge')
+    assert poly._mol_net_charge(cached) == pytest.approx(poly._mol_net_charge(mol), abs=1.0e-12)
+    assert hasattr(cached, 'cell')
+    assert float(cached.cell.dx) == pytest.approx(float(mol.cell.dx))
 
 
 def test_check_3d_structure_poly_limits_proximity_to_local_candidates(monkeypatch):

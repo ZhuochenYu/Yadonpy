@@ -78,12 +78,112 @@ def _moving_average_1d(y: np.ndarray, window: int) -> np.ndarray:
     return np.convolve(ypad, kernel, mode="valid")
 
 
+def plot_npt_convergence(
+    thermo_xvg: Path,
+    *,
+    out_svg: Path,
+    title: str,
+    frac_last: float = 0.2,
+) -> Optional[Path]:
+    """Plot NPT convergence as overlaid relative deviations from the final plateau.
+
+    We intentionally plot all series on a shared relative scale instead of their
+    raw units so density / volume / box lengths remain visually comparable in a
+    single figure.
+    """
+    try:
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+
+        thermo_xvg = _as_path(thermo_xvg)
+        out_svg = _as_path(out_svg)
+        out_svg.parent.mkdir(parents=True, exist_ok=True)
+
+        xvg = read_xvg(thermo_xvg)
+        df = xvg.df
+        if "x" not in df.columns:
+            return None
+
+        series_specs = [
+            ("Density", "Density", "kg/m$^3$"),
+            ("Volume", "Volume", "nm$^3$"),
+            ("Box-X", "a", "nm"),
+            ("Box-Y", "b", "nm"),
+            ("Box-Z", "c", "nm"),
+        ]
+        available = [(col, label, unit) for (col, label, unit) in series_specs if col in df.columns]
+        if len(available) < 2:
+            return None
+
+        t_ps = np.asarray(df["x"].to_numpy(dtype=float), dtype=float)
+        if t_ps.size < 2:
+            return None
+        t_ns = t_ps / 1000.0
+
+        apply_matplotlib_style(n_colors=max(8, len(available)))
+        fig, ax = plt.subplots(figsize=golden_figsize(9.0))
+
+        baseline_notes: list[str] = []
+        n_last = int(max(5, round(float(max(0.05, frac_last)) * float(t_ps.size))))
+        n_last = min(max(1, n_last), int(t_ps.size))
+
+        for col, label, unit in available:
+            y = np.asarray(df[col].to_numpy(dtype=float), dtype=float)
+            if y.size != t_ps.size:
+                continue
+            baseline = float(np.mean(y[-n_last:])) if y.size else 0.0
+            if not np.isfinite(baseline):
+                continue
+            if abs(baseline) > 1.0e-12:
+                y_rel = 100.0 * (y - baseline) / baseline
+                y_label = f"{label} ({baseline:.4g} {unit})"
+            else:
+                y_rel = y - baseline
+                y_label = f"{label} (final≈0 {unit})"
+            if y_rel.size >= 9:
+                w = int(min(101, max(9, y_rel.size // 80)))
+                y_plot = _moving_average_1d(y_rel, w)
+            else:
+                y_plot = y_rel
+            ax.plot(t_ns, y_plot, linewidth=1.6, label=y_label)
+            baseline_notes.append(f"{label}={baseline:.5g} {unit}")
+
+        if not baseline_notes:
+            plt.close(fig)
+            return None
+
+        ax.axhline(0.0, linestyle="--", linewidth=0.9, alpha=0.45, color="black")
+        ax.set_title(str(title))
+        ax.set_xlabel("Time (ns)")
+        ax.set_ylabel("Deviation from final-window mean (%)")
+        ax.grid(True, alpha=0.25)
+        place_legend(ax)
+        ax.text(
+            0.99,
+            0.01,
+            "Final-window means: " + " | ".join(baseline_notes),
+            transform=ax.transAxes,
+            ha="right",
+            va="bottom",
+            fontsize=8,
+        )
+        fig.tight_layout()
+        fig.savefig(out_svg, format="svg")
+        plt.close(fig)
+        return out_svg
+    except Exception:
+        return None
+
+
 
 def plot_thermo_stage(
     thermo_xvg: Path,
     *,
     out_dir: Path,
     title_prefix: str,
+    frac_last: float = 0.2,
 ) -> Dict[str, str]:
     """Create standard thermo plots for a stage (annotated).
 
@@ -170,6 +270,19 @@ Files:
         except Exception:
             continue
     created["thermo_split_svgs"] = str(n_created)
+
+    # 3) NPT convergence overlay (density / volume / box lengths)
+    try:
+        npt_svg = plot_npt_convergence(
+            thermo_xvg,
+            out_svg=out_dir / "npt_convergence.svg",
+            title=f"{title_prefix} NPT convergence",
+            frac_last=float(frac_last),
+        )
+        if npt_svg is not None:
+            created["npt_convergence_svg"] = str(npt_svg)
+    except Exception:
+        pass
     return created
 
 

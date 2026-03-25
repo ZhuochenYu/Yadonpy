@@ -85,13 +85,22 @@ def _normalize_inputs(inputs: Optional[Dict[str, Any]]) -> Dict[str, Any]:
 
 
 def file_signature(path: Path) -> Dict[str, Any]:
-    """Lightweight signature for a file: size + mtime.
+    """Stable signature for a file: path + size + content digest.
 
-    We do not hash file content by default to keep this fast.
+    Resume checks should not be invalidated just because a workflow rewrote the
+    same bytes and bumped the file mtime. We therefore key on file content
+    rather than timestamps.
     """
     try:
+        path = Path(path)
         st = path.stat()
-        return {"path": str(path), "size": int(st.st_size), "mtime": float(st.st_mtime)}
+        h = hashlib.sha256()
+        with path.open("rb") as fh:
+            for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+                if not chunk:
+                    break
+                h.update(chunk)
+        return {"path": str(path), "size": int(st.st_size), "sha256": h.hexdigest()}
     except FileNotFoundError:
         return {"path": str(path), "missing": True}
 

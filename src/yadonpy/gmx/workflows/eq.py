@@ -8,6 +8,7 @@ knowledge, this project does not raise copyright issues.
 
 from __future__ import annotations
 
+import hashlib
 import math
 import time
 from dataclasses import dataclass
@@ -36,8 +37,15 @@ def _file_signature(path: Path | None) -> dict | None:
     if path is None:
         return None
     try:
-        st = Path(path).stat()
-        return {"path": str(path), "size": int(st.st_size), "mtime": float(st.st_mtime)}
+        path = Path(path)
+        st = path.stat()
+        h = hashlib.sha256()
+        with path.open("rb") as fh:
+            for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+                if not chunk:
+                    break
+                h.update(chunk)
+        return {"path": str(path), "size": int(st.st_size), "sha256": h.hexdigest()}
     except FileNotFoundError:
         return {"path": str(path), "missing": True}
 
@@ -855,7 +863,12 @@ class EquilibrationJob:
                         plots_dir = stage_dir / "plots"
                         plots_dir.mkdir(parents=True, exist_ok=True)
                         stage_record.setdefault("plots", {}).update(
-                            plot_thermo_stage(xvg, out_dir=plots_dir, title_prefix=f"{stage_dir.name}")
+                            plot_thermo_stage(
+                                xvg,
+                                out_dir=plots_dir,
+                                title_prefix=f"{stage_dir.name}",
+                                frac_last=self.frac_last,
+                            )
                         )
                     except Exception as _pe:
                         stage_record["thermo_plot_warning"] = str(_pe)

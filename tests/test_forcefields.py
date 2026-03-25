@@ -29,6 +29,43 @@ def test_gaff2_mod_assigns_disiloxane_bridge_oxygen():
     assert "oss" in atom_types
 
 
+def test_gaff2_mod_assigns_silicon_hydride_bonds():
+    mol = _assign_gaff2_mod("[SiH4]")
+
+    atom_types = [atom.GetProp("ff_type") for atom in mol.GetAtoms()]
+    bond_types = [bond.GetProp("ff_type") for bond in mol.GetBonds()]
+    angle_types = {angle.ff.type for angle in mol.angles.values()}
+
+    assert atom_types.count("si") == 1
+    assert atom_types.count("hi") == 4
+    assert len(bond_types) == 4
+    assert set(bond_types) == {"si,hi"}
+    assert angle_types == {"hi,si,hi"}
+
+
+def test_gaff2_mod_assigns_methylsilane_without_missing_si_hi_bonds():
+    mol = _assign_gaff2_mod("C[SiH3]")
+
+    silicon_h_bonds = []
+    for bond in mol.GetBonds():
+        a = bond.GetBeginAtom().GetProp("ff_type")
+        b = bond.GetEndAtom().GetProp("ff_type")
+        if {a, b} == {"si", "hi"}:
+            silicon_h_bonds.append(bond.GetProp("ff_type"))
+
+    assert len(silicon_h_bonds) == 3
+    assert set(silicon_h_bonds) == {"si,hi"}
+    assert {angle.ff.type for angle in mol.angles.values()} >= {"ci,si,hi", "hi,si,hi"}
+
+
+def test_gaff2_mod_assigns_disiloxane_hydride_terms_explicitly():
+    mol = _assign_gaff2_mod("[SiH3]O[SiH3]")
+
+    assert {bond.GetProp("ff_type") for bond in mol.GetBonds()} == {"si,hi", "si,oss"}
+    assert {angle.ff.type for angle in mol.angles.values()} == {"oss,si,hi", "hi,si,hi", "si,oss,si"}
+    assert {dih.ff.type for dih in mol.dihedrals.values()} == {"hi,si,oss,si"}
+
+
 def test_oplsaa_rule_table_matches_parameter_table():
     ff = OPLSAA()
     summary = validate_oplsaa_rule_table(ff.param.pt.keys())

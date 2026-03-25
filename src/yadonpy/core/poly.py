@@ -291,6 +291,272 @@ def _rw_cache_root(work_dir):
     return root
 
 
+_CACHE_SAFE_ATOM_FLOAT_PROPS = (
+    'AtomicCharge',
+    'AtomicCharge_raw',
+    'RESP',
+    'RESP_raw',
+    'ESP',
+    'MullikenCharge',
+    'LowdinCharge',
+    '_GasteigerCharge',
+)
+_CACHE_SAFE_ATOM_STR_PROPS = (
+    'ff_type',
+    'ff_btype',
+    'ff_ptype',
+)
+_CACHE_SAFE_ATOM_INT_PROPS = (
+    'mol_id',
+)
+_CACHE_SAFE_ATOM_BOOL_PROPS = (
+    'head',
+    'tail',
+    'head_neighbor',
+    'tail_neighbor',
+)
+def _cache_snapshot_atom_state(atom):
+    state = {'float': {}, 'str': {}, 'int': {}, 'bool': {}, 'pdb': None}
+    for key in _CACHE_SAFE_ATOM_FLOAT_PROPS:
+        if not atom.HasProp(key):
+            continue
+        try:
+            state['float'][key] = float(atom.GetDoubleProp(key))
+        except Exception:
+            try:
+                state['float'][key] = float(atom.GetProp(key))
+            except Exception:
+                pass
+    for key in _CACHE_SAFE_ATOM_STR_PROPS:
+        if not atom.HasProp(key):
+            continue
+        try:
+            state['str'][key] = str(atom.GetProp(key))
+        except Exception:
+            pass
+    for key in _CACHE_SAFE_ATOM_INT_PROPS:
+        if not atom.HasProp(key):
+            continue
+        try:
+            state['int'][key] = int(atom.GetIntProp(key))
+        except Exception:
+            try:
+                state['int'][key] = int(atom.GetProp(key))
+            except Exception:
+                pass
+    for key in _CACHE_SAFE_ATOM_BOOL_PROPS:
+        if not atom.HasProp(key):
+            continue
+        try:
+            state['bool'][key] = bool(atom.GetBoolProp(key))
+        except Exception:
+            try:
+                val = str(atom.GetProp(key)).strip().lower()
+                state['bool'][key] = val in ('1', 'true', 't', 'yes', 'y', 'on')
+            except Exception:
+                pass
+    ri = atom.GetPDBResidueInfo()
+    if ri is not None:
+        try:
+            state['pdb'] = {
+                'name': ri.GetName(),
+                'resName': ri.GetResidueName(),
+                'resNum': int(ri.GetResidueNumber()),
+                'chain': ri.GetChainId(),
+                'insCode': ri.GetInsertionCode(),
+                'isHet': bool(ri.GetIsHeteroAtom()),
+                'occ': float(ri.GetOccupancy()),
+                'temp': float(ri.GetTempFactor()),
+                'serial': int(ri.GetSerialNumber()),
+                'altLoc': ri.GetAltLoc(),
+            }
+        except Exception:
+            state['pdb'] = None
+    return state
+
+
+def _cache_restore_atom_state(atom, state):
+    if atom is None or not isinstance(state, dict):
+        return
+    for key, value in (state.get('str') or {}).items():
+        try:
+            atom.SetProp(str(key), str(value))
+        except Exception:
+            pass
+    for key, value in (state.get('int') or {}).items():
+        try:
+            atom.SetIntProp(str(key), int(value))
+        except Exception:
+            pass
+    for key, value in (state.get('bool') or {}).items():
+        try:
+            atom.SetBoolProp(str(key), bool(value))
+        except Exception:
+            pass
+    for key, value in (state.get('float') or {}).items():
+        try:
+            atom.SetDoubleProp(str(key), float(value))
+        except Exception:
+            try:
+                atom.SetProp(str(key), str(value))
+            except Exception:
+                pass
+    pdb = state.get('pdb')
+    if isinstance(pdb, dict):
+        try:
+            atom_name = str(pdb.get('name') or _pdb_atom_name(atom))
+            ri = Chem.AtomPDBResidueInfo(
+                atom_name,
+                residueName=str(pdb.get('resName') or 'RU0'),
+                residueNumber=int(pdb.get('resNum', 1)),
+                isHeteroAtom=bool(pdb.get('isHet', False)),
+            )
+            try:
+                ri.SetChainId(str(pdb.get('chain', ' ')))
+            except Exception:
+                pass
+            try:
+                ri.SetInsertionCode(str(pdb.get('insCode', ' ')))
+            except Exception:
+                pass
+            try:
+                ri.SetOccupancy(float(pdb.get('occ', 1.0)))
+            except Exception:
+                pass
+            try:
+                ri.SetTempFactor(float(pdb.get('temp', 0.0)))
+            except Exception:
+                pass
+            try:
+                ri.SetSerialNumber(int(pdb.get('serial', atom.GetIdx() + 1)))
+            except Exception:
+                pass
+            try:
+                ri.SetAltLoc(str(pdb.get('altLoc', ' ')))
+            except Exception:
+                pass
+            atom.SetMonomerInfo(ri)
+        except Exception:
+            pass
+
+
+def _cache_snapshot_mol_state(mol):
+    if mol is None:
+        return None
+    out = {'atom_props': [], 'mol_props': {'str': {}, 'int': {}, 'float': {}, 'bool': {}}}
+    try:
+        for atom in mol.GetAtoms():
+            out['atom_props'].append(_cache_snapshot_atom_state(atom))
+    except Exception:
+        out['atom_props'] = []
+    try:
+        for key in list(mol.GetPropNames(includePrivate=True, includeComputed=False)):
+            try:
+                out['mol_props']['bool'][key] = bool(mol.GetBoolProp(key))
+                continue
+            except Exception:
+                pass
+            try:
+                out['mol_props']['int'][key] = int(mol.GetIntProp(key))
+                continue
+            except Exception:
+                pass
+            try:
+                out['mol_props']['float'][key] = float(mol.GetDoubleProp(key))
+                continue
+            except Exception:
+                pass
+            try:
+                out['mol_props']['str'][key] = str(mol.GetProp(key))
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return out
+
+
+def _cache_restore_mol_state(mol, state):
+    if mol is None or not isinstance(state, dict):
+        return mol
+    mol_props = state.get('mol_props')
+    if isinstance(mol_props, dict):
+        for key, value in (mol_props.get('str') or {}).items():
+            try:
+                mol.SetProp(str(key), str(value))
+            except Exception:
+                pass
+        for key, value in (mol_props.get('int') or {}).items():
+            try:
+                mol.SetIntProp(str(key), int(value))
+            except Exception:
+                pass
+        for key, value in (mol_props.get('bool') or {}).items():
+            try:
+                mol.SetBoolProp(str(key), bool(value))
+            except Exception:
+                pass
+        for key, value in (mol_props.get('float') or {}).items():
+            try:
+                mol.SetDoubleProp(str(key), float(value))
+            except Exception:
+                try:
+                    mol.SetProp(str(key), str(value))
+                except Exception:
+                    pass
+    atom_props = state.get('atom_props')
+    if isinstance(atom_props, list):
+        for idx, atom_state in enumerate(atom_props):
+            if idx >= mol.GetNumAtoms():
+                break
+            try:
+                atom = mol.GetAtomWithIdx(int(idx))
+            except Exception:
+                continue
+            _cache_restore_atom_state(atom, atom_state)
+    return mol
+
+
+def _cache_writer_copy(mol):
+    if mol is None:
+        return None
+    try:
+        mol_copy = Chem.Mol(mol)
+    except Exception:
+        return mol
+    try:
+        for key in list(mol_copy.GetPropNames(includePrivate=True, includeComputed=True)):
+            try:
+                mol_copy.ClearProp(key)
+            except Exception:
+                pass
+    except Exception:
+        pass
+    try:
+        for atom in mol_copy.GetAtoms():
+            for key in list(atom.GetPropNames(includePrivate=True, includeComputed=True)):
+                try:
+                    atom.ClearProp(key)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    return mol_copy
+
+
+def _merge_cache_state_dict(existing, update):
+    if not isinstance(update, dict):
+        return update
+    merged = dict(existing) if isinstance(existing, dict) else {}
+    for key, value in update.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            inner = dict(merged[key])
+            inner.update(value)
+            merged[key] = inner
+        else:
+            merged[key] = value
+    return merged
+
+
 def _rw_cache_key(kind: str, payload: dict) -> str:
     import hashlib, json
     blob = json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(',', ':')).encode('utf-8')
@@ -362,8 +628,14 @@ def _rw_save_state(work_dir, kind: str, payload: dict, data: dict):
         return
     try:
         import json
-
-        state.write_text(json.dumps(_rw_normalize_value(data), indent=2, ensure_ascii=False) + '\n', encoding='utf-8')
+        normalized = _rw_normalize_value(data)
+        if state.exists():
+            try:
+                existing = json.loads(state.read_text(encoding='utf-8'))
+            except Exception:
+                existing = None
+            normalized = _merge_cache_state_dict(existing, normalized)
+        state.write_text(json.dumps(normalized, indent=2, ensure_ascii=False) + '\n', encoding='utf-8')
     except Exception:
         pass
 
@@ -371,14 +643,18 @@ def _rw_save_state(work_dir, kind: str, payload: dict, data: dict):
 def _cache_mol_smiles(mol):
     if mol is None:
         return None
+    # `_yadonpy_molid` is a runtime/cache artifact identifier, not a stable
+    # chemical identity. Restarted workflows can restamp logically identical
+    # molecules with a different molid, so cache payloads must prefer source
+    # chemistry/name metadata before falling back to molid.
     prop_keys = (
-        '_yadonpy_molid',
         '_yadonpy_source_smiles',
         'smiles',
         'input_smiles',
         'mol_name',
         'name',
         '_Name',
+        '_yadonpy_molid',
     )
     for key in prop_keys:
         try:
@@ -443,7 +719,11 @@ def _cell_state_from_mol(mol):
 
 
 def _restore_cached_cell_state(mol, state):
-    if mol is None or not isinstance(state, dict):
+    if mol is None:
+        return mol
+    if isinstance(state, dict):
+        mol = _cache_restore_mol_state(mol, state)
+    if not isinstance(state, dict):
         return mol
     cell_state = state.get('cell')
     if not isinstance(cell_state, dict):
@@ -635,11 +915,21 @@ def _rw_load(work_dir, kind: str, payload: dict):
     key = _rw_cache_key(kind, payload)
     sdf = root / f'{key}.sdf'
     if sdf.exists():
-        return _rw_load_sdf(sdf, kind)
+        mol = _rw_load_sdf(sdf, kind)
+        return _cache_restore_mol_state(mol, _rw_load_state(work_dir, kind, payload))
     compat = _rw_find_compatible_sdf(root, kind, payload)
     if compat is None:
         return None
-    return _rw_load_sdf(compat, kind)
+    mol = _rw_load_sdf(compat, kind)
+    state_path = compat.with_suffix('.state.json')
+    state = None
+    if state_path.exists():
+        try:
+            import json
+            state = json.loads(state_path.read_text(encoding='utf-8'))
+        except Exception:
+            state = None
+    return _cache_restore_mol_state(mol, state)
 
 
 def _rw_save(work_dir, kind: str, payload: dict, mol):
@@ -651,10 +941,11 @@ def _rw_save(work_dir, kind: str, payload: dict, mol):
     meta = root / f'{key}.json'
     try:
         w = Chem.SDWriter(str(sdf))
-        w.write(mol)
+        w.write(_cache_writer_copy(mol))
         w.close()
         import json
         meta.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + '\n', encoding='utf-8')
+        _rw_save_state(work_dir, kind, payload, _cache_snapshot_mol_state(mol))
     except Exception:
         pass
 
@@ -710,7 +1001,7 @@ def _cell_cache_load(work_dir, kind: str, payload: dict):
             cell_state = json.loads(state.read_text(encoding='utf-8'))
         except Exception:
             cell_state = None
-    return mol, cell_state
+    return _cache_restore_mol_state(mol, cell_state), cell_state
 
 
 def _cell_cache_save(work_dir, kind: str, payload: dict, mol, state: dict | None = None):
@@ -719,14 +1010,15 @@ def _cell_cache_save(work_dir, kind: str, payload: dict, mol, state: dict | None
         return
     try:
         w = Chem.SDWriter(str(paths['sdf']))
-        w.write(mol)
+        w.write(_cache_writer_copy(mol))
         w.close()
         import json
 
         meta = {'kind': str(kind), **dict(payload)}
         paths['meta'].write_text(json.dumps(_rw_normalize_value(meta), indent=2, ensure_ascii=False) + '\n', encoding='utf-8')
-        if state is not None:
-            paths['state'].write_text(json.dumps(_rw_normalize_value(state), indent=2, ensure_ascii=False) + '\n', encoding='utf-8')
+        state_payload = _merge_cache_state_dict(_cache_snapshot_mol_state(mol), _rw_normalize_value(state))
+        if state_payload is not None:
+            paths['state'].write_text(json.dumps(state_payload, indent=2, ensure_ascii=False) + '\n', encoding='utf-8')
     except Exception:
         pass
 

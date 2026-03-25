@@ -1,6 +1,6 @@
-# YadonPy
+﻿# YadonPy
 
-Current release: **v0.8.61**
+Current release: **v0.8.62**
 
 YadonPy is a Python package for building polymer, solvent, salt, bulk, and interface workflows directly from SMILES or PSMILES. It is designed for script-driven molecular simulation studies where the user wants to keep the real workflow visible in code instead of hiding it behind a monolithic project file.
 
@@ -20,14 +20,13 @@ The package is built around two stable ideas:
 - **script first**: the study logic should remain understandable from the user script;
 - **MolDB first**: reusable expensive assets are molecular geometry, charge variants, and bonded-patch metadata, not old `.top/.gro/.itp` exports.
 
-## What changed in v0.8.61
+## What changed in v0.8.62
 
-This release updates the force-field layer rather than the interface workflow.
+This release closes two concrete workflow gaps: silicon-hydride GAFF2_mod coverage and automatic NPT convergence plotting.
 
-- `ff/gaff2_mod.py` and `ff/ff_dat/gaff2_mod.json` now absorb the newer RadonPy silicon-family extension for GAFF2_mod. YadonPy now recognizes `si`, `ci`, `hi`, `oi`, `oss`, and `ng`, and ships the corresponding bonded parameters in GROMACS units (`kJ/mol`, `nm`).
-- `ff/gaff.py` now carries the RadonPy `Si` empirical-angle coefficients as a guarded fallback path, so Si-containing angle estimation no longer relies on incomplete element tables.
-- `ff/oplsaa.py` no longer hardcodes the `OPLS-AA` SMARTS table inline. The rule table now lives in `ff/ff_dat/oplsaa_rules.json`, and the matcher layer loads and validates it explicitly. That keeps rule data separate from code and makes future rule maintenance much less brittle.
-- New force-field regression tests cover both paths: GAFF2_mod silicon typing on silanol/disiloxane probes, and OPLS-AA rule-table consistency plus external-rule assignment on a small alcohol.
+- `ff/gaff2_mod.py` and `ff/ff_dat/gaff2_mod.json` now ship explicit `si,hi` bonded parameters instead of relying on surrogate lookup. YadonPy now contains direct `si,hi` bond terms, direct `ci,si,hi` / `oi,si,hi` / `oss,si,hi` / `hi,si,hi` angle terms, and the common `hi,si,oss,si` torsion, so silanes and hydride-terminated siloxanes no longer fall back to `c3/hc/os` surrogate labels during assignment.
+- `gmx/analysis/auto_plot.py`, `gmx/workflows/eq.py`, and `gmx/workflows/quick.py` now emit `plots/npt_convergence.svg` automatically for NPT thermo outputs. The figure overlays density, volume, and box lengths on a shared relative-deviation scale, so convergence can be inspected quickly from one SVG.
+- `workflow/resume.py` and `gmx/workflows/eq.py` now use content hashes instead of `mtime` for resume file signatures. That makes restart reuse stable across timestamp-only rewrites and avoids false cache invalidation on copied worktrees.
 
 ## Installation
 
@@ -155,7 +154,7 @@ What the interface examples now demonstrate:
 
 ## Documentation map
 
-- API reference: `docs/Yadonpy_API_v0.8.61.md`
+- API reference: `docs/Yadonpy_API_v0.8.62.md`
 - Manual: `docs/Yadonpy_manul.md`
 - User guide: `docs/Yaonpyd_user_guide.md`
 
