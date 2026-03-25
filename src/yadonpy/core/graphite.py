@@ -2,11 +2,12 @@
 
 Notes
 -----
-This module uses an ideal AB-stacked graphite construction derived from the
-standard hexagonal graphite lattice rather than vendoring a proprietary
-Materials Studio asset. The in-plane C-C bond length is 1.42 A and the
-interlayer spacing is 3.35 A, which is sufficient for building finite
-graphitic slabs for YadonPy workflows.
+This module uses a bundled public graphite CIF as the crystallographic source:
+Crystallography Open Database (COD) entry 9000046, "Graphite" from
+Kukesh, J. S.; Pauling, L., *American Mineralogist* 35 (1950), 125.
+
+YadonPy vendors this CIF once and builds finite basal/edge graphitic slabs
+from it locally. No Materials Project API key is required at runtime.
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 import math
+from pathlib import Path
 import random
 from typing import Mapping, Sequence
 
@@ -26,12 +28,11 @@ from . import poly, utils
 from .naming import ensure_name, get_name
 from .topology import Cell
 
-_CC_BOND = 1.42
-_INTERLAYER = 3.35
-_A1 = np.array([math.sqrt(3.0) * _CC_BOND, 0.0, 0.0], dtype=float)
-_A2 = np.array([0.5 * math.sqrt(3.0) * _CC_BOND, 1.5 * _CC_BOND, 0.0], dtype=float)
-_AB_SHIFT = (_A1 + _A2) / 3.0
 _ALLOWED_CAPS = ("H", "OH", "CHO", "COOH")
+_GRAPHITE_CIF = "graphite_cod_9000046.cif"
+_GRAPHITE_BOND_MIN = 1.10
+_GRAPHITE_BOND_MAX = 1.70
+_LAYER_TOL = 1.0e-4
 
 
 @dataclass(frozen=True)
@@ -48,6 +49,16 @@ class GraphiteBuildResult:
 class StackedCellResult:
     cell: Chem.Mol
     box_nm: tuple[float, float, float]
+
+
+@dataclass(frozen=True)
+class _GraphiteTemplate:
+    a_ang: float
+    b_ang: float
+    c_ang: float
+    interlayer_ang: float
+    ab_shift_ang: np.ndarray
+    layer_cart: np.ndarray
 
 
 def _unit(vec: np.ndarray, fallback: Sequence[float]) -> np.ndarray:
@@ -91,58 +102,131 @@ def _rotate_x(coord: np.ndarray, angle_deg: float) -> np.ndarray:
     return np.asarray(coord, dtype=float) @ rot.T
 
 
-def _graphene_layer(nx: int, ny: int) -> tuple[Chem.Mol, list[int]]:
+def _graphite_cif_path() -> Path:
+    return Path(__file__).resolve().parent / "data" / _GRAPHITE_CIF
+
+
+def _safe_eval_symop(expr: str, x: float, y: float, z: float) -> float:
+    rendered = str(expr).strip().replace("x", f"({x})").replace("y", f"({y})").replace("z", f"({z})")
+    return float(eval(rendered, {"__builtins__": {}}, {}))
+
+
+def _load_graphite_template() -> _GraphiteTemplate:
+    cif_path = _graphite_cif_path()
+    if not cif_path.exists():
+        raise FileNotFoundError(f"Bundled graphite CIF not found: {cif_path}")
+
+    lines = [ln.strip() for ln in cif_path.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    scalars: dict[str, float] = {}
+    for key in (
+        "_cell_length_a",
+        "_cell_length_b",
+        "_cell_length_c",
+        "_cell_angle_alpha",
+        "_cell_angle_beta",
+        "_cell_angle_gamma",
+    ):
+        for ln in lines:
+            if ln.startswith(key):
+                scalars[key] = float(ln.split()[-1])
+                break
+    if any(abs(float(scalars.get(angle, 90.0)) - 90.0) > 1.0e-6 for angle in ("_cell_angle_alpha", "_cell_angle_beta", "_cell_angle_gamma")):
+        raise ValueError("Bundled graphite CIF parser currently supports orthorhombic cells only.")
+
+    symops: list[str] = []
+    for idx, ln in enumerate(lines):
+        if ln == "_space_group_symop_operation_xyz":
+            j = idx + 1
+            while j < len(lines) and not lines[j].startswith("loop_"):
+                symops.append(lines[j])
+                j += 1
+            break
+    if not symops:
+        raise ValueError("Bundled graphite CIF is missing symmetry operations.")
+
+    basis: list[tuple[str, float, float, float]] = []
+    for idx, ln in enumerate(lines):
+        if ln == "_atom_site_label":
+            j = idx + 4
+            while j < len(lines) and not lines[j].startswith("loop_"):
+                toks = lines[j].split()
+                basis.append((toks[0], float(toks[1]), float(toks[2]), float(toks[3])))
+                j += 1
+            break
+    if not basis:
+        raise ValueError("Bundled graphite CIF is missing atomic sites.")
+
+    frac_coords = set()
+    for _label, fx0, fy0, fz0 in basis:
+        for op in symops:
+            ex, ey, ez = [part.strip() for part in op.split(",")]
+            fx = _safe_eval_symop(ex, fx0, fy0, fz0) % 1.0
+            fy = _safe_eval_symop(ey, fx0, fy0, fz0) % 1.0
+            fz = _safe_eval_symop(ez, fx0, fy0, fz0) % 1.0
+            frac_coords.add((round(fx, 6), round(fy, 6), round(fz, 6)))
+
+    frac = np.asarray(sorted(frac_coords), dtype=float)
+    z_levels = sorted({round(float(v), 6) for v in frac[:, 2]})
+    if len(z_levels) < 2:
+        raise ValueError("Bundled graphite CIF did not produce multiple graphitic layers.")
+
+    a_ang = float(scalars["_cell_length_a"])
+    b_ang = float(scalars["_cell_length_b"])
+    c_ang = float(scalars["_cell_length_c"])
+
+    layer0 = frac[np.isclose(frac[:, 2], z_levels[0], atol=_LAYER_TOL)].copy()
+    layer1 = frac[np.isclose(frac[:, 2], z_levels[1], atol=_LAYER_TOL)].copy()
+    layer0_cart = layer0.copy()
+    layer1_cart = layer1.copy()
+    layer0_cart[:, 0] *= a_ang
+    layer0_cart[:, 1] *= b_ang
+    layer0_cart[:, 2] *= c_ang
+    layer1_cart[:, 0] *= a_ang
+    layer1_cart[:, 1] *= b_ang
+    layer1_cart[:, 2] *= c_ang
+
+    interlayer_ang = float(abs(layer1_cart[0, 2] - layer0_cart[0, 2]))
+    ab_shift_ang = np.array(
+        [
+            float((layer1_cart[0, 0] - layer0_cart[0, 0]) % a_ang),
+            float((layer1_cart[0, 1] - layer0_cart[0, 1]) % b_ang),
+            0.0,
+        ],
+        dtype=float,
+    )
+    return _GraphiteTemplate(
+        a_ang=a_ang,
+        b_ang=b_ang,
+        c_ang=c_ang,
+        interlayer_ang=interlayer_ang,
+        ab_shift_ang=ab_shift_ang,
+        layer_cart=np.asarray(layer0_cart, dtype=float),
+    )
+
+
+def _graphene_layer(nx: int, ny: int) -> tuple[Chem.Mol, list[int], _GraphiteTemplate]:
     if int(nx) <= 0 or int(ny) <= 0:
         raise ValueError("nx and ny must be positive")
 
+    template = _load_graphite_template()
     rw = Chem.RWMol()
     coords: list[np.ndarray] = []
-    coord_index: dict[tuple[int, int, int], int] = {}
+    for ix in range(int(nx)):
+        for iy in range(int(ny)):
+            shift = np.array([float(ix) * template.a_ang, float(iy) * template.b_ang, 0.0], dtype=float)
+            for xyz in template.layer_cart:
+                atom = Chem.Atom("C")
+                atom.SetNoImplicit(True)
+                rw.AddAtom(atom)
+                coords.append(np.asarray(xyz, dtype=float) + shift)
 
-    def _coord_key(pos: np.ndarray) -> tuple[int, int, int]:
-        arr = np.asarray(pos, dtype=float)
-        return (int(round(arr[0] * 1000.0)), int(round(arr[1] * 1000.0)), int(round(arr[2] * 1000.0)))
-
-    def _get_or_add_aromatic_c(pos: np.ndarray) -> int:
-        key = _coord_key(pos)
-        if key in coord_index:
-            return int(coord_index[key])
-        atom = Chem.Atom("C")
-        atom.SetIsAromatic(True)
-        atom.SetNoImplicit(True)
-        idx = rw.AddAtom(atom)
-        coords.append(np.asarray(pos, dtype=float))
-        coord_index[key] = int(idx)
-        return int(idx)
-
-    def _bond(i1: int, i2: int) -> None:
-        if rw.GetBondBetweenAtoms(int(i1), int(i2)) is None:
-            rw.AddBond(int(i1), int(i2), rdchem.BondType.AROMATIC)
-
-    dx = math.sqrt(3.0) * _CC_BOND
-    dy = 1.5 * _CC_BOND
-    vertices = (
-        np.array([0.0, _CC_BOND, 0.0], dtype=float),
-        np.array([0.5 * math.sqrt(3.0) * _CC_BOND, 0.5 * _CC_BOND, 0.0], dtype=float),
-        np.array([0.5 * math.sqrt(3.0) * _CC_BOND, -0.5 * _CC_BOND, 0.0], dtype=float),
-        np.array([0.0, -_CC_BOND, 0.0], dtype=float),
-        np.array([-0.5 * math.sqrt(3.0) * _CC_BOND, -0.5 * _CC_BOND, 0.0], dtype=float),
-        np.array([-0.5 * math.sqrt(3.0) * _CC_BOND, 0.5 * _CC_BOND, 0.0], dtype=float),
-    )
-
-    for row in range(int(ny)):
-        for col in range(int(nx)):
-            center = np.array(
-                [
-                    float(col) * dx + (0.5 * dx if (row % 2) else 0.0),
-                    float(row) * dy,
-                    0.0,
-                ],
-                dtype=float,
-            )
-            ring = [_get_or_add_aromatic_c(center + vertex) for vertex in vertices]
-            for i1, i2 in zip(ring, ring[1:] + ring[:1]):
-                _bond(i1, i2)
+    coord = np.asarray(coords, dtype=float)
+    nat = len(coords)
+    for i in range(nat):
+        for j in range(i + 1, nat):
+            dist = float(np.linalg.norm(coord[i] - coord[j]))
+            if _GRAPHITE_BOND_MIN < dist < _GRAPHITE_BOND_MAX:
+                rw.AddBond(int(i), int(j), rdchem.BondType.SINGLE)
 
     mol = rw.GetMol()
     conf = Chem.Conformer(mol.GetNumAtoms())
@@ -150,9 +234,8 @@ def _graphene_layer(nx: int, ny: int) -> tuple[Chem.Mol, list[int]]:
     for idx, xyz in enumerate(coords):
         conf.SetAtomPosition(idx, Geom.Point3D(float(xyz[0]), float(xyz[1]), float(xyz[2])))
     mol.AddConformer(conf, assignId=True)
-
     dangling = [atom.GetIdx() for atom in mol.GetAtoms() if atom.GetSymbol() == "C" and atom.GetDegree() < 3]
-    return mol, dangling
+    return mol, dangling, template
 
 
 def _choose_caps(
@@ -484,7 +567,7 @@ def build_graphite(
     bottom_margin_ang: float = 2.0,
     top_padding_ang: float = 8.0,
 ) -> GraphiteBuildResult:
-    layer_base, dangling = _graphene_layer(nx=int(nx), ny=int(ny))
+    layer_base, dangling, template = _graphene_layer(nx=int(nx), ny=int(ny))
     if not dangling:
         raise RuntimeError("Graphite builder failed to identify edge sites in the graphene layer")
 
@@ -508,9 +591,9 @@ def build_graphite(
 
     cell = None
     for layer_idx in range(int(n_layers)):
-        shift = np.array([0.0, 0.0, float(layer_idx) * _INTERLAYER], dtype=float)
+        shift = np.array([0.0, 0.0, float(layer_idx) * float(template.interlayer_ang)], dtype=float)
         if layer_idx % 2 == 1:
-            shift[:2] += _AB_SHIFT[:2]
+            shift[:2] += template.ab_shift_ang[:2]
         shifted_layer = _translate(layer_mol, shift)
         cell = shifted_layer if cell is None else poly.combine_mols(cell, shifted_layer, res_name_1="GRA", res_name_2="GRA")
 

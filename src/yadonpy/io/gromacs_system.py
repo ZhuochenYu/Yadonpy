@@ -26,6 +26,8 @@ except Exception:  # pragma: no cover
     Chem = None
     Descriptors = None
 
+from ..core import chem_utils as core_utils
+
 def _mol_signature(m: Chem.Mol) -> tuple[int, tuple[tuple[int, int], ...]]:
     """Return a simple, order-independent signature for a molecule.
 
@@ -77,12 +79,87 @@ def canonicalize_smiles(smiles_or_psmiles: str) -> str:
     if Chem is None:
         return s
     try:
-        m = Chem.MolFromSmiles(s)
+        m = _parse_smiles_for_metadata(s)
         if m is None:
             return s
         return Chem.MolToSmiles(m, canonical=True)
     except Exception:
         return s
+
+
+def _prefer_unsanitized_smiles_parse(smiles: str) -> bool:
+    if Chem is None:
+        return False
+    try:
+        probe = Chem.MolFromSmiles(str(smiles), sanitize=False)
+    except Exception:
+        probe = None
+    if probe is None:
+        return False
+    try:
+        probe.UpdatePropertyCache(strict=False)
+    except Exception:
+        pass
+    try:
+        if core_utils.is_high_symmetry_polyhedral_ion(probe, smiles_hint=str(smiles)):
+            return True
+        if core_utils.is_inorganic_ion_like(probe, smiles_hint=str(smiles)):
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _parse_smiles_for_metadata(smiles: str):
+    if Chem is None:
+        return None
+    s = str(smiles or "").strip()
+    if not s:
+        return None
+    prefer_unsanitized = _prefer_unsanitized_smiles_parse(s)
+    if prefer_unsanitized:
+        try:
+            mol = Chem.MolFromSmiles(s, sanitize=False)
+        except Exception:
+            mol = None
+        if mol is None:
+            return None
+        try:
+            mol.UpdatePropertyCache(strict=False)
+        except Exception:
+            pass
+        try:
+            Chem.SanitizeMol(
+                mol,
+                sanitizeOps=Chem.SanitizeFlags.SANITIZE_ALL ^ Chem.SanitizeFlags.SANITIZE_PROPERTIES,
+            )
+        except Exception:
+            pass
+        return mol
+    try:
+        mol = Chem.MolFromSmiles(s)
+    except Exception:
+        mol = None
+    if mol is not None:
+        return mol
+    try:
+        mol = Chem.MolFromSmiles(s, sanitize=False)
+    except Exception:
+        mol = None
+    if mol is None:
+        return None
+    try:
+        mol.UpdatePropertyCache(strict=False)
+    except Exception:
+        pass
+    try:
+        Chem.SanitizeMol(
+            mol,
+            sanitizeOps=Chem.SanitizeFlags.SANITIZE_ALL ^ Chem.SanitizeFlags.SANITIZE_PROPERTIES,
+        )
+    except Exception:
+        pass
+    return mol
 
 
 def _fs_safe_mol_name(name: str) -> str:
@@ -640,9 +717,7 @@ def _estimate_box_nm(species: list[dict], density_g_cm3: float) -> float:
         if n <= 0:
             continue
         try:
-            mol = Chem.MolFromSmiles(smi)
-            if mol is None:
-                mol = Chem.MolFromSmiles(smi, sanitize=False)
+            mol = _parse_smiles_for_metadata(smi)
             if mol is None:
                 continue
             mw = float(molecular_weight(mol))
@@ -686,7 +761,7 @@ def _formal_charge_from_smiles(smiles: str) -> int:
     if Chem is None:
         return 0
     try:
-        m = Chem.MolFromSmiles(smiles)
+        m = _parse_smiles_for_metadata(smiles)
         if m is None:
             return 0
         return int(sum(int(a.GetFormalCharge()) for a in m.GetAtoms()))

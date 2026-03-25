@@ -12,9 +12,9 @@ GROMACS export. It does not run a long production relaxation by default.
 
 Notes:
 
-- The graphite builder uses an ideal AB-stacked graphite lattice
-  (`C-C = 1.42 A`, interlayer distance `3.35 A`) instead of a proprietary
-  Materials Studio source file.
+- The graphite builder uses a bundled public graphite CIF
+  (`COD 9000046`) as the crystallographic source, then cuts finite basal
+  or edge slabs locally. No Materials Project API key is required.
 - The electrolyte slab uses the same `EC:DEC:EMC = 3:2:5` and `1 M LiPF6`
   planning logic as the interface examples, but in a smaller export-oriented
   setup.

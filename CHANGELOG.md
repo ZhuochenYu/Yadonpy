@@ -1,3 +1,8 @@
+## 0.8.68 (2026-03-26)
+
+- io/gromacs_system + moldb/store + tests/test_workdir_and_molspec: switch PF6-class hypervalent ions to an unsanitized-first SMILES parsing path in exporter metadata helpers (`canonicalize_smiles`, formal-charge classification, mass estimation) and MolDB canonical-key generation, preventing `export_system` from repeatedly re-entering RDKit's `P valence 6` sanitize path during full Example 12 electrolyte export.
+- core/graphite + examples/13_graphite_cmc_electrolyte + tests/test_graphite + packaging: replace the hardcoded ideal graphite generator with a bundled public CIF (`COD 9000046`) parser, keep basal/edge slab construction and edge saturation workflows unchanged at the API level, and ship the CIF in the package so graphite modeling no longer depends on a Materials Project API key.
+
 ## 0.8.67 (2026-03-26)
 
 - core/graphite + core/__init__ + api + tests/test_graphite: add `build_graphite(...)`, `stack_cell_blocks(...)`, and explicit cell-metadata registration helpers so YadonPy can build finite AB-stacked graphite basal or edge substrates with GAFF assignment, multi-layer stacking, configurable edge saturation (`H`, `OH`, `CHO`, `COOH`, or random mixtures), and export-ready metadata for downstream GROMACS system generation;

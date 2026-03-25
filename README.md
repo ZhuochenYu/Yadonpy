@@ -1,6 +1,6 @@
 ﻿# YadonPy
 
-Current release: **v0.8.67**
+Current release: **v0.8.68**
 
 YadonPy is a Python package for building polymer, solvent, salt, bulk, and interface workflows directly from SMILES or PSMILES. It is designed for script-driven molecular simulation studies where the user wants to keep the real workflow visible in code instead of hiding it behind a monolithic project file.
 
@@ -20,14 +20,15 @@ The package is built around two stable ideas:
 - **script first**: the study logic should remain understandable from the user script;
 - **MolDB first**: reusable expensive assets are molecular geometry, charge variants, and bonded-patch metadata, not old `.top/.gro/.itp` exports.
 
-## What changed in v0.8.67
+## What changed in v0.8.68
 
-This release adds graphitic substrate construction and cleans up the interface-example surface.
+This release fixes the PF6 export path used by the full `eg12` electrolyte build
+and switches graphite construction to a bundled public CIF source.
 
-- New `build_graphite(...)` support builds finite AB-stacked graphite slabs directly inside YadonPy, with GAFF assignment, configurable basal or edge orientation, layer count control, and edge saturation options (`H`, `OH`, `CHO`, `COOH`, or random mixtures).
-- New stacking helpers support graphite-at-bottom workflows without forcing the user to hand-edit coordinates in example scripts.
-- New `examples/13_graphite_cmc_electrolyte` shows a linear build path for `graphite basal plane -> CMC slab -> electrolyte slab -> GROMACS export`.
-- Examples `10-12` now use more compact data-driven species preparation for the carbonate solvents and ions, reducing repeated boilerplate while keeping the scripts linear and easy to follow.
+- `gromacs_system` now treats hypervalent inorganic ions such as `PF6-` with the same unsanitized-first parsing strategy already used elsewhere in the codebase, instead of repeatedly calling `RDKit sanitize=True` in metadata helpers during `export_system`.
+- `MolDB` canonical-key generation now uses the same tolerant path for known hypervalent species, so `PF6` lookups and export-side fallback resolution stay on one consistent parsing rule.
+- Added regression coverage to lock the PF6 canonicalization and formal-charge helpers onto the unsanitized-first path.
+- `build_graphite(...)` now uses a bundled public graphite CIF (`COD 9000046`) as its crystallographic source instead of regenerating an idealized lattice from hardcoded geometry constants.
 
 ## Installation
 

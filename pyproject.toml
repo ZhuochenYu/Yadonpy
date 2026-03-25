@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "yadonpy"
-version = "0.8.67"
+version = "0.8.68"
 description = "SMILES-driven workflow toolkit using GROMACS"
 requires-python = ">=3.11"
 authors = [{name = "YZC"}]
@@ -37,6 +37,7 @@ where = ["src"]
 yadonpy = [
   "ff/ff_dat/*.json",
   "core/pdb/*.pdb",
+  "core/data/*.cif",
 ]
 
 [tool.pytest.ini_options]

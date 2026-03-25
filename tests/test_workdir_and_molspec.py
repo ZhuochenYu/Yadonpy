@@ -1522,3 +1522,45 @@ def test_resolve_rw_retry_budget_scales_with_rigidity():
     assert rigid_budget['retry_step'] > flexible_budget['retry_step']
     assert rigid_budget['retry_opt_step'] > flexible_budget['retry_opt_step']
     assert rigid_budget['rigidity'] > flexible_budget['rigidity']
+
+
+def test_export_helpers_prefer_unsanitized_smiles_parse_for_pf6(monkeypatch):
+    import yadonpy.io.gromacs_system as gsys
+
+    original = gsys.Chem.MolFromSmiles
+    calls: list[tuple[str, object]] = []
+
+    def _wrapped(smiles, *args, **kwargs):
+        calls.append((str(smiles), kwargs.get('sanitize', True)))
+        return original(smiles, *args, **kwargs)
+
+    monkeypatch.setattr(gsys.Chem, 'MolFromSmiles', _wrapped)
+
+    assert gsys.canonicalize_smiles('F[P-](F)(F)(F)(F)F')
+    assert gsys._formal_charge_from_smiles('F[P-](F)(F)(F)(F)F') == -1
+
+    pf6_calls = [sanitize for smiles, sanitize in calls if smiles == 'F[P-](F)(F)(F)(F)F']
+    assert pf6_calls
+    assert pf6_calls[0] is False
+
+
+def test_moldb_canonical_key_prefers_unsanitized_smiles_parse_for_pf6(monkeypatch):
+    import yadonpy.moldb.store as store_mod
+
+    original = store_mod.Chem.MolFromSmiles
+    calls: list[tuple[str, object]] = []
+
+    def _wrapped(smiles, *args, **kwargs):
+        calls.append((str(smiles), kwargs.get('sanitize', True)))
+        return original(smiles, *args, **kwargs)
+
+    monkeypatch.setattr(store_mod.Chem, 'MolFromSmiles', _wrapped)
+
+    kind, canon, key = store_mod.canonical_key('F[P-](F)(F)(F)(F)F')
+
+    assert kind == 'smiles'
+    assert canon
+    assert key
+    pf6_calls = [sanitize for smiles, sanitize in calls if smiles == 'F[P-](F)(F)(F)(F)F']
+    assert pf6_calls
+    assert pf6_calls[0] is False

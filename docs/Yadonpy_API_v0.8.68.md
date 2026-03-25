@@ -1,4 +1,4 @@
-# YadonPy API (v0.8.67)
+# YadonPy API (v0.8.68)
 
 This document describes the public, script-facing API for the current release. It focuses on entry points that users are expected to call directly from study scripts.
 

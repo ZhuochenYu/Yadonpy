@@ -85,7 +85,44 @@ def canonical_key(smiles_or_psmiles: str) -> Tuple[str, str, str]:
         canon = s
     else:
         kind = "smiles"
-        mol = Chem.MolFromSmiles(s)
+        prefer_unsanitized = _prefer_unsanitized_mol2(s)
+        mol = None
+        if prefer_unsanitized:
+            try:
+                mol = Chem.MolFromSmiles(s, sanitize=False)
+            except Exception:
+                mol = None
+            if mol is not None:
+                try:
+                    mol.UpdatePropertyCache(strict=False)
+                except Exception:
+                    pass
+                try:
+                    Chem.SanitizeMol(
+                        mol,
+                        sanitizeOps=Chem.SanitizeFlags.SANITIZE_ALL ^ Chem.SanitizeFlags.SANITIZE_PROPERTIES,
+                    )
+                except Exception:
+                    pass
+        if mol is None:
+            mol = Chem.MolFromSmiles(s)
+        if mol is None:
+            try:
+                mol = Chem.MolFromSmiles(s, sanitize=False)
+            except Exception:
+                mol = None
+            if mol is not None:
+                try:
+                    mol.UpdatePropertyCache(strict=False)
+                except Exception:
+                    pass
+                try:
+                    Chem.SanitizeMol(
+                        mol,
+                        sanitizeOps=Chem.SanitizeFlags.SANITIZE_ALL ^ Chem.SanitizeFlags.SANITIZE_PROPERTIES,
+                    )
+                except Exception:
+                    pass
         if mol is None:
             raise ValueError(f"Invalid SMILES: {smiles_or_psmiles!r}")
         canon = Chem.MolToSmiles(mol, canonical=True)

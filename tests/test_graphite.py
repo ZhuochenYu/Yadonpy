@@ -7,7 +7,7 @@ from rdkit import Geometry as Geom
 
 import yadonpy as yp
 from yadonpy.core import poly, utils
-from yadonpy.core.graphite import register_cell_species_metadata, stack_cell_blocks
+from yadonpy.core.graphite import _graphite_cif_path, register_cell_species_metadata, stack_cell_blocks
 from yadonpy.ff.gaff2_mod import GAFF2_mod
 from yadonpy.io.gromacs_system import export_system_from_cell_meta
 
@@ -47,6 +47,13 @@ def test_build_graphite_basal_assigns_gaff_and_metadata():
     assert out.box_nm[0] > 0.0
     assert out.box_nm[1] > 0.0
     assert out.box_nm[2] > 0.0
+
+
+def test_bundled_graphite_cif_exists():
+    path = _graphite_cif_path()
+    assert path.exists()
+    text = path.read_text(encoding="utf-8")
+    assert "data_9000046" in text
 
 
 def test_build_graphite_edge_supports_random_oxygen_caps():
