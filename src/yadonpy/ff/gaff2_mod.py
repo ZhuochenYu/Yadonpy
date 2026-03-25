@@ -54,9 +54,16 @@ class GAFF2_mod(GAFF2):
         # RadonPy's gaff2_mod dataset adds Si-family nonbonded types (`si`, `hi`,
         # `oi`, `oss`, `ci`, `ng`), but its bonded tables remain sparse compared
         # with the core GAFF2 matrix. YadonPy now ships explicit Si-H bond/angle
-        # terms plus the common `hi,si,oss,si` torsion in the packaged JSON, but
-        # we still keep a conservative surrogate map here for the remaining
-        # silicon-family edge cases that are still absent upstream.
+        # terms in the packaged JSON, with their current values derived from a
+        # remote Linux Psi4 + modified Seminario probe run on 2026-03-25:
+        #   probes: [SiH4], C[SiH3], O[SiH3], [SiH3]O[SiH3]
+        #   level : wB97M-D3BJ / def2-SVP (opt + Hessian)
+        #   record: docs/si_h_qm_probe_20260325.md
+        #
+        # The common `hi,si,oss,si` torsion is still a conservative surrogate
+        # cloned from `X,c3,os,X`, because modified Seminario only supplies bond
+        # and angle parameters. For silicon-family edge cases still absent
+        # upstream, we keep a surrogate map here as a last resort.
         alt_ptype_gaff2_mod = {
             'c3f': 'c3',
             'ci': 'c3',

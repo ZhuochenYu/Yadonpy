@@ -1,0 +1,78 @@
+{
+  "meta": {
+    "date": "2026-03-25",
+    "method": "wb97m-d3bj/def2-SVP",
+    "engine": "psi4 modified Seminario"
+  },
+  "probes": {
+    "sih4": {
+      "smiles": "[SiH4]",
+      "targets": [
+        "si,hi",
+        "hi,si,hi"
+      ],
+      "json": "/home/zcyu/si_h_qm_probe_20260325/01_qm/07_bonded_params/sih4/bond_angle_params.json",
+      "itp": "/home/zcyu/si_h_qm_probe_20260325/01_qm/07_bonded_params/sih4/bond_angle_params.itp",
+      "selected": {
+        "si,hi": [
+          {
+            "r0_nm": 0.14851403448797534,
+            "k_kj_mol_nm2": 168297.0691406798,
+            "probe": "sih4"
+          },
+          {
+            "r0_nm": 0.14851403448797534,
+            "k_kj_mol_nm2": 168297.0691406798,
+            "probe": "sih4"
+          },
+          {
+            "r0_nm": 0.14851403448797534,
+            "k_kj_mol_nm2": 168297.0691406798,
+            "probe": "sih4"
+          },
+          {
+            "r0_nm": 0.14851403448797534,
+            "k_kj_mol_nm2": 168297.0691406798,
+            "probe": "sih4"
+          }
+        ]
+      }
+    },
+    "methylsilane": {
+      "smiles": "C[SiH3]",
+      "targets": [
+        "ci,si,hi"
+      ],
+      "json": "/home/zcyu/si_h_qm_probe_20260325/01_qm/07_bonded_params/methylsilane/bond_angle_params.json",
+      "itp": "/home/zcyu/si_h_qm_probe_20260325/01_qm/07_bonded_params/methylsilane/bond_angle_params.itp",
+      "selected": {}
+    },
+    "hydroxysilane": {
+      "smiles": "O[SiH3]",
+      "targets": [
+        "oi,si,hi"
+      ],
+      "json": "/home/zcyu/si_h_qm_probe_20260325/01_qm/07_bonded_params/hydroxysilane/bond_angle_params.json",
+      "itp": "/home/zcyu/si_h_qm_probe_20260325/01_qm/07_bonded_params/hydroxysilane/bond_angle_params.itp",
+      "selected": {}
+    },
+    "disiloxane": {
+      "smiles": "[SiH3]O[SiH3]",
+      "targets": [
+        "oss,si,hi"
+      ],
+      "json": "/home/zcyu/si_h_qm_probe_20260325/01_qm/07_bonded_params/disiloxane/bond_angle_params.json",
+      "itp": "/home/zcyu/si_h_qm_probe_20260325/01_qm/07_bonded_params/disiloxane/bond_angle_params.itp",
+      "selected": {}
+    }
+  },
+  "aggregated": {
+    "si,hi": {
+      "source_probe_set": [
+        "sih4"
+      ],
+      "r0_nm": 0.14851403448797534,
+      "k_kj_mol_nm2": 168297.0691406798
+    }
+  }
+}

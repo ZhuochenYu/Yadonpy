@@ -1,3 +1,8 @@
+## 0.8.63 (2026-03-25)
+
+- ff/gaff2_mod + ff/ff_dat/gaff2_mod.json + docs/si_h_qm_probe_20260325.md + docs/si_h_qm_probe_20260325_typed_summary.json + tests/test_forcefields: replace the provisional surrogate-copied `si,hi` / `hi,si,hi` / `ci,si,hi` / `oi,si,hi` / `oss,si,hi` values with Linux-side `Psi4 + modified Seminario` parameters obtained at `wB97M-D3BJ/def2-SVP`, record the exact probe-set provenance in the repository, and lock the new source metadata and numeric values down with regression coverage;
+- ff/gaff2_mod: clarify that `hi,si,oss,si` remains a deliberate surrogate torsion because the current modified-Seminario workflow derives bond and angle terms only.
+
 ## 0.8.62 (2026-03-25)
 
 - ff/gaff2_mod + ff/ff_dat/gaff2_mod.json + tests/test_forcefields: convert the earlier silicon-hydride fallback path into packaged explicit bonded parameters by adding direct `si,hi` bond terms, direct `ci,si,hi` / `oi,si,hi` / `oss,si,hi` / `hi,si,hi` angle terms, and the common `hi,si,oss,si` torsion; regression coverage now checks that silane and hydride-terminated siloxane probes resolve to those exact Si-H labels instead of surrogate `c3/hc/os` types;

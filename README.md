@@ -1,6 +1,6 @@
 ﻿# YadonPy
 
-Current release: **v0.8.62**
+Current release: **v0.8.63**
 
 YadonPy is a Python package for building polymer, solvent, salt, bulk, and interface workflows directly from SMILES or PSMILES. It is designed for script-driven molecular simulation studies where the user wants to keep the real workflow visible in code instead of hiding it behind a monolithic project file.
 
@@ -20,13 +20,13 @@ The package is built around two stable ideas:
 - **script first**: the study logic should remain understandable from the user script;
 - **MolDB first**: reusable expensive assets are molecular geometry, charge variants, and bonded-patch metadata, not old `.top/.gro/.itp` exports.
 
-## What changed in v0.8.62
+## What changed in v0.8.63
 
-This release closes two concrete workflow gaps: silicon-hydride GAFF2_mod coverage and automatic NPT convergence plotting.
+This release replaces the provisional surrogate-backed Si-H numbers with QM-backed bond and angle terms, and keeps the provenance in the repository.
 
-- `ff/gaff2_mod.py` and `ff/ff_dat/gaff2_mod.json` now ship explicit `si,hi` bonded parameters instead of relying on surrogate lookup. YadonPy now contains direct `si,hi` bond terms, direct `ci,si,hi` / `oi,si,hi` / `oss,si,hi` / `hi,si,hi` angle terms, and the common `hi,si,oss,si` torsion, so silanes and hydride-terminated siloxanes no longer fall back to `c3/hc/os` surrogate labels during assignment.
-- `gmx/analysis/auto_plot.py`, `gmx/workflows/eq.py`, and `gmx/workflows/quick.py` now emit `plots/npt_convergence.svg` automatically for NPT thermo outputs. The figure overlays density, volume, and box lengths on a shared relative-deviation scale, so convergence can be inspected quickly from one SVG.
-- `workflow/resume.py` and `gmx/workflows/eq.py` now use content hashes instead of `mtime` for resume file signatures. That makes restart reuse stable across timestamp-only rewrites and avoids false cache invalidation on copied worktrees.
+- `ff/gaff2_mod.py` and `ff/ff_dat/gaff2_mod.json` now carry `si,hi`, `hi,si,hi`, `ci,si,hi`, `oi,si,hi`, and `oss,si,hi` values derived from a Linux-side `Psi4 + modified Seminario` probe run at `wB97M-D3BJ/def2-SVP`, rather than the earlier GAFF2 surrogate copies.
+- `docs/si_h_qm_probe_20260325.md` and `docs/si_h_qm_probe_20260325_typed_summary.json` now permanently record the probe molecules, remote host/path, method, and the exact adopted values used in the packaged force-field JSON.
+- `hi,si,oss,si` remains an explicit compatibility torsion, but it is now documented as a deliberate surrogate because the current Seminario path derives bond and angle terms only.
 
 ## Installation
 
@@ -154,7 +154,7 @@ What the interface examples now demonstrate:
 
 ## Documentation map
 
-- API reference: `docs/Yadonpy_API_v0.8.62.md`
+- API reference: `docs/Yadonpy_API_v0.8.63.md`
 - Manual: `docs/Yadonpy_manul.md`
 - User guide: `docs/Yaonpyd_user_guide.md`
 

@@ -1,4 +1,4 @@
-# YadonPy User Guide (v0.8.62)
+# YadonPy User Guide (v0.8.63)
 
 This guide is for users who want to run YadonPy productively without reading the whole implementation first.
 
@@ -6,7 +6,7 @@ Python requirement: Python 3.11+
 
 Related documents:
 
-- API reference: `docs/Yadonpy_API_v0.8.62.md`
+- API reference: `docs/Yadonpy_API_v0.8.63.md`
 - manual: `docs/Yadonpy_manul.md`
 
 ## 1. Start with the right mindset

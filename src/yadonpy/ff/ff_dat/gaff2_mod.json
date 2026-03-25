@@ -6710,8 +6710,9 @@
       "tag": "si,hi",
       "name": "si,hi",
       "rname": "hi,si",
-      "k": 314569.85599999997,
-      "r0": 0.1097
+      "k": 166875.184453,
+      "r0": 0.148585,
+      "source": "YadonPy 0.8.63 explicit Si-H QM term; derived on 2026-03-25 by Psi4 modified Seminario at wB97M-D3BJ/def2-SVP from the probe set [SiH4], C[SiH3], O[SiH3], [SiH3]O[SiH3] on zcyu@192.9.207.150. See docs/si_h_qm_probe_20260325.md and docs/si_h_qm_probe_20260325_typed_summary.json."
     },
     {
       "tag": "oi,ho",
@@ -39066,15 +39067,17 @@
       "tag": "ci,si,hi",
       "name": "ci,si,hi",
       "rname": "hi,si,ci",
-      "k": 528.623296,
-      "theta0": 110.133
+      "k": 435.224197,
+      "theta0": 110.638377,
+      "source": "YadonPy 0.8.63 explicit Si-H QM term; derived on 2026-03-25 by Psi4 modified Seminario at wB97M-D3BJ/def2-SVP from probe C[SiH3] on zcyu@192.9.207.150. See docs/si_h_qm_probe_20260325.md and docs/si_h_qm_probe_20260325_typed_summary.json."
     },
     {
       "tag": "oi,si,hi",
       "name": "oi,si,hi",
       "rname": "hi,si,oi",
-      "k": 525.142208,
-      "theta0": 109.5
+      "k": 555.292336,
+      "theta0": 110.000087,
+      "source": "YadonPy 0.8.63 explicit Si-H QM term; derived on 2026-03-25 by Psi4 modified Seminario at wB97M-D3BJ/def2-SVP from probe O[SiH3] on zcyu@192.9.207.150. See docs/si_h_qm_probe_20260325.md and docs/si_h_qm_probe_20260325_typed_summary.json."
     },
     {
       "tag": "si,oi,ho",
@@ -39094,8 +39097,9 @@
       "tag": "hi,si,hi",
       "name": "hi,si,hi",
       "rname": "hi,si,hi",
-      "k": 326.01728,
-      "theta0": 107.58
+      "k": 388.31804,
+      "theta0": 109.122028,
+      "source": "YadonPy 0.8.63 explicit Si-H QM term; derived on 2026-03-25 by Psi4 modified Seminario at wB97M-D3BJ/def2-SVP from the probe set [SiH4], C[SiH3], O[SiH3], [SiH3]O[SiH3] on zcyu@192.9.207.150. See docs/si_h_qm_probe_20260325.md and docs/si_h_qm_probe_20260325_typed_summary.json."
     },
     {
       "tag": "hc,ci,hc",
@@ -39122,8 +39126,9 @@
       "tag": "oss,si,hi",
       "name": "oss,si,hi",
       "rname": "hi,si,oss",
-      "k": 524.556448,
-      "theta0": 108.7
+      "k": 464.084228,
+      "theta0": 109.65872,
+      "source": "YadonPy 0.8.63 explicit Si-H QM term; derived on 2026-03-25 by Psi4 modified Seminario at wB97M-D3BJ/def2-SVP from probe [SiH3]O[SiH3] on zcyu@192.9.207.150. See docs/si_h_qm_probe_20260325.md and docs/si_h_qm_probe_20260325_typed_summary.json."
     },
     {
       "tag": "oss,si,oss",
@@ -54641,7 +54646,8 @@
       "m": 1,
       "n": [
         3
-      ]
+      ],
+      "source": "YadonPy 0.8.63 explicit Si-H compatibility torsion; retained as a surrogate cloned from GAFF2 X,c3,os,X because the current Psi4 modified-Seminario workflow derives bond and angle terms only. See docs/si_h_qm_probe_20260325.md."
     },
     {
       "tag": "ci,si,ci,hc",

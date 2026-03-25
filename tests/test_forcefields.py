@@ -1,7 +1,10 @@
+import json
+
 from rdkit import Chem
 
 from yadonpy.ff.gaff2_mod import GAFF2_mod
 from yadonpy.ff.oplsaa import OPLSAA, validate_oplsaa_rule_table
+from yadonpy.core.resources import ff_data_path
 
 
 def _assign_gaff2_mod(smiles: str):
@@ -64,6 +67,35 @@ def test_gaff2_mod_assigns_disiloxane_hydride_terms_explicitly():
     assert {bond.GetProp("ff_type") for bond in mol.GetBonds()} == {"si,hi", "si,oss"}
     assert {angle.ff.type for angle in mol.angles.values()} == {"oss,si,hi", "hi,si,hi", "si,oss,si"}
     assert {dih.ff.type for dih in mol.dihedrals.values()} == {"hi,si,oss,si"}
+
+
+def test_gaff2_mod_records_qm_backed_si_h_sources():
+    with open(ff_data_path("ff_dat", "gaff2_mod.json"), "r", encoding="utf-8") as fh:
+        data = json.load(fh)
+
+    def _by_tag(section: str, tag: str):
+        for rec in data[section]:
+            if rec.get("tag") == tag:
+                return rec
+        raise AssertionError(f"missing {section}:{tag}")
+
+    si_hi = _by_tag("bond_types", "si,hi")
+    hi_si_hi = _by_tag("angle_types", "hi,si,hi")
+    ci_si_hi = _by_tag("angle_types", "ci,si,hi")
+    oi_si_hi = _by_tag("angle_types", "oi,si,hi")
+    oss_si_hi = _by_tag("angle_types", "oss,si,hi")
+    torsion = _by_tag("dihedral_types", "hi,si,oss,si")
+
+    assert "Psi4 modified Seminario" in si_hi["source"]
+    assert abs(float(si_hi["r0"]) - 0.148585) < 1.0e-6
+    assert abs(float(si_hi["k"]) - 166875.184453) < 1.0e-6
+    assert "Psi4 modified Seminario" in hi_si_hi["source"]
+    assert abs(float(hi_si_hi["theta0"]) - 109.122028) < 1.0e-6
+    assert abs(float(hi_si_hi["k"]) - 388.318040) < 1.0e-6
+    assert "C[SiH3]" in ci_si_hi["source"]
+    assert "O[SiH3]" in oi_si_hi["source"]
+    assert "[SiH3]O[SiH3]" in oss_si_hi["source"]
+    assert "surrogate" in torsion["source"]
 
 
 def test_oplsaa_rule_table_matches_parameter_table():
