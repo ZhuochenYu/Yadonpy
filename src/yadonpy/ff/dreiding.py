@@ -109,6 +109,11 @@ class Dreiding():
 
         if result and report:
             print_ff_assignment_report(mol, ff_obj=self)
+        if result:
+            try:
+                utils.auto_export_assigned_mol(mol, depth=2)
+            except Exception:
+                pass
         return mol if result else False
 
 
@@ -717,4 +722,3 @@ class Dreiding_UT(Dreiding):
             db_file = str(ff_data_path("ff_dat", "dreiding_ut.json"))
         super().__init__(db_file)
         self.name = 'dreiding_ut'
-

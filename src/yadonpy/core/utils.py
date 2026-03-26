@@ -91,7 +91,7 @@ from .chem_utils import (
 )  # noqa: F401
 
 # Naming helpers
-from .naming import set_name_from_var, get_name, ensure_name, named  # noqa: F401
+from .naming import auto_export_assigned_mol, infer_work_dir, set_name_from_var, get_name, ensure_name, named, suggest_name_from_work_dir  # noqa: F401
 
 
 __all__ = [
@@ -114,4 +114,5 @@ __all__ = [
     "symmetrize_polyhedral_ion_geometry", "ensure_3d_coords",
     "scale_atomic_charges", "restore_raw_charges", "mol_from_pdb", "is_in_ring",
     "set_name_from_var", "get_name", "ensure_name", "named",
+    "infer_work_dir", "suggest_name_from_work_dir", "auto_export_assigned_mol",
 ]

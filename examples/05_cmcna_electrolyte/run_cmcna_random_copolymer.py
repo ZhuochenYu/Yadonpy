@@ -19,8 +19,6 @@ from yadonpy.diagnostics import doctor
 from yadonpy.ff import GAFF2_mod, MERZ
 from yadonpy.sim import qm
 from yadonpy.sim.preset import eq
-from yadonpy.io.mol2 import write_mol2
-from yadonpy.io.gmx import write_gmx
 
 
 # ---------------- user inputs ----------------
@@ -152,16 +150,12 @@ if __name__ == "__main__":
         int(dp),
         ratio=feed_prob,
         tacticity='atactic',
-        name='CMC',
         work_dir=cmc_rw_dir,
     )
-    CMC = poly.terminate_rw(CMC, ter1, name='CMC', work_dir=cmc_term_dir)
-    result = ff.ff_assign(CMC)
-    if not result:
+    CMC = poly.terminate_rw(CMC, ter1, work_dir=cmc_term_dir)
+    CMC = ff.ff_assign(CMC)
+    if not CMC:
         raise RuntimeError('Can not assign force field parameters for CMC.')
-    # Export per-species mol2 (charges + geometry) for debugging/interoperability.
-    write_mol2(mol=CMC, out_dir=work_dir / '00_molecules')
-    write_gmx(mol=CMC, out_dir=work_dir / '90_CMC_gmx')
 
     # Sanity-check atomtype coverage (helps diagnose RDF coverage later).
     try:
@@ -174,40 +168,36 @@ if __name__ == "__main__":
         pass
 
     # ---------------- build solvents ----------------
-    EC  = utils.mol_from_smiles(EC_smiles)
-    EMC = utils.mol_from_smiles(EMC_smiles)
-    DEC = utils.mol_from_smiles(DEC_smiles)
-
-    for s in [EC, EMC, DEC]:
-        s, _ = qm.conformation_search(
-            s, ff=ff, work_dir=work_dir,
+    solvent_specs = [
+        ("EC", utils.mol_from_smiles(EC_smiles)),
+        ("EMC", utils.mol_from_smiles(EMC_smiles)),
+        ("DEC", utils.mol_from_smiles(DEC_smiles)),
+    ]
+    solvent_map = {}
+    for solvent_name, solvent in solvent_specs:
+        solvent, _ = qm.conformation_search(
+            solvent, ff=ff, work_dir=work_dir,
             psi4_omp=omp_psi4, mpi=mpi, omp=omp, memory=mem_mb, log_name=None
         )
-        qm.assign_charges(s, charge="RESP", opt=False, work_dir=work_dir, omp=omp_psi4, memory=mem_mb, log_name=None)
-        result = ff.ff_assign(s)
-    if not result:
-        raise RuntimeError("Can not assign force field parameters for solvent.")
-    write_mol2(mol=EC, out_dir=work_dir / '00_molecules')
-    write_gmx(mol=EC, out_dir=work_dir / '90_EC_gmx')
-    write_mol2(mol=EMC, out_dir=work_dir / '00_molecules')
-    write_gmx(mol=EMC, out_dir=work_dir / '90_EMC_gmx')
-    write_mol2(mol=DEC, out_dir=work_dir / '00_molecules')
-    write_gmx(mol=DEC, out_dir=work_dir / '90_DEC_gmx')
+        qm.assign_charges(solvent, charge="RESP", opt=False, work_dir=work_dir, omp=omp_psi4, memory=mem_mb, log_name=None)
+        solvent = ff.ff_assign(solvent)
+        if not solvent:
+            raise RuntimeError(f"Can not assign force field parameters for {solvent_name}.")
+        solvent_map[solvent_name] = solvent
+    EC = solvent_map["EC"]
+    EMC = solvent_map["EMC"]
+    DEC = solvent_map["DEC"]
 
     # ---------------- ions ----------------
     Li = ion_ff.mol(Li_smiles)
-    result = ion_ff.ff_assign(Li)
-    if not result:
+    Li = ion_ff.ff_assign(Li)
+    if not Li:
         raise RuntimeError("Can not assign MERZ force field parameters for Li+.")
-    write_mol2(mol=Li, out_dir=work_dir / '00_molecules')
-    write_gmx(mol=Li, out_dir=work_dir / '90_Li_gmx')
 
     Na = ion_ff.mol(Na_smiles)
-    result = ion_ff.ff_assign(Na)
-    if not result:
+    Na = ion_ff.ff_assign(Na)
+    if not Na:
         raise RuntimeError("Can not assign MERZ force field parameters for Na+.")
-    write_mol2(mol=Na, out_dir=work_dir / '00_molecules')
-    write_gmx(mol=Na, out_dir=work_dir / '90_Na_gmx')
 
     try:
         PF6 = ff.mol(PF6_smiles, charge='RESP', require_ready=True, prefer_db=True)
@@ -219,8 +209,6 @@ if __name__ == "__main__":
         ) from exc
     if not PF6:
         raise RuntimeError('Can not assign force field parameters for MolDB-backed PF6.')
-    write_mol2(mol=PF6, out_dir=work_dir / '00_molecules')
-    write_gmx(mol=PF6, out_dir=work_dir / '90_PF6_gmx')
 
     # ---------------- compute counts ----------------
     # polymer molecular weight from RDKit

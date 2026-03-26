@@ -1,3 +1,9 @@
+## 0.8.69 (2026-03-26)
+
+- core/naming + core/utils + tests/test_workdir_and_molspec: treat generic aliases such as `result`, `results`, `res`, `out`, `tmp`, and similar placeholders as non-authoritative during variable-name inference, add caller work-dir discovery plus name-from-workdir helpers, and lock the fix down with regression coverage so downstream analysis/export code no longer renames real species like `Na` to `result`;
+- ff/gaff + ff/merz + ff/oplsaa + ff/dreiding + ff/tip + tests/test_workdir_and_molspec: automatically export successfully assigned molecules into `00_molecules/<name>.mol2` and `90_<name>_gmx/` when a caller-visible `work_dir` exists, keeping the script-first style while removing repeated manual `write_mol2(...)` / `write_gmx(...)` boilerplate;
+- core/poly + examples/02_polymer_electrolyte + examples/05_cmcna_electrolyte + examples/06_polymer_electrolyte_nvt: let random-walk polymerization and termination infer default names from the existing polymer label or the work-dir basename, remove explicit `name='CMC'` usage from the common CMC workflow, and replace lingering `result = ff.ff_assign(...)` rebinding with direct assignment back to the true variable name.
+
 ## 0.8.68 (2026-03-26)
 
 - io/gromacs_system + moldb/store + tests/test_workdir_and_molspec: switch PF6-class hypervalent ions to an unsanitized-first SMILES parsing path in exporter metadata helpers (`canonicalize_smiles`, formal-charge classification, mass estimation) and MolDB canonical-key generation, preventing `export_system` from repeatedly re-entering RDKit's `P valence 6` sanitize path during full Example 12 electrolyte export.

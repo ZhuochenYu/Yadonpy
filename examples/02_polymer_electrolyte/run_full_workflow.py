@@ -16,8 +16,6 @@ from yadonpy.ff.gaff2_mod import GAFF2_mod
 from yadonpy.ff.merz import MERZ
 from yadonpy.sim import qm
 from yadonpy.sim.preset import eq
-from yadonpy.io.mol2 import write_mol2
-from yadonpy.io.gmx import write_gmx
 from yadonpy.moldb import MolDB
 
 
@@ -141,11 +139,9 @@ if __name__ == '__main__':
         work_dir=poly_rw_dir,
     )
     copoly = poly.terminate_rw(copoly, ter1, name='copoly', work_dir=poly_term_dir)
-    result = ff.ff_assign(copoly)
-    if not result:
+    copoly = ff.ff_assign(copoly)
+    if not copoly:
         raise RuntimeError('Can not assign force field parameters for copoly.')
-    write_mol2(mol=copoly, out_dir=work_dir / '00_molecules')
-    write_gmx(mol=copoly, out_dir=work_dir / '90_copoly_gmx')
     # ############################################################################################################
 
     # solvent#####################################################################################################
@@ -164,9 +160,9 @@ if __name__ == '__main__':
     )
     # Generate a standalone MolDB snippet under work_dir (copy-paste later if desired)
     db.mol_gen(solvent_A, work_dir=work_dir, add_to_moldb=False)
-    result = ff.ff_assign(solvent_A)
-    write_mol2(mol=solvent_A, out_dir=work_dir / '00_molecules')
-    write_gmx(mol=solvent_A, out_dir=work_dir / '90_solvent_A_gmx')
+    solvent_A = ff.ff_assign(solvent_A)
+    if not solvent_A:
+        raise RuntimeError('Can not assign force field parameters for solvent_A.')
 
     solvent_B, energy = qm.conformation_search(
         solvent_B, ff=ff, work_dir=work_dir,
@@ -178,19 +174,17 @@ if __name__ == '__main__':
         omp=omp_psi4, memory=mem, log_name=None
     )
     db.mol_gen(solvent_B, work_dir=work_dir, add_to_moldb=False)
-    result = ff.ff_assign(solvent_B)
-    write_mol2(mol=solvent_B, out_dir=work_dir / '00_molecules')
-    write_gmx(mol=solvent_B, out_dir=work_dir / '90_solvent_B_gmx')
+    solvent_B = ff.ff_assign(solvent_B)
+    if not solvent_B:
+        raise RuntimeError('Can not assign force field parameters for solvent_B.')
     # ############################################################################################################
 
     # cation_A######################################################################################################
     cation_A = cation_ff.mol(cation_smiles_A)
     # (name inferred later)
-    result = cation_ff.ff_assign(cation_A)
-    if not result:
+    cation_A = cation_ff.ff_assign(cation_A)
+    if not cation_A:
         raise RuntimeError('Can not assign MERZ parameters to cation_A')
-    write_mol2(mol=cation_A, out_dir=work_dir / '00_molecules')
-    write_gmx(mol=cation_A, out_dir=work_dir / '90_cation_A_gmx')
     # ############################################################################################################
 
     # anion_A#######################################################################################################
@@ -204,8 +198,6 @@ if __name__ == '__main__':
         ) from exc
     if not anion_A:
         raise RuntimeError('Can not assign force field parameters for MolDB-backed PF6.')
-    write_mol2(mol=anion_A, out_dir=work_dir / '00_molecules')
-    write_gmx(mol=anion_A, out_dir=work_dir / '90_anion_A_gmx')
     # ############################################################################################################
 
     # build amorphous cell########################################################################################

@@ -106,6 +106,11 @@ class TIP3P():
 
         if result and report:
             print_ff_assignment_report(mol, ff_obj=self)
+        if result:
+            try:
+                utils.auto_export_assigned_mol(mol, depth=2)
+            except Exception:
+                pass
 
         return mol if result else False
 
@@ -339,6 +344,11 @@ class TIP4P():
 
         if result and report:
             print_ff_assignment_report(mol, ff_obj=self)
+        if result:
+            try:
+                utils.auto_export_assigned_mol(mol, depth=2)
+            except Exception:
+                pass
 
         return mol if result else False
 
@@ -576,6 +586,11 @@ class TIP5P():
 
         if result and report:
             print_ff_assignment_report(mol, ff_obj=self)
+        if result:
+            try:
+                utils.auto_export_assigned_mol(mol, depth=2)
+            except Exception:
+                pass
 
         return mol if result else False
 

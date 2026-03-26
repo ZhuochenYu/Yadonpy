@@ -3,6 +3,8 @@
 from __future__ import annotations
 import inspect
 import hashlib
+import os
+from pathlib import Path
 import re
 
 
@@ -106,6 +108,7 @@ BAD_DEFAULTS = {
     # common loop / generic variable names
     "m", "mon", "monomer", "sp", "species", "item", "x", "y", "z",
     "a", "b", "c", "i", "j", "k",
+    "result", "results", "res", "ok", "ret", "out", "tmp", "value", "data", "record",
     # internal placeholder names frequently introduced inside helper methods
     "spec", "molspec", "handle", "obj", "resolved",
     # common placeholders used in yadonpy internals / examples
@@ -295,6 +298,97 @@ def infer_var_name(obj, *, depth: int = 1) -> str | None:
     """
     try:
         return _resolve_inferred_name(obj, depth=depth + 1, max_depth=16)
+    except Exception:
+        return None
+
+
+def _coerce_work_dir_path(candidate) -> Path | None:
+    try:
+        if candidate is None:
+            return None
+        if hasattr(candidate, "path_obj"):
+            return Path(candidate.path_obj).expanduser().resolve()
+        return Path(os.fspath(candidate)).expanduser().resolve()
+    except Exception:
+        return None
+
+
+def infer_work_dir(*, depth: int = 1, max_depth: int = 12) -> Path | None:
+    """Best-effort lookup of a caller-visible ``work_dir`` style variable."""
+    try:
+        frame = inspect.currentframe()
+        for _ in range(max(0, int(depth))):
+            if frame is None or frame.f_back is None:
+                break
+            frame = frame.f_back
+        if frame is None:
+            return None
+
+        preferred_keys = ("work_dir", "wd", "workspace_dir")
+        for _ in range(max(1, int(max_depth))):
+            if frame is None:
+                break
+            scopes = (getattr(frame, "f_locals", {}), getattr(frame, "f_globals", {}))
+            for key in preferred_keys:
+                for scope in scopes:
+                    try:
+                        if key in scope:
+                            path = _coerce_work_dir_path(scope.get(key))
+                            if path is not None:
+                                return path
+                    except Exception:
+                        continue
+            frame = frame.f_back
+    except Exception:
+        return None
+    return None
+
+
+def suggest_name_from_work_dir(work_dir) -> str | None:
+    """Suggest a stable molecule name from a work-dir basename."""
+    path = _coerce_work_dir_path(work_dir)
+    if path is None:
+        return None
+    stem = str(path.name).strip()
+    if not stem:
+        return None
+    for suffix in ("_rw", "_term", "_gmx", "_mol2", "_build_cell", "_build", "_prep", "_system"):
+        if stem.lower().endswith(suffix):
+            stem = stem[: -len(suffix)]
+            break
+    stem = re.sub(r"[^A-Za-z0-9._+\-]+", "_", stem).strip("_")
+    if not stem or is_bad_default_name(stem):
+        return None
+    return stem
+
+
+def auto_export_assigned_mol(obj, *, depth: int = 1, work_dir=None) -> Path | None:
+    """Best-effort auto export after successful ``ff_assign``.
+
+    If a caller-visible ``work_dir`` exists, write:
+    - ``work_dir/00_molecules/<name>.mol2``
+    - ``work_dir/90_<name>_gmx/*``
+    """
+    try:
+        root = _coerce_work_dir_path(work_dir)
+        if root is None:
+            root = infer_work_dir(depth=depth + 1, max_depth=12)
+        if root is None:
+            return None
+
+        current_name = get_name(obj, default=None)
+        if current_name is None or is_bad_default_name(current_name):
+            current_name = suggest_name_from_work_dir(root)
+        stem = ensure_name(obj, name=current_name, depth=depth + 1, prefer_var=(current_name is None))
+
+        from ..io.mol2 import write_mol2
+        from ..io.gmx import write_gmx
+
+        mol2_dir = root / "00_molecules"
+        gmx_dir = root / f"90_{stem}_gmx"
+        write_mol2(mol=obj, out_dir=mol2_dir, name=stem, mol_name=stem)
+        write_gmx(mol=obj, out_dir=gmx_dir, name=stem, mol_name=stem)
+        return root
     except Exception:
         return None
 

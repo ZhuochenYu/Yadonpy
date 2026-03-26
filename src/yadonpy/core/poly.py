@@ -2809,27 +2809,14 @@ def random_copolymerize_rw(mols, n, ratio=None, reac_ratio=[], init_poly=None, h
 
 
 
-    # Optional explicit naming for stable artifact filenames
-
-
-
-    if name is not None:
-
-
-
-        try:
-
-
-
-            utils.ensure_name(poly, name=str(name), depth=1)
-
-
-
-        except Exception:
-
-
-
-            pass
+    try:
+        resolved_name = str(name).strip() if name is not None else ""
+        if not resolved_name:
+            resolved_name = utils.suggest_name_from_work_dir(work_dir) or ""
+        if resolved_name:
+            utils.ensure_name(poly, name=str(resolved_name), depth=1, prefer_var=False)
+    except Exception:
+        pass
 
 
 
@@ -3161,17 +3148,14 @@ def terminate_rw(poly, mol1, mol2=None, confId=0, dist_min=1.0, retry=100, rollb
     dt2 = datetime.datetime.now()
     utils.radon_print('Normal termination of poly.terminate_rw. Elapsed time = %s' % str(dt2-dt1), level=1)
 
-    # Optional explicit naming for stable artifact filenames
-
-    if name is not None:
-
-        try:
-
-            utils.ensure_name(poly_c, name=str(name), depth=1)
-
-        except Exception:
-
-            pass
+    try:
+        resolved_name = str(name).strip() if name is not None else ""
+        if not resolved_name:
+            resolved_name = utils.get_name(poly, default=None) or utils.suggest_name_from_work_dir(work_dir) or ""
+        if resolved_name:
+            utils.ensure_name(poly_c, name=str(resolved_name), depth=1, prefer_var=False)
+    except Exception:
+        pass
 
 
     _rw_save(work_dir, 'terminate_rw', payload, poly_c)

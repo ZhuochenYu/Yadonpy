@@ -320,6 +320,11 @@ class GAFF():
             return mol if result else False
         if result and report:
             print_ff_assignment_report(mol, ff_obj=self)
+        if result:
+            try:
+                naming.auto_export_assigned_mol(mol, depth=2)
+            except Exception:
+                pass
         return mol if result else False
 
 

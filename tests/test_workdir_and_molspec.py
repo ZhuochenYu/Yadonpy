@@ -206,6 +206,51 @@ def test_random_copolymerize_rw_refreshes_bridge_oxygen_types_after_new_bonds(ca
     assert bad_oxygens == []
 
 
+def test_ensure_name_ignores_generic_result_alias():
+    ff = MERZ()
+    Na = ff.mol("[Na+]")
+    result = Na
+    utils.ensure_name(Na, depth=1, prefer_var=True)
+
+    assert result is Na
+    assert utils.get_name(Na) == "Na"
+
+
+def test_ff_assign_auto_exports_to_work_dir(tmp_path: Path):
+    work_dir = tmp_path / "run"
+    work_dir.mkdir(parents=True)
+
+    ff = MERZ()
+    Na = ff.mol("[Na+]")
+    Na = ff.ff_assign(Na)
+
+    assert Na is not False
+    assert (work_dir / "00_molecules" / "Na.mol2").exists()
+    assert (work_dir / "90_Na_gmx" / "Na.gro").exists()
+    assert (work_dir / "90_Na_gmx" / "Na.itp").exists()
+    assert (work_dir / "90_Na_gmx" / "Na.top").exists()
+
+
+def test_random_copolymerize_rw_uses_work_dir_basename_as_default_name(tmp_path: Path, monkeypatch):
+    monomer = utils.mol_from_smiles("*CC*")
+    assert monomer is not None
+
+    fake_poly = Chem.MolFromSmiles("CC")
+    assert fake_poly is not None
+
+    monkeypatch.setattr(poly, "_effective_restart_flag", lambda *args, **kwargs: False)
+    monkeypatch.setattr(poly, "_rw_load_state", lambda *args, **kwargs: None)
+    monkeypatch.setattr(poly, "_rw_save_state", lambda *args, **kwargs: None)
+    monkeypatch.setattr(poly, "_rw_save", lambda *args, **kwargs: None)
+    monkeypatch.setattr(poly, "gen_monomer_array", lambda *args, **kwargs: [0])
+    monkeypatch.setattr(poly, "gen_chiral_inv_array", lambda *args, **kwargs: ([False], True))
+    monkeypatch.setattr(poly, "random_walk_polymerization", lambda *args, **kwargs: Chem.Mol(fake_poly))
+
+    CMC = poly.random_copolymerize_rw([monomer], 1, work_dir=tmp_path / "CMC_rw")
+
+    assert utils.get_name(CMC) == "CMC"
+
+
 def test_resolved_molspec_is_accepted_by_poly_helpers(tmp_path: Path):
     ff = GAFF2_mod()
     spec = ff.mol('*CCO*', require_ready=False, prefer_db=False)
