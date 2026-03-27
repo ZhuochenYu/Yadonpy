@@ -1,3 +1,8 @@
+## 0.8.73 (2026-03-27)
+
+- gmx/analysis/structured + sim/analyzer + gmx/analysis/auto_plot + tests/test_structured_analysis: refactor MSD, RDF, CN, and Nernst-Einstein conductivity into a structured post-processing path with explicit metric semantics (`ion_atomic_msd`, `molecule_com_msd`, `chain_com_msd`, `residue_com_msd`, `charged_group_com_msd`), site-level RDF/CN as the default analysis mode, strict center-species resolution, a shared first-shell detector for JSON and SVG outputs, and fit-window visualization in MSD plots;
+- gmx/analysis/structured + sim/analyzer + docs: change charged-polymer ionic conductivity so polymer contributions are computed from charged-group diffusion coefficients with per-group formal charges (`+1`, `-1`, `+2`, etc.), distinguish cationic and anionic group components explicitly, and disable whole-chain fallback whenever a charged polymer lacks charged-group MSD metadata.
+
 ## 0.8.72 (2026-03-27)
 
 - moldb/store + api + ff/gaff + tests/test_api: make MolDB charge variants polyelectrolyte-aware by storing and resolving grouped-charge metadata (`polyelectrolyte_mode`, detection mode, constraint signature, charge-group payloads, RESP constraint payloads, grouped summaries, and source-kind tags), restoring those tags on load, and preventing grouped-polyelectrolyte RESP fits from colliding with ordinary RESP variants under the same SMILES key;

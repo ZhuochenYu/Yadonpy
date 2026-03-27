@@ -19,6 +19,7 @@ import numpy as np
 
 from ...plotting.style import apply_matplotlib_style, golden_figsize
 from ...plotting.legend import place_legend
+from .structured import detect_first_shell
 from .xvg import read_xvg
 from .plot import plot_xvg_svg
 
@@ -378,8 +379,11 @@ def plot_msd(
         apply_matplotlib_style()
         out_svg = out_dir / f"msd_{group}.svg"
         plt.figure(figsize=golden_figsize(8.0))
-        plt.plot(t_ps / 1000.0, msd_plot, label=f"MSD (smoothed, w={window})")
-        plt.plot(t_ps / 1000.0, msd, alpha=0.25, label="MSD (raw)")
+        t_ns = t_ps / 1000.0
+        plt.plot(t_ns, msd_plot, label=f"MSD (smoothed, w={window})")
+        plt.plot(t_ns, msd, alpha=0.25, label="MSD (raw)")
+        if fit_t_start_ps is not None and fit_t_end_ps is not None:
+            plt.axvspan(float(fit_t_start_ps) / 1000.0, float(fit_t_end_ps) / 1000.0, alpha=0.15, label="fit window")
         plt.title(f"MSD - {group}")
         plt.xlabel("Time (ns)")
         plt.ylabel("MSD (nm$^2$)")
@@ -405,6 +409,10 @@ def plot_msd(
         t_ns = t_ps / 1000.0
         plt.loglog(t_ns, msd_plot, label=f"MSD (smoothed, w={window})")
         plt.loglog(t_ns, msd, alpha=0.25, label="MSD (raw)")
+        if fit_t_start_ps is not None and fit_t_end_ps is not None:
+            fit_mask = (t_ps >= float(fit_t_start_ps)) & (t_ps <= float(fit_t_end_ps)) & (t_ps > 0.0) & (msd > 0.0)
+            if np.any(fit_mask):
+                plt.loglog(t_ns[fit_mask], msd[fit_mask], linewidth=2.0, label="fit window")
         plt.title(f"MSD (log-log) - {group}")
         plt.xlabel("Time (ns)")
         plt.ylabel("MSD (nm$^2$)")
@@ -417,6 +425,91 @@ def plot_msd(
     except Exception:
         pass
 
+    return created
+
+
+def plot_msd_series(
+    *,
+    t_ps: np.ndarray,
+    msd_nm2: np.ndarray,
+    out_dir: Path,
+    group: str,
+    fit_t_start_ps: Optional[float] = None,
+    fit_t_end_ps: Optional[float] = None,
+    confidence: Optional[str] = None,
+    status: Optional[str] = None,
+    window: Optional[int] = None,
+) -> Dict[str, str]:
+    out_dir = _as_path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    created: Dict[str, str] = {}
+    t_ps = np.asarray(t_ps, dtype=float)
+    msd = np.asarray(msd_nm2, dtype=float)
+    if t_ps.size == 0 or msd.size == 0:
+        return created
+    if window is None:
+        window = int(min(51, max(11, len(msd) // 50)))
+    msd_plot = _moving_average_1d(msd, int(window))
+    note = None
+    if confidence or status:
+        note = " | ".join([str(x) for x in (confidence, status) if x])
+    try:
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+
+        apply_matplotlib_style()
+        out_svg = out_dir / f"msd_{_fs_safe_label(group)}.svg"
+        plt.figure(figsize=golden_figsize(8.0))
+        t_ns = t_ps / 1000.0
+        plt.plot(t_ns, msd_plot, label=f"MSD (smoothed, w={window})")
+        plt.plot(t_ns, msd, alpha=0.25, label="MSD (raw)")
+        if fit_t_start_ps is not None and fit_t_end_ps is not None:
+            plt.axvspan(float(fit_t_start_ps) / 1000.0, float(fit_t_end_ps) / 1000.0, alpha=0.15, label="fit window")
+        plt.title(f"MSD - {group}")
+        if note:
+            plt.text(0.98, 0.98, note, transform=plt.gca().transAxes, ha="right", va="top")
+        plt.xlabel("Time (ns)")
+        plt.ylabel("MSD (nm$^2$)")
+        plt.grid(True)
+        place_legend(plt.gca())
+        plt.tight_layout()
+        plt.savefig(out_svg, format="svg")
+        plt.close()
+        created["msd_svg"] = str(out_svg)
+    except Exception:
+        pass
+    try:
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+
+        apply_matplotlib_style()
+        out_svg = out_dir / f"msd_loglog_{_fs_safe_label(group)}.svg"
+        plt.figure(figsize=golden_figsize(8.0))
+        t_ns = t_ps / 1000.0
+        mask = (t_ns > 0.0) & (msd_plot > 0.0) & (msd > 0.0)
+        plt.loglog(t_ns[mask], msd_plot[mask], label=f"MSD (smoothed, w={window})")
+        plt.loglog(t_ns[mask], msd[mask], alpha=0.25, label="MSD (raw)")
+        if fit_t_start_ps is not None and fit_t_end_ps is not None:
+            fit_mask = (t_ps >= float(fit_t_start_ps)) & (t_ps <= float(fit_t_end_ps)) & (t_ps > 0.0) & (msd > 0.0)
+            if np.any(fit_mask):
+                plt.loglog(t_ns[fit_mask], msd[fit_mask], linewidth=2.0, label="fit window")
+        plt.title(f"MSD (log-log) - {group}")
+        if note:
+            plt.text(0.98, 0.98, note, transform=plt.gca().transAxes, ha="right", va="top")
+        plt.xlabel("Time (ns)")
+        plt.ylabel("MSD (nm$^2$)")
+        plt.grid(True)
+        place_legend(plt.gca())
+        plt.tight_layout()
+        plt.savefig(out_svg, format="svg")
+        plt.close()
+        created["msd_loglog_svg"] = str(out_svg)
+    except Exception:
+        pass
     return created
 
 
@@ -653,6 +746,58 @@ def plot_msd_summary(
         return None
 
 
+def plot_msd_series_summary(
+    *,
+    msd_series: Dict[str, Tuple[np.ndarray, np.ndarray]],
+    out_svg: Path,
+    title: str,
+) -> Optional[Path]:
+    try:
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+
+        out_svg = _as_path(out_svg)
+        out_svg.parent.mkdir(parents=True, exist_ok=True)
+
+        apply_matplotlib_style(n_colors=max(8, len(msd_series)))
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8.0, 9.0))
+        for name in sorted(msd_series.keys()):
+            t_ps, msd = msd_series[name]
+            t_ps = np.asarray(t_ps, dtype=float)
+            msd = np.asarray(msd, dtype=float)
+            if t_ps.size == 0 or msd.size == 0:
+                continue
+            if msd.size >= 9:
+                w = int(min(51, max(11, msd.size // 50)))
+                msd = _moving_average_1d(msd, w)
+            t_ns = t_ps / 1000.0
+            ax1.plot(t_ns, msd, label=str(name))
+            mask = (t_ns > 0) & (msd > 0)
+            if np.any(mask):
+                ax2.loglog(t_ns[mask], msd[mask], label=str(name))
+
+        ax1.set_title(f"{title} - linear")
+        ax1.set_xlabel("Time (ns)")
+        ax1.set_ylabel("MSD (nm$^2$)")
+        ax1.grid(True)
+        place_legend(ax1)
+
+        ax2.set_title(f"{title} - log-log")
+        ax2.set_xlabel("Time (ns)")
+        ax2.set_ylabel("MSD (nm$^2$)")
+        ax2.grid(True)
+        place_legend(ax2)
+
+        fig.tight_layout()
+        fig.savefig(out_svg, format="svg")
+        plt.close(fig)
+        return out_svg
+    except Exception:
+        return None
+
+
 def plot_rdf_cn(
     *,
     rdf_xvg: Path,
@@ -675,33 +820,6 @@ def plot_rdf_cn(
         ycol = [c for c in df.columns if c != "x"][0]
         g = np.asarray(df[ycol].to_numpy(dtype=float))
 
-        # --- helper: estimate first-shell cutoff (first minimum after first peak)
-        def _first_shell_cutoff_nm(r_nm: np.ndarray, gr: np.ndarray) -> Optional[float]:
-            if r_nm.size < 8:
-                return None
-            # light smoothing to avoid tiny numerical oscillations
-            w = int(min(21, max(7, r_nm.size // 80)))
-            gr_s = _moving_average_1d(np.asarray(gr, dtype=float), w)
-            # find the *first* physically meaningful peak
-            i_peak = None
-            for i in range(1, gr_s.size - 1):
-                if r_nm[i] < 0.08:
-                    continue
-                if r_nm[i] > 0.90:
-                    break
-                if (gr_s[i] > gr_s[i - 1]) and (gr_s[i] > gr_s[i + 1]) and (gr_s[i] > 1.05):
-                    i_peak = i
-                    break
-            if i_peak is None:
-                i_peak = int(np.argmax(gr_s))
-            # first minimum after the peak
-            for j in range(i_peak + 1, gr_s.size - 1):
-                if r_nm[j] > 1.80:
-                    break
-                if (gr_s[j] <= gr_s[j - 1]) and (gr_s[j] <= gr_s[j + 1]):
-                    return float(r_nm[j])
-            return None
-
         apply_matplotlib_style()
         fig, ax1 = plt.subplots(figsize=golden_figsize(8.0))
         ax1.plot(r, g, label="RDF")
@@ -710,27 +828,24 @@ def plot_rdf_cn(
         ax1.grid(True)
 
         ax2 = None
-        r_shell = _first_shell_cutoff_nm(r, g)
         cn_shell = None
         if cn_xvg is not None and Path(cn_xvg).exists():
             df2 = read_xvg(cn_xvg).df
             r2 = np.asarray(df2["x"].to_numpy(dtype=float))
             y2col = [c for c in df2.columns if c != "x"][0]
             cn = np.asarray(df2[y2col].to_numpy(dtype=float))
+            shell_info = detect_first_shell(r, g, cn) if r.size == cn.size else {"r_shell_nm": None, "cn_shell": None, "status": "failed", "confidence": "failed"}
             ax2 = ax1.twinx()
             ax2.plot(r2, cn, linestyle="--", label="CN")
             ax2.set_ylabel("CN")
-            # For readability across systems, keep CN scale consistent.
-            ax2.set_ylim(0.0, 6.0)
-
-            # If we have a first-shell cutoff, annotate CN at that cutoff.
-            if r_shell is not None:
-                try:
-                    cn_shell = float(np.interp(float(r_shell), r2, cn))
-                except Exception:
-                    cn_shell = None
-
-        # annotate 1st-shell cutoff on the plot (both RDF and CN)
+            cn_max = float(np.nanmax(cn)) if cn.size else 0.0
+            ax2.set_ylim(0.0, max(1.0, cn_max * 1.1))
+            r_shell = shell_info.get("r_shell_nm")
+            cn_shell = shell_info.get("cn_shell")
+        else:
+            shell_info = detect_first_shell(r, g, np.zeros_like(r))
+        r_shell = shell_info.get("r_shell_nm")
+        cn_shell = shell_info.get("cn_shell")
         if r_shell is not None:
             ax1.axvline(float(r_shell), linestyle=":", alpha=0.8)
             if ax2 is not None and cn_shell is not None:
@@ -739,7 +854,7 @@ def plot_rdf_cn(
                 except Exception:
                     pass
             # put a compact note in axes coordinates
-            note = f"1st shell cutoff: r={float(r_shell):.3f} nm"
+            note = f"{shell_info.get('status', 'unknown')} | {shell_info.get('confidence', 'unknown')}\nr={float(r_shell):.3f} nm"
             if cn_shell is not None:
                 note += f"\nCN={float(cn_shell):.2f}"
             ax1.text(
@@ -760,6 +875,132 @@ def plot_rdf_cn(
             labels += l2
         if handles:
             ax1.legend(handles, labels, loc="best")
+
+        fig.tight_layout()
+        fig.savefig(out_svg, format="svg")
+        plt.close(fig)
+        return out_svg
+    except Exception:
+        return None
+
+
+def plot_rdf_cn_series(
+    *,
+    r_nm: np.ndarray,
+    g_r: np.ndarray,
+    cn_curve: Optional[np.ndarray],
+    out_svg: Path,
+    title: str,
+    shell: Optional[dict[str, object]] = None,
+) -> Optional[Path]:
+    try:
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+
+        out_svg = _as_path(out_svg)
+        out_svg.parent.mkdir(parents=True, exist_ok=True)
+        r = np.asarray(r_nm, dtype=float)
+        g = np.asarray(g_r, dtype=float)
+        cn = np.asarray(cn_curve, dtype=float) if cn_curve is not None else None
+        shell_info = shell if isinstance(shell, dict) else detect_first_shell(r, g, cn if cn is not None else np.zeros_like(r))
+
+        apply_matplotlib_style()
+        fig, ax1 = plt.subplots(figsize=golden_figsize(8.0))
+        ax1.plot(r, g, label="RDF")
+        ax1.set_xlabel("r (nm)")
+        ax1.set_ylabel("g(r)")
+        ax1.grid(True)
+
+        ax2 = None
+        if cn is not None and cn.size == r.size:
+            ax2 = ax1.twinx()
+            ax2.plot(r, cn, linestyle="--", label="CN")
+            ax2.set_ylabel("CN")
+            cn_max = float(np.nanmax(cn)) if cn.size else 0.0
+            ax2.set_ylim(0.0, max(1.0, cn_max * 1.1))
+
+        r_shell = shell_info.get("r_shell_nm")
+        cn_shell = shell_info.get("cn_shell")
+        if r_shell is not None:
+            ax1.axvline(float(r_shell), linestyle=":", alpha=0.8)
+            if ax2 is not None and cn_shell is not None:
+                ax2.plot([float(r_shell)], [float(cn_shell)], marker="o")
+            note = f"{shell_info.get('status', 'unknown')} | {shell_info.get('confidence', 'unknown')}\nr={float(r_shell):.3f} nm"
+            if cn_shell is not None:
+                note += f"\nCN={float(cn_shell):.2f}"
+            ax1.text(0.98, 0.98, note, transform=ax1.transAxes, ha="right", va="top")
+
+        fig.suptitle(title)
+        handles, labels = ax1.get_legend_handles_labels()
+        if ax2 is not None:
+            h2, l2 = ax2.get_legend_handles_labels()
+            handles += h2
+            labels += l2
+        if handles:
+            ax1.legend(handles, labels, loc="best")
+        fig.tight_layout()
+        fig.savefig(out_svg, format="svg")
+        plt.close(fig)
+        return out_svg
+    except Exception:
+        return None
+
+
+def plot_rdf_cn_series_summary(
+    *,
+    rdf_series: Dict[str, Tuple[np.ndarray, np.ndarray]],
+    cn_series: Optional[Dict[str, Tuple[np.ndarray, np.ndarray]]],
+    out_svg: Path,
+    title: str,
+) -> Optional[Path]:
+    try:
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+
+        out_svg = _as_path(out_svg)
+        out_svg.parent.mkdir(parents=True, exist_ok=True)
+
+        apply_matplotlib_style(n_colors=max(8, len(rdf_series)))
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8.0, 9.0), sharex=True)
+
+        for name in sorted(rdf_series.keys()):
+            r, g = rdf_series[name]
+            r = np.asarray(r, dtype=float)
+            g = np.asarray(g, dtype=float)
+            if g.size >= 9:
+                w = int(min(21, max(7, g.size // 80)))
+                g = _moving_average_1d(g, w)
+            ax1.plot(r, g, label=str(name))
+
+        cn_series = cn_series or {}
+        cn_max = 0.0
+        for name in sorted(cn_series.keys()):
+            r, cn = cn_series[name]
+            r = np.asarray(r, dtype=float)
+            cn = np.asarray(cn, dtype=float)
+            if cn.size >= 9:
+                w = int(min(21, max(7, cn.size // 80)))
+                cn = _moving_average_1d(cn, w)
+            if cn.size:
+                cn_max = max(cn_max, float(np.nanmax(cn)))
+            ax2.plot(r, cn, label=str(name))
+
+        ax1.set_ylabel("g(r)")
+        ax1.set_title(f"{title} - RDF")
+        ax1.grid(True)
+        place_legend(ax1)
+
+        ax2.set_xlabel("r (nm)")
+        ax2.set_ylabel("CN")
+        ax2.set_title(f"{title} - CN")
+        ax2.set_ylim(0.0, max(1.0, cn_max * 1.1))
+        ax2.grid(True)
+        if cn_series:
+            place_legend(ax2)
 
         fig.tight_layout()
         fig.savefig(out_svg, format="svg")

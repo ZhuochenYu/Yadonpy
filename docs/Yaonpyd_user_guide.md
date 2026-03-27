@@ -1,4 +1,4 @@
-# YadonPy User Guide (v0.8.72)
+# YadonPy User Guide (v0.8.73)
 
 This guide explains how to use YadonPy effectively in day-to-day study scripts.
 
@@ -6,7 +6,7 @@ Related documents:
 
 - README: package scope and installation
 - manual: `docs/Yadonpy_manul.md`
-- API reference: `docs/Yadonpy_API_v0.8.72.md`
+- API reference: `docs/Yadonpy_API_v0.8.73.md`
 
 ## 1. Build the right environment
 
@@ -206,6 +206,45 @@ result = job.exec()
 
 For NPT-capable workflows, the run now also writes an NPT convergence plot that overlays density, volume, and box lengths.
 
+## 8.1 Read post-processing outputs with the new defaults
+
+### MSD
+
+`AnalyzeResult.msd()` now writes metric-specific outputs.
+
+Interpret them as follows:
+
+- `ion_atomic_msd`: single-atom ion motion
+- `molecule_com_msd`: whole-molecule center-of-mass diffusion
+- `chain_com_msd`: polymer chain translation
+- `residue_com_msd`: polymer segmental motion at the residue/monomer level
+- `charged_group_com_msd`: motion of charged polymer groups only
+
+Do not interpret `chain_com_msd` as local polymer segmental motion. For polymers, segmental mobility is represented by `residue_com_msd`.
+
+### RDF/CN
+
+`AnalyzeResult.rdf()` now defaults to site-level coordination analysis.
+
+In practice:
+
+- the center species must exist explicitly in `system_meta.json`;
+- the output directory is `06_analysis/rdf_site/`;
+- `site_map.json` shows exactly which atoms were grouped into each target site class;
+- first-shell CN is only treated as formal when the shell detector reports an acceptable confidence level.
+
+### Ionic conductivity of charged polymers
+
+`AnalyzeResult.sigma()` now uses charged-group diffusion coefficients for charged polymers.
+
+This is intentional. The conductivity contribution is computed from:
+
+- the number of charged groups;
+- the charged-group formal charge (`+1`, `-1`, `+2`, etc.);
+- the charged-group diffusion coefficient from `charged_group_com_msd`.
+
+If a charged polymer has no charged-group MSD metadata, the code does not fall back to a whole-chain net charge approximation. The ignored contribution is recorded in `sigma.json`.
+
 ## 9. Build interfaces
 
 Use the polymer-first strategy for polymer/electrolyte studies:
@@ -232,9 +271,9 @@ Recommended order:
 8. `examples/12_cmcna_interface`
 9. `examples/13_graphite_cmc_electrolyte`
 
-Specific to `v0.8.71`:
+Specific to `v0.8.73`:
 
-- `examples/05` and `examples/12` are the reference scripts for grouped polyelectrolyte RESP and local scaling.
+- `examples/05` and `examples/12` are the reference scripts for grouped polyelectrolyte RESP, local scaling, and charged-group-aware post-processing.
 
 ## 11. Common failure modes
 

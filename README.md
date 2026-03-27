@@ -1,12 +1,12 @@
 # YadonPy
 
-Current release: **v0.8.72**
+Current release: **v0.8.73**
 
 YadonPy is a script-oriented molecular modeling and simulation workflow package for polymer, electrolyte, substrate, bulk-phase, and interface studies built around GROMACS. It accepts SMILES or PSMILES as the primary chemistry input, prepares reusable molecular assets, constructs packed systems, exports GROMACS-ready topologies, and runs staged workflows for equilibration and analysis.
 
 ## Release focus
 
-Version `0.8.72` keeps **PsiRESP** as the RESP/ESP backend and extends MolDB so grouped-polyelectrolyte RESP variants are stored, distinguished, and restored explicitly.
+Version `0.8.73` keeps **PsiRESP** as the RESP/ESP backend, preserves grouped-polyelectrolyte RESP variants in MolDB, and restructures post-processing so the default analysis outputs have explicit physical meaning.
 
 This change was made because grouped charge constraints are required for rigorous polyelectrolyte workflows, and PsiRESP provides the necessary primitives:
 
@@ -15,16 +15,19 @@ This change was made because grouped charge constraints are required for rigorou
 - explicit two-stage RESP and ESP job objects;
 - auditable constraint metadata that can be preserved in the workflow.
 
-The release also adds a first implementation of **polyelectrolyte-aware RESP and charge scaling**:
+The current release keeps the grouped-polyelectrolyte RESP/scaling path and adds a structured post-processing model:
 
 - `polyelectrolyte_mode=True` on RESP/ESP assignment;
 - automatic charged-group detection by template first, graph fallback second;
 - grouped charge constraints for charged motifs plus constrained neutral remainder;
 - residue-preserving polymer export for `.gro` and `.itp`;
 - `charge_groups.json`, `resp_constraints.json`, `residue_map.json`, and `charge_scaling_report.json` in exported systems;
-- simulation-level local charge scaling of charged groups while preserving raw RESP templates.
+- simulation-level local charge scaling of charged groups while preserving raw RESP templates;
 - MolDB variant records that now distinguish grouped polyelectrolyte RESP variants from ordinary RESP variants and restore those tags on load.
 - bundled-species rebuild tooling for the shipped MolDB archive, including additional battery anions such as `ClO4-`, `BF4-`, `AsF6-`, `FSI-`, and `TFSI-`.
+- adaptive MSD outputs that distinguish atomic-ion, molecular COM, chain COM, residue COM, and charged-group COM motion;
+- site-level RDF/CN as the default coordination analysis path, with strict center-species resolution and one shared first-shell detector for plots and JSON summaries;
+- Nernst-Einstein conductivity for charged polymers computed from charged-group diffusion coefficients rather than whole-chain net charges.
 
 ## Scope
 
@@ -211,6 +214,47 @@ These files are intended for:
 - postprocessing by residue or charged group;
 - reproducing the exact scaling logic used in a given topology export.
 
+## Analysis defaults added by v0.8.73
+
+### MSD
+
+`AnalyzeResult.msd()` no longer treats one moltype-wide atom selection as a generic diffusion coefficient by default.
+
+The default metric now depends on species type:
+
+- single-atom ions: `ion_atomic_msd`
+- ordinary small molecules and salts: `molecule_com_msd`
+- polymers: `chain_com_msd`
+
+For polymers, the analysis also writes:
+
+- `residue_com_msd`
+- `charged_group_com_msd` when charged-group metadata exist
+
+Each metric writes a raw CSV series, an explicit fit window, fit confidence, and a diffusion coefficient only when a credible diffusive regime is found.
+
+### RDF and CN
+
+`AnalyzeResult.rdf()` now defaults to `granularity="site"` rather than full atomtype enumeration.
+
+Important consequences:
+
+- the center species must resolve explicitly from exported metadata;
+- unresolved centers now raise rather than falling back to `IONS`;
+- first-shell JSON summaries and SVG annotations use the same shell detector and therefore report the same cutoff and CN.
+
+Legacy atomtype-wide RDF remains available, but only as an explicit opt-in mode.
+
+### Ionic conductivity for charged polymers
+
+`AnalyzeResult.sigma()` now computes the Nernst-Einstein conductivity of charged polymers from **charged-group diffusion coefficients**.
+
+This means:
+
+- the contributing charge is the charged-group formal charge (`+1`, `-1`, `+2`, etc.), not the whole-chain net charge;
+- cationic and anionic charged groups are reported separately;
+- a charged polymer without `charged_group_com_msd` metadata is excluded from the Nernst-Einstein sum and recorded as ignored rather than being approximated as one large polyion.
+
 ## Rebuild the bundled MolDB species set
 
 The repository ships a batch rebuild script:
@@ -258,7 +302,7 @@ Relevant updates in this release:
 
 - Manual: `docs/Yadonpy_manul.md`
 - User guide: `docs/Yaonpyd_user_guide.md`
-- API reference: `docs/Yadonpy_API_v0.8.72.md`
+- API reference: `docs/Yadonpy_API_v0.8.73.md`
 
 Recommended reading order:
 

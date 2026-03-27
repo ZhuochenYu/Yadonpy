@@ -34,6 +34,20 @@ from ..gmx.analysis.auto_plot import (
     plot_rdf_cn,
     plot_rdf_cn_summary,
     _plot_overlay_from_xvgs,
+    plot_msd_series,
+    plot_msd_series_summary,
+    plot_rdf_cn_series,
+    plot_rdf_cn_series_summary,
+)
+from ..gmx.analysis.structured import (
+    build_species_catalog,
+    build_msd_metric_catalog,
+    build_ne_conductivity_from_msd,
+    build_site_map,
+    compute_msd_series,
+    compute_site_rdf,
+    detect_first_shell,
+    resolve_moltypes_from_mols,
 )
 from ..gmx.analysis.rg_convergence import find_rg_convergence, plot_rg_convergence_svg
 from ..gmx.topology import parse_system_top, SystemTopology
@@ -782,6 +796,184 @@ class AnalyzeResult:
             except Exception:
                 return float(base)
         return float(default_ps)
+
+    def _analysis_xtc_path(self) -> Path:
+        xtc_path = Path(self.xtc)
+        try:
+            cand = xtc_path.with_name(xtc_path.name + ".pbc_tmp" + xtc_path.suffix)
+            if cand.exists() and cand.stat().st_size > 0:
+                return cand
+        except Exception:
+            pass
+        return xtc_path
+
+    def _resolve_species_moltypes(self, mol_or_mols: object) -> list[str]:
+        return resolve_moltypes_from_mols(self._system_dir(), mol_or_mols)
+
+    def _strict_center_moltypes(self, center_mol: object, *, strict_center: bool = True) -> list[str]:
+        moltypes = self._resolve_species_moltypes(center_mol)
+        if moltypes:
+            return moltypes
+        if strict_center:
+            raise ValueError("Failed to resolve RDF center species from system_meta.json; pass a species present in the exported system.")
+        return []
+
+    def _write_series_csv(
+        self,
+        *,
+        out_csv: Path,
+        x_name: str,
+        x: np.ndarray,
+        y_name: str,
+        y: np.ndarray,
+    ) -> Path:
+        out_csv.parent.mkdir(parents=True, exist_ok=True)
+        arr = np.column_stack([np.asarray(x, dtype=float), np.asarray(y, dtype=float)])
+        header = f"{x_name},{y_name}"
+        np.savetxt(out_csv, arr, delimiter=",", header=header, comments="")
+        return out_csv
+
+    def _rdf_atomtype_legacy(
+        self,
+        *,
+        center_group: str,
+        target_moltypes: Optional[set[str]] = None,
+        include_h: bool = False,
+        bin_nm: float = 0.002,
+    ) -> Dict[str, Any]:
+        topo = parse_system_top(self.top)
+        analysis_dir = self._analysis_dir() / "rdf_atomtype"
+        analysis_dir.mkdir(parents=True, exist_ok=True)
+        runner = GromacsRunner()
+        self._item("center_group", center_group)
+        self._item("topology", self._compact_path(self.top))
+        self._item("index", self._compact_path(self.ndx))
+
+        gro_path = self._system_dir() / "system.gro"
+        vol_nm3 = _read_box_volume_nm3(gro_path) if gro_path.exists() else None
+        ndx_groups: set[str] = set()
+        try:
+            ndx_path = Path(self.ndx)
+            if ndx_path.exists():
+                for raw in ndx_path.read_text(encoding='utf-8', errors='replace').splitlines():
+                    s = raw.strip()
+                    if s.startswith('[') and s.endswith(']'):
+                        ndx_groups.add(s.strip('[]').strip())
+        except Exception:
+            ndx_groups = set()
+
+        tasks: list[tuple[str, str, Optional[float], str]] = []
+        for moltype, count in topo.molecules:
+            if target_moltypes is not None and str(moltype) not in target_moltypes:
+                continue
+            mt = topo.moleculetypes.get(moltype)
+            if mt is None:
+                continue
+            for atype in sorted(set(mt.atomtypes)):
+                rho = None
+                if vol_nm3 and vol_nm3 > 0:
+                    n_atoms_type_per_mol = sum(1 for _at in mt.atomtypes if _at == atype)
+                    rho = float(count) * float(n_atoms_type_per_mol) / float(vol_nm3)
+                if not include_h:
+                    all_h = True
+                    for an, at in zip(mt.atomnames, mt.atomtypes):
+                        if at == atype and not (an.upper().startswith('H') or at.lower().startswith('h')):
+                            all_h = False
+                            break
+                    if all_h:
+                        continue
+                target_group = f"TYPE_{moltype}_{atype}"
+                if target_group not in ndx_groups:
+                    continue
+                tasks.append((str(moltype), str(atype), rho, target_group))
+
+        out_summary: Dict[str, Any] = {}
+        rdf_xvgs: Dict[str, Path] = {}
+        cn_xvgs: Dict[str, Path] = {}
+        plots_dir = analysis_dir / "plots"
+        plots_dir.mkdir(parents=True, exist_ok=True)
+
+        for moltype, atype, rho, target_group in tasks:
+            tag = f"{moltype}:{atype}"
+            rdf_xvg = analysis_dir / f"rdf_{moltype}_{atype}.xvg"
+            cn_xvg = analysis_dir / f"cn_{moltype}_{atype}.xvg"
+            try:
+                runner.rdf(
+                    tpr=self.tpr,
+                    xtc=self.xtc,
+                    ndx=self.ndx,
+                    ref_group=center_group,
+                    sel_group=target_group,
+                    out_rdf_xvg=rdf_xvg,
+                    out_cn_xvg=cn_xvg,
+                    bin_nm=bin_nm,
+                    cwd=analysis_dir,
+                )
+            except Exception as e:
+                out_summary[tag] = {
+                    "center_group": center_group,
+                    "target_group": target_group,
+                    "moltype": moltype,
+                    "atomtype": atype,
+                    "rho_target_nm3": rho,
+                    "rdf_xvg": str(rdf_xvg) if rdf_xvg.exists() else None,
+                    "cn_xvg": str(cn_xvg) if cn_xvg.exists() else None,
+                    "rdf_cn_svg": None,
+                    "note": f"gmx rdf failed: {e.__class__.__name__}",
+                }
+                continue
+
+            df = read_xvg(rdf_xvg).df
+            r = df["x"].to_numpy(dtype=float)
+            ycols = [c for c in df.columns if c != "x"]
+            g = df[ycols[0]].to_numpy(dtype=float) if ycols else np.zeros_like(r)
+            if cn_xvg.exists():
+                df_cn = read_xvg(cn_xvg).df
+                y_cn_cols = [c for c in df_cn.columns if c != "x"]
+                cn_curve = df_cn[y_cn_cols[0]].to_numpy(dtype=float) if y_cn_cols else np.zeros_like(r)
+            else:
+                cn_curve = _integrate_cn(r, g, rho_nm3=float(rho or 0.0)) if rho else np.zeros_like(r)
+            shell = detect_first_shell(r, g, cn_curve)
+            if shell.get("confidence") in {"low", "failed"}:
+                shell["cn_shell"] = None
+            svg = plot_rdf_cn(
+                rdf_xvg=rdf_xvg,
+                cn_xvg=cn_xvg if cn_xvg.exists() else None,
+                out_svg=plots_dir / f"rdf_{moltype}_{atype}.svg",
+                title=f"RDF/CN: {center_group} vs {target_group}",
+            )
+            out_summary[tag] = {
+                "center_group": center_group,
+                "target_group": target_group,
+                "moltype": moltype,
+                "atomtype": atype,
+                "rho_target_nm3": rho,
+                "rdf_xvg": str(rdf_xvg),
+                "cn_xvg": str(cn_xvg),
+                "rdf_cn_svg": str(svg) if svg is not None else None,
+                **shell,
+            }
+            rdf_xvgs[tag] = rdf_xvg
+            if cn_xvg.exists():
+                cn_xvgs[tag] = cn_xvg
+
+        try:
+            if rdf_xvgs:
+                ov_combo = plot_rdf_cn_summary(
+                    rdf_xvgs=rdf_xvgs,
+                    cn_xvgs=cn_xvgs,
+                    out_svg=plots_dir / "rdf_cn_all_types.svg",
+                    title=f"RDF/CN summary ({center_group})",
+                )
+                if ov_combo is not None:
+                    out_summary["_overlay"] = {"rdf_cn_all_types_svg": str(ov_combo)}
+        except Exception:
+            pass
+
+        (analysis_dir / "rdf_first_shell.json").write_text(
+            json.dumps(out_summary, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+        )
+        return out_summary
     def _rg_series(self) -> Optional[dict[str, Any]]:
         """Compute radius of gyration time series via `gmx gyrate` (best-effort).
 
@@ -1035,267 +1227,150 @@ class AnalyzeResult:
         center_mol: Optional[object] = None,
         include_h: bool = False,
         bin_nm: float = 0.002,
+        granularity: str = "site",
+        exhaustive_atomtypes: bool = False,
+        strict_center: bool = True,
+        shell_policy: str = "confidence",
     ) -> Dict[str, Any]:
-        """Compute RDF between center group and each species' atomtypes."""
-        t_all = self._section_begin("RDF/CN analysis", detail=f"bin={float(bin_nm):.4f} nm")
-        if center_mol is None:
-            center_mol = mol_or_mols
-        try:
-            from rdkit import Chem
-            smi = center_mol.GetProp('_yadonpy_smiles') if center_mol.HasProp('_yadonpy_smiles') else Chem.MolToSmiles(center_mol, isomericSmiles=True)
-        except Exception:
-            smi = ""
-
+        """Compute RDF/CN with site-level analysis by default."""
+        t_all = self._section_begin("RDF/CN analysis", detail=f"granularity={granularity} | bin={float(bin_nm):.4f} nm")
         topo = parse_system_top(self.top)
-        center_group = None
-        sys_dir = self._system_dir()
-        meta_path = sys_dir / "system_meta.json"
-        if meta_path.exists() and smi:
-            try:
-                meta = json.loads(meta_path.read_text(encoding="utf-8"))
-                for sp in meta.get("species", []):
-                    if sp.get("smiles") == smi:
-                        center_group = sp.get("moltype") or sp.get("mol_name") or sp.get("mol_id")
-                        break
-            except Exception:
-                center_group = None
-        if not center_group:
-            center_group = "IONS"
-            try:
-                q_formal = sum(int(a.GetFormalCharge()) for a in center_mol.GetAtoms())
-                if q_formal > 0:
-                    center_group = "CATIONS"
-                elif q_formal < 0:
-                    center_group = "ANIONS"
-            except Exception:
-                pass
-
-        analysis_dir = self._analysis_dir() / "rdf"
-        analysis_dir.mkdir(parents=True, exist_ok=True)
-        runner = GromacsRunner()
+        system_dir = self._system_dir()
+        center_input = center_mol if center_mol is not None else mol_or_mols
+        center_moltypes = self._strict_center_moltypes(center_input, strict_center=bool(strict_center))
+        if len(center_moltypes) != 1:
+            raise ValueError(f"RDF center must resolve to exactly one moltype, got {center_moltypes}")
+        center_group = str(center_moltypes[0])
         self._item("center_group", center_group)
-        self._item("topology", self._compact_path(self.top))
-        self._item("index", self._compact_path(self.ndx))
 
-        try:
-            atmap = {}
-            for _mn, _count in topo.molecules:
-                _mt = topo.moleculetypes.get(_mn)
-                if _mt is None:
-                    continue
-                atmap[_mn] = {
-                    "n_molecules": int(_count),
-                    "natoms": int(_mt.natoms),
-                    "unique_atomtypes": sorted(set(_mt.atomtypes)),
-                }
-            (analysis_dir / "atomtypes_by_moltype.json").write_text(
-                json.dumps(atmap, indent=2, ensure_ascii=False) + "\n",
-                encoding="utf-8",
+        target_moltypes: Optional[set[str]] = None
+        if center_mol is not None and mol_or_mols is not None:
+            resolved_targets = set(self._resolve_species_moltypes(mol_or_mols))
+            if not resolved_targets:
+                raise ValueError("Failed to resolve requested RDF target species from system_meta.json.")
+            target_moltypes = resolved_targets
+
+        if str(granularity).strip().lower() == "atomtype" or bool(exhaustive_atomtypes):
+            out_summary = self._rdf_atomtype_legacy(
+                center_group=center_group,
+                target_moltypes=target_moltypes,
+                include_h=include_h,
+                bin_nm=bin_nm,
             )
+            self._update_summary_sections(rdf_first_shell=out_summary)
+            self._item("rdf_outputs", self._compact_path(self._analysis_dir() / "rdf_atomtype"))
+            self._section_done("RDF/CN analysis", t_all, detail=f"mode=legacy_atomtype | outputs={self._compact_path(self._analysis_dir() / 'rdf_atomtype')}")
+            return out_summary
+
+        analysis_dir = self._analysis_dir() / "rdf_site"
+        analysis_dir.mkdir(parents=True, exist_ok=True)
+        plots_dir = analysis_dir / "plots"
+        plots_dir.mkdir(parents=True, exist_ok=True)
+
+        catalog = build_species_catalog(topo, system_dir)
+        center_entry = catalog.get(center_group)
+        if center_entry is None:
+            raise ValueError(f"Center moltype {center_group!r} is not present in the exported topology.")
+        center_indices: list[int] = []
+        for inst in center_entry.get("instances", []):
+            center_indices.extend([int(i) for i in np.asarray(inst["atom_indices_0"], dtype=int)])
+        if not center_indices:
+            raise ValueError(f"Center moltype {center_group!r} has no atoms in the exported system.")
+
+        site_map = build_site_map(topo, system_dir, include_h=include_h, selected_moltypes=target_moltypes)
+        (analysis_dir / "site_map.json").write_text(json.dumps(site_map, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+        r_max_nm = 1.5
+        try:
+            meta = json.loads((system_dir / "system_meta.json").read_text(encoding="utf-8"))
+            box_lengths = meta.get("box_lengths_nm") or []
+            if isinstance(box_lengths, list) and len(box_lengths) >= 3:
+                r_max_nm = max(0.5, 0.49 * float(min(float(x) for x in box_lengths[:3])))
         except Exception:
             pass
 
-        gro_path = sys_dir / "system.gro"
-        vol_nm3 = _read_box_volume_nm3(gro_path) if gro_path.exists() else None
-        ndx_groups: set[str] = set()
-        try:
-            ndx_path = Path(self.ndx)
-            if ndx_path.exists():
-                for raw in ndx_path.read_text(encoding='utf-8', errors='replace').splitlines():
-                    s = raw.strip()
-                    if s.startswith('[') and s.endswith(']'):
-                        ndx_groups.add(s.strip('[]').strip())
-        except Exception:
-            ndx_groups = set()
-        if not ndx_groups:
-            try:
-                from ..gmx.index import generate_system_ndx
-                generate_system_ndx(top_path=self.top, ndx_path=self.ndx)
-                ndx_path = Path(self.ndx)
-                if ndx_path.exists():
-                    for raw in ndx_path.read_text(encoding='utf-8', errors='replace').splitlines():
-                        s = raw.strip()
-                        if s.startswith('[') and s.endswith(']'):
-                            ndx_groups.add(s.strip('[]').strip())
-            except Exception:
-                pass
-
-        tasks: list[tuple[str, str, Optional[float], str]] = []
-        for moltype, count in topo.molecules:
-            mt = topo.moleculetypes.get(moltype)
-            if mt is None:
-                continue
-            for atype in sorted(set(mt.atomtypes)):
-                rho = None
-                if vol_nm3 and vol_nm3 > 0:
-                    n_atoms_type_per_mol = sum(1 for _at in mt.atomtypes if _at == atype)
-                    rho = float(count) * float(n_atoms_type_per_mol) / float(vol_nm3)
-                if not include_h:
-                    all_h = True
-                    for an, at in zip(mt.atomnames, mt.atomtypes):
-                        if at == atype and not (an.upper().startswith('H') or at.lower().startswith('h')):
-                            all_h = False
-                            break
-                    if all_h:
-                        continue
-                tasks.append((str(moltype), str(atype), rho, f"TYPE_{moltype}_{atype}"))
-
-        total_tasks = len(tasks)
-        self._item("rdf_targets", total_tasks)
         out_summary: Dict[str, Any] = {}
-        rdf_xvgs: Dict[str, Path] = {}
-        cn_xvgs: Dict[str, Path] = {}
-        for idx, (moltype, atype, rho, target_group) in enumerate(tasks, start=1):
-            tag = f"{moltype}:{atype}"
-            title = self._progress_title("RDF/CN", idx, total_tasks)
-            t0 = self._step_begin(title, detail=f"{center_group} -> {target_group}")
-            rdf_xvg = analysis_dir / f"rdf_{moltype}_{atype}.xvg"
-            cn_xvg = analysis_dir / f"cn_{moltype}_{atype}.xvg"
-            if ndx_groups and (target_group not in ndx_groups):
-                out_summary[tag] = {
-                    "center_group": center_group,
-                    "target_group": target_group,
-                    "moltype": moltype,
-                    "atomtype": atype,
-                    "rho_target_nm3": rho,
-                    "rdf_xvg": None,
-                    "cn_xvg": None,
-                    "rdf_cn_svg": None,
-                    "note": f"ndx group missing: {target_group}",
-                }
-                self._step_skip(title, detail=f"missing ndx group {target_group}")
-                continue
-            try:
-                runner.rdf(
-                    tpr=self.tpr,
-                    xtc=self.xtc,
-                    ndx=self.ndx,
-                    ref_group=center_group,
-                    sel_group=target_group,
-                    out_rdf_xvg=rdf_xvg,
-                    out_cn_xvg=cn_xvg,
-                    bin_nm=bin_nm,
-                    cwd=analysis_dir,
-                )
-            except Exception as e:
-                out_summary[tag] = {
-                    "center_group": center_group,
-                    "target_group": target_group,
-                    "moltype": moltype,
-                    "atomtype": atype,
-                    "rho_target_nm3": rho,
-                    "rdf_xvg": str(rdf_xvg) if rdf_xvg.exists() else None,
-                    "cn_xvg": str(cn_xvg) if cn_xvg.exists() else None,
-                    "rdf_cn_svg": None,
-                    "note": f"gmx rdf failed: {e.__class__.__name__}",
-                }
-                self._step_warn(title, detail=f"gmx rdf failed: {e.__class__.__name__}")
-                continue
+        rdf_series: Dict[str, tuple[np.ndarray, np.ndarray]] = {}
+        cn_series: Dict[str, tuple[np.ndarray, np.ndarray]] = {}
+        site_groups = list(site_map.get("site_groups", []) or [])
+        self._item("rdf_targets", len(site_groups))
+        xtc_for_rdf = self._analysis_xtc_path()
 
-            try:
-                plots_dir = analysis_dir / "plots"
-                plots_dir.mkdir(parents=True, exist_ok=True)
-                svg = plot_rdf_cn(
-                    rdf_xvg=rdf_xvg,
-                    cn_xvg=cn_xvg if cn_xvg.exists() else None,
-                    out_svg=plots_dir / f"rdf_{moltype}_{atype}.svg",
-                    title=f"RDF/CN: {center_group} vs {target_group}",
-                )
-            except Exception:
-                svg = None
-            df = read_xvg(rdf_xvg).df
-            r = df["x"].to_numpy(dtype=float)
-            ycols = [c for c in df.columns if c != "x"]
-            g = df[ycols[0]].to_numpy(dtype=float) if ycols else np.zeros_like(r)
-            cn_est = _integrate_cn(r, g, rho_nm3=float(rho or 0.0)) if rho else np.zeros_like(r)
-            shell = _first_shell_from_gr(r, g, cn_est)
-            if cn_xvg.exists() and shell.get("r_shell_nm") is not None:
-                try:
-                    df_cn = read_xvg(cn_xvg).df
-                    r_cn = df_cn["x"].to_numpy(dtype=float)
-                    y_cn_cols = [c for c in df_cn.columns if c != "x"]
-                    cn_curve = df_cn[y_cn_cols[0]].to_numpy(dtype=float) if y_cn_cols else None
-                    if cn_curve is not None and len(r_cn) == len(cn_curve) and len(r_cn) > 1:
-                        shell["cn_shell"] = float(np.interp(float(shell["r_shell_nm"]), r_cn, cn_curve))
-                except Exception:
-                    pass
-            out_summary[tag] = {
+        for idx, site in enumerate(site_groups, start=1):
+            site_id = str(site.get("site_id") or f"site_{idx}")
+            title = self._progress_title("RDF/CN", idx, len(site_groups))
+            t0 = self._step_begin(title, detail=f"{center_group} -> {site_id}")
+            rdf_data = compute_site_rdf(
+                gro_path=system_dir / "system.gro",
+                xtc_path=xtc_for_rdf,
+                center_indices_0=center_indices,
+                target_indices_0=site.get("atom_indices", []),
+                bin_nm=float(bin_nm),
+                r_max_nm=float(r_max_nm),
+            )
+            rdf_csv = self._write_series_csv(
+                out_csv=analysis_dir / f"rdf_{site_id.replace(':', '_')}.csv",
+                x_name="r_nm",
+                x=np.asarray(rdf_data["r_nm"], dtype=float),
+                y_name="g_r",
+                y=np.asarray(rdf_data["g_r"], dtype=float),
+            )
+            cn_csv = self._write_series_csv(
+                out_csv=analysis_dir / f"cn_{site_id.replace(':', '_')}.csv",
+                x_name="r_nm",
+                x=np.asarray(rdf_data["r_nm"], dtype=float),
+                y_name="cn",
+                y=np.asarray(rdf_data["cn_curve"], dtype=float),
+            )
+            shell = dict(rdf_data.get("shell") or {})
+            formal_cn = shell.get("cn_shell")
+            if str(shell_policy).strip().lower() == "confidence" and shell.get("confidence") in {"low", "failed"}:
+                formal_cn = None
+            shell["formal_cn_shell"] = formal_cn
+            svg = plot_rdf_cn_series(
+                r_nm=np.asarray(rdf_data["r_nm"], dtype=float),
+                g_r=np.asarray(rdf_data["g_r"], dtype=float),
+                cn_curve=np.asarray(rdf_data["cn_curve"], dtype=float),
+                out_svg=plots_dir / f"rdf_{site_id.replace(':', '_')}.svg",
+                title=f"RDF/CN: {center_group} vs {site_id}",
+                shell=shell,
+            )
+            out_summary[site_id] = {
                 "center_group": center_group,
-                "target_group": target_group,
-                "moltype": moltype,
-                "atomtype": atype,
-                "rho_target_nm3": rho,
-                "rdf_xvg": str(rdf_xvg),
-                "cn_xvg": str(cn_xvg),
+                "site_id": site_id,
+                "moltype": str(site.get("moltype") or ""),
+                "site_label": str(site.get("site_label") or ""),
+                "site_count": int(site.get("count") or 0),
+                "rho_target_nm3": float(rdf_data.get("rho_target_nm3") or 0.0),
+                "rdf_csv": str(rdf_csv),
+                "cn_csv": str(cn_csv),
                 "rdf_cn_svg": str(svg) if svg is not None else None,
                 **shell,
             }
-            rdf_xvgs[tag] = rdf_xvg
-            if cn_xvg.exists():
-                cn_xvgs[tag] = cn_xvg
+            rdf_series[site_id] = (np.asarray(rdf_data["r_nm"], dtype=float), np.asarray(rdf_data["g_r"], dtype=float))
+            cn_series[site_id] = (np.asarray(rdf_data["r_nm"], dtype=float), np.asarray(rdf_data["cn_curve"], dtype=float))
             detail = None
             if shell.get("r_shell_nm") is not None:
                 detail = f"r_shell={float(shell['r_shell_nm']):.3f} nm"
-                if shell.get("cn_shell") is not None:
-                    detail += f" | CN={float(shell['cn_shell']):.3f}"
+                if shell.get("formal_cn_shell") is not None:
+                    detail += f" | CN={float(shell['formal_cn_shell']):.3f}"
             self._step_done(title, t0, detail=detail)
 
-        overlay: Dict[str, Any] = {}
-        try:
-            plots_dir = analysis_dir / "plots"
-            plots_dir.mkdir(parents=True, exist_ok=True)
-            if rdf_xvgs:
-                ov_rdf = _plot_overlay_from_xvgs(
-                    xvg_map=rdf_xvgs,
-                    out_svg=plots_dir / "rdf_all_types.svg",
-                    title=f"RDF summary ({center_group})",
-                    xlabel="r (nm)",
-                    ylabel="g(r)",
-                    smooth=True,
-                )
-                ov_cn = _plot_overlay_from_xvgs(
-                    xvg_map=cn_xvgs,
-                    out_svg=plots_dir / "cn_all_types.svg",
-                    title=f"CN summary ({center_group})",
-                    xlabel="r (nm)",
-                    ylabel="CN",
-                    smooth=True,
-                ) if cn_xvgs else None
-                ov_combo = plot_rdf_cn_summary(
-                    rdf_xvgs=rdf_xvgs,
-                    cn_xvgs=cn_xvgs,
-                    out_svg=plots_dir / "rdf_cn_all_types.svg",
-                    title=f"RDF/CN summary ({center_group})",
-                )
-                if ov_rdf is not None:
-                    overlay["rdf_all_types_svg"] = str(ov_rdf)
-                if ov_cn is not None:
-                    overlay["cn_all_types_svg"] = str(ov_cn)
-                if ov_combo is not None:
-                    overlay["rdf_cn_all_types_svg"] = str(ov_combo)
-        except Exception as e:
-            self._step_warn("RDF/CN overlay plots", detail=str(e))
-        if overlay:
-            out_summary["_overlay"] = overlay
-
-        summary_path = self._analysis_dir() / "summary.json"
-        summary_all = {}
-        if summary_path.exists():
-            try:
-                summary_all = json.loads(summary_path.read_text(encoding="utf-8"))
-            except Exception:
-                summary_all = {}
-        summary_all.setdefault("rdf_first_shell", {})
-        summary_all["rdf_first_shell"].update(out_summary)
-        summary_path.write_text(
-            json.dumps(self._prune_raw_paths(summary_all), indent=2, ensure_ascii=False) + "\n",
-            encoding="utf-8",
+        overlay = plot_rdf_cn_series_summary(
+            rdf_series=rdf_series,
+            cn_series=cn_series,
+            out_svg=plots_dir / "rdf_cn_all_sites.svg",
+            title=f"RDF/CN summary ({center_group})",
         )
+        if overlay is not None:
+            out_summary["_overlay"] = {"rdf_cn_all_sites_svg": str(overlay)}
+
+        self._update_summary_sections(rdf_first_shell=out_summary)
         (self._analysis_dir() / "rdf_first_shell.json").write_text(
             json.dumps(out_summary, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
         )
         self._item("rdf_outputs", self._compact_path(analysis_dir))
-        self._section_done("RDF/CN analysis", t_all, detail=f"targets={total_tasks} | outputs={self._compact_path(analysis_dir)}")
+        self._section_done("RDF/CN analysis", t_all, detail=f"targets={len(site_groups)} | outputs={self._compact_path(analysis_dir)}")
         return out_summary
 
     def msd(
@@ -1304,155 +1379,217 @@ class AnalyzeResult:
         *,
         begin_ps: Optional[float] = None,
         end_ps: Optional[float] = None,
+        policy: str = "adaptive",
+        include_legacy_atom_msd: bool = False,
     ) -> Dict[str, Any]:
-        """Compute MSD for each moltype group and estimate diffusion coefficient."""
-        t_all = self._section_begin("MSD analysis", detail="per-moltype diffusion coefficients")
+        """Compute adaptive MSD metrics with physically explicit semantics."""
+        if str(policy).strip().lower() == "legacy":
+            self._analysis_log("MSD policy=legacy requested; falling back to per-moltype atom-group MSD.", level=2)
+            return self.msd(mols=mols, begin_ps=begin_ps, end_ps=end_ps, policy="adaptive", include_legacy_atom_msd=True)
+
+        t_all = self._section_begin("MSD analysis", detail="adaptive ion/molecule/polymer MSD metrics")
         topo = parse_system_top(self.top)
-        runner = GromacsRunner()
         outdir = self._analysis_dir() / "msd"
         outdir.mkdir(parents=True, exist_ok=True)
+        plots_dir = outdir / "plots"
+        plots_dir.mkdir(parents=True, exist_ok=True)
 
-        xtc_for_msd = Path(self.xtc)
-        try:
-            cand = xtc_for_msd.with_name(xtc_for_msd.name + ".pbc_tmp" + xtc_for_msd.suffix)
-            if cand.exists() and cand.stat().st_size > 0:
-                xtc_for_msd = cand
-        except Exception:
-            xtc_for_msd = Path(self.xtc)
-
-        trestart_ps = self._auto_msd_trestart_ps(default_ps=20.0)
+        xtc_for_msd = self._analysis_xtc_path()
         self._item("xtc_used", self._compact_path(xtc_for_msd))
-        self._item("trestart_ps", f"{trestart_ps:.3f}")
-        dt_frame_ps: Optional[float] = None
-        try:
-            mdp_path = Path(self.tpr).with_suffix(".mdp")
-            if mdp_path.exists():
-                kv = self._read_mdp_kv(mdp_path)
-                dt = float(kv.get("dt", "0") or 0)
-                nst_raw = kv.get("nstxout-compressed") or kv.get("nstxout") or "0"
-                nst = int(float(nst_raw))
-                if dt > 0 and nst > 0:
-                    dt_frame_ps = float(dt) * float(nst)
-        except Exception:
-            dt_frame_ps = None
+
+        metric_catalog = build_msd_metric_catalog(topo, self._system_dir())
+        selected_moltypes = set(self._resolve_species_moltypes(mols)) if mols is not None else None
 
         res: Dict[str, Any] = {}
-        msd_xvgs: Dict[str, Path] = {}
+        overlay_series: Dict[str, tuple[np.ndarray, np.ndarray]] = {}
+        total = len([mt for mt in metric_catalog.keys() if selected_moltypes is None or mt in selected_moltypes])
+        self._item("msd_species", total)
 
-        def _best_linear_fit(t_ps: np.ndarray, y_nm2: np.ndarray) -> dict[str, float]:
-            if t_ps.size < 8:
-                a, b = np.polyfit(t_ps, y_nm2, 1)
-                return {"slope": float(a), "intercept": float(b), "r2": float("nan"), "t_start_ps": float(t_ps[0]), "t_end_ps": float(t_ps[-1])}
-            start_fracs = [0.20, 0.30, 0.40, 0.50, 0.60]
-            end_fracs = [0.85, 0.90, 0.95, 1.00]
-            best = None
-            n = int(t_ps.size)
-            for sf in start_fracs:
-                i0 = max(0, min(n - 3, int(round(sf * n))))
-                for ef in end_fracs:
-                    i1 = max(i0 + 3, min(n, int(round(ef * n))))
-                    tt = t_ps[i0:i1]
-                    yy = y_nm2[i0:i1]
-                    if tt.size < 8:
-                        continue
-                    a, b = np.polyfit(tt, yy, 1)
-                    yhat = a * tt + b
-                    ss_res = float(np.sum((yy - yhat) ** 2))
-                    ss_tot = float(np.sum((yy - float(np.mean(yy))) ** 2))
-                    r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else float("nan")
-                    cand = {"slope": float(a), "intercept": float(b), "r2": float(r2), "t_start_ps": float(tt[0]), "t_end_ps": float(tt[-1]), "n_points": int(tt.size)}
-                    if best is None or (cand["r2"] > best["r2"] + 1e-6) or (abs(cand["r2"] - best["r2"]) <= 1e-6 and cand["n_points"] > best["n_points"]):
-                        best = cand
-            if best is None:
-                a, b = np.polyfit(t_ps, y_nm2, 1)
-                return {"slope": float(a), "intercept": float(b), "r2": float("nan"), "t_start_ps": float(t_ps[0]), "t_end_ps": float(t_ps[-1])}
-            best.pop("n_points", None)
-            return best
-
-        total = len(topo.molecules)
-        self._item("msd_groups", total)
-        for idx, (moltype, _count) in enumerate(topo.molecules, start=1):
-            title = self._progress_title("MSD", idx, total)
-            t0 = self._step_begin(title, detail=f"group={moltype}")
-            xvg = outdir / f"msd_{moltype}.xvg"
-            runner.msd(
-                tpr=self.tpr,
-                xtc=xtc_for_msd,
-                ndx=self.ndx,
-                group=moltype,
-                out_xvg=xvg,
-                begin_ps=begin_ps,
-                end_ps=end_ps,
-                trestart_ps=trestart_ps,
-                dt_ps=dt_frame_ps,
-                rmcomm=True,
-                cwd=outdir,
-            )
-            df = read_xvg(xvg).df
-            t = df["x"].to_numpy(dtype=float)
-            ycols = [c for c in df.columns if c != "x"]
-            msd_arr = df[ycols[0]].to_numpy(dtype=float) if ycols else np.zeros_like(t)
-            if len(t) < 5:
-                self._step_warn(title, detail=f"group={moltype} has too few MSD points")
+        for idx, (moltype, entry) in enumerate(metric_catalog.items(), start=1):
+            if selected_moltypes is not None and moltype not in selected_moltypes:
                 continue
-            fit = _best_linear_fit(t, msd_arr)
-            a = float(fit["slope"])
-            D_nm2_ps = float(a) / 6.0
-            D_m2_s = D_nm2_ps * 1e-6
-            rec = {
-                "D_m2_s": D_m2_s,
-                "D_nm2_ps": D_nm2_ps,
-                "fit_slope": float(a),
-                "fit_intercept": float(fit["intercept"]),
-                "fit_r2": float(fit.get("r2")) if fit.get("r2") is not None else None,
-                "xvg": str(xvg),
-                "fit_t_start_ps": float(fit["t_start_ps"]),
-                "fit_t_end_ps": float(fit["t_end_ps"]),
-                "xtc_used": str(xtc_for_msd),
+            title = self._progress_title("MSD", idx, total)
+            t0 = self._step_begin(title, detail=f"moltype={moltype}")
+            species_rec: Dict[str, Any] = {
+                "moltype": str(moltype),
+                "kind": str(entry.get("kind") or ""),
+                "smiles": str(entry.get("smiles") or ""),
+                "n_molecules": int(entry.get("n_molecules") or 0),
+                "natoms": int(entry.get("natoms") or 0),
+                "formal_charge_e": float(entry.get("formal_charge_e") or 0.0),
+                "default_metric": str(entry.get("default_metric") or ""),
+                "metrics": {},
             }
-            try:
-                plots_dir = outdir / "plots"
-                plots_dir.mkdir(parents=True, exist_ok=True)
-                created = plot_msd(xvg, out_dir=plots_dir, group=str(moltype), fit_t_start_ps=float(fit["t_start_ps"]), fit_t_end_ps=float(fit["t_end_ps"]))
-                if created:
-                    rec.setdefault("plots", {}).update(created)
-            except Exception:
-                pass
-            res[str(moltype)] = rec
-            msd_xvgs[str(moltype)] = xvg
-            self._step_done(title, t0, detail=f"group={moltype} | D={D_m2_s:.3e} m^2/s")
+            metrics = dict(entry.get("metrics") or {})
+            if include_legacy_atom_msd:
+                mt = topo.moleculetypes.get(str(moltype))
+                if mt is not None:
+                    legacy_groups = []
+                    current_atom = 0
+                    for name, count in topo.molecules:
+                        mt_iter = topo.moleculetypes.get(name)
+                        natoms_iter = int(mt_iter.natoms if mt_iter is not None else 0)
+                        for inst in range(int(count)):
+                            atom_indices = np.arange(current_atom, current_atom + natoms_iter, dtype=int)
+                            if str(name) == str(moltype):
+                                legacy_groups.extend(
+                                    [
+                                        {
+                                            "instance_index": inst,
+                                            "atom_indices": atom_indices,
+                                        }
+                                    ]
+                                )
+                            current_atom += natoms_iter
+                    groups = []
+                    masses = np.ones(int(mt.natoms), dtype=float)
+                    for lg in legacy_groups:
+                        for atom_idx in np.asarray(lg["atom_indices"], dtype=int):
+                            groups.append(
+                                {
+                                    "group_id": f"{moltype}:legacy_atom:{lg['instance_index']}:{int(atom_idx)}",
+                                    "label": str(moltype),
+                                    "moltype": str(moltype),
+                                    "species_kind": str(entry.get("kind") or ""),
+                                    "atom_indices_0": np.asarray([int(atom_idx)], dtype=int),
+                                    "masses": np.asarray([1.0], dtype=float),
+                                }
+                            )
+                    if groups:
+                        from ..gmx.analysis.structured import GroupSpec
+
+                        metrics["legacy_atom_msd"] = {
+                            "group_kind": "legacy_atom",
+                            "groups": [
+                                GroupSpec(
+                                    group_id=str(g["group_id"]),
+                                    label=str(g["label"]),
+                                    moltype=str(g["moltype"]),
+                                    species_kind=str(g["species_kind"]),
+                                    atom_indices_0=np.asarray(g["atom_indices_0"], dtype=int),
+                                    masses=np.asarray(g["masses"], dtype=float),
+                                )
+                                for g in groups
+                            ],
+                        }
+
+            for metric_name, metric_entry in metrics.items():
+                group_specs = list(metric_entry.get("groups") or [])
+                if not group_specs:
+                    continue
+                try:
+                    metric_data = compute_msd_series(
+                        gro_path=self._system_dir() / "system.gro",
+                        xtc_path=xtc_for_msd,
+                        group_specs=group_specs,
+                    )
+                except Exception as e:
+                    species_rec["metrics"][metric_name] = {"error": str(e), "group_kind": metric_entry.get("group_kind")}
+                    continue
+
+                csv_path = self._write_series_csv(
+                    out_csv=outdir / f"msd_{moltype}_{metric_name}.csv",
+                    x_name="time_ps",
+                    x=np.asarray(metric_data["t_ps"], dtype=float),
+                    y_name="msd_nm2",
+                    y=np.asarray(metric_data["msd_nm2"], dtype=float),
+                )
+                fit = dict(metric_data.get("fit") or {})
+                plots = plot_msd_series(
+                    t_ps=np.asarray(metric_data["t_ps"], dtype=float),
+                    msd_nm2=np.asarray(metric_data["msd_nm2"], dtype=float),
+                    out_dir=plots_dir,
+                    group=f"{moltype}_{metric_name}",
+                    fit_t_start_ps=fit.get("fit_t_start_ps"),
+                    fit_t_end_ps=fit.get("fit_t_end_ps"),
+                    confidence=fit.get("confidence"),
+                    status=fit.get("status"),
+                )
+                metric_rec: Dict[str, Any] = {
+                    "group_kind": str(metric_entry.get("group_kind") or metric_name),
+                    "n_groups": int(metric_data.get("n_groups") or 0),
+                    "frame_interval_ps": metric_data.get("frame_interval_ps"),
+                    "series_csv": str(csv_path),
+                    "fit_t_start_ps": fit.get("fit_t_start_ps"),
+                    "fit_t_end_ps": fit.get("fit_t_end_ps"),
+                    "fit_r2": fit.get("fit_r2"),
+                    "fit_slope_nm2_ps": fit.get("fit_slope_nm2_ps"),
+                    "fit_intercept_nm2": fit.get("fit_intercept_nm2"),
+                    "alpha_mean": fit.get("alpha_mean"),
+                    "alpha_std": fit.get("alpha_std"),
+                    "confidence": fit.get("confidence"),
+                    "status": fit.get("status"),
+                    "warning": fit.get("warning"),
+                    "D_nm2_ps": fit.get("D_nm2_ps"),
+                    "D_m2_s": fit.get("D_m2_s"),
+                }
+                if plots:
+                    metric_rec["plots"] = plots
+                comp_metrics = metric_data.get("component_metrics") or {}
+                if comp_metrics:
+                    metric_rec["component_metrics"] = {}
+                    for comp_key, comp in comp_metrics.items():
+                        comp_csv = self._write_series_csv(
+                            out_csv=outdir / f"msd_{moltype}_{metric_name}_{comp_key.replace(':', '_').replace('|', '_')}.csv",
+                            x_name="time_ps",
+                            x=np.asarray(comp["t_ps"], dtype=float),
+                            y_name="msd_nm2",
+                            y=np.asarray(comp["msd_nm2"], dtype=float),
+                        )
+                        metric_rec["component_metrics"][comp_key] = {
+                            "component_label": comp.get("component_label"),
+                            "formal_charge_e": comp.get("formal_charge_e"),
+                            "charge_sign": comp.get("charge_sign"),
+                            "n_groups": comp.get("n_groups"),
+                            "series_csv": str(comp_csv),
+                            "fit_t_start_ps": comp.get("fit_t_start_ps"),
+                            "fit_t_end_ps": comp.get("fit_t_end_ps"),
+                            "fit_r2": comp.get("fit_r2"),
+                            "fit_slope_nm2_ps": comp.get("fit_slope_nm2_ps"),
+                            "fit_intercept_nm2": comp.get("fit_intercept_nm2"),
+                            "alpha_mean": comp.get("alpha_mean"),
+                            "alpha_std": comp.get("alpha_std"),
+                            "confidence": comp.get("confidence"),
+                            "status": comp.get("status"),
+                            "warning": comp.get("warning"),
+                            "D_nm2_ps": comp.get("D_nm2_ps"),
+                            "D_m2_s": comp.get("D_m2_s"),
+                        }
+
+                species_rec["metrics"][metric_name] = metric_rec
+                if metric_name == species_rec["default_metric"]:
+                    species_rec["metric"] = metric_name
+                    species_rec["D_nm2_ps"] = metric_rec.get("D_nm2_ps")
+                    species_rec["D_m2_s"] = metric_rec.get("D_m2_s")
+                    overlay_series[str(moltype)] = (
+                        np.asarray(metric_data["t_ps"], dtype=float),
+                        np.asarray(metric_data["msd_nm2"], dtype=float),
+                    )
+
+            res[str(moltype)] = species_rec
+            d_val = species_rec.get("D_m2_s")
+            detail = f"default={species_rec.get('default_metric')}"
+            if d_val is not None:
+                detail += f" | D={float(d_val):.3e} m^2/s"
+            self._step_done(title, t0, detail=detail)
 
         try:
-            if msd_xvgs:
-                plots_dir = outdir / "plots"
-                plots_dir.mkdir(parents=True, exist_ok=True)
-                ov1 = plot_msd_overlay(msd_xvgs=msd_xvgs, out_svg=plots_dir / "msd_overlay.svg", title="MSD overlay", loglog=False)
-                ov2 = plot_msd_overlay(msd_xvgs=msd_xvgs, out_svg=plots_dir / "msd_overlay_loglog.svg", title="MSD overlay (log-log)", loglog=True)
-                ov3 = plot_msd_summary(msd_xvgs=msd_xvgs, out_svg=plots_dir / "msd_all_types.svg", title="MSD summary (all moltypes)")
-                if ov1 is not None or ov2 is not None or ov3 is not None:
+            if overlay_series:
+                ov = plot_msd_series_summary(
+                    msd_series=overlay_series,
+                    out_svg=plots_dir / "msd_all_types.svg",
+                    title="MSD summary (adaptive defaults)",
+                )
+                if ov is not None:
                     res.setdefault("_overlay", {})
-                    if ov1 is not None:
-                        res["_overlay"]["msd_overlay_svg"] = str(ov1)
-                    if ov2 is not None:
-                        res["_overlay"]["msd_overlay_loglog_svg"] = str(ov2)
-                    if ov3 is not None:
-                        res["_overlay"]["msd_all_types_svg"] = str(ov3)
+                    res["_overlay"]["msd_all_types_svg"] = str(ov)
         except Exception as e:
             self._step_warn("MSD overlay plots", detail=str(e))
 
-        summary_path = self._analysis_dir() / "summary.json"
-        summary_all: Dict[str, Any] = {}
-        if summary_path.exists():
-            try:
-                summary_all = json.loads(summary_path.read_text(encoding="utf-8"))
-            except Exception:
-                summary_all = {}
-        summary_all.setdefault("msd", {})
-        summary_all["msd"].update(res)
-        summary_path.write_text(json.dumps(self._prune_raw_paths(summary_all), indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        self._update_summary_sections(msd=res)
         (self._analysis_dir() / "msd.json").write_text(json.dumps(res, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
         self._item("msd_outputs", self._compact_path(outdir))
-        self._section_done("MSD analysis", t_all, detail=f"groups={len(msd_xvgs)} | outputs={self._compact_path(outdir)}")
+        self._section_done("MSD analysis", t_all, detail=f"species={len([k for k in res.keys() if not str(k).startswith('_')])} | outputs={self._compact_path(outdir)}")
         return res
 
     def rg(self, *, begin_ps: Optional[float] = None, end_ps: Optional[float] = None) -> Dict[str, Any]:
@@ -1517,7 +1654,6 @@ class AnalyzeResult:
     def sigma(self, *, temp_k: Optional[float] = None, msd: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Compute ionic conductivity."""
         t_all = self._section_begin("Conductivity analysis", detail="NE + EH conductivity")
-        topo = parse_system_top(self.top)
         if msd is None:
             self._item("msd_source", "not provided -> recompute")
             msd = self.msd()
@@ -1548,46 +1684,9 @@ class AnalyzeResult:
             vol_nm3 = None
         if vol_nm3 is None:
             vol_nm3 = _read_box_volume_nm3(self._system_dir() / "system.gro")
-        e_c = 1.602176634e-19
-        k_b = 1.380649e-23
-        vol_m3 = vol_nm3 * 1e-27
-
-        ne_components = []
-        ignored_components = []
-        for moltype, count in topo.molecules:
-            mt = topo.moleculetypes.get(moltype)
-            if mt is None:
-                continue
-            q_e = float(np.sum(mt.charges))
-            if abs(q_e) < 1e-12:
-                continue
-            rec = msd.get(str(moltype), {}) if isinstance(msd, dict) else {}
-            D_m2_s = rec.get("D_m2_s") if isinstance(rec, dict) else None
-            if D_m2_s is None:
-                continue
-            term = (float(count) * (q_e * e_c) ** 2 * float(D_m2_s)) / (max(float(vol_m3), 1e-300) * k_b * float(temp_k))
-            comp = {
-                "moltype": str(moltype),
-                "count": int(count),
-                "charge_e": float(q_e),
-                "D_m2_s": float(D_m2_s),
-                "sigma_component_S_m": float(term),
-            }
-            if abs(q_e) >= 5.0 and int(getattr(mt, 'natoms', 0) or 0) >= 30:
-                comp["ignored_as_polyionic_macromolecule"] = True
-                comp["reason"] = "large net charge on a large molecule; excluded from NE by default"
-                ignored_components.append(comp)
-            else:
-                ne_components.append(comp)
-        sigma_ne = float(sum(c["sigma_component_S_m"] for c in ne_components))
-        ne_out = {
-            "sigma_S_m": sigma_ne,
-            "temperature_K": float(temp_k),
-            "volume_nm3": float(vol_nm3),
-            "components": ne_components,
-            "ignored_components": ignored_components,
-        }
-        self._step_done("Step 1/2 Nernst-Einstein conductivity", t0, detail=f"sigma_NE={sigma_ne:.3e} S/m | active_components={len(ne_components)}")
+        ne_out = build_ne_conductivity_from_msd(msd_payload=msd if isinstance(msd, dict) else {}, volume_nm3=float(vol_nm3), temp_k=float(temp_k))
+        sigma_ne = float(ne_out.get("sigma_S_m") or 0.0)
+        self._step_done("Step 1/2 Nernst-Einstein conductivity", t0, detail=f"sigma_NE={sigma_ne:.3e} S/m | active_components={len(ne_out.get('components', []))}")
         self._stat("sigma_NE", f"{sigma_ne:.3e} S/m")
 
         t0 = self._step_begin("Step 2/2 Einstein-Helfand conductivity", detail="gmx current -dsp (velocity trajectory required)")

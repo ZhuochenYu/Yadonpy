@@ -1,4 +1,4 @@
-# YadonPy Manual (v0.8.72)
+# YadonPy Manual (v0.8.73)
 
 ## 1. Purpose
 
@@ -6,7 +6,7 @@ This manual describes the architectural rules of YadonPy. It is intended for use
 
 Related documents:
 
-- API reference: `docs/Yadonpy_API_v0.8.72.md`
+- API reference: `docs/Yadonpy_API_v0.8.73.md`
 - user guide: `docs/Yaonpyd_user_guide.md`
 
 ## 2. Architectural principles
@@ -100,7 +100,7 @@ System state is exported into GROMACS artifacts and passed into staged workflows
 
 ### 3.5 Analysis and reporting
 
-Analysis is written as files that are both human-readable and machine-readable, so later code can consume the outputs programmatically.
+Analysis is written as files that are both human-readable and machine-readable, so later code can consume the outputs programmatically. From `v0.8.73`, the analysis layer is also expected to preserve physical semantics explicitly rather than inferring them from loose moltype selections.
 
 ## 4. Charge workflow model
 
@@ -240,6 +240,29 @@ NPT-capable workflows now generate a convergence plot that overlays:
 
 The plot is written in normalized form so the series can be interpreted together despite differing units.
 
+### 11.3 Structured post-processing
+
+From `v0.8.73`, three rules are fixed.
+
+1. **MSD is metric-specific**
+
+- single-atom ions default to `ion_atomic_msd`;
+- small molecules default to `molecule_com_msd`;
+- polymers default to `chain_com_msd`;
+- polymers may additionally expose `residue_com_msd` and `charged_group_com_msd`.
+
+2. **RDF/CN are site-first**
+
+- site-level coordination analysis is the default;
+- atomtype-wide RDF is retained only as an explicit auxiliary mode;
+- center-species resolution is fail-closed, not heuristic.
+
+3. **Charged-polymer conductivity is group-based**
+
+- Nernst-Einstein conductivity uses charged-group diffusion coefficients when charged-group metadata are available;
+- the charge carried into the equation is the group formal charge, not the whole-chain net charge;
+- if a charged polymer lacks charged-group MSD metadata, its conductivity contribution is omitted and recorded as such.
+
 ## 12. Packaging and release hygiene
 
 Release trees should not retain generated clutter such as:
@@ -276,6 +299,7 @@ Known limits include:
 - charged-group detection is template-first and therefore not exhaustive;
 - graph fallback is structural, not chemically complete for all exotic motifs;
 - local charge scaling currently preserves grouped totals but does not attempt a second constrained redistribution on the neutral remainder after scaling;
-- exported residue/group metadata are present, but downstream analysis scripts still need broader standardization around them.
+- site classification is conservative and therefore not exhaustive for every unusual heteroatom environment;
+- charged-polymer conductivity requires charged-group metadata and will be omitted rather than guessed if that metadata are absent.
 
 These limits are explicit design tradeoffs in favor of auditable behavior over aggressive automatic inference.
