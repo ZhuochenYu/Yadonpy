@@ -31,14 +31,15 @@ from ..gmx.index import _write_ndx
 from ..gmx.topology import SystemTopology, parse_system_top
 from ..gmx.workflows._util import normalize_gro_molecules_inplace
 from ..runtime import resolve_restart
+from ..schema_versions import INTERFACE_BUILD_SCHEMA_VERSION as _SCHEMA_INTERFACE_BUILD
 from ..sim.preset.eq import _find_latest_equilibrated_gro
-from ..workflow.resume import ResumeManager, StepSpec
+from ..workflow.resume import ResumeManager, StepSpec, file_signature
 from .postprocess import export_interface_group_catalog
 
 Axis = Literal["X", "Y", "Z"]
 Route = Literal["route_a", "route_b"]
 _AXIS_TO_INDEX = {"X": 0, "Y": 1, "Z": 2}
-_INTERFACE_BUILD_SCHEMA_VERSION = "0.8.61-interface-build-v4"
+_INTERFACE_BUILD_SCHEMA_VERSION = _SCHEMA_INTERFACE_BUILD
 _ROUTE_B_WALL_CLEARANCE_NM = 0.05
 _PARAMETER_SECTION_ORDER = [
     "defaults",
@@ -86,6 +87,7 @@ class BulkSource:
     system_ndx: Path
     system_meta: Path
     system_dir: Path
+    snapshot_manifest: Path
     representative_gro: Path
     representative_tpr: Optional[Path]
     representative_xtc: Optional[Path]
@@ -850,7 +852,17 @@ def _extract_snapshot(*, name: str, bulk_root: Path, out_dir: Path, restart: Opt
     spec = StepSpec(
         name=f"extract_snapshot_{_safe_name(name)}",
         outputs=[rep_raw, rep_whole, manifest],
-        inputs={"latest_gro": str(latest_gro), "tpr": str(tpr), "xtc": str(xtc), "window": window, "selection_group": selection_group},
+        inputs={
+            "builder_schema_version": _INTERFACE_BUILD_SCHEMA_VERSION,
+            "latest_gro": str(latest_gro),
+            "latest_gro_sig": file_signature(latest_gro),
+            "tpr": str(tpr),
+            "tpr_sig": (file_signature(tpr) if tpr.exists() else None),
+            "xtc": str(xtc),
+            "xtc_sig": (file_signature(xtc) if xtc.exists() else None),
+            "window": window,
+            "selection_group": selection_group,
+        },
         description="Extract representative bulk snapshot for interface preparation",
     )
 
@@ -893,6 +905,7 @@ def _extract_snapshot(*, name: str, bulk_root: Path, out_dir: Path, restart: Opt
         system_ndx=system_ndx,
         system_meta=system_meta,
         system_dir=system_dir,
+        snapshot_manifest=manifest,
         representative_gro=rep_whole,
         representative_tpr=tpr if tpr.exists() else None,
         representative_xtc=xtc if xtc.exists() else None,
@@ -2120,7 +2133,27 @@ def _assemble_interface(*, name: str, out_dir: Path, route_spec: InterfaceRouteS
             if mt is None:
                 continue
             total_charge += float(mt.net_charge) * int(count)
-    _write_json(system_meta, {"name": name, "route": route_spec.route, "axis": route_spec.axis, "box_nm": tuple(box), "gap_nm": gap, "vacuum_nm": vacuum, "top_lateral_shift_fraction": tuple(float(x) for x in route_spec.top_lateral_shift_fraction), "bottom_slab": bottom.meta_path, "top_slab": top.meta_path, "molecule_counts": dict(mol_counts), "net_charge_e": float(total_charge), "geometry_validation": geometry_validation, "notes": notes})
+    _write_json(
+        system_meta,
+        {
+            "schema_version": _INTERFACE_BUILD_SCHEMA_VERSION,
+            "name": name,
+            "route": route_spec.route,
+            "axis": route_spec.axis,
+            "box_nm": tuple(box),
+            "gap_nm": gap,
+            "vacuum_nm": vacuum,
+            "top_lateral_shift_fraction": tuple(float(x) for x in route_spec.top_lateral_shift_fraction),
+            "bottom_slab": bottom.meta_path,
+            "top_slab": top.meta_path,
+            "bottom_slab_sig": file_signature(bottom.meta_path),
+            "top_slab_sig": file_signature(top.meta_path),
+            "molecule_counts": dict(mol_counts),
+            "net_charge_e": float(total_charge),
+            "geometry_validation": geometry_validation,
+            "notes": notes,
+        },
+    )
     _write_json(
         protocol_manifest,
         {
@@ -2173,7 +2206,15 @@ class InterfaceBuilder:
                 "route": route.route,
                 "axis": route.axis,
                 "bottom_snapshot": str(bottom.representative_gro),
+                "bottom_snapshot_sig": file_signature(bottom.representative_gro),
                 "top_snapshot": str(top.representative_gro),
+                "top_snapshot_sig": file_signature(top.representative_gro),
+                "bottom_snapshot_manifest": str(bottom.snapshot_manifest),
+                "bottom_snapshot_manifest_sig": file_signature(bottom.snapshot_manifest),
+                "top_snapshot_manifest": str(top.snapshot_manifest),
+                "top_snapshot_manifest_sig": file_signature(top.snapshot_manifest),
+                "bottom_system_top_sig": file_signature(bottom.system_top),
+                "top_system_top_sig": file_signature(top.system_top),
                 "bottom_time_ps": bottom.representative_time_ps,
                 "top_time_ps": top.representative_time_ps,
                 "gap_nm": max(route.bottom.gap_nm, route.top.gap_nm),

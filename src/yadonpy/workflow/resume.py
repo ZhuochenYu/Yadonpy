@@ -105,11 +105,12 @@ def file_signature(path: Path) -> Dict[str, Any]:
         return {"path": str(path), "missing": True}
 
 
-def dir_signature(path: Path, *, patterns: Sequence[str] = ("*",), max_files: int = 2000) -> Dict[str, Any]:
-    """Signature for a directory by sampling file stats.
+def dir_signature(path: Path, *, patterns: Sequence[str] = ("**/*",), max_files: int | None = None) -> Dict[str, Any]:
+    """Stable signature for a directory.
 
-    This is intended for job folders (e.g. GROMACS stages). We cap the number of
-    files to avoid huge state.
+    This now prefers correctness over compactness: by default we walk the full
+    tree and hash every matching file. Callers that truly need truncation must
+    opt into `max_files`.
     """
     if not path.exists():
         return {"path": str(path), "missing": True}
@@ -120,11 +121,11 @@ def dir_signature(path: Path, *, patterns: Sequence[str] = ("*",), max_files: in
             if p.is_file():
                 files.append(file_signature(p))
                 n += 1
-                if n >= max_files:
+                if max_files is not None and n >= max_files:
                     break
-        if n >= max_files:
+        if max_files is not None and n >= max_files:
             break
-    return {"path": str(path), "files": files, "truncated": n >= max_files}
+    return {"path": str(path), "files": files, "truncated": bool(max_files is not None and n >= max_files)}
 
 
 def inputs_hash(inputs: Optional[Dict[str, Any]]) -> str:
@@ -154,7 +155,7 @@ class ResumeManager:
         # Store resume state in a hidden subdir by default, to keep `work_dir/`
         # clean and focused on scientific artifacts.
         state_name: str = ".yadonpy/resume_state.json",
-        strict_inputs: bool = False,
+        strict_inputs: bool = True,
         env_disable: str = "YADONPY_NO_RESUME",
         enabled: bool = True,
     ):
@@ -193,7 +194,7 @@ class ResumeManager:
                     bak.write_text(self.state_path.read_text(encoding="utf-8", errors="replace"), encoding="utf-8")
                 except Exception:
                     pass
-        return {"schema_version": 1, "root": str(self.root), "steps": {}}
+        return {"schema_version": 2, "root": str(self.root), "steps": {}}
 
     def _save_state(self) -> None:
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
@@ -220,14 +221,13 @@ class ResumeManager:
             return "resume_env_disabled"
         rec = self._state.get("steps", {}).get(spec.name)
         if not rec:
-            return "done" if not self.strict_inputs else "no_record"
+            return "no_record"
         if rec.get("status") != "done":
             return "not_done"
-        if self.strict_inputs:
-            want = inputs_hash(spec.inputs)
-            have = rec.get("inputs_hash")
-            if have != want:
-                return "inputs_mismatch"
+        want = inputs_hash(spec.inputs)
+        have = rec.get("inputs_hash")
+        if have != want:
+            return "inputs_mismatch"
         return "done"
 
     def needs_fresh_run(self, spec: StepSpec) -> bool:

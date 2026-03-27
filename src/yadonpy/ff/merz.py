@@ -24,7 +24,7 @@ This module is intentionally minimal:
 Typical use case in YadonPy:
     ion_ff = MERZ()
     ion_pack = ion(ion='Na+', n_ion=1000, ff=ion_ff)
-    ac = poly.amorphous_cell(polymer, 10, density=0.05)  # ions are injected from registry
+    ac = poly.amorphous_cell(polymer, 10, density=0.05, ions=[ion_pack])
 """
 
 import json

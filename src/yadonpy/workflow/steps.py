@@ -521,9 +521,9 @@ def pack_amorphous_cell(
     Notes
     -----
     - If you need automatic neutralization (polyelectrolytes), you can either:
-        (1) call core.poly.ion(...) before this function, OR
-        (2) pass an `ions=` list of IonPack objects.
-      In both cases, the ions will be injected inside core.poly.amorphous_cell.
+        (1) build IonPack objects with ``core.poly.ion(...)``, then
+        (2) pass them explicitly via ``ions=``.
+      Implicit global ion injection is no longer supported.
     """
 
     wd = _as_path(work_dir)

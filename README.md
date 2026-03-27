@@ -1,12 +1,12 @@
 # YadonPy
 
-Current release: **v0.8.73**
+Current release: **v0.8.74**
 
 YadonPy is a script-oriented molecular modeling and simulation workflow package for polymer, electrolyte, substrate, bulk-phase, and interface studies built around GROMACS. It accepts SMILES or PSMILES as the primary chemistry input, prepares reusable molecular assets, constructs packed systems, exports GROMACS-ready topologies, and runs staged workflows for equilibration and analysis.
 
 ## Release focus
 
-Version `0.8.73` keeps **PsiRESP** as the RESP/ESP backend, preserves grouped-polyelectrolyte RESP variants in MolDB, and restructures post-processing so the default analysis outputs have explicit physical meaning.
+Version `0.8.74` keeps **PsiRESP** as the RESP/ESP backend, preserves grouped-polyelectrolyte RESP variants in MolDB, and tightens the build/export pipeline so restart, scaling, and interface assembly no longer silently reuse incomplete state.
 
 This change was made because grouped charge constraints are required for rigorous polyelectrolyte workflows, and PsiRESP provides the necessary primitives:
 
@@ -22,12 +22,16 @@ The current release keeps the grouped-polyelectrolyte RESP/scaling path and adds
 - grouped charge constraints for charged motifs plus constrained neutral remainder;
 - residue-preserving polymer export for `.gro` and `.itp`;
 - `charge_groups.json`, `resp_constraints.json`, `residue_map.json`, and `charge_scaling_report.json` in exported systems;
+- `site_map.json` and `export_manifest.json` in exported systems;
 - simulation-level local charge scaling of charged groups while preserving raw RESP templates;
 - MolDB variant records that now distinguish grouped polyelectrolyte RESP variants from ordinary RESP variants and restore those tags on load.
 - bundled-species rebuild tooling for the shipped MolDB archive, including additional battery anions such as `ClO4-`, `BF4-`, `AsF6-`, `FSI-`, and `TFSI-`.
 - adaptive MSD outputs that distinguish atomic-ion, molecular COM, chain COM, residue COM, and charged-group COM motion;
 - site-level RDF/CN as the default coordination analysis path, with strict center-species resolution and one shared first-shell detector for plots and JSON summaries;
 - Nernst-Einstein conductivity for charged polymers computed from charged-group diffusion coefficients rather than whole-chain net charges.
+- strict resume defaults for build/export/interface steps, content-signature based cache invalidation, and fail-closed grouped scaling for charged polymers;
+- explicit `ions=` input for `amorphous_cell(...)`; implicit global ion injection is no longer supported;
+- iterative large-system packing retries with persisted diagnostics in `.yadonpy/amorphous_cell_pack_diagnostics.json`.
 
 ## Scope
 
@@ -302,7 +306,7 @@ Relevant updates in this release:
 
 - Manual: `docs/Yadonpy_manul.md`
 - User guide: `docs/Yaonpyd_user_guide.md`
-- API reference: `docs/Yadonpy_API_v0.8.73.md`
+- API reference: `docs/Yadonpy_API_v0.8.74.md`
 
 Recommended reading order:
 

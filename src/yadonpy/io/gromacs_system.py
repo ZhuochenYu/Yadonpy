@@ -34,6 +34,10 @@ from ..core.polyelectrolyte import (
     get_polyelectrolyte_summary,
     get_resp_constraints,
 )
+from ..gmx.topology import parse_system_top
+from ..gmx.analysis.structured import build_site_map
+from ..schema_versions import EXPORT_SYSTEM_SCHEMA_VERSION
+from ..workflow.resume import file_signature
 
 def _mol_signature(m: Chem.Mol) -> tuple[int, tuple[tuple[int, int], ...]]:
     """Return a simple, order-independent signature for a molecule.
@@ -55,8 +59,74 @@ def _mol_signature(m: Chem.Mol) -> tuple[int, tuple[tuple[int, int], ...]]:
     c = Counter(nums)
     return (len(nums), tuple(sorted((int(k), int(v)) for k, v in c.items())))
 
+
+def _artifact_digest(artifact_dir: Path, moltype: str) -> dict[str, Any]:
+    artifact_dir = Path(artifact_dir)
+    payload: dict[str, Any] = {"artifact_dir": str(artifact_dir), "moltype": str(moltype)}
+    for suffix in (".itp", ".gro", ".top"):
+        fp = artifact_dir / f"{moltype}{suffix}"
+        if fp.exists():
+            payload[suffix.lstrip(".")] = file_signature(fp)
+    return payload
+
+
+def _requires_charge_groups(species_payload: Mapping[str, Any]) -> bool:
+    summary = species_payload.get("polyelectrolyte_summary")
+    if isinstance(summary, Mapping) and bool(summary.get("is_polyelectrolyte")):
+        return True
+    if bool(species_payload.get("polyelectrolyte_mode")):
+        return True
+    if str(species_payload.get("kind") or "").strip().lower() == "polymer" and int(species_payload.get("formal_charge", 0) or 0) != 0:
+        return True
+    return False
+
+
+def _ensure_charge_group_ready(species_payload: Mapping[str, Any], *, effective_polyelectrolyte_mode: bool) -> None:
+    if not effective_polyelectrolyte_mode:
+        return
+    if not _requires_charge_groups(species_payload):
+        return
+    groups = species_payload.get("charge_groups")
+    if isinstance(groups, list) and groups:
+        return
+    moltype = str(species_payload.get("moltype") or species_payload.get("mol_name") or species_payload.get("mol_id") or "UNKNOWN")
+    raise RuntimeError(
+        f"Polyelectrolyte-aware export requires charge_groups for species '{moltype}', "
+        "but no grouped metadata were found. Re-run charge assignment / MolDB generation with polyelectrolyte_mode=True."
+    )
+
 from ..api import get_ff
 from .artifacts import write_molecule_artifacts
+
+
+@dataclass
+class SpeciesExportRecord:
+    payload: dict[str, Any]
+    artifact_dir: Path
+    mol_id: str
+    mol_name: str
+    moltype: str
+    formal_charge: int
+    kind: str
+    source_artifact_digest: dict[str, Any] | None = None
+
+
+@dataclass
+class ChargeScalingDecision:
+    moltype: str
+    scale: float
+    used_group_scaling: bool
+    report: dict[str, Any]
+
+
+@dataclass
+class SystemAssemblyPlan:
+    out_dir: Path
+    molecules_dir: Path
+    source_molecules_dir: Path | None
+    system_gro_template: Path | None
+    system_ndx_template: Path | None
+    effective_polyelectrolyte_mode: bool
 
 
 def _gro_wrap_index(value: int) -> int:
@@ -1081,6 +1151,14 @@ def export_system_from_cell_meta(
     source_molecules_dir = (Path(source_molecules_dir).expanduser().resolve() if source_molecules_dir is not None else None)
     system_gro_template = (Path(system_gro_template).expanduser().resolve() if system_gro_template is not None else None)
     system_ndx_template = (Path(system_ndx_template).expanduser().resolve() if system_ndx_template is not None else None)
+    assembly_plan = SystemAssemblyPlan(
+        out_dir=out_dir,
+        molecules_dir=molecules_dir,
+        source_molecules_dir=source_molecules_dir,
+        system_gro_template=system_gro_template,
+        system_ndx_template=system_ndx_template,
+        effective_polyelectrolyte_mode=False,
+    )
 
     # Charged mol2 outputs (raw + scaled)
 
@@ -1181,6 +1259,7 @@ def export_system_from_cell_meta(
     ) -> dict[str, Any]:
         payload = {
             **sp_in,
+            "export_schema_version": EXPORT_SYSTEM_SCHEMA_VERSION,
             "smiles": smiles,
             "n": n,
             "artifact_dir": str(artifact_dir),
@@ -1190,6 +1269,7 @@ def export_system_from_cell_meta(
             "formal_charge": int(formal_charge),
             "kind": kind,
             "polyelectrolyte_mode": bool(sp_in.get("polyelectrolyte_mode", False)),
+            "source_artifact_digest": _artifact_digest(artifact_dir, moltype),
         }
         for key in ("charge_groups", "resp_constraints", "polyelectrolyte_summary", "residue_map"):
             if key in sp_in and sp_in.get(key) is not None:
@@ -1474,6 +1554,9 @@ def export_system_from_cell_meta(
         or meta.get("polyelectrolyte_mode")
         or any(sp.get("charge_groups") for sp in species)
     )
+    assembly_plan.effective_polyelectrolyte_mode = bool(effective_polyelectrolyte_mode)
+    for sp in species:
+        _ensure_charge_group_ready(sp, effective_polyelectrolyte_mode=bool(effective_polyelectrolyte_mode))
 
     # ---------------
     # Copy molecule ITP/TOP/GRO into work directory
@@ -1533,7 +1616,7 @@ def export_system_from_cell_meta(
     if inherited_param_itp is not None:
         _accumulate_param_blocks(inherited_param_itp.read_text(encoding="utf-8", errors="replace"))
 
-    charge_scaling_report: dict[str, Any] = {"species": []}
+    charge_scaling_report: dict[str, Any] = {"schema_version": EXPORT_SYSTEM_SCHEMA_VERSION, "species": []}
     for sp in species:
         art_dir = Path(sp["artifact_dir"])
         mol_name = str(sp.get("mol_name") or sp.get("mol_id") or "MOL")
@@ -1917,6 +2000,7 @@ def export_system_from_cell_meta(
     system_meta = out_dir / "system_meta.json"
     actual_box_lengths_nm = _read_gro_box_lengths_nm(system_gro) or tuple(float(x) for x in box_vec_nm)
     payload = {
+        "schema_version": EXPORT_SYSTEM_SCHEMA_VERSION,
         "species": species,
         "box_nm": float(max(actual_box_lengths_nm)),
         "box_lengths_nm": [float(x) for x in actual_box_lengths_nm],
@@ -1970,6 +2054,39 @@ def export_system_from_cell_meta(
 
     charge_scaling_report_path = out_dir / "charge_scaling_report.json"
     charge_scaling_report_path.write_text(json.dumps(charge_scaling_report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+    site_map_path = out_dir / "site_map.json"
+    site_map_payload = build_site_map(parse_system_top(system_top), out_dir)
+    site_map_path.write_text(json.dumps(site_map_payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+    export_manifest = out_dir / "export_manifest.json"
+    export_manifest.write_text(
+        json.dumps(
+            {
+                "schema_version": EXPORT_SYSTEM_SCHEMA_VERSION,
+                "effective_polyelectrolyte_mode": bool(assembly_plan.effective_polyelectrolyte_mode),
+                "out_dir": str(assembly_plan.out_dir),
+                "molecules_dir": str(assembly_plan.molecules_dir),
+                "source_molecules_dir": (str(assembly_plan.source_molecules_dir) if assembly_plan.source_molecules_dir is not None else None),
+                "system_gro_template": (str(assembly_plan.system_gro_template) if assembly_plan.system_gro_template is not None else None),
+                "system_ndx_template": (str(assembly_plan.system_ndx_template) if assembly_plan.system_ndx_template is not None else None),
+                "system_top_sig": file_signature(system_top),
+                "system_gro_sig": file_signature(system_gro),
+                "system_ndx_sig": file_signature(system_ndx),
+                "species": [
+                    {
+                        "moltype": str(sp.get("moltype", "")),
+                        "artifact_dir": str(sp.get("artifact_dir", "")),
+                        "source_artifact_digest": sp.get("source_artifact_digest"),
+                    }
+                    for sp in species
+                ],
+            },
+            indent=2,
+            ensure_ascii=False,
+        ) + "\n",
+        encoding="utf-8",
+    )
 
     return SystemExportResult(
         system_gro=system_gro,

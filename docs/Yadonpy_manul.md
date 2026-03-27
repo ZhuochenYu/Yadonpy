@@ -1,4 +1,4 @@
-# YadonPy Manual (v0.8.73)
+# YadonPy Manual (v0.8.74)
 
 ## 1. Purpose
 
@@ -6,7 +6,7 @@ This manual describes the architectural rules of YadonPy. It is intended for use
 
 Related documents:
 
-- API reference: `docs/Yadonpy_API_v0.8.73.md`
+- API reference: `docs/Yadonpy_API_v0.8.74.md`
 - user guide: `docs/Yaonpyd_user_guide.md`
 
 ## 2. Architectural principles
@@ -101,6 +101,13 @@ System state is exported into GROMACS artifacts and passed into staged workflows
 ### 3.5 Analysis and reporting
 
 Analysis is written as files that are both human-readable and machine-readable, so later code can consume the outputs programmatically. From `v0.8.73`, the analysis layer is also expected to preserve physical semantics explicitly rather than inferring them from loose moltype selections.
+
+From `v0.8.74`, build/export correctness is tightened as well:
+
+- strict input checking is the default resume behavior for build/export/interface stages;
+- implicit ion registry injection is removed; ions must be passed explicitly into `amorphous_cell(...)`;
+- exported systems now include `site_map.json` and `export_manifest.json`;
+- large-system packing writes `.yadonpy/amorphous_cell_pack_diagnostics.json` when a work directory is available.
 
 ## 4. Charge workflow model
 

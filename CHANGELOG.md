@@ -1,3 +1,10 @@
+## 0.8.74 (2026-03-28)
+
+- workflow/resume + runtime + tests/test_runtime.py: make strict input validation the default resume mode, stop treating "outputs exist but no state record" as reusable completion, and promote full file-signature based invalidation for critical workflow stages.
+- core/poly + workflow/steps + ff/merz + tests/test_workdir_and_molspec.py: remove implicit global ion injection, convert amorphous-cell retries from recursion to iterative planning, record packing diagnostics under `.yadonpy/amorphous_cell_pack_diagnostics.json`, and add species-phase packing metadata for large systems.
+- io/gromacs_system + gmx/analysis/structured + tests/test_workdir_and_molspec.py: split export responsibilities with explicit assembly metadata, require charge-group metadata for polyelectrolyte-aware polymer scaling, add `site_map.json` and `export_manifest.json`, and persist source artifact digests in export metadata.
+- interface/builder + schema_versions.py: centralize interface schema versioning and bind snapshot/slab content signatures into the interface resume keys so changed representative snapshots force a rebuild.
+
 ## 0.8.73 (2026-03-27)
 
 - gmx/analysis/structured + sim/analyzer + gmx/analysis/auto_plot + tests/test_structured_analysis: refactor MSD, RDF, CN, and Nernst-Einstein conductivity into a structured post-processing path with explicit metric semantics (`ion_atomic_msd`, `molecule_com_msd`, `chain_com_msd`, `residue_com_msd`, `charged_group_com_msd`), site-level RDF/CN as the default analysis mode, strict center-species resolution, a shared first-shell detector for JSON and SVG outputs, and fit-window visualization in MSD plots;

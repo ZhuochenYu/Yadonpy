@@ -1,4 +1,4 @@
-# YadonPy User Guide (v0.8.73)
+# YadonPy User Guide (v0.8.74)
 
 This guide explains how to use YadonPy effectively in day-to-day study scripts.
 
@@ -6,7 +6,7 @@ Related documents:
 
 - README: package scope and installation
 - manual: `docs/Yadonpy_manul.md`
-- API reference: `docs/Yadonpy_API_v0.8.73.md`
+- API reference: `docs/Yadonpy_API_v0.8.74.md`
 
 ## 1. Build the right environment
 
@@ -33,6 +33,11 @@ python -c "from yadonpy.diagnostics import doctor; doctor(print_report=True)"
 For RESP/ESP workflows, `doctor()` should report both `psi4` and `psiresp`.
 
 If the study requires only force-field assignment and export, `psi4` and `psiresp` remain optional. If the study requires RESP or ESP, both are required.
+
+From `v0.8.74`, two operational defaults changed:
+
+- restart-aware workflows default to strict input checking instead of permissive reuse;
+- ion packs created by `core.poly.ion(...)` must be passed explicitly via `ions=[...]`.
 
 ## 1.1 Rebuild the bundled MolDB species set
 

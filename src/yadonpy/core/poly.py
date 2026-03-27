@@ -35,6 +35,7 @@ from .polyelectrolyte import annotate_polyelectrolyte_metadata, build_residue_ma
 from .resources import core_data_path
 from ..ff.gaff2_mod import GAFF2_mod
 from ..runtime import resolve_restart
+from ..schema_versions import AMORPHOUS_CELL_SCHEMA_VERSION
 
 
 def _resolve_work_dir_path(work_dir):
@@ -160,6 +161,53 @@ def _estimate_total_atoms(mols, n) -> int:
     return int(total)
 
 
+def _estimate_mol_bbox_span(mol) -> np.ndarray:
+    try:
+        coords = np.asarray(mol.GetConformer(0).GetPositions(), dtype=float)
+    except Exception:
+        return np.zeros(3, dtype=float)
+    if coords.size == 0:
+        return np.zeros(3, dtype=float)
+    return np.asarray(np.ptp(coords, axis=0), dtype=float)
+
+
+def _estimate_vdw_reference_clearance(mols, *, dist_min: float) -> float:
+    periodic = Chem.GetPeriodicTable()
+    best = float(dist_min)
+    for mol in mols:
+        for atom in mol.GetAtoms():
+            try:
+                r = float(periodic.GetRvdw(int(atom.GetAtomicNum())))
+            except Exception:
+                r = 1.5
+            best = max(best, 2.0 * r)
+    return float(best)
+
+
+def _classify_pack_phase(mol) -> str:
+    try:
+        nat = int(mol.GetNumAtoms())
+    except Exception:
+        nat = 0
+    if nat >= 80:
+        return 'backbone'
+    if nat <= 8:
+        return 'filler'
+    return 'matrix'
+
+
+def _amorphous_pack_batches(mols, n) -> list[dict]:
+    phased: dict[str, list[int]] = {'backbone': [], 'matrix': [], 'filler': []}
+    for idx in _amorphous_pack_order(mols, n):
+        phase = _classify_pack_phase(mols[idx])
+        phased.setdefault(phase, []).append(int(idx))
+    out: list[dict] = []
+    for phase in ('backbone', 'matrix', 'filler'):
+        if phased.get(phase):
+            out.append({'phase': phase, 'indices': tuple(phased[phase])})
+    return out
+
+
 def _resolve_large_system_mode(mode, total_atoms: int) -> bool:
     if isinstance(mode, str):
         token = mode.strip().lower()
@@ -174,7 +222,7 @@ def _resolve_large_system_mode(mode, total_atoms: int) -> bool:
     return bool(mode)
 
 
-def _build_large_pack_state(cell, dist_min: float, *, enabled: bool) -> dict:
+def _build_large_pack_state(cell, dist_min: float, *, enabled: bool, reference_clearance: float | None = None) -> dict:
     state = {
         'enabled': bool(enabled),
         'wrapped': np.empty((0, 3), dtype=float),
@@ -197,7 +245,8 @@ def _build_large_pack_state(cell, dist_min: float, *, enabled: bool) -> dict:
         dtype=float,
     )
     lengths = np.maximum(lengths, 1.0e-6)
-    grid = max(float(dist_min) * 1.25, 2.5)
+    base_clearance = float(reference_clearance) if reference_clearance is not None else float(dist_min)
+    grid = max(float(dist_min), base_clearance * 1.05, 2.0)
     nbins = np.maximum(np.floor(lengths / grid).astype(int), 1)
     reach = max(int(np.ceil(float(dist_min) / grid)), 1)
     state.update(
@@ -266,6 +315,34 @@ def _large_pack_clash(state: dict, coord, dist_min: float, cell_box) -> bool:
             if np.any(dist_sq <= threshold_sq):
                 return True
     return False
+
+
+def _large_pack_min_distance(state: dict, coord, cell_box) -> float:
+    if not state.get('enabled', False):
+        return float('inf')
+    if len(state['wrapped']) == 0:
+        return float('inf')
+    coord = np.asarray(coord, dtype=float)
+    if coord.size == 0:
+        return float('inf')
+
+    wrapped = calc.wrap(coord, cell_box.xhi, cell_box.xlo, cell_box.yhi, cell_box.ylo, cell_box.zhi, cell_box.zlo)
+    keys = _grid_keys_for_coords(wrapped, state)
+    lengths = state['lengths']
+    best = float('inf')
+    for atom_idx, key in enumerate(keys):
+        base = np.asarray(key, dtype=int)
+        for off in state['neighbor_offsets']:
+            nb_key = tuple(int(v) for v in np.mod(base + np.asarray(off, dtype=int), state['nbins']).tolist())
+            idxs = state['cells'].get(nb_key)
+            if not idxs:
+                continue
+            delta = state['wrapped'][idxs] - wrapped[atom_idx]
+            delta -= np.round(delta / lengths) * lengths
+            dist = np.sqrt(np.sum(delta * delta, axis=1))
+            if dist.size:
+                best = min(best, float(np.min(dist)))
+    return float(best)
 
 
 def _cell_log_begin(func_name: str, *, restart: bool):
@@ -684,6 +761,7 @@ def _cell_cache_payload(kind: str, *, mols, n, cell, density, threshold, dec_rat
             })
     return _rw_payload(
         kind,
+        schema_version=AMORPHOUS_CELL_SCHEMA_VERSION,
         smiles=[_cache_mol_smiles(mol) for mol in mols],
         n=[int(v) for v in n],
         cell_smiles=_cache_mol_smiles(cell) if isinstance(cell, Chem.Mol) else None,
@@ -759,7 +837,28 @@ def _copy_cell_holder(mol):
     return holder
 
 
-def _next_amorphous_retry_target(cell, density, dec_rate):
+def _estimate_packing_stress_axes(mols, n, cell_box) -> tuple[int, ...]:
+    if cell_box is None:
+        return (2, 1, 0)
+    lengths = np.asarray(
+        [
+            float(cell_box.xhi) - float(cell_box.xlo),
+            float(cell_box.yhi) - float(cell_box.ylo),
+            float(cell_box.zhi) - float(cell_box.zlo),
+        ],
+        dtype=float,
+    )
+    lengths = np.maximum(lengths, 1.0e-6)
+    stress = np.zeros(3, dtype=float)
+    for mol, count in zip(mols, n):
+        span = _estimate_mol_bbox_span(mol)
+        stress += np.asarray(span, dtype=float) * max(int(count), 0)
+    norm = np.divide(stress, lengths, out=np.zeros_like(stress), where=lengths > 0.0)
+    order = np.argsort(norm)[::-1]
+    return tuple(int(i) for i in order.tolist())
+
+
+def _next_amorphous_retry_target(cell, density, dec_rate, *, axes: tuple[int, ...] = (2,)):
     if density is not None:
         retry_density = float(density) * float(dec_rate)
         return {
@@ -774,21 +873,46 @@ def _next_amorphous_retry_target(cell, density, dec_rate):
 
     grow = 1.0 / max(float(dec_rate), 1.0e-8)
     src = cell.cell
-    dx = float(src.xhi) - float(src.xlo)
-    dy = float(src.yhi) - float(src.ylo)
-    dz = (float(src.zhi) - float(src.zlo)) * grow
+    lengths = np.array(
+        [
+            float(src.xhi) - float(src.xlo),
+            float(src.yhi) - float(src.ylo),
+            float(src.zhi) - float(src.zlo),
+        ],
+        dtype=float,
+    )
+    axes = tuple(int(a) for a in axes if int(a) in (0, 1, 2))
+    if not axes:
+        axes = (2,)
+    for axis in axes:
+        lengths[axis] = float(lengths[axis]) * grow
     retry_cell = _copy_cell_holder(cell)
-    setattr(retry_cell, 'cell', utils.Cell(dx, 0.0, dy, 0.0, dz, 0.0))
+    setattr(retry_cell, 'cell', utils.Cell(float(lengths[0]), 0.0, float(lengths[1]), 0.0, float(lengths[2]), 0.0))
+    axes_label = ''.join('XYZ'[axis] for axis in axes)
     return {
         'cell': retry_cell,
         'density': None,
-        'log': '[PACK] Retry poly.amorphous_cell. Remaining %i times. Density is fixed by explicit cell; expanded Z to %f while keeping XY fixed.',
-        'log_value': dz,
+        'log': f'[PACK] Retry poly.amorphous_cell. Remaining %i times. Density is fixed by explicit cell; expanded {axes_label} lengths to %s.',
+        'log_value': tuple(float(v) for v in lengths.tolist()),
     }
 
 
 def _pdb_atom_name(atom):
     return atom.GetProp('ff_type') if atom.HasProp('ff_type') else atom.GetSymbol()
+
+
+def _write_pack_diagnostics(work_dir, payload: dict) -> None:
+    wd = _resolve_work_dir_path(work_dir)
+    if wd is None:
+        return
+    try:
+        import json
+
+        out = wd / '.yadonpy' / 'amorphous_cell_pack_diagnostics.json'
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + '\n', encoding='utf-8')
+    except Exception:
+        pass
 
 
 def _infer_residue_defaults(mol, residue_name='RU0', residue_number=1):
@@ -1352,10 +1476,6 @@ else:
 # Ion injection helper (for polyelectrolytes)
 # -----------------------------------------------------------------------------
 
-# Global registry for ion packs created by ion()
-_ION_PACKS = []
-
-
 class IonPack:
     """Container for ions to be added into an amorphous cell."""
     def __init__(self, mol, n, ff_name='merz'):
@@ -1365,7 +1485,7 @@ class IonPack:
 
 
 def ion(ion='Na+', n_ion=None, ff=None):
-    """Register an ion pack to be injected in the next amorphous_cell() call.
+    """Create an explicit ion pack for ``amorphous_cell(..., ions=[...])``.
 
     This helper is designed to match a simple user script style:
 
@@ -1373,8 +1493,7 @@ def ion(ion='Na+', n_ion=None, ff=None):
         ion_pack = ion(ion='Na+', n_ion=1000, ff=ion_ff)
 
     Notes:
-        - The returned object is an IonPack, but you don't have to pass it explicitly.
-          If you call poly.amorphous_cell(...) without ions=, it will consume the global registry.
+        - The returned object must be passed explicitly via ``ions=``.
         - ff must provide create_ion_mol(ion) method (MERZ does).
     """
     if ff is None or not hasattr(ff, 'create_ion_mol'):
@@ -1399,9 +1518,7 @@ def ion(ion='Na+', n_ion=None, ff=None):
         raise ValueError('ion(): MERZ ion builder supports monoatomic ions only. Multi-atom ions should be parameterized by GAFF2_mod and passed as normal species.')
 
     ion_mol = ff.create_ion_mol(ion_key)
-    pack = IonPack(ion_mol, n_ion, ff_name=getattr(ff, 'name', 'ion_ff'))
-    _ION_PACKS.append(pack)
-    return pack
+    return IonPack(ion_mol, n_ion, ff_name=getattr(ff, 'name', 'ion_ff'))
 
 
 # Make ion() available without explicit import (so user scripts can call ion(...) directly)
@@ -3509,12 +3626,6 @@ def amorphous_cell(
         pass
 
     # --- Ion injection / charge neutrality ---------------------------------
-    # If ions were registered by ion(), use them unless explicit ions= is given.
-    _clear_ion_registry = False
-    if ions is None and len(_ION_PACKS) > 0:
-        ions = _ION_PACKS
-        _clear_ion_registry = True
-
     if ions is not None:
         if isinstance(ions, IonPack):
             ions = [ions]
@@ -3548,52 +3659,11 @@ def amorphous_cell(
             q_total += _mol_net_charge(_mol) * float(n[_m])
         if abs(q_total) > float(neutralize_tol):
             raise ValueError('System net charge is not neutral after adding ions. net_charge=%.6f' % q_total)
-
-        if _clear_ion_registry:
-            _ION_PACKS.clear()
-
     # -----------------------------------------------------------------------
 
-    mols_c = [utils.deepcopy_mol(mol) for mol in mols]
-    mol_coord = [np.array(mol.GetConformer(0).GetPositions()) for mol in mols_c]
-    has_ring = False
-    tri_coord = None
-    bond_coord = None
-
-    if cell is None:
-        cell_c = Chem.Mol()
-    else:
-        cell_c = utils.deepcopy_mol(cell)
-
-        sssr_tmp = Chem.GetSSSR(cell_c)
-        if type(sssr_tmp) is int:
-            if sssr_tmp > 0:
-                has_ring = True
-        elif len(sssr_tmp) > 0:  # For RDKit version >= 2022.09
-            has_ring = True
-
-    for mol_c in mols_c:
-        sssr_tmp = Chem.GetSSSR(mol_c)
-        if type(sssr_tmp) is int:
-            if sssr_tmp > 0:
-                has_ring = True
-        elif len(sssr_tmp) > 0:  # For RDKit version >= 2022.09
-            has_ring = True
-
-    if density is None and hasattr(cell_c, 'cell'):
-        xhi = cell_c.cell.xhi
-        xlo = cell_c.cell.xlo
-        yhi = cell_c.cell.yhi
-        ylo = cell_c.cell.ylo
-        zhi = cell_c.cell.zhi
-        zlo = cell_c.cell.zlo
-    else:
-        xhi, xlo, yhi, ylo, zhi, zlo = calc_cell_length([*mols_c, cell_c], [*n, 1], density=density)
-        setattr(cell_c, 'cell', utils.Cell(xhi, xlo, yhi, ylo, zhi, zlo))
-
-    total_atoms_target = _estimate_total_atoms(mols_c, n)
+    total_atoms_target = _estimate_total_atoms(mols, n)
     large_pack_enabled = _resolve_large_system_mode(large_system_mode, total_atoms_target)
-    pack_state = _build_large_pack_state(cell_c, threshold, enabled=large_pack_enabled)
+    reference_clearance = _estimate_vdw_reference_clearance(mols, dist_min=threshold)
     if large_pack_enabled:
         utils.radon_print(
             '[PACK] Large-system mode enabled automatically for amorphous_cell '
@@ -3601,91 +3671,190 @@ def amorphous_cell(
             level=1,
         )
 
-    retry_flag = False
-    pack_order = _amorphous_pack_order(mols_c, n)
-    for order_idx, m in enumerate(pack_order):
-        mol = mols_c[m]
-        for i in tqdm(range(n[m]), desc='[Unit cell generation %i/%i]' % (order_idx+1, len(pack_order)), disable=const.tqdm_disable):
-            for r in range(retry_step):
-                # Random rotation and translation
-                trans = np.array([
-                    np.random.uniform(xlo, xhi),
-                    np.random.uniform(ylo, yhi),
-                    np.random.uniform(zlo, zhi)
-                ])
-                rot = np.random.uniform(-np.pi, np.pi, 3)
+    trial_cell = cell
+    trial_density = density
+    retries_left = int(retry)
+    attempt_index = 0
+    pack_diagnostics: dict[str, object] = {
+        'schema_version': AMORPHOUS_CELL_SCHEMA_VERSION,
+        'target_atoms': int(total_atoms_target),
+        'large_system_mode': bool(large_pack_enabled),
+        'reference_clearance_angstrom': float(reference_clearance),
+        'attempts': [],
+    }
+    cell_c = Chem.Mol()
 
-                mol_coord_c = mol_coord[m]
-                mol_coord_c = calc.rotate_rod(mol_coord_c, np.array([1, 0, 0]), rot[0])
-                mol_coord_c = calc.rotate_rod(mol_coord_c, np.array([0, 1, 0]), rot[1])
-                mol_coord_c = calc.rotate_rod(mol_coord_c, np.array([0, 0, 1]), rot[2])
-                mol_coord_c += trans - np.mean(mol_coord_c, axis=0)
+    while True:
+        attempt_index += 1
+        mols_c = [utils.deepcopy_mol(mol) for mol in mols]
+        mol_coord = [np.array(mol.GetConformer(0).GetPositions()) for mol in mols_c]
+        has_ring = False
+        tri_coord = None
+        bond_coord = None
 
-                if cell_c.GetNumConformers() == 0: break
-
-                check_3d = check_3d_structure_cell(cell_c, mol_coord_c, dist_min=threshold, pack_state=pack_state)
-                if check_3d and check_bond_ring_intersection and has_ring:
-                    check_3d, tri_coord_new, bond_coord_new = check_3d_bond_ring_intersection(cell_c, mon=mol, mon_coord=mol_coord_c,
-                                                                    tri_coord=tri_coord, bond_coord=bond_coord, mp=mp)
-                if check_3d:
-                    if check_bond_ring_intersection and has_ring:
-                        tri_coord = tri_coord_new
-                        bond_coord = bond_coord_new
-                    break
-                elif r < retry_step-1:
-                    if r == 0 or (r+1) % 100 == 0:
-                        step_n = sum(n[:m])+i+1 if m > 0 else i+1
-                        utils.radon_print('[PACK] Retry placing a molecule in cell. Step=%i, %i/%i' % (step_n, r+1, retry_step), level=1)
-                else:
-                    retry_flag = True
-                    step_n = sum(n[:m])+i+1 if m > 0 else i+1
-                    utils.radon_print('[PACK] Reached maximum number of retrying in step %i of poly.amorphous_cell.' % step_n, level=1)
-
-            if retry_flag and retry > 0: break
-
-            cell_n = cell_c.GetNumAtoms()
-
-            # Add Mol to cell
-            cell_c = combine_mols(cell_c, mol)
-
-            # Set atomic coordinate
-            for j in range(mol.GetNumAtoms()):
-                cell_c.GetConformer(0).SetAtomPosition(
-                    cell_n+j,
-                    Geom.Point3D(mol_coord_c[j, 0], mol_coord_c[j, 1], mol_coord_c[j, 2])
-                )
-            _append_large_pack_coords(pack_state, mol_coord_c, cell_c.cell)
-            
-        if retry_flag and retry > 0: break
-
-    if retry_flag:
-        if retry <= 0:
-            utils.radon_print('Reached maximum number of retrying poly.amorphous_cell.', level=3)
+        if trial_cell is None:
+            cell_c = Chem.Mol()
         else:
-            retry_target = _next_amorphous_retry_target(cell, density, dec_rate)
-            utils.radon_print(retry_target['log'] % (retry, retry_target['log_value']), level=1)
-            retry -= 1
-            cell_c = amorphous_cell(
-                    mols,
-                    n,
-                    cell=retry_target['cell'],
-                    density=retry_target['density'],
-                    retry=retry,
-                    retry_step=retry_step,
-                    threshold=threshold,
-                    dec_rate=dec_rate,
-                    check_bond_ring_intersection=check_bond_ring_intersection,
-                    mp=mp,
-                    restart=True,
-                    work_dir=work_dir,
-                    ions=ions,
-                    neutralize=neutralize,
-                    neutralize_tol=neutralize_tol,
-                    charge_scale=charge_scale,
-                    polyelectrolyte_mode=polyelectrolyte_mode,
-                    charge_tolerance=charge_tolerance,
-                    large_system_mode=large_system_mode,
+            cell_c = utils.deepcopy_mol(trial_cell)
+            sssr_tmp = Chem.GetSSSR(cell_c)
+            if type(sssr_tmp) is int:
+                if sssr_tmp > 0:
+                    has_ring = True
+            elif len(sssr_tmp) > 0:
+                has_ring = True
+
+        for mol_c in mols_c:
+            sssr_tmp = Chem.GetSSSR(mol_c)
+            if type(sssr_tmp) is int:
+                if sssr_tmp > 0:
+                    has_ring = True
+            elif len(sssr_tmp) > 0:
+                has_ring = True
+
+        if trial_density is None and hasattr(cell_c, 'cell'):
+            xhi = cell_c.cell.xhi
+            xlo = cell_c.cell.xlo
+            yhi = cell_c.cell.yhi
+            ylo = cell_c.cell.ylo
+            zhi = cell_c.cell.zhi
+            zlo = cell_c.cell.zlo
+        else:
+            xhi, xlo, yhi, ylo, zhi, zlo = calc_cell_length([*mols_c, cell_c], [*n, 1], density=trial_density)
+            setattr(cell_c, 'cell', utils.Cell(xhi, xlo, yhi, ylo, zhi, zlo))
+
+        pack_state = _build_large_pack_state(
+            cell_c,
+            threshold,
+            enabled=large_pack_enabled,
+            reference_clearance=reference_clearance,
+        )
+        pack_plan = _amorphous_pack_batches(mols_c, n)
+        box_lengths = (
+            float(cell_c.cell.xhi) - float(cell_c.cell.xlo),
+            float(cell_c.cell.yhi) - float(cell_c.cell.ylo),
+            float(cell_c.cell.zhi) - float(cell_c.cell.zlo),
+        )
+        attempt_diag: dict[str, object] = {
+            'attempt_index': int(attempt_index),
+            'density_g_cm3': (float(trial_density) if trial_density is not None else None),
+            'box_lengths_angstrom': [float(v) for v in box_lengths],
+            'phases': [],
+            'placement_retries_total': 0,
+            'placement_failures': {},
+        }
+
+        retry_flag = False
+        placed_counter = 0
+        for batch_idx, batch in enumerate(pack_plan, start=1):
+            phase = str(batch['phase'])
+            indices = tuple(int(v) for v in batch['indices'])
+            attempt_diag['phases'].append(
+                {
+                    'phase': phase,
+                    'species_indices': [int(v) for v in indices],
+                    'species_names': [str(utils.get_name(mols_c[idx], default=f'M{idx+1}')) for idx in indices],
+                }
             )
+            for m in indices:
+                mol = mols_c[m]
+                species_name = str(utils.get_name(mol, default=f'M{m+1}'))
+                for i in tqdm(
+                    range(n[m]),
+                    desc='[Unit cell generation %i/%i]' % (batch_idx, len(pack_plan)),
+                    disable=const.tqdm_disable,
+                ):
+                    accepted = False
+                    tries_used = 0
+                    for r in range(retry_step):
+                        tries_used = r + 1
+                        trans = np.array([
+                            np.random.uniform(xlo, xhi),
+                            np.random.uniform(ylo, yhi),
+                            np.random.uniform(zlo, zhi)
+                        ])
+                        rot = np.random.uniform(-np.pi, np.pi, 3)
+
+                        mol_coord_c = mol_coord[m]
+                        mol_coord_c = calc.rotate_rod(mol_coord_c, np.array([1, 0, 0]), rot[0])
+                        mol_coord_c = calc.rotate_rod(mol_coord_c, np.array([0, 1, 0]), rot[1])
+                        mol_coord_c = calc.rotate_rod(mol_coord_c, np.array([0, 0, 1]), rot[2])
+                        mol_coord_c += trans - np.mean(mol_coord_c, axis=0)
+
+                        if cell_c.GetNumConformers() == 0:
+                            accepted = True
+                            break
+
+                        check_3d = check_3d_structure_cell(cell_c, mol_coord_c, dist_min=threshold, pack_state=pack_state)
+                        if check_3d and check_bond_ring_intersection and has_ring:
+                            check_3d, tri_coord_new, bond_coord_new = check_3d_bond_ring_intersection(
+                                cell_c,
+                                mon=mol,
+                                mon_coord=mol_coord_c,
+                                tri_coord=tri_coord,
+                                bond_coord=bond_coord,
+                                mp=mp,
+                            )
+                        if check_3d:
+                            if check_bond_ring_intersection and has_ring:
+                                tri_coord = tri_coord_new
+                                bond_coord = bond_coord_new
+                            accepted = True
+                            break
+                        if r < retry_step - 1 and (r == 0 or (r + 1) % 100 == 0):
+                            utils.radon_print('[PACK] Retry placing a molecule in cell. Step=%i, %i/%i' % (placed_counter + 1, r + 1, retry_step), level=1)
+
+                    attempt_diag['placement_retries_total'] = int(attempt_diag['placement_retries_total']) + max(0, tries_used - 1)
+                    if not accepted:
+                        retry_flag = True
+                        bucket = attempt_diag['placement_failures'].setdefault(
+                            species_name,
+                            {'count': 0, 'phase': phase, 'natoms': int(mol.GetNumAtoms())},
+                        )
+                        bucket['count'] = int(bucket['count']) + 1
+                        utils.radon_print('[PACK] Reached maximum number of retrying in step %i of poly.amorphous_cell.' % (placed_counter + 1), level=1)
+                        break
+
+                    cell_n = cell_c.GetNumAtoms()
+                    cell_c = combine_mols(cell_c, mol)
+                    for j in range(mol.GetNumAtoms()):
+                        cell_c.GetConformer(0).SetAtomPosition(
+                            cell_n + j,
+                            Geom.Point3D(mol_coord_c[j, 0], mol_coord_c[j, 1], mol_coord_c[j, 2])
+                        )
+                    _append_large_pack_coords(pack_state, mol_coord_c, cell_c.cell)
+                    placed_counter += 1
+
+                if retry_flag:
+                    break
+            if retry_flag:
+                break
+
+        box_volume = max(float(np.prod(np.asarray(box_lengths, dtype=float))), 1.0e-12)
+        approx_occ = 0.0
+        for mol, count in zip(mols_c, n):
+            span = np.maximum(_estimate_mol_bbox_span(mol), 1.0e-3)
+            approx_occ += float(np.prod(span)) * float(count)
+        approx_occ = min(max(approx_occ / box_volume, 0.0), 0.999999)
+        attempt_diag['approx_occupied_fraction'] = float(approx_occ)
+        attempt_diag['approx_max_cavity_angstrom'] = float(np.cbrt(max(box_volume * (1.0 - approx_occ), 0.0)))
+        pack_diagnostics['attempts'].append(attempt_diag)
+
+        if not retry_flag:
+            break
+
+        if retries_left <= 0:
+            _write_pack_diagnostics(work_dir, pack_diagnostics)
+            raise RuntimeError('Reached maximum number of retrying poly.amorphous_cell without finding a valid packing.')
+
+        retry_axes = (2,) if (trial_density is None and trial_cell is not None) else _estimate_packing_stress_axes(mols_c, n, cell_c.cell)
+        retry_target = _next_amorphous_retry_target(trial_cell, trial_density, dec_rate, axes=retry_axes)
+        retry_value = retry_target['log_value']
+        if isinstance(retry_value, tuple):
+            retry_value = ', '.join(f'{float(v):.3f}' for v in retry_value)
+        utils.radon_print(retry_target['log'] % (retries_left, retry_value), level=1)
+        retries_left -= 1
+        trial_cell = retry_target['cell']
+        trial_density = retry_target['density']
 
     _cell_log_done('amorphous_cell', dt1, restart=rst_flag)
 
@@ -3780,11 +3949,14 @@ def amorphous_cell(
                 'polyelectrolyte_mode': bool(polyelectrolyte_mode),
             })
         payload = {
-            'density_g_cm3': (float(density) if density is not None else None),
+            'schema_version': AMORPHOUS_CELL_SCHEMA_VERSION,
+            'density_g_cm3': (float(trial_density) if trial_density is not None else None),
+            'requested_density_g_cm3': (float(density) if density is not None else None),
             'species': meta,
             'pack_mode': ('large_system' if large_pack_enabled else 'default'),
             'target_atoms': int(total_atoms_target),
             'polyelectrolyte_mode': bool(polyelectrolyte_mode),
+            'packing_diagnostics': pack_diagnostics,
         }
         if isinstance(_cs, dict):
             payload['charge_scale'] = _cs
@@ -3828,6 +4000,7 @@ def amorphous_cell(
         except Exception:
             pass
         cell_c.SetProp('_yadonpy_cell_meta', json.dumps(payload, ensure_ascii=False))
+        _write_pack_diagnostics(work_dir, payload.get('packing_diagnostics') or {})
     except Exception:
         pass
 

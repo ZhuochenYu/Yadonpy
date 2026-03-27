@@ -763,6 +763,28 @@ def test_export_system_fast_path_reuses_raw_artifacts_and_box_files(tmp_path: Pa
     assert scaled_itp != raw_itp
 
 
+def test_amorphous_cell_does_not_consume_implicit_global_ion_registry(tmp_path: Path):
+    ff = GAFF2_mod()
+    ion_ff = MERZ()
+    solvent = ff.mol('CCO', require_ready=False, prefer_db=False)
+    assert ff.ff_assign(solvent, report=False)
+
+    orphan_pack = poly.ion(ion='Na+', n_ion=1, ff=ion_ff)
+    assert orphan_pack.n == 1
+
+    ac = poly.amorphous_cell(
+        [solvent],
+        [1],
+        density=0.2,
+        retry=1,
+        retry_step=20,
+        work_dir=tmp_path / 'cell_no_implicit_ions',
+    )
+    meta = json.loads(ac.GetProp('_yadonpy_cell_meta'))
+    assert len(meta['species']) == 1
+    assert meta['species'][0]['smiles']
+
+
 def test_export_system_resolves_mixed_forcefield_species_from_cell_metadata(tmp_path: Path):
     from yadonpy.io.gromacs_system import export_system_from_cell_meta
 
@@ -798,6 +820,38 @@ def test_export_system_resolves_mixed_forcefield_species_from_cell_metadata(tmp_
     assert 'solvent_A' in top_text
     assert 'lithium' in top_text
     assert (out.molecules_dir / 'lithium' / 'lithium.itp').exists()
+
+
+def test_export_system_fails_closed_for_polyelectrolyte_scaling_without_charge_groups(tmp_path: Path):
+    ff = GAFF2_mod()
+    polymer = ff.mol('*CC[O-]', require_ready=False, prefer_db=False, name='poly_anion')
+    assert ff.ff_assign(polymer, report=False)
+    ac = poly.amorphous_cell(
+        [polymer],
+        [1],
+        density=0.05,
+        retry=1,
+        retry_step=20,
+        polyelectrolyte_mode=True,
+    )
+    meta = json.loads(ac.GetProp('_yadonpy_cell_meta'))
+    meta['polyelectrolyte_mode'] = True
+    meta['species'][0]['polyelectrolyte_mode'] = True
+    meta['species'][0]['charge_groups'] = None
+    meta['species'][0]['resp_constraints'] = None
+    meta['species'][0]['polyelectrolyte_summary'] = {'is_polyelectrolyte': True}
+    ac.SetProp('_yadonpy_cell_meta', json.dumps(meta, ensure_ascii=False))
+
+    with pytest.raises(RuntimeError, match='requires charge_groups'):
+        export_system_from_cell_meta(
+            cell_mol=ac,
+            out_dir=tmp_path / 'scaled_missing_groups',
+            ff_name=ff.name,
+            charge_method='RESP',
+            charge_scale=0.8,
+            polyelectrolyte_mode=True,
+            write_system_mol2=False,
+        )
 
 
 def test_export_system_normalizes_embedded_parameter_blocks_with_compact_moleculetype_headers(tmp_path: Path):
@@ -859,6 +913,7 @@ def test_export_system_normalizes_embedded_parameter_blocks_with_compact_molecul
     assert '[ atomtypes ]' in ff_params
     assert '[ atomtypes ]' not in norm_itp
     assert norm_itp.lstrip().startswith('[moleculetype]')
+    assert (scaled.system_top.parent / 'site_map.json').exists()
 
 
 def test_export_system_fast_path_reuses_raw_ff_parameters_include(tmp_path: Path):

@@ -30,7 +30,7 @@ def _parse_bool(value: str, *, default: bool) -> bool:
 @dataclass(frozen=True)
 class RunOptions:
     restart: bool = True
-    strict_inputs: bool = False
+    strict_inputs: bool = True
 
 
 @dataclass(frozen=True)

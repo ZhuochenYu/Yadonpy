@@ -8,6 +8,7 @@ import yadonpy.runtime as runtime
 import yadonpy.core.const as const
 from yadonpy.gmx.engine import GromacsRunner
 from yadonpy.sim.analyzer import AnalyzeResult
+from yadonpy.workflow.resume import ResumeManager, StepSpec
 
 
 def test_parse_bool_accepts_common_tokens():
@@ -18,7 +19,7 @@ def test_parse_bool_accepts_common_tokens():
 
 def test_run_options_context_manager_restores_previous_state():
     original = runtime.get_run_options()
-    runtime.set_run_options(restart=True, strict_inputs=False)
+    runtime.set_run_options(restart=True, strict_inputs=True)
 
     with runtime.run_options(restart=False, strict_inputs=True) as opts:
         assert opts.restart is False
@@ -29,7 +30,7 @@ def test_run_options_context_manager_restores_previous_state():
 
     restored = runtime.get_run_options()
     assert restored.restart is True
-    assert restored.strict_inputs is False
+    assert restored.strict_inputs is True
 
     runtime.set_run_options(restart=original.restart, strict_inputs=original.strict_inputs)
 
@@ -44,6 +45,21 @@ def test_default_run_options_reads_environment(monkeypatch):
         assert opts.strict_inputs is True
     finally:
         importlib.reload(mod)
+
+
+def test_default_run_options_are_strict_by_default():
+    opts = runtime._default_run_options()
+    assert opts.restart is True
+    assert opts.strict_inputs is True
+
+
+def test_resume_manager_does_not_reuse_outputs_without_state_record(tmp_path: Path):
+    out = tmp_path / "done.txt"
+    out.write_text("ok\n", encoding="utf-8")
+    mgr = ResumeManager(tmp_path, strict_inputs=True, enabled=True)
+    spec = StepSpec(name="demo", outputs=[out], inputs={"x": 1})
+    assert mgr.reuse_status(spec) == "no_record"
+    assert mgr.is_done(spec) is False
 
 
 def test_recommend_local_resources_respects_cpu_cap_and_defaults(monkeypatch):
