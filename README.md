@@ -1,6 +1,6 @@
 ﻿# YadonPy
 
-Current release: **v0.8.69**
+Current release: **v0.8.70**
 
 YadonPy is a Python package for building polymer, solvent, salt, bulk, and interface workflows directly from SMILES or PSMILES. It is designed for script-driven molecular simulation studies where the user wants to keep the real workflow visible in code instead of hiding it behind a monolithic project file.
 
@@ -20,16 +20,17 @@ The package is built around two stable ideas:
 - **script first**: the study logic should remain understandable from the user script;
 - **MolDB first**: reusable expensive assets are molecular geometry, charge variants, and bonded-patch metadata, not old `.top/.gro/.itp` exports.
 
-## What changed in v0.8.69
+## What changed in v0.8.70
 
-This release fixes name inference mistakes that leaked generic aliases such as
-`result` into downstream analysis labels, adds automatic post-assignment export,
-and removes redundant explicit `name=` usage from the random-walk CMC examples.
+This release integrates the latest `moltemplate` OPLS-AA 2024 source set into
+YadonPy's OPLS parameter library and extends the SMARTS rule table to cover the
+new silicon-, ion-, epoxide-, allene-, ketene-, and carbon-dioxide-related
+types that can be assigned unambiguously from RDKit chemistry.
 
-- Variable-name inference now treats generic aliases such as `result`, `res`, `out`, and `tmp` as non-authoritative names, preventing later analysis and export code from renaming species like `Na` to `result`.
-- Successful `ff.ff_assign(...)` calls now auto-export the assigned molecule into the caller work directory when one is visible in scope, writing MOL2 files to `00_molecules` and GROMACS exports to `90_<name>_gmx`.
-- `poly.random_copolymerize_rw(...)` and `poly.terminate_rw(...)` now infer a stable default polymer name from the existing molecule name or the work-dir basename, so scripts no longer need explicit `name='CMC'` boilerplate in the common `CMC_rw` / `CMC_term` pattern.
-- Examples 02, 05, and 06 were cleaned up to stop rebinding assigned molecules to generic `result` variables and to rely on the new automatic export path.
+- `oplsaa.json` is regenerated against `moltemplate` `oplsaa2024` source files, expanding the packaged particle table from the old pre-2024 range into the 1000+ type range while keeping YadonPy's JSON schema and GROMACS unit conventions.
+- `oplsaa_rules.json` now remaps monoatomic ions to the 2024 ion parameters and adds high-priority SMARTS rules for silanes, silanols, silyl ethers, disilanes, carbon dioxide, allenes, ketenes, epoxides, and Zn2+.
+- `ff/oplsaa.py` now tries a small set of bonded-type aliases such as `H <-> H~` and `O <-> O~` before giving up on bonded lookup, which makes the imported OPLS 2024 data more robust against historical one-character versus padded-type notation differences.
+- The import provenance and conversion rules are documented in `docs/oplsaa2024_moltemplate_import.md`.
 
 ## Installation
 

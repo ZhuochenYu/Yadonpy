@@ -1,3 +1,9 @@
+## 0.8.70 (2026-03-27)
+
+- tools/oplsaa/import_moltemplate_oplsaa2024.py + ff/ff_dat/oplsaa.json + docs/oplsaa2024_moltemplate_import.md: import the latest `moltemplate` OPLS-AA 2024 upstream source set into YadonPy, rebuild the packaged nonbonded particle table from the 2024 `.par` file, merge the bonded coefficient tables from `oplsaa2024.lt`, and record the exact upstream source path plus unit-conversion rules used during import;
+- ff/ff_dat/oplsaa_rules.json + tests/test_forcefields: extend the SMARTS rule table with explicit high-priority OPLS 2024 coverage for silicon hydrides, silanols, silyl ethers, disilanes, carbon dioxide, allenes, ketenes, epoxides, and Zn2+, while remapping the existing monoatomic ion SMARTS rules to the 2024 ion parameter types (`1100-1114`);
+- ff/oplsaa.py: add conservative bonded-type alias fallback (`H <-> H~`, `O <-> O~`, `N <-> N~`, `C <-> C~`, `S <-> S~`, `P <-> P~`, `F <-> F~`, `I <-> I~`) before wildcard matching so imported OPLS 2024 bonded terms remain usable even when historical single-character and padded bonded labels differ.
+
 ## 0.8.69 (2026-03-26)
 
 - core/naming + core/utils + tests/test_workdir_and_molspec: treat generic aliases such as `result`, `results`, `res`, `out`, `tmp`, and similar placeholders as non-authoritative during variable-name inference, add caller work-dir discovery plus name-from-workdir helpers, and lock the fix down with regression coverage so downstream analysis/export code no longer renames real species like `Na` to `result`;

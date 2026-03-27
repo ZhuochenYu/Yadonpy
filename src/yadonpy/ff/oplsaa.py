@@ -17,6 +17,7 @@ knowledge, this project does not raise copyright issues.
 import json
 from dataclasses import dataclass
 from functools import lru_cache
+from itertools import product
 
 from rdkit import Chem
 from rdkit import Geometry as Geom
@@ -83,6 +84,24 @@ def validate_oplsaa_rule_table(param_pt_names=None):
 
 # Lazy-compiled RDKit SMARTS queries (compiled on first use)
 _COMPILED = None
+_BTYPE_ALIASES = {
+    "H": "H~",
+    "H~": "H",
+    "O": "O~",
+    "O~": "O",
+    "N": "N~",
+    "N~": "N",
+    "C": "C~",
+    "C~": "C",
+    "S": "S~",
+    "S~": "S",
+    "P": "P~",
+    "P~": "P",
+    "F": "F~",
+    "F~": "F",
+    "I": "I~",
+    "I~": "I",
+}
 
 
 def _get_compiled_rules():
@@ -109,6 +128,23 @@ def _iter_unique_params(mapping):
             continue
         seen.add(ident)
         yield obj
+
+
+def _iter_btype_alias_token_sets(tokens):
+    per_token = []
+    for token in tokens:
+        choices = [token]
+        alias = _BTYPE_ALIASES.get(token)
+        if alias and alias not in choices:
+            choices.append(alias)
+        per_token.append(tuple(choices))
+
+    seen = set()
+    for combo in product(*per_token):
+        if combo in seen:
+            continue
+        seen.add(combo)
+        yield combo
 
 
 def _match_bonded_pattern(pattern_tokens, actual_tokens):
@@ -485,6 +521,16 @@ class OPLSAA(GAFF):
         rkey = ','.join(reversed(tokens))
         if rkey in mapping:
             return mapping[rkey], 'reverse'
+
+        for alias_tokens in _iter_btype_alias_token_sets(tokens):
+            if alias_tokens == tuple(tokens):
+                continue
+            key = ','.join(alias_tokens)
+            if key in mapping:
+                return mapping[key], 'alias'
+            rkey = ','.join(reversed(alias_tokens))
+            if rkey in mapping:
+                return mapping[rkey], 'alias-reverse'
 
         best_obj = None
         best_score = None

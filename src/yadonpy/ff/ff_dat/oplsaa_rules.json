@@ -2266,106 +2266,119 @@
   {
     "element": "F",
     "btype": "F-",
-    "opls": "opls_400",
+    "opls": "opls_1100",
     "smarts": "[F-]",
     "charge": -1.0,
-    "desc": "Fluoride Ion F-"
+    "desc": "Fluoride Ion F- (OPLS-AA 2024)",
+    "priority": 9500
   },
   {
     "element": "Cl",
     "btype": "Cl-",
-    "opls": "opls_401",
+    "opls": "opls_1101",
     "smarts": "[Cl-]",
     "charge": -1.0,
-    "desc": "Chloride Ion Cl-"
+    "desc": "Chloride Ion Cl- (OPLS-AA 2024)",
+    "priority": 9500
   },
   {
     "element": "Br",
     "btype": "Br-",
-    "opls": "opls_402",
+    "opls": "opls_1102",
     "smarts": "[Br-]",
     "charge": -1.0,
-    "desc": "Bromide Ion Br-"
+    "desc": "Bromide Ion Br- (OPLS-AA 2024)",
+    "priority": 9500
   },
   {
     "element": "I",
     "btype": "I-",
-    "opls": "opls_403",
+    "opls": "opls_1103",
     "smarts": "[I-]",
     "charge": -1.0,
-    "desc": "Iodide Ion I-"
+    "desc": "Iodide Ion I- (OPLS-AA 2024)",
+    "priority": 9500
   },
   {
     "element": "Li",
     "btype": "Li+",
-    "opls": "opls_404",
+    "opls": "opls_1106",
     "smarts": "[Li+]",
     "charge": 1.0,
-    "desc": "Lithium Ion Li+"
+    "desc": "Lithium Ion Li+ (OPLS-AA 2024)",
+    "priority": 9500
   },
   {
     "element": "Na",
     "btype": "Na+",
-    "opls": "opls_405",
+    "opls": "opls_1107",
     "smarts": "[Na+]",
     "charge": 1.0,
-    "desc": "Sodium Ion Na+"
+    "desc": "Sodium Ion Na+ (OPLS-AA 2024)",
+    "priority": 9500
   },
   {
     "element": "K",
     "btype": "K+",
-    "opls": "opls_408",
+    "opls": "opls_1108",
     "smarts": "[K+]",
     "charge": 1.0,
-    "desc": "Potassium Ion K+"
+    "desc": "Potassium Ion K+ (OPLS-AA 2024)",
+    "priority": 9500
   },
   {
     "element": "Rb",
     "btype": "Rb+",
-    "opls": "opls_409",
+    "opls": "opls_1109",
     "smarts": "[Rb+]",
     "charge": 1.0,
-    "desc": "Rubidium Ion Rb+"
+    "desc": "Rubidium Ion Rb+ (OPLS-AA 2024)",
+    "priority": 9500
   },
   {
     "element": "Cs",
     "btype": "Cs+",
-    "opls": "opls_410",
+    "opls": "opls_1110",
     "smarts": "[Cs+]",
     "charge": 1.0,
-    "desc": "Cesium Ion Cs+"
+    "desc": "Cesium Ion Cs+ (OPLS-AA 2024)",
+    "priority": 9500
   },
   {
     "element": "Mg",
     "btype": "Mg2+",
-    "opls": "opls_411",
+    "opls": "opls_1111",
     "smarts": "[Mg+2]",
     "charge": 2.0,
-    "desc": "Magnesium Ion Mg+2"
+    "desc": "Magnesium Ion Mg2+ (OPLS-AA 2024)",
+    "priority": 9500
   },
   {
     "element": "Ca",
     "btype": "Ca2+",
-    "opls": "opls_412",
+    "opls": "opls_1112",
     "smarts": "[Ca+2]",
     "charge": 2.0,
-    "desc": "Calcium Ion Ca+2"
+    "desc": "Calcium Ion Ca2+ (OPLS-AA 2024)",
+    "priority": 9500
   },
   {
     "element": "Sr",
     "btype": "Sr2+",
-    "opls": "opls_413",
+    "opls": "opls_1113",
     "smarts": "[Sr+2]",
     "charge": 2.0,
-    "desc": "Strontium Ion Sr+2"
+    "desc": "Strontium Ion Sr2+ (OPLS-AA 2024)",
+    "priority": 9500
   },
   {
     "element": "Ba",
     "btype": "Ba2+",
-    "opls": "opls_414",
+    "opls": "opls_1114",
     "smarts": "[Ba+2]",
     "charge": 2.0,
-    "desc": "Barium Ion Ba+2"
+    "desc": "Barium Ion Ba2+ (OPLS-AA 2024)",
+    "priority": 9500
   },
   {
     "element": "C",
@@ -5286,5 +5299,365 @@
     "smarts": "[$([F][CH0]([F])([F])[F])]",
     "charge": -0.12,
     "desc": "Perfluoroalkane C-F"
+  },
+  {
+    "element": "Zn",
+    "btype": "Zn2+",
+    "opls": "opls_1005",
+    "smarts": "[Zn+2]",
+    "charge": 2.0,
+    "desc": "Zinc Ion Zn2+ (OPLS-AA 2024)",
+    "priority": 10000
+  },
+  {
+    "element": "H",
+    "btype": "H",
+    "opls": "opls_1064",
+    "smarts": "[#1][Si]",
+    "charge": -0.01,
+    "desc": "H on Si in silane, silanol, or silyl ether",
+    "priority": 10010
+  },
+  {
+    "element": "H",
+    "btype": "HO",
+    "opls": "opls_1074",
+    "smarts": "[#1][O][Si]",
+    "charge": 0.35,
+    "desc": "H in SiOH silanol",
+    "priority": 10020
+  },
+  {
+    "element": "O",
+    "btype": "OH",
+    "opls": "opls_1073",
+    "smarts": "[O;H1][Si]",
+    "charge": -0.5,
+    "desc": "O in SiOH silanol",
+    "priority": 10030
+  },
+  {
+    "element": "O",
+    "btype": "OS",
+    "opls": "opls_1078",
+    "smarts": "[O;H0;X2]([#6])[Si]",
+    "charge": -0.35,
+    "desc": "O in alkyl silyl ether",
+    "priority": 10040
+  },
+  {
+    "element": "C",
+    "btype": "CT",
+    "opls": "opls_1065",
+    "smarts": "[CH3X4][Si]",
+    "charge": -0.26,
+    "desc": "CH3 on Si in silane family",
+    "priority": 10050
+  },
+  {
+    "element": "C",
+    "btype": "CT",
+    "opls": "opls_1066",
+    "smarts": "[CH2X4]([#6])[Si]",
+    "charge": -0.2,
+    "desc": "CH2 on Si in silane family",
+    "priority": 10060
+  },
+  {
+    "element": "C",
+    "btype": "CT",
+    "opls": "opls_1067",
+    "smarts": "[CHX4]([#6])([#6])[Si]",
+    "charge": -0.14,
+    "desc": "CH on Si in silane family",
+    "priority": 10070
+  },
+  {
+    "element": "C",
+    "btype": "CT",
+    "opls": "opls_1068",
+    "smarts": "[CX4]([#6])([#6])([#6])[Si]",
+    "charge": -0.08,
+    "desc": "Quaternary carbon on Si in silane family",
+    "priority": 10080
+  },
+  {
+    "element": "C",
+    "btype": "CA",
+    "opls": "opls_1069",
+    "smarts": "[cX3]([Si])[c]",
+    "charge": -0.08,
+    "desc": "Ipso aromatic carbon in phenyl silane",
+    "priority": 10090
+  },
+  {
+    "element": "Si",
+    "btype": "Si",
+    "opls": "opls_1083",
+    "smarts": "[SiH4]",
+    "charge": 0.04,
+    "desc": "Si in SiH4",
+    "priority": 10100
+  },
+  {
+    "element": "Si",
+    "btype": "Si",
+    "opls": "opls_1084",
+    "smarts": "[SiH3][O;H1]",
+    "charge": 0.18,
+    "desc": "Si in SiH3OH",
+    "priority": 10110
+  },
+  {
+    "element": "Si",
+    "btype": "Si",
+    "opls": "opls_1082",
+    "smarts": "[SiH3][Si]",
+    "charge": 0.03,
+    "desc": "Si in H3Si-Si disilane",
+    "priority": 10120
+  },
+  {
+    "element": "Si",
+    "btype": "Si",
+    "opls": "opls_1063",
+    "smarts": "[SiH3][#6]",
+    "charge": 0.11,
+    "desc": "Si in RSiH3",
+    "priority": 10130
+  },
+  {
+    "element": "Si",
+    "btype": "Si",
+    "opls": "opls_1072",
+    "smarts": "[SiH2]([#6])[O;H1]",
+    "charge": 0.25,
+    "desc": "Si in RSiH2OH",
+    "priority": 10140
+  },
+  {
+    "element": "Si",
+    "btype": "Si",
+    "opls": "opls_1077",
+    "smarts": "[SiH2]([#6])[O;H0][#6]",
+    "charge": 0.25,
+    "desc": "Si in RSiH2OR",
+    "priority": 10150
+  },
+  {
+    "element": "Si",
+    "btype": "Si",
+    "opls": "opls_1081",
+    "smarts": "[SiH2]([#6])[Si]",
+    "charge": 0.1,
+    "desc": "Si in RSiH2Si disilane",
+    "priority": 10160
+  },
+  {
+    "element": "Si",
+    "btype": "Si",
+    "opls": "opls_1062",
+    "smarts": "[SiH2]([#6])[#6]",
+    "charge": 0.18,
+    "desc": "Si in R2SiH2",
+    "priority": 10170
+  },
+  {
+    "element": "Si",
+    "btype": "Si",
+    "opls": "opls_1071",
+    "smarts": "[SiH1]([#6])([#6])[O;H1]",
+    "charge": 0.32,
+    "desc": "Si in R2SiHOH",
+    "priority": 10180
+  },
+  {
+    "element": "Si",
+    "btype": "Si",
+    "opls": "opls_1076",
+    "smarts": "[SiH1]([#6])([#6])[O;H0][#6]",
+    "charge": 0.32,
+    "desc": "Si in R2SiHOR",
+    "priority": 10190
+  },
+  {
+    "element": "Si",
+    "btype": "Si",
+    "opls": "opls_1080",
+    "smarts": "[SiH1]([#6])([#6])[Si]",
+    "charge": 0.17,
+    "desc": "Si in R2SiHSi disilane",
+    "priority": 10200
+  },
+  {
+    "element": "Si",
+    "btype": "Si",
+    "opls": "opls_1061",
+    "smarts": "[SiH1]([#6])([#6])[#6]",
+    "charge": 0.25,
+    "desc": "Si in R3SiH",
+    "priority": 10210
+  },
+  {
+    "element": "Si",
+    "btype": "Si",
+    "opls": "opls_1070",
+    "smarts": "[SiH0]([#6])([#6])([#6])[O;H1]",
+    "charge": 0.39,
+    "desc": "Si in R3SiOH",
+    "priority": 10220
+  },
+  {
+    "element": "Si",
+    "btype": "Si",
+    "opls": "opls_1075",
+    "smarts": "[SiH0]([#6])([#6])([#6])[O;H0][#6]",
+    "charge": 0.39,
+    "desc": "Si in R3SiOR",
+    "priority": 10230
+  },
+  {
+    "element": "Si",
+    "btype": "Si",
+    "opls": "opls_1079",
+    "smarts": "[SiH0]([#6])([#6])([#6])[Si]",
+    "charge": 0.24,
+    "desc": "Si in R3SiSi disilane",
+    "priority": 10240
+  },
+  {
+    "element": "Si",
+    "btype": "Si",
+    "opls": "opls_1060",
+    "smarts": "[SiH0]([#6])([#6])([#6])[#6]",
+    "charge": 0.32,
+    "desc": "Si in tetraalkylsilane R4Si",
+    "priority": 10250
+  },
+  {
+    "element": "O",
+    "btype": "O",
+    "opls": "opls_1159",
+    "smarts": "[O]=[C]=[C]",
+    "charge": -0.25,
+    "desc": "Ketene oxygen",
+    "priority": 10260
+  },
+  {
+    "element": "C",
+    "btype": "C:",
+    "opls": "opls_1158",
+    "smarts": "[C;X2](=[O])=[C]",
+    "charge": 0.2,
+    "desc": "Ketene central carbon",
+    "priority": 10270
+  },
+  {
+    "element": "C",
+    "btype": "C:",
+    "opls": "opls_1157",
+    "smarts": "[C;X2](=[C])=[C]",
+    "charge": -0.1,
+    "desc": "Allene central carbon",
+    "priority": 10280
+  },
+  {
+    "element": "C",
+    "btype": "CM",
+    "opls": "opls_1154",
+    "smarts": "[CH2]=[C]=[C]",
+    "charge": -0.25,
+    "desc": "Allene terminal carbon CH2",
+    "priority": 10290
+  },
+  {
+    "element": "C",
+    "btype": "CM",
+    "opls": "opls_1155",
+    "smarts": "[CH]=[C]=[C]",
+    "charge": -0.1,
+    "desc": "Allene terminal carbon CHR",
+    "priority": 10300
+  },
+  {
+    "element": "C",
+    "btype": "CM",
+    "opls": "opls_1156",
+    "smarts": "[C;H0]=[C]=[C]",
+    "charge": 0.05,
+    "desc": "Allene terminal carbon CR2",
+    "priority": 10310
+  },
+  {
+    "element": "H",
+    "btype": "HC",
+    "opls": "opls_1153",
+    "smarts": "[#1][C]=[C]=[C]",
+    "charge": 0.15,
+    "desc": "Hydrogen on allene terminal carbon",
+    "priority": 10320
+  },
+  {
+    "element": "C",
+    "btype": "C:",
+    "opls": "opls_1160",
+    "smarts": "[C](=[O])=[O]",
+    "charge": 0.7,
+    "desc": "Carbon dioxide carbon",
+    "priority": 10330
+  },
+  {
+    "element": "O",
+    "btype": "O",
+    "opls": "opls_1161",
+    "smarts": "[O]=[C]=[O]",
+    "charge": -0.35,
+    "desc": "Carbon dioxide oxygen",
+    "priority": 10340
+  },
+  {
+    "element": "O",
+    "btype": "O$",
+    "opls": "opls_1025",
+    "smarts": "[O;r3]([#6;r3])[#6;r3]",
+    "charge": -0.4,
+    "desc": "Epoxide oxygen",
+    "priority": 10350
+  },
+  {
+    "element": "C",
+    "btype": "CY",
+    "opls": "opls_1026",
+    "smarts": "[CH2;r3]1[O;r3][#6;r3]1",
+    "charge": 0.14,
+    "desc": "Epoxide CH2 carbon",
+    "priority": 10360
+  },
+  {
+    "element": "C",
+    "btype": "CY",
+    "opls": "opls_1027",
+    "smarts": "[CH;r3]1[O;r3][#6;r3]1",
+    "charge": 0.17,
+    "desc": "Epoxide CH carbon",
+    "priority": 10370
+  },
+  {
+    "element": "C",
+    "btype": "CY",
+    "opls": "opls_1028",
+    "smarts": "[C;r3]1[O;r3][#6;r3]1",
+    "charge": 0.2,
+    "desc": "Epoxide quaternary carbon",
+    "priority": 10380
+  },
+  {
+    "element": "H",
+    "btype": "HC",
+    "opls": "opls_1029",
+    "smarts": "[#1][C;r3]1[O;r3][#6;r3]1",
+    "charge": 0.03,
+    "desc": "Hydrogen alpha to epoxide oxygen",
+    "priority": 10390
   }
 ]

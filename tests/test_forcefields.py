@@ -115,3 +115,51 @@ def test_oplsaa_assign_ptypes_from_external_rule_table():
     assert ff.assign_ptypes(mol, charge="opls")
     assert all(atom.HasProp("ff_btype") for atom in mol.GetAtoms())
     assert any(atom.GetProp("ff_type") == "opls_154" for atom in mol.GetAtoms())
+
+
+def test_oplsaa2024_integrates_new_particles_and_rules():
+    with open(ff_data_path("ff_dat", "oplsaa.json"), "r", encoding="utf-8") as fh:
+        ff_data = json.load(fh)
+    with open(ff_data_path("ff_dat", "oplsaa_rules.json"), "r", encoding="utf-8") as fh:
+        rule_data = json.load(fh)
+
+    particle_tags = {row["tag"] for row in ff_data["particle_types"]}
+    bond_tags = {row["tag"] for row in ff_data["bond_types"]}
+    angle_tags = {row["tag"] for row in ff_data["angle_types"]}
+    dihedral_tags = {row["tag"] for row in ff_data["dihedral_types"]}
+
+    assert {"opls_1060", "opls_1078", "opls_1106", "opls_1114", "opls_1160"} <= particle_tags
+    assert {"Si,CT", "Si,H~", "Si,OH", "Si,OS", "Si,Si"} <= bond_tags
+    assert {"CT,Si,CT", "H~,Si,H~", "CT,Si,OH", "CT,Si,OS"} <= angle_tags
+    assert {"CT,Si,OS,CT", "H~,Si,OS,CT", "HC,CT,Si,OS", "CT,Si,Si,CT"} <= dihedral_tags
+
+    by_smarts = {row["smarts"]: row for row in rule_data}
+    assert by_smarts["[Li+]"]["opls"] == "opls_1106"
+    assert by_smarts["[Na+]"]["opls"] == "opls_1107"
+    assert by_smarts["[F-]"]["opls"] == "opls_1100"
+    assert by_smarts["[Cl-]"]["opls"] == "opls_1101"
+    assert by_smarts["[SiH4]"]["opls"] == "opls_1083"
+    assert by_smarts["[O;H1][Si]"]["opls"] == "opls_1073"
+    assert by_smarts["[C](=[O])=[O]"]["opls"] == "opls_1160"
+
+
+def test_oplsaa2024_assigns_silane_co2_and_updated_ions():
+    ff = OPLSAA()
+
+    silane = Chem.AddHs(Chem.MolFromSmiles("[SiH4]"))
+    assert ff.assign_ptypes(silane, charge="opls")
+    assert ff.assign_btypes(silane)
+    assert ff.assign_atypes(silane)
+    assert ff.assign_dtypes(silane)
+    assert [atom.GetProp("ff_type") for atom in silane.GetAtoms()].count("opls_1083") == 1
+    assert [atom.GetProp("ff_type") for atom in silane.GetAtoms()].count("opls_1064") == 4
+    assert {bond.GetProp("ff_type") for bond in silane.GetBonds()} == {"Si,H~"}
+    assert {angle.ff.type for angle in silane.angles.values()} == {"H~,Si,H~"}
+
+    co2 = Chem.MolFromSmiles("O=C=O")
+    assert ff.assign_ptypes(co2, charge="opls")
+    assert [atom.GetProp("ff_type") for atom in co2.GetAtoms()] == ["opls_1161", "opls_1160", "opls_1161"]
+
+    li = Chem.MolFromSmiles("[Li+]")
+    assert ff.assign_ptypes(li, charge="opls")
+    assert li.GetAtomWithIdx(0).GetProp("ff_type") == "opls_1106"
