@@ -1,332 +1,259 @@
-# YadonPy Manual (v0.8.69)
+# YadonPy Manual (v0.8.71)
 
-YadonPy is a script-oriented molecular workflow package for polymer, solvent, salt, bulk, and interface studies. This manual explains how the package is organized, what the stable architectural rules are, and how the current release expects real workflows to be staged.
+## 1. Purpose
 
-Python requirement: Python 3.11+
+This manual describes the architectural rules of YadonPy. It is intended for users and developers who need to understand why the workflow is structured the way it is, what data are persistent, and where physical or software-level assumptions enter the pipeline.
 
 Related documents:
 
-- API reference: `docs/Yadonpy_API_v0.8.69.md`
+- API reference: `docs/Yadonpy_API_v0.8.71.md`
 - user guide: `docs/Yaonpyd_user_guide.md`
 
-## 1. Why this manual exists
+## 2. Architectural principles
 
-The user guide explains how to use YadonPy. The API reference explains what can be called. This manual explains why the package behaves the way it does.
+### 2.1 Script-first workflow
 
-Use this manual when you need to reason about:
+YadonPy is designed so that the scientific protocol remains legible in the user script. Helper APIs reduce duplication, but they do not replace the explicit statement of:
 
-- what is stored in MolDB and what is deliberately regenerated;
-- why work directories are explicit and restart-aware;
-- how interface planning is split between bulk preparation, slab build, and staged interface dynamics;
-- which behaviors are product behavior versus implementation detail.
+- molecular identities;
+- composition;
+- target density or explicit cell dimensions;
+- force field;
+- equilibration strategy;
+- interface route and protocol.
 
-## 2. Core design rules
+### 2.2 MolDB-first persistence
 
-### 2.1 Script first
-
-YadonPy assumes the user wants to keep the real study logic visible in Python.
-
-That means:
-
-- examples are part of the public workflow surface;
-- helper APIs exist to reduce duplication, not to hide the workflow entirely;
-- major choices such as chemistry, composition, density target, and interface route remain explicit in user scripts.
-
-### 2.2 MolDB first
-
-MolDB is the persistent cache for expensive molecule preparation.
-
-It stores:
+MolDB is the persistent cache for expensive molecular preparation. Its role is to preserve:
 
 - geometry;
 - charge variants;
-- readiness metadata;
-- bonded-patch sidecar information for variants that need it.
+- charge/basis/method metadata;
+- bonded-patch sidecars when required.
 
-It does not exist to preserve old `.gro/.top/.itp` trees as the authoritative source of truth. Those exports are treated as rebuildable products.
+System-level GROMACS exports are treated as reproducible products, not as the primary persistent source.
 
 ### 2.3 Restart-aware work directories
 
-Work directories are not throwaway scratch by default. They are structured records of one workflow execution.
-
-Typical responsibilities:
-
-- hold packed-cell outputs;
-- hold exported topologies;
-- hold staged equilibration folders;
-- hold analysis summaries;
-- hold interface assembly artifacts;
-- hold resume metadata.
+Work directories are structured execution records. Restart logic is expected to reuse valid outputs, but only when their inputs and schema remain compatible with the current run definition.
 
 ### 2.4 Conservative physical staging
 
-The package favors better staging over blind retry inflation.
-
-For difficult systems this usually means:
+For difficult systems, YadonPy prefers better staging over brute-force retries. This includes:
 
 - lower initial packing density;
-- extra initial `Z` slack;
-- fixed-XY or semiisotropic relaxation;
-- separate equilibration of components before final interface assembly;
-- staged interface release instead of immediate unrestricted contact.
-- explicit substrates such as graphite are treated as reusable construction blocks and stacked into the final cell before export, instead of being repaired afterward in coordinate files.
+- additional free volume along the least constrained axis;
+- separated component equilibration;
+- staged contact and release for interfaces;
+- explicit substrate blocks instead of post hoc coordinate editing.
 
-## 3. Conceptual layers
+## 3. Layer model
 
-The package is easiest to understand as five layers.
+YadonPy can be understood as five layers.
 
 ### 3.1 Molecular identity
 
-Input starts as SMILES, PSMILES, an RDKit molecule, or a MolDB-backed handle.
+Input begins as SMILES, PSMILES, RDKit molecules, or MolDB-backed handles.
 
 ### 3.2 Molecular preparation
 
-This is where geometry, charges, atom types, and bonded terms become usable for simulation.
+This layer assigns:
+
+- geometry;
+- charges;
+- atom types;
+- bonded terms;
+- reusable metadata.
 
 ### 3.3 System construction
 
-Prepared species are turned into bulk or interfacial systems through composition targets, density targets, explicit cells, and packing logic.
+Prepared species are converted into bulk or interface systems through:
+
+- composition targets;
+- density or explicit box constraints;
+- packing and stacking logic;
+- species-level metadata propagation.
 
 ### 3.4 Export and simulation
 
-The system is exported to GROMACS inputs and then passed through staged workflows such as EQ21, additional relaxation, NPT production, or staged interface dynamics.
+System state is exported into GROMACS artifacts and passed into staged workflows such as EQ21, additional relaxation, interface diffusion, elongation, or glass-transition protocols.
 
 ### 3.5 Analysis and reporting
 
-Analysis outputs are written as structured JSON and related artifacts so later code can consume them programmatically.
+Analysis is written as files that are both human-readable and machine-readable, so later code can consume the outputs programmatically.
 
-## 4. Molecules, handles, and resolved structures
+## 4. Charge workflow model
 
-### 4.1 Direct molecule creation
+### 4.1 Separation of raw charge template and simulation scaling
 
-At the top level:
+YadonPy now enforces a strict separation between:
 
-```python
-import yadonpy as yp
+- **raw molecular charges**, produced by QM fitting and eligible for MolDB persistence;
+- **simulation-level scaled charges**, applied only during export or system construction.
 
-mol = yp.mol_from_smiles("CCO", name="ethanol")
-```
+The raw RESP template is the authoritative molecular charge state. Scaling is a system-level modeling choice.
 
-### 4.2 Explicit force-field handles
+### 4.2 PsiRESP as the RESP/ESP backend
 
-The explicit style is:
+From `v0.8.71`, RESP and ESP are implemented through **PsiRESP** rather than the old Psi4 `resp` plugin path.
 
-```python
-import yadonpy as yp
+The reason is architectural rather than cosmetic. The workflow requires:
 
-ff = yp.get_ff("gaff2_mod")
-mol = ff.mol("CCO")
-ok = ff.ff_assign(mol)
-```
+- explicit charge-sum constraints;
+- explicit equivalence constraints;
+- auditable grouped constraints for charged polymer motifs.
 
-`ff.mol(...)` can be a lightweight handle. `ff.ff_assign(...)` is the boundary where that handle is resolved into a prepared RDKit-backed molecule.
+PsiRESP provides these facilities in a stable and inspectable form.
 
-This matters because it keeps one script style valid for:
+### 4.3 Polyelectrolyte mode
 
-- direct preparation from SMILES;
-- MolDB-backed reuse;
-- explicit bonded overrides such as `bonded="DRIH"`.
+`polyelectrolyte_mode=True` activates grouped charge detection and grouped RESP constraints.
 
-## 5. Persistence model
+The workflow is:
 
-### 5.1 What belongs in MolDB
+1. detect charged groups by built-in template;
+2. if template matching fails, try graph-based local charged-subgraph detection;
+3. create one charge-sum constraint per charged group;
+4. constrain the neutral remainder as one charge-sum region;
+5. add conservative equivalence constraints on the neutral remainder only;
+6. preserve the resulting metadata on the molecule and in exports.
 
-Good MolDB candidates:
+### 4.4 Failure policy
 
-- PF6 or similar ions after expensive RESP or bonded-patch preparation;
-- reusable solvents used in many studies;
-- monomers or charged fragments that appear across projects.
+If grouped charged-region identification fails:
 
-### 5.2 What belongs in the work directory
+- RESP is still allowed to finish;
+- the fallback is recorded explicitly;
+- downstream charge scaling falls back to whole-molecule scaling;
+- the failure is not silent.
 
-Good workdir artifacts:
+## 5. Polyelectrolyte metadata model
 
-- system exports;
-- packed-cell build folders;
-- EQ21 stage folders;
-- production trajectories;
-- interface slab and assembled-system files;
-- per-study analysis outputs.
+The current implementation preserves four categories of metadata:
 
-### 5.3 Why topology export is rebuildable
+- `charge_groups.json`
+- `resp_constraints.json`
+- `residue_map.json`
+- `charge_scaling_report.json`
 
-The package intentionally regenerates `.gro/.top/.itp/.ndx` outputs because the authoritative state is the prepared molecule plus the current export logic. This avoids silently trusting stale topology trees after code changes.
+These files are written during export and are intended for:
 
-## 6. Force-field and charge workflow
+- tracing atom-index groups back to chemistry;
+- validating grouped charge constraints;
+- validating local scaling behavior;
+- external analysis by residue or charged-group.
 
-### 6.1 Charge assignment
+## 6. Residue model for polymers
 
-The common stages are:
+### 6.1 Residues are monomer-level export units
 
-1. generate or load geometry;
-2. optionally run conformer search;
-3. optionally optimize;
-4. assign charges;
-5. assign the force field.
+For polymeric species, YadonPy now preserves residue information through export:
 
-### 6.2 Assignment reports
+- each repeat unit is written as a residue;
+- terminal groups remain separate residues when available;
+- small molecules and ions remain single-residue species.
 
-After successful assignment, YadonPy prints a per-atom report by default. This is not decorative. It is a first-line chemistry validation tool.
+### 6.2 Why this matters
 
-### 6.3 Bonded patch persistence
-
-Some variants, especially certain ions, require bonded-sidecar data. Current MolDB logic preserves that data with the relevant charge variant so later reuse does not silently lose the bonded override.
+This change is required for rigorous local scaling and later analysis, because charged-group indices must remain auditable after system export.
 
 ## 7. Bulk construction model
 
-Bulk construction is usually one of two kinds.
-
 ### 7.1 Density-driven packing
 
-Use this when the final cell does not have to match another system later. A density target is enough to derive a starting box.
+This mode is appropriate when no later interface requires an externally fixed lateral footprint.
 
-### 7.2 Explicit-cell or fixed-XY packing
+### 7.2 Explicit-cell or fixed-lateral-dimension packing
 
-Use this when one system must later match another system laterally, especially in interface workflows.
+This mode is required when a bulk phase will later be assembled into an interface or stacked against a substrate or another phase.
 
-The current interface helpers use this model for final electrolyte rebuilds:
+## 8. Interface model
 
-- keep polymer `XY` fixed;
-- give the initial electrolyte box more `Z` room;
-- relax under semiisotropic control.
+The interface subsystem is deliberately split into three responsibilities:
 
-## 8. Equilibration philosophy
+1. **bulk preparation**
+2. **geometric assembly**
+3. **interface dynamics**
 
-### 8.1 EQ21
+This separation allows geometry inspection, cached reuse, and route-specific assembly logic without entangling all MD logic into one monolithic path.
 
-EQ21 is the robust staged equilibration preset. It writes a dedicated staged layout and deliberately uses a conservative GROMACS policy for difficult systems.
+### 8.1 Route A
 
-### 8.2 Additional equilibration rounds
+Route A is the fully periodic interface workflow.
 
-YadonPy can keep relaxing if the current equilibrium checks still say the system is not settled enough.
+### 8.2 Route B
 
-### 8.3 Final NPT tails
+Route B is the vacuum-buffered and wall-ready interface workflow for `pbc = xy` use cases.
 
-The last NPT stage is often the place where geometry-specific control is applied. For example:
+## 9. Substrate model
 
-- fixed-XY semiisotropic NPT for standalone electrolyte relaxation;
-- production NPT after a dense bulk has stabilized.
+Graphite and other explicit substrates are treated as reusable construction blocks. They are built as proper molecular/cell objects and stacked into the final cell before export rather than being repaired afterward in coordinate files.
 
-## 9. Interface architecture
+## 10. Export model
 
-The interface subsystem is intentionally split into three responsibilities.
+`export_system_from_cell_meta(...)` is the main system-export bridge for modern workflows.
 
-### 9.1 Bulk preparation
+Its responsibilities include:
 
-The bulk sides are prepared and equilibrated independently first. This is not optional complexity. It is part of the success strategy.
+- resolving per-species artifacts;
+- preserving molecule type names;
+- preserving polymer residue identity when present;
+- applying simulation-level charge scaling;
+- generating topology, coordinate, and index artifacts;
+- writing machine-readable metadata about charge scaling and residues.
 
-### 9.2 Slab build and assembly
+## 11. Simulation presets
 
-`InterfaceBuilder` reads equilibrated bulk states, selects slab windows, unwraps bonded fragments, applies lateral sizing and shifting, assembles the interfacial box, and writes:
+### 11.1 EQ21
 
-- `system.gro`
-- `system.top`
-- `system.ndx`
-- `system_meta.json`
-- `protocol_manifest.json`
+EQ21 remains the main conservative equilibration preset. It is intended for robust equilibration rather than minimal wall-clock cost.
 
-### 9.3 Interface dynamics
+### 11.2 NPT reporting
 
-`InterfaceDynamics` is separate from geometry assembly. It runs the staged protocol on top of the already assembled interface.
+NPT-capable workflows now generate a convergence plot that overlays:
 
-This separation allows:
+- density;
+- volume;
+- three box lengths.
 
-- geometry inspection before MD;
-- route-specific assembly logic without duplicating MD logic;
-- preflight validation of topology and index groups before the run.
+The plot is written in normalized form so the series can be interpreted together despite differing units.
 
-## 10. Current interface planning model
+## 12. Packaging and release hygiene
 
-### 10.1 Polymer-anchored footprint
+Release trees should not retain generated clutter such as:
 
-The equilibrated polymer `XY` lengths define the shared lateral reference.
+- `__pycache__`
+- `.pytest_cache`
+- `.yadonpy_cache`
+- `yadonpy.egg-info`
 
-### 10.2 Electrolyte planning
+The current release process also requires:
 
-For difficult systems the package prefers:
+- archive of the previous numbered release into `history_version`;
+- only the current version directory and current `.tar` in the root release tree;
+- GitHub synchronization after each update.
 
-1. determine the compact final target volume relevant to the slab;
-2. if needed, build a looser isotropic probe electrolyte first;
-3. read the equilibrated probe density response;
-4. resize the final electrolyte composition to the polymer-matched footprint;
-5. rebuild the final electrolyte in a fixed-XY box with extra `Z` slack.
+## 13. Environment baseline
 
-### 10.3 Route and protocol selection
+The recommended baseline for QM-enabled workflows is:
 
-In the current release, `recommend_polymer_diffusion_interface_recipe(...)` centralizes the route and staged-protocol defaults for polymer/electrolyte diffusion studies.
+- Python `3.11`
+- `psi4`
+- `psiresp`
+- `dftd3-python`
+- `rdkit`
 
-That helper is meant to answer one narrow question:
+Because Psi4 and PsiRESP are most stable through conda, the project documentation treats conda as the primary installation path for the QM stack.
 
-"Given the already planned polymer-matched interface geometry, which route and staged protocol should this study use by default?"
+## 14. Current limitations
 
-Its current behavior is:
+The current polyelectrolyte implementation is deliberately conservative.
 
-- neutral systems stay on route A unless vacuum is explicitly requested;
-- polyelectrolyte-style systems default to route B with a vacuum buffer;
-- stage durations are lengthened for polyelectrolyte-style systems;
-- the early stages keep the gap-hold and density-relax logic explicit.
+Known limits include:
 
-## 11. Example 12 design in the current release
+- charged-group detection is template-first and therefore not exhaustive;
+- graph fallback is structural, not chemically complete for all exotic motifs;
+- local charge scaling currently preserves grouped totals but does not attempt a second constrained redistribution on the neutral remainder after scaling;
+- exported residue/group metadata are present, but downstream analysis scripts still need broader standardization around them.
 
-Example 12 is the most demanding shipped workflow and therefore sets the practical standard for interface robustness.
-
-Its intended chain is:
-
-1. build a large CMC bulk;
-2. equilibrate CMC first;
-3. use the equilibrated CMC `XY` lengths as the interface footprint;
-4. build and equilibrate an isotropic electrolyte probe bulk;
-5. resize the final electrolyte composition from the equilibrated probe profile;
-6. rebuild and relax the final electrolyte in a fixed-XY box;
-7. assemble a route-B vacuum-buffered interface;
-8. run staged diffusion dynamics with gradual release.
-
-The script remains explicit, but the route/protocol choice is now library-managed instead of being rebuilt by hand inside the example.
-
-The current release also enforces a stricter bulk-equilibration rule for difficult systems: an energy-minimization stage is not considered reusable if GROMACS reports overlapping atoms or non-finite forces. That behavior is intentional. An invalid EM output is a bad packed structure, not a successful restart checkpoint.
-
-## 12. Output contracts that matter
-
-The following files are behaviorally important, not just temporary output:
-
-- `system.top`
-- `system.gro`
-- `system.ndx`
-- `system_meta.json`
-- workdir metadata
-- resume metadata
-- EQ21 schedule files
-- interface protocol manifests
-
-When changing code, these must be treated as contracts.
-
-## 13. Validation expectations
-
-When code changes land, the relevant validation order is:
-
-1. syntax and import sanity;
-2. focused unit tests for the changed helpers;
-3. release-sanity checks for docs and examples;
-4. non-GROMACS validation when local GROMACS is unavailable;
-5. real MD only in environments that actually provide GROMACS.
-
-## 14. Maintenance constraints
-
-Current maintenance rules for this release:
-
-- keep the workflow script-first;
-- do not hide core study logic behind opaque launchers;
-- keep MolDB as the reusable chemistry cache rather than reviving persistent topology-cache logic;
-- preserve restart/resume semantics as product behavior;
-- treat `__pycache__`, `.pytest_cache`, `.yadonpy_cache`, and `src/yadonpy.egg-info` as disposable generated artifacts.
-
-## 15. Final guidance
-
-YadonPy is easiest to maintain correctly when you keep asking:
-
-- what is the real scientific workflow boundary here;
-- what is reusable molecular state versus rebuildable exported state;
-- which artifact is the source of truth;
-- which stage should absorb the complexity so user scripts can stay explicit but not messy.
-
-That is the reasoning behind the current `v0.8.66` layout.
+These limits are explicit design tradeoffs in favor of auditable behavior over aggressive automatic inference.

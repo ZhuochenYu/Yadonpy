@@ -324,7 +324,7 @@ class OPLSAA(GAFF):
             return resolved
         return mol
 
-    def ff_assign(self, mol, charge=None, retryMDL=True, useMDL=True, report: bool = True):
+    def ff_assign(self, mol, charge=None, retryMDL=True, useMDL=True, report: bool = True, **charge_kwargs):
         """
         OPLSAA.ff_assign
 
@@ -382,7 +382,7 @@ class OPLSAA(GAFF):
 
         # If charge is not 'opls', use YadonPy's generic charge assignment.
         if result and effective_charge is not None and effective_charge != 'opls':
-            result = calc.assign_charges(mol, charge=effective_charge)
+            result = calc.assign_charges(mol, charge=effective_charge, **charge_kwargs)
 
         if not result and retryMDL and not useMDL:
             utils.radon_print('Retry to assign with MDL aromaticity model', level=1)
@@ -399,7 +399,7 @@ class OPLSAA(GAFF):
             if result:
                 result = self.assign_itypes(mol)
             if result and effective_charge is not None and effective_charge != 'opls':
-                result = calc.assign_charges(mol, charge=effective_charge)
+                result = calc.assign_charges(mol, charge=effective_charge, **charge_kwargs)
             if result:
                 utils.radon_print('Success to assign with MDL aromaticity model', level=1)
 

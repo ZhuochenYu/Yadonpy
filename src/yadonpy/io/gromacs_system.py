@@ -27,6 +27,13 @@ except Exception:  # pragma: no cover
     Descriptors = None
 
 from ..core import chem_utils as core_utils
+from ..core.polyelectrolyte import (
+    annotate_polyelectrolyte_metadata,
+    build_residue_map,
+    get_charge_groups,
+    get_polyelectrolyte_summary,
+    get_resp_constraints,
+)
 
 def _mol_signature(m: Chem.Mol) -> tuple[int, tuple[tuple[int, int], ...]]:
     """Return a simple, order-independent signature for a molecule.
@@ -517,7 +524,7 @@ def _read_gro_single_molecule(gro_path: Path) -> Tuple[List[str], np.ndarray]:
     return atom_names, coords
 
 
-def _scale_itp_charges(itp_text: str, scale: float) -> str:
+def _scale_itp_charges(itp_text: str, scale: float, atom_indices: list[int] | None = None) -> str:
     """Scale charges in the `[ atoms ]` section of an ITP.
 
     We keep the rest of the file untouched. This is used for simulation-level
@@ -530,8 +537,10 @@ def _scale_itp_charges(itp_text: str, scale: float) -> str:
     if abs(s - 1.0) < 1.0e-12:
         return itp_text
 
+    selected = None if atom_indices is None else {int(i) + 1 for i in atom_indices}
     out_lines: list[str] = []
     in_atoms = False
+    atom_nr = None
     for raw in itp_text.splitlines():
         line = raw
         stripped = line.strip()
@@ -557,6 +566,10 @@ def _scale_itp_charges(itp_text: str, scale: float) -> str:
         cols = body.split()
         if len(cols) >= 7:
             try:
+                atom_nr = int(cols[0])
+                if selected is not None and atom_nr not in selected:
+                    out_lines.append(raw)
+                    continue
                 q = float(cols[6])
                 cols[6] = f"{q * s:.8f}"
                 body2 = "\t".join(cols)
@@ -571,6 +584,73 @@ def _scale_itp_charges(itp_text: str, scale: float) -> str:
         out_lines.append(raw)
 
     return "\n".join(out_lines) + ("\n" if itp_text.endswith("\n") else "")
+
+
+def _scale_itp_charge_groups(itp_text: str, groups: list[dict[str, Any]], scale: float) -> tuple[str, dict[str, Any]]:
+    if abs(float(scale) - 1.0) < 1.0e-12 or not groups:
+        return itp_text, {"scale": float(scale), "groups": [], "fallback": None}
+
+    lines = itp_text.splitlines()
+    in_atoms = False
+    atom_rows: dict[int, dict[str, Any]] = {}
+    for idx, raw in enumerate(lines):
+        stripped = raw.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            sec = stripped.strip("[]").strip().lower()
+            in_atoms = sec == "atoms"
+            continue
+        if not in_atoms or stripped == "" or stripped.startswith(";"):
+            continue
+        body = raw.split(";", 1)[0]
+        cols = body.split()
+        if len(cols) < 7:
+            continue
+        try:
+            atom_no = int(cols[0])
+            atom_rows[atom_no] = {"line_index": idx, "cols": cols}
+        except Exception:
+            continue
+
+    report = {"scale": float(scale), "groups": [], "fallback": None}
+    for grp in groups:
+        group_indices = [int(i) + 1 for i in grp.get("atom_indices", [])]
+        if not group_indices:
+            continue
+        present = [i for i in group_indices if i in atom_rows]
+        if not present:
+            continue
+        orig = []
+        for atom_no in present:
+            orig.append(float(atom_rows[atom_no]["cols"][6]))
+        orig_total = float(sum(orig))
+        target_total = float(grp.get("formal_charge", 0.0)) * float(scale)
+        if abs(orig_total) > 1.0e-12:
+            factor = target_total / orig_total
+            new_vals = [q * factor for q in orig]
+        else:
+            delta = target_total / float(len(present))
+            new_vals = [delta for _ in orig]
+        for atom_no, q in zip(present, new_vals):
+            atom_rows[atom_no]["cols"][6] = f"{float(q):.8f}"
+        report["groups"].append(
+            {
+                "group_id": grp.get("group_id"),
+                "atom_indices": [int(i) - 1 for i in present],
+                "formal_charge": int(grp.get("formal_charge", 0)),
+                "original_total_charge": float(orig_total),
+                "scaled_total_charge": float(sum(new_vals)),
+                "target_total_charge": float(target_total),
+            }
+        )
+
+    for atom_no, info in atom_rows.items():
+        raw = lines[info["line_index"]]
+        comment = ""
+        if ";" in raw:
+            _, tail = raw.split(";", 1)
+            comment = " ;" + tail
+        lines[info["line_index"]] = "\t".join(info["cols"]) + comment
+    return ("\n".join(lines) + ("\n" if itp_text.endswith("\n") else "")), report
 
 
 def _itp_total_charge(itp_text: str) -> float:
@@ -864,8 +944,8 @@ def _resolve_charge_scale(
         return float(spec["default"])
     return 1.0
 
-def _rewrite_itp_moltype_and_resname(itp_text: str, new_name: str) -> str:
-    """Rewrite [ moleculetype ] name and [ atoms ] residue name to `new_name`."""
+def _rewrite_itp_moltype_and_resname(itp_text: str, new_name: str, *, preserve_residues: bool = False) -> str:
+    """Rewrite [ moleculetype ] name and optionally flatten [ atoms ] residue name."""
     lines = itp_text.splitlines()
     out = []
     i = 0
@@ -914,7 +994,7 @@ def _rewrite_itp_moltype_and_resname(itp_text: str, new_name: str) -> str:
             else:
                 parts = ln.split()
                 # Expected: nr type resnr residue atom cgnr charge mass
-                if len(parts) >= 4:
+                if len(parts) >= 4 and not preserve_residues:
                     parts[3] = new_res
                     out.append(" ".join(parts))
                 else:
@@ -927,8 +1007,10 @@ def _rewrite_itp_moltype_and_resname(itp_text: str, new_name: str) -> str:
     return "\n".join(out) + ("\n" if itp_text.endswith("\n") else "")
 
 
-def _rewrite_gro_resname(gro_text: str, new_resname: str) -> str:
-    """Rewrite the 5-char residue name field in a .gro atom lines."""
+def _rewrite_gro_resname(gro_text: str, new_resname: str, *, preserve_residues: bool = False) -> str:
+    """Rewrite the 5-char residue name field in a .gro atom lines unless residues are preserved."""
+    if preserve_residues:
+        return gro_text
     lines = gro_text.splitlines()
     if len(lines) < 3:
         return gro_text
@@ -964,6 +1046,7 @@ def export_system_from_cell_meta(
     # specify per-species scaling in poly.amorphous_cell(..., charge_scale=[...]).
     # If None, we will read per-species scaling from the cell metadata.
     charge_scale: Optional[Any] = None,
+    polyelectrolyte_mode: bool = False,
     include_h_atomtypes: bool = False,
     source_molecules_dir: Optional[Path] = None,
     system_gro_template: Optional[Path] = None,
@@ -1085,6 +1168,42 @@ def export_system_from_cell_meta(
         return frag_mols
 
     species: list[dict] = []
+    def _species_payload(
+        sp_in: dict,
+        *,
+        artifact_dir: Path,
+        mol_id: str,
+        mol_name: str,
+        moltype: str,
+        formal_charge: int,
+        kind: str,
+        mol=None,
+    ) -> dict[str, Any]:
+        payload = {
+            **sp_in,
+            "smiles": smiles,
+            "n": n,
+            "artifact_dir": str(artifact_dir),
+            "mol_id": mol_id,
+            "mol_name": mol_name,
+            "moltype": moltype,
+            "formal_charge": int(formal_charge),
+            "kind": kind,
+            "polyelectrolyte_mode": bool(sp_in.get("polyelectrolyte_mode", False)),
+        }
+        for key in ("charge_groups", "resp_constraints", "polyelectrolyte_summary", "residue_map"):
+            if key in sp_in and sp_in.get(key) is not None:
+                payload[key] = sp_in.get(key)
+        if mol is not None:
+            try:
+                payload["charge_groups"] = get_charge_groups(mol)
+                payload["resp_constraints"] = get_resp_constraints(mol)
+                payload["polyelectrolyte_summary"] = get_polyelectrolyte_summary(mol)
+                payload["residue_map"] = build_residue_map(mol, mol_name=moltype)
+            except Exception:
+                pass
+        return payload
+
     # Resolve/create per-species artifacts
     for i, sp in enumerate(species_in):
         smiles = canonicalize_smiles(sp.get("smiles", ""))
@@ -1122,11 +1241,18 @@ def export_system_from_cell_meta(
 
             dst_itp = art_dir / f"{mol_name_fs}.itp"
             itp_txt = src_itp.read_text(encoding="utf-8", errors="ignore")
-            dst_itp.write_text(_rewrite_itp_moltype_and_resname(itp_txt, mol_name_fs), encoding="utf-8")
+            preserve_residues = bool(kind == "polymer" or sp.get("residue_map"))
+            dst_itp.write_text(
+                _rewrite_itp_moltype_and_resname(itp_txt, mol_name_fs, preserve_residues=preserve_residues),
+                encoding="utf-8",
+            )
 
             dst_gro = art_dir / f"{mol_name_fs}.gro"
             gro_txt = src_gro.read_text(encoding="utf-8", errors="ignore")
-            dst_gro.write_text(_rewrite_gro_resname(gro_txt, mol_name_fs), encoding="utf-8")
+            dst_gro.write_text(
+                _rewrite_gro_resname(gro_txt, mol_name_fs, preserve_residues=preserve_residues),
+                encoding="utf-8",
+            )
 
             if src_top is not None:
                 dst_top = art_dir / f"{mol_name_fs}.top"
@@ -1143,17 +1269,15 @@ def export_system_from_cell_meta(
                 src_gro = next(iter(sorted(src_dir.glob("*.gro"))), None)
             if src_itp is not None and src_gro is not None and src_itp.is_file() and src_gro.is_file():
                 species.append(
-                    {
-                        **sp,
-                        "smiles": smiles,
-                        "n": n,
-                        "artifact_dir": str(src_dir),
-                        "mol_id": mol_id,
-                        "mol_name": mol_name,
-                        "moltype": mol_name_fs,
-                        "formal_charge": int(formal_charge),
-                        "kind": kind,
-                    }
+                    _species_payload(
+                        sp,
+                        artifact_dir=src_dir,
+                        mol_id=mol_id,
+                        mol_name=mol_name,
+                        moltype=mol_name_fs,
+                        formal_charge=formal_charge,
+                        kind=kind,
+                    )
                 )
                 continue
 
@@ -1177,17 +1301,15 @@ def export_system_from_cell_meta(
 
         if copied:
             species.append(
-                {
-                    **sp,
-                    "smiles": smiles,
-                    "n": n,
-                    "artifact_dir": str(art_dir),
-                    "mol_id": mol_id,
-                    "mol_name": mol_name,
-                    "moltype": mol_name_fs,
-                    "formal_charge": int(formal_charge),
-                    "kind": kind,
-                }
+                _species_payload(
+                    sp,
+                    artifact_dir=art_dir,
+                    mol_id=mol_id,
+                    mol_name=mol_name,
+                    moltype=mol_name_fs,
+                    formal_charge=formal_charge,
+                    kind=kind,
+                )
             )
             continue
 
@@ -1267,18 +1389,17 @@ def export_system_from_cell_meta(
                     write_mol2=False,
                 )
             species.append(
-                {
-                    **sp,
-                    "smiles": smiles,
-                    "n": n,
-                    "artifact_dir": str(art_dir),
-                    "mol_id": mol_id,
-                    "mol_name": mol_name,
-                    "moltype": mol_name_fs,
-                    "formal_charge": int(formal_charge),
-                    "kind": kind,
-                }
+                _species_payload(
+                    sp,
+                    artifact_dir=art_dir,
+                    mol_id=mol_id,
+                    mol_name=mol_name,
+                    moltype=mol_name_fs,
+                    formal_charge=formal_charge,
+                    kind=kind,
+                    mol=rep_mol,
                 )
+            )
             continue
 
         # Otherwise: resolve by SMILES via MolDB (geometry + charges), then write artifacts.
@@ -1333,22 +1454,26 @@ def export_system_from_cell_meta(
         )
 
         species.append(
-            {
-                **sp,
-                "artifact_dir": str(art_dir),
-                "mol_id": mol_id,
-                "mol_name": mol_name,
-                "moltype": mol_name_fs,
-                "n": n,
-                "smiles": smiles,
-                "formal_charge": int(formal_charge),
-                "kind": kind,
-            }
+            _species_payload(
+                sp,
+                artifact_dir=art_dir,
+                mol_id=mol_id,
+                mol_name=mol_name,
+                moltype=mol_name_fs,
+                formal_charge=formal_charge,
+                kind=kind,
+                mol=rep_mol,
+            )
         )
 
 
     if not species:
         raise ValueError("Empty system: no species resolved from cell metadata")
+    effective_polyelectrolyte_mode = bool(
+        polyelectrolyte_mode
+        or meta.get("polyelectrolyte_mode")
+        or any(sp.get("charge_groups") for sp in species)
+    )
 
     # ---------------
     # Copy molecule ITP/TOP/GRO into work directory
@@ -1408,6 +1533,7 @@ def export_system_from_cell_meta(
     if inherited_param_itp is not None:
         _accumulate_param_blocks(inherited_param_itp.read_text(encoding="utf-8", errors="replace"))
 
+    charge_scaling_report: dict[str, Any] = {"species": []}
     for sp in species:
         art_dir = Path(sp["artifact_dir"])
         mol_name = str(sp.get("mol_name") or sp.get("mol_id") or "MOL")
@@ -1441,11 +1567,18 @@ def export_system_from_cell_meta(
         dst_gro = dst_dir / f"{mol_name_fs}.gro"
         # Apply per-species simulation-level charge scaling when copying to the run directory.
         itp_text = itp.read_text(encoding="utf-8", errors="replace")
-        itp_text = _scale_itp_charges(itp_text, scale=float(scale))
+        charge_groups = sp.get("charge_groups") if isinstance(sp.get("charge_groups"), list) else None
+        use_group_scaling = bool(effective_polyelectrolyte_mode and charge_groups)
+        if use_group_scaling:
+            itp_text, scale_report = _scale_itp_charge_groups(itp_text, charge_groups, scale=float(scale))
+        else:
+            itp_text = _scale_itp_charges(itp_text, scale=float(scale))
+            scale_report = {"scale": float(scale), "groups": [], "fallback": ("whole_molecule_scale" if effective_polyelectrolyte_mode else None)}
 
         # Rewrite moltype + residue name to match `mol_name_fs`.
         # (Important when cached entries use hashed IDs.)
-        itp_text = _rewrite_itp_moltype_and_resname(itp_text, mol_name_fs)
+        preserve_residues = bool(kind == "polymer" or sp.get("residue_map"))
+        itp_text = _rewrite_itp_moltype_and_resname(itp_text, mol_name_fs, preserve_residues=preserve_residues)
 
         # Extract any parameter blocks before [ moleculetype ] and accumulate them.
         params_text, mol_text = _split_itp_params_and_mol_text(itp_text)
@@ -1454,8 +1587,19 @@ def export_system_from_cell_meta(
         dst_itp.write_text(mol_text, encoding="utf-8")
 
         gro_txt = gro.read_text(encoding="utf-8", errors="replace")
-        dst_gro.write_text(_rewrite_gro_resname(gro_txt, mol_name_fs), encoding="utf-8")
+        dst_gro.write_text(_rewrite_gro_resname(gro_txt, mol_name_fs, preserve_residues=preserve_residues), encoding="utf-8")
         sp["artifact_dir"] = str(dst_dir)
+        charge_scaling_report["species"].append(
+            {
+                "moltype": mol_name_fs,
+                "smiles": str(sp.get("smiles", "")),
+                "kind": kind,
+                "charge_scale": float(scale),
+                "polyelectrolyte_mode": bool(effective_polyelectrolyte_mode),
+                "used_group_scaling": bool(use_group_scaling),
+                "report": scale_report,
+            }
+        )
 
         mol_itp_paths.append(dst_itp)
         mol_gro_paths.append(dst_gro)
@@ -1780,6 +1924,52 @@ def export_system_from_cell_meta(
     if charge_fix_info is not None:
         payload["export_charge_correction"] = charge_fix_info
     system_meta.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+    residue_map_path = out_dir / "residue_map.json"
+    residue_map_payload = {
+        "species": [
+            {
+                "moltype": str(sp.get("moltype", "")),
+                "mol_name": str(sp.get("mol_name", "")),
+                "n": int(sp.get("n", 0)),
+                "residue_map": sp.get("residue_map"),
+            }
+            for sp in species
+            if sp.get("residue_map") is not None
+        ]
+    }
+    residue_map_path.write_text(json.dumps(residue_map_payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+    charge_groups_path = out_dir / "charge_groups.json"
+    charge_groups_payload = {
+        "species": [
+            {
+                "moltype": str(sp.get("moltype", "")),
+                "mol_name": str(sp.get("mol_name", "")),
+                "smiles": str(sp.get("smiles", "")),
+                "charge_groups": sp.get("charge_groups", []),
+                "polyelectrolyte_summary": sp.get("polyelectrolyte_summary"),
+            }
+            for sp in species
+        ]
+    }
+    charge_groups_path.write_text(json.dumps(charge_groups_payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+    resp_constraints_path = out_dir / "resp_constraints.json"
+    resp_constraints_payload = {
+        "species": [
+            {
+                "moltype": str(sp.get("moltype", "")),
+                "mol_name": str(sp.get("mol_name", "")),
+                "resp_constraints": sp.get("resp_constraints"),
+            }
+            for sp in species
+        ]
+    }
+    resp_constraints_path.write_text(json.dumps(resp_constraints_payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+    charge_scaling_report_path = out_dir / "charge_scaling_report.json"
+    charge_scaling_report_path.write_text(json.dumps(charge_scaling_report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
     return SystemExportResult(
         system_gro=system_gro,

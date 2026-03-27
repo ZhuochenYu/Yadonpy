@@ -119,6 +119,8 @@ def parameterize_smiles(
     total_multiplicity: Optional[int] = None,
     name: str | None = None,
     allow_ff_without_requested_charges: bool = False,
+    polyelectrolyte_mode: bool = False,
+    polyelectrolyte_detection: str = 'auto',
 ):
     """Script-friendly helper: SMILES -> charges -> ``ff_assign``.
 
@@ -145,6 +147,8 @@ def parameterize_smiles(
             work_dir=str(wd),
             total_charge=total_charge,
             total_multiplicity=total_multiplicity,
+            polyelectrolyte_mode=polyelectrolyte_mode,
+            polyelectrolyte_detection=polyelectrolyte_detection,
         )
     except Exception as exc:
         msg = (

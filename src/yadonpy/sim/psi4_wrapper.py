@@ -26,13 +26,13 @@ from packaging.version import parse as parse_version
 from rdkit import Chem
 from rdkit import Geometry as Geom
 
-# Psi4/resp are optional dependencies.
+# Psi4 and PsiRESP are optional dependencies.
 # We must not fail at import time when users only want non-QM workflows.
 #
 # IMPORTANT: Some users only need Psi4 for geometry optimizations / ESP tasks
-# that do *not* require the Python package `resp`. Therefore:
+# that do *not* require the Python package `psiresp`. Therefore:
 #   - We require Psi4 at object construction.
-#   - We require `resp` lazily only when calling Psi4w.resp().
+#   - We require `psiresp` lazily only when calling Psi4w.resp().
 #
 # Also, catch broad exceptions and preserve the root cause for better error
 # messages (conda environments can have ABI issues that raise OSError).
@@ -43,14 +43,6 @@ try:  # pragma: no cover
 except Exception as e:  # pragma: no cover
     _psi4_import_error = e
     psi4 = None
-
-resp = None
-_resp_import_error: Exception | None = None
-try:  # pragma: no cover
-    import resp  # type: ignore
-except Exception as e:  # pragma: no cover
-    _resp_import_error = e
-    resp = None
 
 from ..core import const, calc, utils
 
@@ -188,31 +180,6 @@ class Psi4w():
             gc.collect()
         except Exception:
             pass
-
-    @staticmethod
-    def _require_resp() -> None:
-        """Ensure the optional `resp` dependency is importable.
-
-        We only need this when performing RESP charge fitting.
-        """
-        global resp, _resp_import_error
-        if resp is not None:
-            return
-        # Try importing again in case environment changed after module import.
-        try:
-            import resp as _resp  # type: ignore
-            resp = _resp
-            _resp_import_error = None
-            return
-        except Exception as e:
-            _resp_import_error = e
-            raise ImportError(
-                "RESP charge fitting requires optional dependency 'resp'.\n"
-                "Try (conda):\n"
-                "  conda install -c psi4 resp\n"
-                f"Root cause when importing resp: {e!r}"
-            )
-
 
     @property
     def get_name(self):
@@ -1056,142 +1023,59 @@ class Psi4w():
         """
         Psi4w.resp
 
-        RESP charge calculation by Psi4
+        RESP charge calculation by PsiRESP/Psi4.
 
         Returns:
             RESP charge (float, array)
         """
+        import json
+        from .psiresp_wrapper import run_psiresp_fit
 
-        # `resp` is an optional dependency. Require it lazily here.
-        Psi4w._require_resp()
-
-        def _new_esp_solve(A, B):
-            """
-            Override function of resp.espfit.esp_solve to avoid LinAlgError
-            Solves for point charges: A*q = B
-
-            Parameters
-            ----------
-            A : ndarray
-                array of matrix A
-            B : ndarray
-                array of matrix B
-
-            Return
-            ------
-            q : ndarray
-                array of charges
-
-            """
-
-            try:
-                q = np.linalg.solve(A, B)
-            except np.linalg.LinAlgError:
-                q = np.linalg.lstsq(A, B, rcond=None)[0]
-
-            if np.linalg.cond(A) > 1/np.finfo(A.dtype).eps:
-                q = np.linalg.lstsq(A, B, rcond=None)[0]
-
-            if _version_key(resp.__version__) >= _version_key('0.8'):
-                return q
-            else:
-                return q, ''
-
-        # Function override to avoid LinAlgError in calculation of inverse matrix
-        resp.espfit.esp_solve = _new_esp_solve
-
-        ptab = Chem.GetPeriodicTable()
-
-        # Avoid a bug in RESP 0.8
-        if _version_key(resp.__version__) >= _version_key('0.8'):
-            # Make a dict of expected bonds
-            defv_dict = {ptab.GetElementSymbol(n).upper(): ptab.GetDefaultValence(n) if ptab.GetDefaultValence(n) >= 0 else 0 for n in range(1, 119)}
-            psi4.qcdb.parker._expected_bonds = {**defv_dict, **psi4.qcdb.parker._expected_bonds} 
-
-        pmol = self._init_psi4(output='./%s_psi4_resp.log' % self.name)
-
-        # Make a dict of vdW radii
-        except_list = set([1, 6, 7, 8, 9, 15, 16, 17])  # H, C, N, O, F, P, S, Cl
-        rvdw_dict = {ptab.GetElementSymbol(n): ptab.GetRvdw(n) for n in range(1, 119) if n not in except_list}
-        # https://www.cgl.ucsf.edu/chimerax/docs/user/radii.html
-        rvdw_dict['Br'] = 1.978
-        rvdw_dict['I'] = 2.094
-
-        options = {'VDW_SCALE_FACTORS'  : [1.4, 1.6, 1.8, 2.0],
-                   'VDW_POINT_DENSITY'  : 20.0,
-                   'RESP_A'             : 0.0005,
-                   'RESP_B'             : 0.1,
-                   'RADIUS'             : rvdw_dict,
-                   'VDW_RADII'          : rvdw_dict,
-                   'METHOD_ESP'         : self.method,
-                   'BASIS_ESP'          : 'radonpy_basis'
-                   }
-        dt1 = datetime.datetime.now()
-        try:
-            _smi = Chem.MolToSmiles(self.mol)
-        except Exception:
-            _smi = '?'
-        utils.radon_print(
-            f"Psi4 RESP is running... name={self.name} charge={self.charge} mult={self.multiplicity} "
-            f"method={self.method} basis={self.basis} smiles={_smi}",
-            level=1,
-        )
+        polyelectrolyte_mode = bool(kwargs.pop("polyelectrolyte_mode", False))
+        polyelectrolyte_detection = str(kwargs.pop("polyelectrolyte_detection", "auto") or "auto")
 
         try:
-            # First stage
-            utils.radon_print('First stage of RESP charge calculation', level=0)
-            if resp.resp.__code__.co_argcount == 2:
-                charges1 = resp.resp([pmol], options)
-            else:
-                charges1 = resp.resp([pmol], [options])[0]
-
-            # Change the value of the RESP parameter A
-            options['RESP_A'] = 0.001
-
-            # Reset radius parameters to avoid a bug of the RESP plugin
-            options['RADIUS'] = {}
-
-            # Add c for atoms fixed in second stage
-            if _version_key(resp.__version__) >= _version_key('0.8'):
-                resp.stage2_helper.set_stage2_constraint(pmol, charges1[1], options)
-                options['grid'] = ['./1_%s_grid.dat' % pmol.name()]
-                options['esp'] = ['./1_%s_grid_esp.dat' % pmol.name()]
-            else:
-                helper = resp.stage2_helper()
-                helper.set_stage2_constraint(pmol, charges1[1], options)
-                options['grid'] = './1_%s_grid.dat' % pmol.name()
-                options['esp'] = './1_%s_grid_esp.dat' % pmol.name()
-        
-            # Second stage
-            utils.radon_print('Second stage of RESP charge calculation', level=0)
-            psi4.core.set_output_file('./%s_psi4_resp.log' % self.name, True)
-            if resp.resp.__code__.co_argcount == 2:
-                charges2 = resp.resp([pmol], options)
-            else:
-                charges2 = resp.resp([pmol], [options])[0]
-
-            charges2 = np.array(charges2)
-            dt2 = datetime.datetime.now()
-            utils.radon_print('Normal termination of psi4 RESP charge calculation. Elapsed time = %s' % str(dt2-dt1), level=1)
-
-        except psi4.SCFConvergenceError as e:
-            utils.radon_print('Psi4 SCF convergence error. %s' % e, level=2)
-            charges2 = np.array([np.nan for x in range(self.mol.GetNumAtoms())])
-            self.error_flag = True
-
+            result = run_psiresp_fit(
+                self.mol,
+                fit_kind="RESP",
+                method=str(self.method),
+                basis=str(self.basis),
+                total_charge=int(self.charge),
+                total_multiplicity=int(self.multiplicity),
+                work_dir=self.work_dir,
+                name=str(self.name),
+                polyelectrolyte_mode=polyelectrolyte_mode,
+                polyelectrolyte_detection=polyelectrolyte_detection,
+            )
+            resp_q = np.asarray(result["resp"], dtype=float)
+            esp_q = np.asarray(result["esp"], dtype=float)
+            meta = result.get("constraint_meta")
         except BaseException as e:
-            self._fin_psi4()
             self.error_flag = True
-            utils.radon_print('Error termination of psi4 RESP charge calculation. %s' % e, level=3)
+            utils.radon_print(f"Error termination of PsiRESP charge calculation. {e}", level=3)
+            nan_arr = np.asarray([np.nan for _ in range(self.mol.GetNumAtoms())], dtype=float)
+            for atom in self.mol.GetAtoms():
+                atom.SetDoubleProp("ESP", float("nan"))
+                atom.SetDoubleProp("RESP", float("nan"))
+            return nan_arr
 
-        self._fin_psi4()
-
-        # Get RESP charges
         for i, atom in enumerate(self.mol.GetAtoms()):
-            atom.SetDoubleProp('ESP', charges2[0, i])
-            atom.SetDoubleProp('RESP', charges2[1, i])
-
-        return charges2[1]
+            atom.SetDoubleProp("ESP", float(esp_q[i]))
+            atom.SetDoubleProp("RESP", float(resp_q[i]))
+        try:
+            if meta:
+                self.mol.SetProp("_yadonpy_psiresp_constraints", json.dumps(meta, ensure_ascii=False))
+                summary = meta.get("summary") if isinstance(meta, dict) else None
+                constraints = meta.get("constraints") if isinstance(meta, dict) else None
+                if isinstance(summary, dict):
+                    self.mol.SetProp("_yadonpy_polyelectrolyte_summary_json", json.dumps(summary, ensure_ascii=False))
+                    if isinstance(summary.get("groups"), list):
+                        self.mol.SetProp("_yadonpy_charge_groups_json", json.dumps(summary.get("groups"), ensure_ascii=False))
+                if isinstance(constraints, dict):
+                    self.mol.SetProp("_yadonpy_resp_constraints_json", json.dumps(constraints, ensure_ascii=False))
+        except Exception:
+            pass
+        return resp_q
 
 
     def mulliken_charge(self, recalc=False, **kwargs):

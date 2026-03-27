@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "yadonpy"
-version = "0.8.70"
+version = "0.8.71"
 description = "SMILES-driven workflow toolkit using GROMACS"
 requires-python = ">=3.11"
 authors = [{name = "YZC"}]
@@ -24,6 +24,7 @@ dependencies = [
 
 [project.optional-dependencies]
 accel = ["numba>=0.61"]
+qm = ["psiresp>=0.8"]
 test = ["pytest>=8"]
 
 

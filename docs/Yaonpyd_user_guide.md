@@ -1,100 +1,205 @@
-# YadonPy User Guide (v0.8.69)
+# YadonPy User Guide (v0.8.71)
 
-This guide is for users who want to run YadonPy productively without reading the whole implementation first.
-
-Python requirement: Python 3.11+
+This guide explains how to use YadonPy effectively in day-to-day study scripts.
 
 Related documents:
 
-- API reference: `docs/Yadonpy_API_v0.8.69.md`
+- README: package scope and installation
 - manual: `docs/Yadonpy_manul.md`
+- API reference: `docs/Yadonpy_API_v0.8.71.md`
 
-## 1. Start with the right mindset
+## 1. Build the right environment
 
-YadonPy works best when you treat it as a workflow library, not as a black box.
-
-Practical consequences:
-
-- your script is part of the study record;
-- expensive molecular preparation belongs in MolDB;
-- exported GROMACS trees are rebuildable products;
-- difficult systems should be stabilized by better staging rather than by guesswork.
-
-## 2. Environment setup
-
-### 2.1 Minimum useful environment
-
-- Python 3.11+
-- RDKit
-- NumPy, SciPy, pandas, matplotlib
-- ParmEd
-
-### 2.2 Common optional tools
-
-- Open Babel: better 3D recovery for awkward ions and inorganic species
-- Psi4 plus `resp`: RESP or ESP charge workflows
-- GROMACS: real MD workflows
-- `numba`: optional acceleration in some interface-build paths
-
-### 2.3 Example conda setup
+Recommended environment:
 
 ```bash
 conda create -n yadonpy python=3.11
 conda activate yadonpy
 
 conda install -c conda-forge rdkit openbabel parmed mdtraj matplotlib pandas scipy packaging
-conda install -c psi4 psi4 resp dftd3-python
+conda install -c psi4 psi4 dftd3-python
+conda install -c conda-forge psiresp
 
 pip install -e .
 pip install -e .[accel]
 ```
 
-### 2.4 First check
+Check the environment:
 
 ```bash
 python -c "from yadonpy.diagnostics import doctor; doctor(print_report=True)"
 ```
 
-Run that before troubleshooting by hand.
+For RESP/ESP workflows, `doctor()` should report both `psi4` and `psiresp`.
 
-## 3. Pick the right script style
+## 2. Use an explicit script structure
 
-### 3.1 Fastest convenience path
+Recommended study skeleton:
 
 ```python
-import yadonpy as yp
+from pathlib import Path
 
-mol, ok = yp.parameterize_smiles(
-    "CCO",
-    ff_name="gaff2_mod",
-    charge_method="RESP",
-    work_dir="./work_ethanol",
+import yadonpy as yp
+from yadonpy.core import workdir
+from yadonpy.runtime import set_run_options
+
+restart = True
+set_run_options(restart=restart)
+
+BASE_DIR = Path(__file__).resolve().parent
+work_dir = workdir(BASE_DIR / "work_dir", clean=not restart)
+ff = yp.get_ff("gaff2_mod")
+```
+
+This keeps restart logic, output paths, and chemistry preparation explicit.
+
+## 3. Prepare species
+
+### 3.1 Small neutral molecules
+
+```python
+EC = ff.mol("O=C1OCCO1")
+ok = ff.ff_assign(EC)
+```
+
+### 3.2 Explicit QM charge assignment
+
+```python
+from yadonpy.sim import qm
+
+qm.assign_charges(
+    EC,
+    charge="RESP",
+    work_dir=work_dir / "01_ec_resp",
+)
+ok = ff.ff_assign(EC)
+```
+
+### 3.3 Polyelectrolyte monomers
+
+```python
+qm.assign_charges(
+    glucose_6,
+    charge="RESP",
+    work_dir=work_dir / "01_glucose6_resp",
+    polyelectrolyte_mode=True,
+)
+ok = ff.ff_assign(glucose_6)
+```
+
+Use `polyelectrolyte_mode=True` whenever the repeat unit contains persistent charged motifs and you want grouped RESP constraints and grouped export metadata.
+
+## 4. Store expensive species in MolDB
+
+Good MolDB candidates:
+
+- PF6 and similar ions;
+- reusable carbonate solvents;
+- frequently reused monomers;
+- species with expensive QM geometry or bonded-patch preparation.
+
+Do not treat MolDB as a project dump for trajectories or full system exports.
+
+## 5. Build a bulk cell
+
+Typical pattern:
+
+```python
+from yadonpy.core import poly
+from yadonpy.io.gmx import write_gmx
+
+ac = poly.amorphous_cell(
+    [polymer, EC, DEC, EMC, Li, PF6],
+    [1, 50, 30, 20, 6, 6],
+    density=0.9,
+    work_dir=work_dir / "02_build_cell",
+    charge_scale=0.8,
 )
 ```
 
-Use this when you are prototyping or parameterizing a small molecule quickly.
-
-### 3.2 Explicit workflow path
+For polyelectrolyte systems:
 
 ```python
-import yadonpy as yp
-
-ff = yp.get_ff("gaff2_mod")
-mol = ff.mol("O=C1OCCO1", name="EC")
-ok = ff.ff_assign(mol)
+ac = poly.amorphous_cell(
+    [CMC, Na],
+    [2, 40],
+    density=0.4,
+    charge_scale=0.8,
+    polyelectrolyte_mode=True,
+    work_dir=work_dir / "02_build_cmc_cell",
+)
 ```
 
-Use this when:
+This activates grouped local scaling if charged-group metadata are present on the species.
 
-- the script should stay close to the examples;
-- the same code should later work with MolDB reuse;
-- you need bonded overrides or more control.
+## 6. Understand charge scaling
 
-This is the preferred style for serious study scripts.
+### 6.1 Raw charges
 
-## 4. Learn the package in the right order
+Raw RESP charges are produced during molecular preparation and should be regarded as the authoritative QM-derived template.
 
-Recommended example order:
+### 6.2 Simulation scaling
+
+`charge_scale` is a simulation-level model choice. It is applied during cell construction/export and does not overwrite the original RESP template.
+
+### 6.3 Polyelectrolyte-aware scaling
+
+With `polyelectrolyte_mode=True`:
+
+- charged groups are scaled locally;
+- the neutral backbone is left unchanged;
+- the export records the result in `charge_scaling_report.json`.
+
+If charged-group detection is unavailable, the workflow records a fallback and reverts to whole-molecule scaling.
+
+## 7. Export and inspect the system
+
+Modern workflows typically export via the internal system-export bridge used by the preset workflows. The important point for the user is that exports now preserve more metadata.
+
+For polymeric/polyelectrolyte systems, inspect:
+
+- `system.top`
+- `system.gro`
+- `residue_map.json`
+- `charge_groups.json`
+- `resp_constraints.json`
+- `charge_scaling_report.json`
+
+These files are now part of the standard audit path for grouped RESP and grouped scaling.
+
+## 8. Run equilibration
+
+Typical preset usage:
+
+```python
+from yadonpy.sim.preset import eq
+
+job = eq.EQ21step(
+    ac,
+    work_dir=work_dir,
+    omp=8,
+    gpu=1,
+)
+result = job.exec()
+```
+
+For NPT-capable workflows, the run now also writes an NPT convergence plot that overlays density, volume, and box lengths.
+
+## 9. Build interfaces
+
+Use the polymer-first strategy for polymer/electrolyte studies:
+
+1. equilibrate polymer bulk;
+2. use polymer `XY` as the lateral reference;
+3. prepare electrolyte bulk separately;
+4. assemble the interface;
+5. run staged release rather than immediate unrestricted contact.
+
+Use route selection helpers rather than in-script ad hoc route logic where possible.
+
+## 10. Use the examples in the right order
+
+Recommended order:
 
 1. `examples/07_moldb_precompute_and_reuse`
 2. `examples/08_text_to_csv_and_build_moldb`
@@ -106,206 +211,54 @@ Recommended example order:
 8. `examples/12_cmcna_interface`
 9. `examples/13_graphite_cmc_electrolyte`
 
-That order is intentional. It moves from reusable chemistry to bulk systems and only then to interface workflows.
+Specific to `v0.8.71`:
 
-Use `example 13` when you need an explicit solid substrate workflow instead of a polymer-vs-electrolyte two-phase interface.
+- `examples/05` and `examples/12` are the reference scripts for grouped polyelectrolyte RESP and local scaling.
 
-## 5. Work directories
+## 11. Common failure modes
 
-Use one explicit study root:
+### RESP stack missing
 
-```python
-from pathlib import Path
-from yadonpy.core import workdir
-from yadonpy.runtime import set_run_options
+Symptoms:
 
-restart = True
-set_run_options(restart=restart)
+- import errors for `psi4` or `psiresp`
+- `doctor()` reports missing modules
 
-BASE_DIR = Path(__file__).resolve().parent
-work_dir = workdir(BASE_DIR / "work_dir", clean=not restart)
-```
+Action:
 
-Then create child folders such as:
+- install `psi4`, `dftd3-python`, and `psiresp` through conda.
 
-- `work_dir.child("ac_poly")`
-- `work_dir.child("ac_electrolyte")`
-- `work_dir.child("interface_route_b")`
+### Packed system too dense
 
-This is the expected structure for restartable studies.
+Symptoms:
 
-## 6. MolDB: what to store and what not to store
+- non-finite forces during EM
+- repeated packing retries
+- severe density overshoot
 
-Store in MolDB:
+Action:
 
-- expensive RESP-prepared ions;
-- reusable solvents;
-- monomers or fragments that appear in multiple studies;
-- variants with bonded-patch sidecars.
+- start from a lower density;
+- give the system more `Z` slack;
+- equilibrate the components separately before interface assembly.
 
-Do not treat MolDB as a project dump for:
+### Polyelectrolyte fallback triggered
 
-- system trajectories;
-- packed bulk boxes;
-- old exported topology trees.
+Symptoms:
 
-## 7. Bulk workflow checklist
+- `charge_scaling_report.json` reports `whole_molecule_scale`
 
-A normal bulk workflow is:
+Action:
 
-1. define the molecules;
-2. assign charges;
-3. assign force fields;
-4. optionally store expensive species in MolDB;
-5. build an amorphous cell;
-6. run EQ21 and follow-up relaxation if needed;
-7. inspect analysis outputs before continuing.
+- inspect `charge_groups.json` and `resp_constraints.json`;
+- verify the monomer chemistry and formal-charge pattern;
+- extend the template library if the chemistry is a legitimate recurring motif.
 
-The most common mistake is making the first box too dense.
+## 12. Practical rule
 
-For awkward systems, start from:
+If a system is expensive, difficult, or reused across studies, make its preparation auditable:
 
-- lower initial density;
-- more `Z` room;
-- better staging.
-
-## 8. Interface workflow checklist
-
-The current interface strategy is polymer first.
-
-For the best success rate:
-
-1. equilibrate the polymer bulk first;
-2. use the equilibrated polymer `XY` box as the lateral reference;
-3. plan the electrolyte only for the slab volume that will actually be used;
-4. if the system is difficult, build an isotropic probe electrolyte first;
-5. resize the final electrolyte from the equilibrated probe response;
-6. rebuild the final electrolyte in a fixed-XY box with more `Z` slack;
-7. assemble the final interface only after both sides are individually reasonable;
-8. use staged diffusion release instead of immediate unrestricted contact.
-
-## 9. Route A versus Route B
-
-### Route A
-
-Use route A when you want a periodic interface workflow and do not need an explicit vacuum buffer.
-
-### Route B
-
-Use route B when you want:
-
-- a vacuum-buffered interface setup;
-- `pbc = xy`;
-- wall-ready dynamics;
-- a one-sided interface workflow that should not immediately collapse into a fully periodic `Z` interpretation.
-
-Examples 11 and 12 are the main references for route B.
-
-## 10. Interface recipe helper and current defaults
-
-The interface examples now use:
-
-`recommend_polymer_diffusion_interface_recipe(...)`
-
-Use it after the polymer-matched geometry is already planned. It returns:
-
-- the recommended route object;
-- the matching staged interface protocol;
-- notes explaining the choice.
-
-Why this helper exists:
-
-- scripts stay linear and easy to imitate;
-- route and protocol heuristics live in library code instead of being re-copied into every example;
-- neutral and polyelectrolyte workflows can use different defaults without making scripts messy.
-
-## 11. What Example 12 now demonstrates
-
-Example 12 is intentionally large and conservative.
-
-It now does this:
-
-1. build a larger CMC bulk with `DP = 150` and `6` chains;
-2. neutralize the polymer phase with explicit Na counter-ions;
-3. equilibrate the polymer phase first;
-4. build a `1 M` LiPF6 electrolyte using the same solvent ratio as before;
-5. use a probe electrolyte bulk to learn the density response;
-6. resize and rebuild the final electrolyte to the equilibrated polymer footprint;
-7. assemble a vacuum-buffered route-B interface;
-8. run a staged diffusion protocol with gap hold, density relax, contact, release, exchange, and production.
-
-This is the main example to follow when interface robustness matters more than minimum system size.
-
-The current release also treats a non-finite EM result as a real build failure. If the first EQ21 stage reports overlapping atoms or infinite forces, do not keep rerunning the same structure. Rebuild from a looser initial pack.
-
-## 12. Restart behavior
-
-`restart=True` means:
-
-- reuse completed compatible outputs when possible;
-- skip finished expensive steps when their inputs still match;
-- rebuild when schema or input expectations say an artifact is stale.
-
-It does not mean "trust everything already on disk".
-
-## 13. What to inspect after runs
-
-Useful output categories:
-
-- force-field assignment reports;
-- `system_meta.json` and interface manifests;
-- `06_analysis/*.json` summaries;
-- final box dimensions and density summaries.
-
-For interface workflows, also inspect:
-
-- slab thickness and target box notes;
-- route choice and stage list;
-- assembled interface metadata.
-
-## 14. Common failure patterns
-
-### 14.1 Charge or QM failures
-
-Check the diagnostics report first, then check backend availability.
-
-### 14.2 Dense packing failures
-
-Do not immediately increase retry counts. First ask whether the initial box is structurally too tight.
-
-Usually the better fix is:
-
-- lower initial density;
-- increase initial `Z`;
-- use a probe-and-resize flow;
-- keep `XY` fixed only when it must be fixed.
-
-### 14.3 Interface instability
-
-Split the problem:
-
-1. is the polymer bulk itself well relaxed;
-2. is the standalone electrolyte bulk reasonable;
-3. is the assembled interface geometry sensible before MD;
-4. is the early-stage protocol too aggressive.
-
-### 14.4 GROMACS GPU runtime errors
-
-Recent GROMACS GPU builds can fail on some nodes with internal CUDA errors before the stage is physically meaningful. The current release falls back to CPU kernels for that stage automatically, but that safeguard only helps after the input geometry is already valid. It does not repair a bad packed bulk.
-
-## 15. Lightweight validation when GROMACS is unavailable
-
-You can still do code-level validation:
-
-```bash
-python -m compileall src examples tests
-PYTHONPATH=src pytest -q
-```
-
-This is useful on machines that do not provide GROMACS locally.
-
-## 16. Final advice
-
-If a workflow is unstable, make the staging better before making the script more complicated.
-
-That rule is the key to using YadonPy effectively.
+- store the prepared molecular state in MolDB;
+- preserve charge metadata;
+- keep the work directory explicit;
+- inspect the export metadata before launching long MD runs.

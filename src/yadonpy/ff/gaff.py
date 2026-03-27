@@ -92,6 +92,7 @@ class GAFF():
         total_charge=None,
         total_multiplicity: int = 1,
         report: bool = True,
+        **charge_kwargs,
     ):
         """
         GAFF.ff_assign
@@ -168,7 +169,7 @@ class GAFF():
         if result: result = self.assign_atypes(mol)
         if result: result = self.assign_dtypes(mol)
         if result: result = self.assign_itypes(mol)
-        if result and charge is not None: result = calc.assign_charges(mol, charge=charge)
+        if result and charge is not None: result = calc.assign_charges(mol, charge=charge, **charge_kwargs)
         
         if not result and retryMDL and not useMDL:
             utils.radon_print('Retry to assign with MDL aromaticity model', level=1)
@@ -180,7 +181,7 @@ class GAFF():
             if result: result = self.assign_atypes(mol)
             if result: result = self.assign_dtypes(mol)
             if result: result = self.assign_itypes(mol)
-            if result and charge is not None: result = calc.assign_charges(mol, charge=charge)
+            if result and charge is not None: result = calc.assign_charges(mol, charge=charge, **charge_kwargs)
             if result: utils.radon_print('Success to assign with MDL aromaticity model', level=1)
 
         # ------------------------------------------------------------------

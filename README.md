@@ -1,141 +1,202 @@
-﻿# YadonPy
+# YadonPy
 
-Current release: **v0.8.70**
+Current release: **v0.8.71**
 
-YadonPy is a Python package for building polymer, solvent, salt, bulk, and interface workflows directly from SMILES or PSMILES. It is designed for script-driven molecular simulation studies where the user wants to keep the real workflow visible in code instead of hiding it behind a monolithic project file.
+YadonPy is a script-oriented molecular modeling and simulation workflow package for polymer, electrolyte, substrate, bulk-phase, and interface studies built around GROMACS. It accepts SMILES or PSMILES as the primary chemistry input, prepares reusable molecular assets, constructs packed systems, exports GROMACS-ready topologies, and runs staged workflows for equilibration and analysis.
 
-## What YadonPy is for
+## Release focus
 
-YadonPy focuses on the full preparation chain:
+Version `0.8.71` replaces the previous Psi4 `resp` plugin path with **PsiRESP** as the RESP/ESP backend.
 
-- molecule construction from SMILES or PSMILES;
-- conformer search and charge assignment;
-- force-field assignment with GAFF, GAFF2, GAFF2_mod, OPLS-AA, MERZ, and DREIDING families;
-- MolDB-backed reuse of expensive molecular preparation;
-- bulk-cell and interface-system construction;
-- GROMACS export, staged equilibration, and post-processing.
+This change was made because grouped charge constraints are required for rigorous polyelectrolyte workflows, and PsiRESP provides the necessary primitives:
 
-The package is built around two stable ideas:
+- grouped charge-sum constraints;
+- equivalence constraints;
+- explicit two-stage RESP and ESP job objects;
+- auditable constraint metadata that can be preserved in the workflow.
 
-- **script first**: the study logic should remain understandable from the user script;
-- **MolDB first**: reusable expensive assets are molecular geometry, charge variants, and bonded-patch metadata, not old `.top/.gro/.itp` exports.
+The release also adds a first implementation of **polyelectrolyte-aware RESP and charge scaling**:
 
-## What changed in v0.8.70
+- `polyelectrolyte_mode=True` on RESP/ESP assignment;
+- automatic charged-group detection by template first, graph fallback second;
+- grouped charge constraints for charged motifs plus constrained neutral remainder;
+- residue-preserving polymer export for `.gro` and `.itp`;
+- `charge_groups.json`, `resp_constraints.json`, `residue_map.json`, and `charge_scaling_report.json` in exported systems;
+- simulation-level local charge scaling of charged groups while preserving raw RESP templates.
 
-This release integrates the latest `moltemplate` OPLS-AA 2024 source set into
-YadonPy's OPLS parameter library and extends the SMARTS rule table to cover the
-new silicon-, ion-, epoxide-, allene-, ketene-, and carbon-dioxide-related
-types that can be assigned unambiguously from RDKit chemistry.
+## Scope
 
-- `oplsaa.json` is regenerated against `moltemplate` `oplsaa2024` source files, expanding the packaged particle table from the old pre-2024 range into the 1000+ type range while keeping YadonPy's JSON schema and GROMACS unit conventions.
-- `oplsaa_rules.json` now remaps monoatomic ions to the 2024 ion parameters and adds high-priority SMARTS rules for silanes, silanols, silyl ethers, disilanes, carbon dioxide, allenes, ketenes, epoxides, and Zn2+.
-- `ff/oplsaa.py` now tries a small set of bonded-type aliases such as `H <-> H~` and `O <-> O~` before giving up on bonded lookup, which makes the imported OPLS 2024 data more robust against historical one-character versus padded-type notation differences.
-- The import provenance and conversion rules are documented in `docs/oplsaa2024_moltemplate_import.md`.
+YadonPy is designed for workflows where the user wants the full study logic to remain visible in code.
+
+The package covers:
+
+- small molecules, ions, monomers, and polymers from SMILES or PSMILES;
+- charge assignment (`gasteiger`, `RESP`, `ESP`, `Mulliken`, `Lowdin`, and selected quick-charge methods);
+- GAFF, GAFF2, GAFF2_mod, OPLS-AA, DREIDING, MERZ, and water-model assignment;
+- MolDB-backed reuse of expensive prepared molecules;
+- amorphous bulk construction;
+- polymer/electrolyte and substrate-assisted interface workflows;
+- GROMACS export and staged MD preparation;
+- analysis/report generation and restart-aware work directories.
 
 ## Installation
 
-### Baseline requirements
+### Baseline environment
 
-- Python 3.11+
-- RDKit
-- ParmEd
-- NumPy, SciPy, pandas, matplotlib
+- Python `3.11`
+- `numpy`, `scipy`, `pandas`, `matplotlib`, `packaging`
+- `rdkit`
+- `parmed`
+- `mdtraj`
 
-Optional but commonly needed:
+### Optional but commonly required
 
-- Open Babel for more robust 3D generation on awkward ions and inorganic species
-- Psi4 plus Python `resp` for RESP or ESP charge workflows
-- GROMACS for MD workflows
-- `numba` for optional acceleration in some interface-build paths
+- `openbabel` for robust 3D recovery and inorganic handling
+- `psi4` for QM geometry/ESP generation
+- `psiresp` for RESP/ESP fitting
+- `dftd3-python` when the chosen QM method requires it
+- `gromacs` for MD execution
 
-### Example conda environment
+### Recommended conda environment
 
 ```bash
 conda create -n yadonpy python=3.11
 conda activate yadonpy
 
 conda install -c conda-forge rdkit openbabel parmed mdtraj matplotlib pandas scipy packaging
-conda install -c psi4 psi4 resp dftd3-python
+conda install -c psi4 psi4 dftd3-python
+conda install -c conda-forge psiresp
 
 pip install -e .
 pip install -e .[accel]
 ```
 
-### First environment check
+### Environment check
 
 ```bash
 python -c "from yadonpy.diagnostics import doctor; doctor(print_report=True)"
 ```
 
-Run that before debugging missing backends by hand.
+The doctor report should show, at minimum:
 
-## Workflow model
+- Python path and data root;
+- `gmx` discovery status;
+- `rdkit`, `psi4`, and `psiresp` module availability.
 
-### 1. Prepare reusable species
+## Core workflow model
 
-Typical patterns are:
+### 1. Prepare molecular species
 
 ```python
 import yadonpy as yp
 
 ff = yp.get_ff("gaff2_mod")
-mol = ff.mol("O=C1OCCO1")
-ok = ff.ff_assign(mol)
+EC = ff.mol("O=C1OCCO1")
+ok = ff.ff_assign(EC)
 ```
 
-or:
+For explicit RESP:
 
 ```python
-import yadonpy as yp
+from yadonpy.sim import qm
 
-mol, ok = yp.parameterize_smiles(
-    "CCO",
-    ff_name="gaff2_mod",
-    charge_method="RESP",
-    work_dir="./work_ethanol",
+qm.assign_charges(
+    EC,
+    charge="RESP",
+    work_dir="./work_ec",
+)
+ok = ff.ff_assign(EC)
+```
+
+For polyelectrolytes:
+
+```python
+qm.assign_charges(
+    CMC_monomer,
+    charge="RESP",
+    work_dir="./work_cmc_monomer",
+    polyelectrolyte_mode=True,
 )
 ```
 
-Use the explicit `ff.mol(...)` plus `ff.ff_assign(...)` form for serious scripts, especially when the species may later come from MolDB or require bonded overrides such as `bonded="DRIH"`.
-
-### 2. Reuse expensive chemistry with MolDB
+### 2. Reuse expensive molecular assets through MolDB
 
 MolDB stores:
 
-- best available geometry;
+- converged geometry;
 - charge variants;
-- readiness metadata;
-- bonded-patch sidecar data when a charge variant depends on it.
+- readiness flags;
+- bonded-patch sidecars when required by a charge variant.
 
-MolDB does **not** store project-level topology trees as the long-term source of truth. Those are regenerated from the molecular state when needed.
+MolDB does **not** treat old exported `.gro/.itp/.top` files as the primary persistent source.
 
-### 3. Build a bulk cell
+### 3. Build the system
 
-The bulk workflow is normally:
+Typical bulk path:
 
-1. prepare species;
-2. pack an amorphous cell;
-3. export the system;
-4. run EQ21 and optional follow-up relaxation;
-5. read the equilibrated box and analysis outputs.
+1. define species;
+2. assign charges and force fields;
+3. pack an amorphous cell;
+4. export the GROMACS system;
+5. run EQ21 or another staged workflow;
+6. inspect density, box convergence, and derived properties.
 
-### 4. Build an interface
+Typical interface path:
 
-The current interface logic follows a polymer-first workflow:
+1. equilibrate polymer bulk first;
+2. take polymer `XY` dimensions as the authoritative lateral footprint;
+3. size electrolyte against that footprint;
+4. equilibrate the electrolyte bulk independently;
+5. assemble slabs or blocks;
+6. run staged interface relaxation and release.
 
-1. equilibrate the polymer bulk first;
-2. treat the equilibrated polymer `XY` lengths as the authoritative footprint;
-3. build or resize the electrolyte against that footprint, but allow extra `Z` slack initially;
-4. equilibrate the standalone electrolyte bulk first;
-5. assemble slabs only after both sides are individually reasonable;
-6. run staged interface diffusion dynamics.
+## Polyelectrolyte RESP and local charge scaling
 
-For route selection:
+The current implementation distinguishes three layers:
 
-- `route_a`: fully periodic interface workflow;
-- `route_b`: vacuum-buffered, wall-ready interface workflow under `pbc = xy`.
+### Raw QM charge template
 
-Examples 10 and 11 show the neutral polymer route-A and route-B variants. Example 12 uses the more conservative route-B diffusion path for the large CMC system and now starts from a lower-density free-bulk CMC pack before reading the polymer `XY` footprint.
+RESP or ESP is fit by PsiRESP and stored as the raw molecular charge template.
+
+### Constraint model
+
+With `polyelectrolyte_mode=True`, YadonPy:
+
+- detects charged groups using built-in templates first;
+- falls back to graph-based formal-charge neighborhoods when needed;
+- applies one charge-sum constraint per charged group;
+- applies one charge-sum constraint to the neutral remainder;
+- adds conservative equivalence constraints on the neutral remainder only.
+
+### Simulation-level scaling
+
+`charge_scale` remains a simulation/export option. It does not overwrite the raw RESP template stored in the molecule or MolDB.
+
+When `polyelectrolyte_mode=True` and charge-group metadata exists:
+
+- charged groups are scaled locally;
+- the neutral remainder is left unchanged;
+- the export writes a `charge_scaling_report.json` file.
+
+When metadata is missing or detection fails:
+
+- the export records a fallback;
+- the workflow reverts to whole-molecule scaling.
+
+## Export artifacts added by v0.8.71
+
+For polymeric or polyelectrolyte systems, exports now preserve residue-level metadata and write:
+
+- `residue_map.json`
+- `charge_groups.json`
+- `resp_constraints.json`
+- `charge_scaling_report.json`
+
+These files are intended for:
+
+- auditing the constraint model;
+- postprocessing by residue or charged group;
+- reproducing the exact scaling logic used in a given topology export.
 
 ## Examples
 
@@ -149,61 +210,31 @@ Recommended reading order:
 6. `examples/10_interface_route_a`
 7. `examples/11_interface_route_b`
 8. `examples/12_cmcna_interface`
+9. `examples/13_graphite_cmc_electrolyte`
 
-What the interface examples now demonstrate:
+Relevant updates in this release:
 
-- **Example 10**: periodic polymer/electrolyte diffusion interface with a linear script and library-selected staged protocol.
-- **Example 11**: vacuum-buffered route-B counterpart with the same linear script style.
-- **Example 12**: larger CMC interface study using `6` chains, `DP = 150`, a low-density free-bulk CMC pack, polymer-first XY anchoring, probe electrolyte equilibration, resized final electrolyte rebuild, and staged diffusion release.
+- `examples/05` now uses `polyelectrolyte_mode=True` for CMC monomer RESP and charge-scaled cell construction;
+- `examples/12` now uses the same grouped polyelectrolyte path and no longer requires manual charged-atom index handling in the script.
 
-## Documentation map
+## Documentation
 
-- API reference: `docs/Yadonpy_API_v0.8.66.md`
 - Manual: `docs/Yadonpy_manul.md`
 - User guide: `docs/Yaonpyd_user_guide.md`
+- API reference: `docs/Yadonpy_API_v0.8.71.md`
 
-Use them in this order:
+Recommended reading order:
 
-- README: package scope and quickest start;
-- User guide: how to run a study productively;
-- Manual: architecture, persistence model, restart model, and workflow constraints;
-- API reference: callable entry points and script-facing objects.
-
-## Working directories and restart
-
-The recommended script pattern is:
-
-```python
-from pathlib import Path
-from yadonpy.core import workdir
-from yadonpy.runtime import set_run_options
-
-restart = True
-set_run_options(restart=restart)
-BASE_DIR = Path(__file__).resolve().parent
-work_dir = workdir(BASE_DIR / "work_dir", clean=not restart)
-```
-
-`restart=True` means "reuse valid finished work when the current workflow still agrees with it". It does not mean "trust all old artifacts blindly".
-
-## Release hygiene
-
-Release trees should not keep generated clutter such as:
-
-- `__pycache__`
-- `.pytest_cache`
-- `.yadonpy_cache`
-- `src/yadonpy.egg-info`
-
-Current release packaging excludes those artifacts, and the maintenance rules require cleaning them during each version update.
+1. README for package scope and installation;
+2. user guide for practical study assembly;
+3. manual for architecture and persistence rules;
+4. API reference for callable interfaces and important parameters.
 
 ## Development checks
-
-For a source tree:
 
 ```bash
 python -m compileall src examples tests
 PYTHONPATH=src pytest -q
 ```
 
-When GROMACS is not available, code-level and topology-level tests can still be run. Full MD execution is only required for real simulation validation.
+If GROMACS is not installed, code-level and topology-level checks can still be run. MD execution remains an environment-dependent validation step.

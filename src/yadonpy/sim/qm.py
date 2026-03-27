@@ -128,7 +128,7 @@ def _qm_task_dir(work_dir, *, log_name: str, task: str) -> tuple[Path, Path]:
     return root, task_dir
 
 
-def _save_atomic_charges_json(mol, path, *, charge_label: str, log_name: str):
+def _save_atomic_charges_json(mol, path, *, charge_label: str, log_name: str, extra_meta: dict[str, Any] | None = None):
     """Persist per-atom charges to JSON for resumable workflows.
 
     Charges are stored in RDKit atom double-prop 'AtomicCharge'.
@@ -153,6 +153,8 @@ def _save_atomic_charges_json(mol, path, *, charge_label: str, log_name: str):
             meta["smiles"] = mol.GetProp('_yadonpy_smiles')
     except Exception:
         pass
+    if extra_meta:
+        meta.update(dict(extra_meta))
 
     # IMPORTANT: persist (m)Seminario patch metadata so that a resumed workflow
     # can still inject the QM-derived bond/angle params after ff_assign().
@@ -177,7 +179,7 @@ def _save_atomic_charges_json(mol, path, *, charge_label: str, log_name: str):
     p.write_text(json.dumps({"meta": meta, "charges": charges}, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
-def load_atomic_charges_json(mol, path, *, strict: bool = True) -> bool:
+def load_atomic_charges_json(mol, path, *, strict: bool = True, expected_meta: dict[str, Any] | None = None) -> bool:
     """Load charges written by _save_atomic_charges_json into an RDKit Mol.
 
     Returns True if charges were applied.
@@ -194,6 +196,13 @@ def load_atomic_charges_json(mol, path, *, strict: bool = True) -> bool:
             return False
         if strict and len(charges) != mol.GetNumAtoms():
             return False
+        meta = obj.get('meta') if isinstance(obj, dict) else None
+        if expected_meta and isinstance(meta, dict):
+            for key, value in expected_meta.items():
+                if value is None:
+                    continue
+                if meta.get(key) != value:
+                    return False
         n = min(len(charges), mol.GetNumAtoms())
         for i in range(n):
             mol.GetAtomWithIdx(i).SetDoubleProp('AtomicCharge', float(charges[i]))
@@ -201,7 +210,6 @@ def load_atomic_charges_json(mol, path, *, strict: bool = True) -> bool:
         # Restore QM patch metadata (e.g. (m)Seminario bond/angle fragment) so
         # downstream topology writers can inject it.
         try:
-            meta = obj.get('meta') if isinstance(obj, dict) else None
             if isinstance(meta, dict):
                 for k in (
                     "_yadonpy_mseminario_itp",
@@ -213,6 +221,15 @@ def load_atomic_charges_json(mol, path, *, strict: bool = True) -> bool:
                     "_yadonpy_bonded_requested",
                     "_yadonpy_bonded_explicit",
                     "_yadonpy_bonded_signature",
+                ):
+                    v = meta.get(k)
+                    if isinstance(v, str) and v.strip():
+                        mol.SetProp(k, v.strip())
+                for k in (
+                    "_yadonpy_charge_groups_json",
+                    "_yadonpy_resp_constraints_json",
+                    "_yadonpy_polyelectrolyte_summary_json",
+                    "_yadonpy_psiresp_constraints",
                 ):
                     v = meta.get(k)
                     if isinstance(v, str) and v.strip():
@@ -395,6 +412,8 @@ def assign_charges(
     bonded_params: str = 'auto',
     total_charge=None,
     total_multiplicity=None,
+    polyelectrolyte_mode: bool = False,
+    polyelectrolyte_detection: str = 'auto',
     symmetrize=True,
     symmetrize_geometry: bool = True,
     restart: Optional[bool] = None,
@@ -484,6 +503,11 @@ def assign_charges(
     charged_sdf = None
     charges_json = None
     cached_charge_hit = False
+    charge_cache_meta = {
+        "charge_model": str(charge),
+        "polyelectrolyte_mode": bool(polyelectrolyte_mode),
+        "polyelectrolyte_detection": str(polyelectrolyte_detection or "auto"),
+    }
     if work_dir_root is not None:
         charged_sdf = Path(work_dir) / f"{log_name}.charged.sdf"
         charges_json = Path(work_dir_root) / "01_qm" / "90_charged_mol2" / f"{log_name}.charges.json"
@@ -492,7 +516,7 @@ def assign_charges(
                 if charged_sdf.exists():
                     cached = _read_sdf_one(charged_sdf)
                     _copy_geometry_inplace(mol, cached)
-                if not load_atomic_charges_json(mol, charges_json, strict=True):
+                if not load_atomic_charges_json(mol, charges_json, strict=True, expected_meta=charge_cache_meta):
                     raise RuntimeError(f"Failed to load cached charges from {charges_json}")
                 _reattach_bonded_patch_metadata(mol, work_dir_root=work_dir_root, log_name=str(log_name))
                 cached_charge_hit = True
@@ -607,6 +631,8 @@ def assign_charges(
             charge_basis_gen=charge_basis_gen,
             total_charge=total_charge,
             total_multiplicity=total_multiplicity,
+            polyelectrolyte_mode=bool(polyelectrolyte_mode),
+            polyelectrolyte_detection=str(polyelectrolyte_detection or 'auto'),
             **kwargs,
         )
 
@@ -811,7 +837,25 @@ def assign_charges(
 
             # Also write JSON charges for easy resuming.
             try:
-                _save_atomic_charges_json(mol, d / f"{log_name}.charges.json", charge_label=str(charge), log_name=str(log_name))
+                extra_meta = dict(charge_cache_meta)
+                for key in (
+                    "_yadonpy_charge_groups_json",
+                    "_yadonpy_resp_constraints_json",
+                    "_yadonpy_polyelectrolyte_summary_json",
+                    "_yadonpy_psiresp_constraints",
+                ):
+                    try:
+                        if mol.HasProp(key):
+                            extra_meta[key] = str(mol.GetProp(key))
+                    except Exception:
+                        pass
+                _save_atomic_charges_json(
+                    mol,
+                    d / f"{log_name}.charges.json",
+                    charge_label=str(charge),
+                    log_name=str(log_name),
+                    extra_meta=extra_meta,
+                )
             except Exception:
                 pass
     except Exception:

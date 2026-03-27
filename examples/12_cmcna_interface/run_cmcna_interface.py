@@ -336,7 +336,7 @@ if __name__ == "__main__":
     interface_md_dir = work_dir.child("interface_route_b_md")
 
     cmc_monomers = {
-        label: ff.ff_assign(ff.mol(smiles), report=False)
+        label: ff.ff_assign(ff.mol(smiles), charge="RESP", report=False, polyelectrolyte_mode=True)
         for label, smiles in (
             ("glucose", glucose_smiles),
             ("glucose_2", glucose_2_smiles),
@@ -375,10 +375,9 @@ if __name__ == "__main__":
         dp,
         ratio=feed_prob,
         tacticity="atactic",
-        name="CMC",
         work_dir=cmc_rw_dir,
     )
-    CMC = poly.terminate_rw(CMC, ter1, name="CMC", work_dir=cmc_term_dir)
+    CMC = poly.terminate_rw(CMC, ter1, work_dir=cmc_term_dir)
     CMC = ff.ff_assign(CMC, report=False)
     if not CMC:
         raise RuntimeError("Can not assign force field parameters for CMC.")
@@ -436,6 +435,7 @@ if __name__ == "__main__":
         threshold=polymer_pack_threshold_ang,
         dec_rate=polymer_pack_dec_rate,
         charge_scale=[0.8, 0.8],
+        polyelectrolyte_mode=True,
         neutralize=False,
         work_dir=ac_CMC_build_dir,
     )

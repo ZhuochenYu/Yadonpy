@@ -1,3 +1,9 @@
+## 0.8.71 (2026-03-27)
+
+- sim/psi4_wrapper + sim/psiresp_wrapper + sim/qm + core/calc + diagnostics: replace the legacy Psi4 `resp` plugin path with a PsiRESP-backed RESP/ESP implementation, thread `polyelectrolyte_mode` and grouped-charge detection through the public charge-assignment path, validate cache metadata against the charge backend settings, and update environment diagnostics/install guidance to require `psiresp`;
+- core/polyelectrolyte + io/gromacs_molecule + io/gromacs_system + core/poly + tests/test_polyelectrolyte_resp: add charged-group detection and persistence, grouped RESP constraint metadata, residue-preserving polymer export, grouped simulation-level charge scaling during system export, and machine-readable `charge_groups.json` / `resp_constraints.json` / `residue_map.json` / `charge_scaling_report.json` outputs;
+- examples/05_cmcna_electrolyte + examples/12_cmcna_interface + README + docs/Yadonpy_manul.md + docs/Yaonpyd_user_guide.md + docs/Yadonpy_API_v0.8.71.md: move the documented QM stack to `psi4 + psiresp`, describe the new raw-vs-scaled charge separation and grouped-polyelectrolyte workflow, and update the CMC examples to enable `polyelectrolyte_mode=True` without manual charged-atom index handling.
+
 ## 0.8.70 (2026-03-27)
 
 - tools/oplsaa/import_moltemplate_oplsaa2024.py + ff/ff_dat/oplsaa.json + docs/oplsaa2024_moltemplate_import.md: import the latest `moltemplate` OPLS-AA 2024 upstream source set into YadonPy, rebuild the packaged nonbonded particle table from the 2024 `.par` file, merge the bonded coefficient tables from `oplsaa2024.lt`, and record the exact upstream source path plus unit-conversion rules used during import;

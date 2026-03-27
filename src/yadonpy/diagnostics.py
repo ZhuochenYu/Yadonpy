@@ -93,7 +93,7 @@ def require_rdkit() -> None:
 
 
 def require_psi4_resp() -> None:
-    """Require Psi4 + RESP stack for QM-derived charges."""
+    """Require Psi4 + PsiRESP stack for QM-derived charges."""
     if find_spec("psi4") is None:
         raise ImportError(
             "Psi4 is required for QM-derived charges (RESP/ESP/Mulliken/Lowdin).\n"
@@ -102,12 +102,11 @@ def require_psi4_resp() -> None:
             "If you only want a quick test, switch to charge_method='gasteiger'\n"
             "or charge_method='zero'.\n"
         )
-    # 'resp' is commonly installed together with Psi4 in YadonPy workflows.
-    if find_spec("resp") is None:
+    if find_spec("psiresp") is None:
         raise ImportError(
-            "Python package 'resp' is required for RESP charge fitting.\n"
+            "Python package 'psiresp' is required for RESP/ESP charge fitting.\n"
             "Try (conda):\n"
-            "  conda install -c psi4 resp\n"
+            "  conda install -c conda-forge psiresp\n"
         )
 
 
@@ -135,9 +134,9 @@ def doctor(*, print_report: bool = True) -> dict[str, Any]:
                 "psi4",
                 hint="conda install -c psi4 psi4",
             ).__dict__,
-            "resp": check_python_module(
-                "resp",
-                hint="conda install -c psi4 resp",
+            "psiresp": check_python_module(
+                "psiresp",
+                hint="conda install -c conda-forge psiresp",
             ).__dict__,
         },
     }

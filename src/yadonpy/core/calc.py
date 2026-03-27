@@ -636,7 +636,10 @@ def assign_charges(mol, charge='gasteiger', confId=0, opt=True, work_dir=None, t
     opt_method='wb97m-d3bj', opt_basis='def2-SVP', opt_basis_gen={'Br':'def2-SVP', 'I': 'def2-SVP'}, 
     geom_iter=50, geom_conv='QCHEM', geom_algorithm='RFO',
     charge_method='wb97m-d3bj', charge_basis='def2-TZVP', charge_basis_gen={'Br':'def2-TZVP', 'I': 'def2-TZVP'},
-    total_charge=None, total_multiplicity=None, **kwargs):
+    total_charge=None, total_multiplicity=None,
+    polyelectrolyte_mode: bool = False,
+    polyelectrolyte_detection: str = 'auto',
+    **kwargs):
     """
     calc.assign_charges
 
@@ -690,7 +693,7 @@ def assign_charges(mol, charge='gasteiger', confId=0, opt=True, work_dir=None, t
 
     elif charge in ['RESP', 'ESP', 'Mulliken', 'Lowdin']:
         if not qm_avail:
-            utils.radon_print('Cannot import psi4_wrapper. You can use psi4_wrapper by "conda install -c psi4 psi4 resp dftd3"', level=3)
+            utils.radon_print('Cannot import psi4_wrapper. Install the QM stack with "conda install -c psi4 psi4 dftd3-python" and "conda install -c conda-forge psiresp".', level=3)
             return False
 
         # ------------------------------------------------------------------
@@ -790,7 +793,10 @@ def assign_charges(mol, charge='gasteiger', confId=0, opt=True, work_dir=None, t
         psi4mol.basis_gen = charge_basis_gen
 
         if charge == 'RESP':
-            psi4mol.resp()
+            psi4mol.resp(
+                polyelectrolyte_mode=bool(polyelectrolyte_mode),
+                polyelectrolyte_detection=str(polyelectrolyte_detection or 'auto'),
+            )
             if psi4mol.error_flag: return False
             for i, atom in enumerate(psi4mol.mol.GetAtoms()):
                 mol.GetAtomWithIdx(i).SetDoubleProp('RESP', atom.GetDoubleProp('RESP'))
@@ -798,7 +804,10 @@ def assign_charges(mol, charge='gasteiger', confId=0, opt=True, work_dir=None, t
                 mol.GetAtomWithIdx(i).SetDoubleProp('AtomicCharge', atom.GetDoubleProp('RESP'))
 
         elif charge == 'ESP':
-            psi4mol.resp()
+            psi4mol.resp(
+                polyelectrolyte_mode=bool(polyelectrolyte_mode),
+                polyelectrolyte_detection=str(polyelectrolyte_detection or 'auto'),
+            )
             if psi4mol.error_flag: return False
             for i, atom in enumerate(psi4mol.mol.GetAtoms()):
                 mol.GetAtomWithIdx(i).SetDoubleProp('RESP', atom.GetDoubleProp('RESP'))
@@ -1560,7 +1569,7 @@ def conformation_search(mol, ff=None, nconf=1000, dft_nconf=0, etkdg_ver=2, rmst
     if dft_nconf > 0:
         opt_success = 0
         if not qm_avail:
-            utils.radon_print('Cannot import psi4_wrapper. You can use psi4_wrapper by "conda install -c psi4 psi4 resp dftd3"', level=3)
+            utils.radon_print('Cannot import psi4_wrapper. Install the QM stack with "conda install -c psi4 psi4 dftd3-python" and "conda install -c conda-forge psiresp".', level=3)
             Chem.SanitizeMol(mol_c)
             return mol_c, re_energy
 

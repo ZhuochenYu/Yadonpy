@@ -31,6 +31,7 @@ from rdkit import Geometry as Geom
 from rdkit import RDLogger
 from . import calc, const, utils
 from .molspec import MolSpec, as_rdkit_mol, molecular_weight
+from .polyelectrolyte import annotate_polyelectrolyte_metadata, build_residue_map, get_charge_groups, get_polyelectrolyte_summary, get_resp_constraints
 from .resources import core_data_path
 from ..ff.gaff2_mod import GAFF2_mod
 from ..runtime import resolve_restart
@@ -3359,6 +3360,7 @@ def amorphous_cell(
         neutralize=True,
         neutralize_tol=1e-4,
         charge_scale=None,
+        polyelectrolyte_mode=False,
         charge_tolerance=1e-2,
         large_system_mode='auto',
         work_dir=None,
@@ -3680,6 +3682,7 @@ def amorphous_cell(
                     neutralize=neutralize,
                     neutralize_tol=neutralize_tol,
                     charge_scale=charge_scale,
+                    polyelectrolyte_mode=polyelectrolyte_mode,
                     charge_tolerance=charge_tolerance,
                     large_system_mode=large_system_mode,
             )
@@ -3714,6 +3717,10 @@ def amorphous_cell(
             _cached_mol_id = None
             _cached_artifact_dir = None
             _ff_name = None
+            _charge_groups = None
+            _resp_constraints = None
+            _polyelectrolyte_summary = None
+            _residue_map = None
             try:
                 if hasattr(_mol, 'HasProp'):
                     if _mol.HasProp('_yadonpy_bonded_requested'):
@@ -3730,6 +3737,17 @@ def amorphous_cell(
                         _cached_artifact_dir = str(_mol.GetProp('_yadonpy_artifact_dir')).strip() or None
                     if _mol.HasProp('ff_name'):
                         _ff_name = str(_mol.GetProp('ff_name')).strip() or None
+                    try:
+                        _charge_groups = get_charge_groups(_mol)
+                        _resp_constraints = get_resp_constraints(_mol)
+                        _polyelectrolyte_summary = get_polyelectrolyte_summary(_mol)
+                        _residue_map = build_residue_map(_mol, mol_name=utils.get_name(_mol, default='MOL'))
+                    except Exception:
+                        if bool(polyelectrolyte_mode):
+                            annotated = annotate_polyelectrolyte_metadata(_mol)
+                            _charge_groups = annotated["summary"]["groups"]
+                            _resp_constraints = annotated["constraints"]
+                            _polyelectrolyte_summary = annotated["summary"]
             except Exception:
                 _bonded_requested = None
                 _bonded_method = None
@@ -3738,6 +3756,10 @@ def amorphous_cell(
                 _cached_mol_id = None
                 _cached_artifact_dir = None
                 _ff_name = None
+                _charge_groups = None
+                _resp_constraints = None
+                _polyelectrolyte_summary = None
+                _residue_map = None
             meta.append({
                 'smiles': smi,
                 'n': int(_count),
@@ -3751,12 +3773,18 @@ def amorphous_cell(
                 'cached_mol_id': _cached_mol_id,
                 'cached_artifact_dir': _cached_artifact_dir,
                 'ff_name': _ff_name,
+                'charge_groups': _charge_groups,
+                'resp_constraints': _resp_constraints,
+                'polyelectrolyte_summary': _polyelectrolyte_summary,
+                'residue_map': _residue_map,
+                'polyelectrolyte_mode': bool(polyelectrolyte_mode),
             })
         payload = {
             'density_g_cm3': (float(density) if density is not None else None),
             'species': meta,
             'pack_mode': ('large_system' if large_pack_enabled else 'default'),
             'target_atoms': int(total_atoms_target),
+            'polyelectrolyte_mode': bool(polyelectrolyte_mode),
         }
         if isinstance(_cs, dict):
             payload['charge_scale'] = _cs
@@ -3824,6 +3852,7 @@ def amorphous_mixture_cell(
         check_bond_ring_intersection=False,
         mp=0,
         charge_scale=None,
+        polyelectrolyte_mode=False,
         large_system_mode='auto',
         work_dir=None,
         restart=None,
@@ -3845,6 +3874,7 @@ def amorphous_mixture_cell(
             check_bond_ring_intersection=check_bond_ring_intersection,
             mp=mp,
             charge_scale=charge_scale,
+            polyelectrolyte_mode=polyelectrolyte_mode,
             large_system_mode=large_system_mode,
             work_dir=work_dir,
             restart=restart,

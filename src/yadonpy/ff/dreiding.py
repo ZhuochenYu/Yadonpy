@@ -62,7 +62,7 @@ class Dreiding():
         self.alt_ptype = {}
 
 
-    def ff_assign(self, mol, charge=None, retryMDL=True, useMDL=True, report: bool = True):
+    def ff_assign(self, mol, charge=None, retryMDL=True, useMDL=True, report: bool = True, **charge_kwargs):
         """
         Dreiding.ff_assign
 
@@ -92,7 +92,7 @@ class Dreiding():
         if result: result = self.assign_atypes(mol)
         if result: result = self.assign_dtypes(mol)
         if result: result = self.assign_itypes(mol)
-        if result and charge is not None: result = calc.assign_charges(mol, charge=charge)
+        if result and charge is not None: result = calc.assign_charges(mol, charge=charge, **charge_kwargs)
         
         if not result and retryMDL and not useMDL:
             utils.radon_print('Retry to assign with MDL aromaticity model', level=1)
@@ -104,7 +104,7 @@ class Dreiding():
             if result: result = self.assign_atypes(mol)
             if result: result = self.assign_dtypes(mol)
             if result: result = self.assign_itypes(mol)
-            if result and charge is not None: result = calc.assign_charges(mol, charge=charge)
+            if result and charge is not None: result = calc.assign_charges(mol, charge=charge, **charge_kwargs)
             if result: utils.radon_print('Success to assign with MDL aromaticity model', level=1)
 
         if result and report:

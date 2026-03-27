@@ -119,7 +119,16 @@ if __name__ == "__main__":
             mon, ff=ff, work_dir=work_dir,
             psi4_omp=omp_psi4, mpi=mpi, omp=omp, memory=mem_mb, log_name=None
         )
-        qm.assign_charges(mon, charge="RESP", opt=False, work_dir=work_dir, omp=omp_psi4, memory=mem_mb, log_name=None)
+        qm.assign_charges(
+            mon,
+            charge="RESP",
+            opt=False,
+            work_dir=work_dir,
+            omp=omp_psi4,
+            memory=mem_mb,
+            log_name=None,
+            polyelectrolyte_mode=True,
+        )
         monomers[i] = mon
 
     glucose, glucose_2, glucose_3, glucose_6 = monomers
@@ -260,6 +269,7 @@ if __name__ == "__main__":
         [CMC, EC, EMC, DEC, Li, PF6, Na],
         counts,
         charge_scale=charge_scale,
+        polyelectrolyte_mode=True,
         density=density_pack_g_cm3,
         neutralize=False,
         work_dir=ac_build_dir,

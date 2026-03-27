@@ -212,6 +212,23 @@ def _get_atom_mass(atom) -> float:
         return float(atom.GetAtomicNum())
 
 
+def _atom_residue_fields(atom, *, atom_index: int, default_resnr: int, default_resname: str):
+    info = None
+    try:
+        info = atom.GetPDBResidueInfo()
+    except Exception:
+        info = None
+    if info is not None:
+        try:
+            resnr = int(info.GetResidueNumber())
+        except Exception:
+            resnr = int(default_resnr)
+        resname = str(info.GetResidueName()).strip() or str(default_resname)
+        atomname = str(info.GetName()).strip() or f"{atom.GetSymbol()}{atom_index}"
+        return resnr, resname, atomname
+    return int(default_resnr), str(default_resname), f"{atom.GetSymbol()}{atom_index}"
+
+
 def write_gro_from_rdkit(mol, out_gro: Path, mol_name: str) -> None:
     """Write a minimal .gro from RDKit conformer (expects Angstrom coords)."""
 
@@ -226,9 +243,12 @@ def write_gro_from_rdkit(mol, out_gro: Path, mol_name: str) -> None:
         x = angstrom_to_nm(pos.x)
         y = angstrom_to_nm(pos.y)
         z = angstrom_to_nm(pos.z)
-        resnr = 1
-        resname = mol_name[:5]
-        aname = (atom.GetSymbol() + str(i))[:5]
+        resnr, resname, aname = _atom_residue_fields(
+            atom,
+            atom_index=i,
+            default_resnr=1,
+            default_resname=mol_name[:5],
+        )
         lines.append(_format_gro_atom_line(resnr=resnr, resname=resname, atomname=aname, atomnr=i, x=x, y=y, z=z) + "\n")
 
     # A dummy box (1 nm cube) - caller may override for systems.
@@ -281,9 +301,12 @@ def write_gromacs_single_molecule_topology(
             },
         )
 
-        resnr = 1
-        resname = mol_name
-        aname = (atom.GetSymbol() + str(idx))
+        resnr, resname, aname = _atom_residue_fields(
+            atom,
+            atom_index=idx,
+            default_resnr=1,
+            default_resname=mol_name,
+        )
         cgnr = idx
         atoms_lines.append(
             f"{idx:5d} {atype:<6} {resnr:5d} {resname:<8} {aname:<8} {cgnr:5d} {charge: .6f} {mass: .4f}\n"
