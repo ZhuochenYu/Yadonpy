@@ -1,3 +1,8 @@
+## 0.8.72 (2026-03-27)
+
+- moldb/store + api + ff/gaff + tests/test_api: make MolDB charge variants polyelectrolyte-aware by storing and resolving grouped-charge metadata (`polyelectrolyte_mode`, detection mode, constraint signature, charge-group payloads, RESP constraint payloads, grouped summaries, and source-kind tags), restoring those tags on load, and preventing grouped-polyelectrolyte RESP fits from colliding with ordinary RESP variants under the same SMILES key;
+- tools/moldb/rebuild_bundle_species.py + README + docs/Yadonpy_manul.md + docs/Yaonpyd_user_guide.md + docs/Yadonpy_API_v0.8.72.md: add a batch rebuild utility for the bundled `yd_moldb.tar` species set, extend the rebuild list with battery anions and salts (`ClO4-`, `BF4-`, `AsF6-`, `FSI-`, `TFSI-`, `Li+`), document the DRIH-vs-standard-RESP split for symmetric inorganic ions, and refresh installation guidance around the current PsiRESP-based environment.
+
 ## 0.8.71 (2026-03-27)
 
 - sim/psi4_wrapper + sim/psiresp_wrapper + sim/qm + core/calc + diagnostics: replace the legacy Psi4 `resp` plugin path with a PsiRESP-backed RESP/ESP implementation, thread `polyelectrolyte_mode` and grouped-charge detection through the public charge-assignment path, validate cache metadata against the charge backend settings, and update environment diagnostics/install guidance to require `psiresp`;

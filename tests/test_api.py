@@ -7,6 +7,7 @@ from rdkit import Chem
 
 import yadonpy.api as api
 import yadonpy.moldb as moldb
+from yadonpy.core.polyelectrolyte import annotate_polyelectrolyte_metadata
 
 
 class _DummyDB:
@@ -33,6 +34,8 @@ def test_load_from_moldb_returns_molecule_by_default(monkeypatch):
                 'charge': 'RESP',
                 'basis_set': 'def2-TZVP',
                 'method': 'wb97m-d3bj',
+                'polyelectrolyte_mode': None,
+                'polyelectrolyte_detection': None,
             },
         )
     ]
@@ -47,6 +50,8 @@ def test_load_from_moldb_can_return_record(monkeypatch):
     assert mol == 'MOL'
     assert record == {'key': 'dummy'}
     assert db.calls[0][1]['require_ready'] is False
+    assert db.calls[0][1]['polyelectrolyte_mode'] is None
+    assert db.calls[0][1]['polyelectrolyte_detection'] is None
 
 
 def test_assign_forcefield_returns_ff_instance_and_status(monkeypatch):
@@ -200,3 +205,60 @@ def test_moldb_load_falls_back_when_best_mol2_is_corrupted(tmp_path: Path):
 
     assert loaded_rec.key == rec.key
     assert loaded.GetNumAtoms() == mol.GetNumAtoms()
+
+
+def test_moldb_polyelectrolyte_variants_are_distinguished(tmp_path: Path):
+    db = moldb.MolDB(db_dir=tmp_path / 'moldb')
+    smiles = '*OC1OC(CO)C(*)C(O)C1OCC(=O)[O-]'
+
+    mol_plain = api.mol_from_smiles(smiles, coord=True, name='glucose_6')
+    for atom in mol_plain.GetAtoms():
+        atom.SetDoubleProp('AtomicCharge', float(atom.GetFormalCharge()) * 0.1)
+    rec_plain = db.update_from_mol(
+        mol_plain,
+        smiles_or_psmiles=smiles,
+        name='glucose_6',
+        charge='RESP',
+    )
+
+    mol_poly = api.mol_from_smiles(smiles, coord=True, name='glucose_6')
+    for atom in mol_poly.GetAtoms():
+        atom.SetDoubleProp('AtomicCharge', float(atom.GetFormalCharge()) * 0.1)
+    annotate_polyelectrolyte_metadata(mol_poly)
+    rec_poly = db.update_from_mol(
+        mol_poly,
+        smiles_or_psmiles=smiles,
+        name='glucose_6',
+        charge='RESP',
+        polyelectrolyte_mode=True,
+    )
+
+    assert rec_plain.key == rec_poly.key
+    assert len(rec_poly.variants) >= 2
+    metas = list(rec_poly.variants.values())
+    assert any(bool(v.get('polyelectrolyte_mode')) for v in metas)
+    assert any(not bool(v.get('polyelectrolyte_mode', False)) for v in metas)
+
+
+def test_moldb_load_restores_polyelectrolyte_metadata(tmp_path: Path):
+    db = moldb.MolDB(db_dir=tmp_path / 'moldb')
+    smiles = '*OC1OC(CO)C(*)C(O)C1OCC(=O)[O-]'
+    mol = api.mol_from_smiles(smiles, coord=True, name='glucose_6')
+    for atom in mol.GetAtoms():
+        atom.SetDoubleProp('AtomicCharge', float(atom.GetFormalCharge()) * 0.1)
+    annotate_polyelectrolyte_metadata(mol)
+
+    rec = db.update_from_mol(
+        mol,
+        smiles_or_psmiles=smiles,
+        name='glucose_6',
+        charge='RESP',
+        polyelectrolyte_mode=True,
+    )
+    loaded, loaded_rec = db.load_mol(smiles, require_ready=True, charge='RESP')
+
+    assert loaded_rec.key == rec.key
+    assert loaded.HasProp('_YADONPY_VARIANT_ID')
+    assert loaded.HasProp('_yadonpy_charge_groups_json')
+    assert loaded.HasProp('_yadonpy_resp_constraints_json')
+    assert loaded.HasProp('_yadonpy_polyelectrolyte_summary_json')

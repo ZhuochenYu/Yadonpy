@@ -1,12 +1,12 @@
 # YadonPy
 
-Current release: **v0.8.71**
+Current release: **v0.8.72**
 
 YadonPy is a script-oriented molecular modeling and simulation workflow package for polymer, electrolyte, substrate, bulk-phase, and interface studies built around GROMACS. It accepts SMILES or PSMILES as the primary chemistry input, prepares reusable molecular assets, constructs packed systems, exports GROMACS-ready topologies, and runs staged workflows for equilibration and analysis.
 
 ## Release focus
 
-Version `0.8.71` replaces the previous Psi4 `resp` plugin path with **PsiRESP** as the RESP/ESP backend.
+Version `0.8.72` keeps **PsiRESP** as the RESP/ESP backend and extends MolDB so grouped-polyelectrolyte RESP variants are stored, distinguished, and restored explicitly.
 
 This change was made because grouped charge constraints are required for rigorous polyelectrolyte workflows, and PsiRESP provides the necessary primitives:
 
@@ -23,6 +23,8 @@ The release also adds a first implementation of **polyelectrolyte-aware RESP and
 - residue-preserving polymer export for `.gro` and `.itp`;
 - `charge_groups.json`, `resp_constraints.json`, `residue_map.json`, and `charge_scaling_report.json` in exported systems;
 - simulation-level local charge scaling of charged groups while preserving raw RESP templates.
+- MolDB variant records that now distinguish grouped polyelectrolyte RESP variants from ordinary RESP variants and restore those tags on load.
+- bundled-species rebuild tooling for the shipped MolDB archive, including additional battery anions such as `ClO4-`, `BF4-`, `AsF6-`, `FSI-`, and `TFSI-`.
 
 ## Scope
 
@@ -128,6 +130,17 @@ MolDB stores:
 - readiness flags;
 - bonded-patch sidecars when required by a charge variant.
 
+From `v0.8.72`, MolDB variant records can also carry:
+
+- `polyelectrolyte_mode`
+- `polyelectrolyte_detection`
+- `constraint_signature`
+- `charge_groups`
+- `resp_constraints`
+- `polyelectrolyte_summary`
+
+Those fields are also part of variant resolution. A grouped-polyelectrolyte RESP fit is therefore not reused as if it were an unconstrained RESP fit.
+
 MolDB does **not** treat old exported `.gro/.itp/.top` files as the primary persistent source.
 
 ### 3. Build the system
@@ -183,7 +196,7 @@ When metadata is missing or detection fails:
 - the export records a fallback;
 - the workflow reverts to whole-molecule scaling.
 
-## Export artifacts added by v0.8.71
+## Export artifacts added by v0.8.72
 
 For polymeric or polyelectrolyte systems, exports now preserve residue-level metadata and write:
 
@@ -197,6 +210,29 @@ These files are intended for:
 - auditing the constraint model;
 - postprocessing by residue or charged group;
 - reproducing the exact scaling logic used in a given topology export.
+
+## Rebuild the bundled MolDB species set
+
+The repository ships a batch rebuild script:
+
+`tools/moldb/rebuild_bundle_species.py`
+
+It reads `yd_moldb.tar`, rebuilds the bundled species list, and extends it with the battery-relevant extras:
+
+- `ClO4-`
+- `BF4-`
+- `AsF6-`
+- `FSI-`
+- `TFSI-`
+- `Li+`
+
+Example:
+
+```bash
+python tools/moldb/rebuild_bundle_species.py --db-dir ~/.yadonpy/moldb --work-root ./work_rebuild_bundle_species
+```
+
+`DRIH` is applied only to recognized high-symmetry polyhedral ions. `FSI-` and `TFSI-` stay on the standard RESP path.
 
 ## Examples
 
@@ -216,12 +252,13 @@ Relevant updates in this release:
 
 - `examples/05` now uses `polyelectrolyte_mode=True` for CMC monomer RESP and charge-scaled cell construction;
 - `examples/12` now uses the same grouped polyelectrolyte path and no longer requires manual charged-atom index handling in the script.
+- `tools/moldb/rebuild_bundle_species.py` rebuilds bundled MolDB species and adds `ClO4-`, `BF4-`, `AsF6-`, `FSI-`, `TFSI-`, and `Li+`.
 
 ## Documentation
 
 - Manual: `docs/Yadonpy_manul.md`
 - User guide: `docs/Yaonpyd_user_guide.md`
-- API reference: `docs/Yadonpy_API_v0.8.71.md`
+- API reference: `docs/Yadonpy_API_v0.8.72.md`
 
 Recommended reading order:
 

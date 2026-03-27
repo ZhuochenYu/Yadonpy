@@ -76,6 +76,8 @@ def load_from_moldb(
     method: str | None = None,
     require_ready: bool = True,
     return_record: bool = False,
+    polyelectrolyte_mode: bool | None = None,
+    polyelectrolyte_detection: str | None = None,
 ):
     """Load a molecule from MolDB using the requested charge variant.
 
@@ -103,6 +105,8 @@ def load_from_moldb(
         charge=charge,
         basis_set=basis_set,
         method=method,
+        polyelectrolyte_mode=polyelectrolyte_mode,
+        polyelectrolyte_detection=polyelectrolyte_detection,
     )
     if return_record:
         return mol, record

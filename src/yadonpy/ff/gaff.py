@@ -1547,6 +1547,8 @@ class GAFF():
         charge: str = "RESP",
         basis_set: str | None = None,
         method: str | None = None,
+        polyelectrolyte_mode: bool | None = None,
+        polyelectrolyte_detection: str | None = None,
     ):
         """Create or load a molecule (RDKit Mol) from the shared MolDB.
 
@@ -1581,6 +1583,8 @@ class GAFF():
                 charge=charge,
                 basis_set=basis_set,
                 method=method,
+                polyelectrolyte_mode=polyelectrolyte_mode,
+                polyelectrolyte_detection=polyelectrolyte_detection,
             )
         elif require_db:
             mol, rec = db.load_mol(
@@ -1589,6 +1593,8 @@ class GAFF():
                 charge=charge,
                 basis_set=basis_set,
                 method=method,
+                polyelectrolyte_mode=polyelectrolyte_mode,
+                polyelectrolyte_detection=polyelectrolyte_detection,
             )
         else:
             mol, rec = db.build_or_load(smiles_or_psmiles, name=name, prefer_db=prefer_db)
@@ -1617,6 +1623,8 @@ class GAFF():
         charge: str = "RESP",
         basis_set: str | None = None,
         method: str | None = None,
+        polyelectrolyte_mode: bool | None = None,
+        polyelectrolyte_detection: str | None = None,
     ):
         """Store current geometry + charges of an RDKit mol into shared MolDB."""
         from pathlib import Path
@@ -1629,4 +1637,6 @@ class GAFF():
             charge=charge,
             basis_set=basis_set,
             method=method,
+            polyelectrolyte_mode=polyelectrolyte_mode,
+            polyelectrolyte_detection=polyelectrolyte_detection,
         )

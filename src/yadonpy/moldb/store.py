@@ -35,6 +35,12 @@ _BONDED_FILE_KEYS = (
     "_yadonpy_mseminario_json",
 )
 
+_POLYELECTROLYTE_PROP_KEYS = (
+    "_yadonpy_charge_groups_json",
+    "_yadonpy_resp_constraints_json",
+    "_yadonpy_polyelectrolyte_summary_json",
+)
+
 
 def _bonded_meta_from_mol(mol: Chem.Mol) -> Dict[str, str]:
     meta: Dict[str, str] = {}
@@ -48,6 +54,100 @@ def _bonded_meta_from_mol(mol: Chem.Mol) -> Dict[str, str]:
     except Exception:
         pass
     return meta
+
+
+def _json_prop(mol: Chem.Mol, key: str):
+    try:
+        if hasattr(mol, "HasProp") and mol.HasProp(key):
+            raw = json.loads(mol.GetProp(key))
+            return raw
+    except Exception:
+        pass
+    return None
+
+
+def _variant_default_token(value: str | None, *, default: str) -> str:
+    s = str(value or "").strip()
+    return s if s else default
+
+
+def _constraint_signature(summary: Any, constraints: Any) -> str | None:
+    payload: dict[str, Any] = {}
+    if isinstance(summary, dict):
+        payload["groups"] = summary.get("groups") or []
+        payload["detection"] = summary.get("detection")
+        payload["fallback"] = summary.get("fallback")
+    if isinstance(constraints, dict):
+        payload["mode"] = constraints.get("mode")
+        payload["charged_group_constraints"] = constraints.get("charged_group_constraints") or []
+        payload["equivalence_groups"] = constraints.get("equivalence_groups") or []
+        payload["neutral_remainder_indices"] = constraints.get("neutral_remainder_indices") or []
+        payload["neutral_remainder_charge"] = constraints.get("neutral_remainder_charge")
+    if not payload:
+        return None
+    raw = json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()[:12]
+
+
+def _polyelectrolyte_variant_meta_from_mol(
+    mol: Chem.Mol,
+    *,
+    polyelectrolyte_mode: bool | None = None,
+    polyelectrolyte_detection: str | None = None,
+) -> Dict[str, Any]:
+    summary = _json_prop(mol, "_yadonpy_polyelectrolyte_summary_json")
+    charge_groups = _json_prop(mol, "_yadonpy_charge_groups_json")
+    constraints = _json_prop(mol, "_yadonpy_resp_constraints_json")
+    inferred_mode = bool(charge_groups or constraints or summary)
+    mode = bool(polyelectrolyte_mode) if polyelectrolyte_mode is not None else inferred_mode
+    detection = str(polyelectrolyte_detection).strip() if polyelectrolyte_detection is not None else None
+    if not detection and isinstance(summary, dict):
+        raw_detection = summary.get("detection")
+        if raw_detection is not None:
+            detection = str(raw_detection).strip() or None
+    meta: Dict[str, Any] = {
+        "polyelectrolyte_mode": bool(mode),
+        "polyelectrolyte_detection": detection or "auto",
+        "constraint_signature": _constraint_signature(summary, constraints),
+    }
+    if isinstance(summary, dict):
+        meta["polyelectrolyte_summary"] = summary
+        meta["is_polyelectrolyte"] = bool(summary.get("is_polyelectrolyte"))
+        meta["is_polymer"] = bool(summary.get("is_polymer"))
+        meta["charge_group_count"] = int(len(summary.get("groups") or []))
+    if isinstance(charge_groups, list):
+        meta["charge_groups"] = charge_groups
+    if isinstance(constraints, dict):
+        meta["resp_constraints"] = constraints
+    try:
+        if mol.HasProp("_YADONPY_KIND"):
+            meta["source_kind"] = str(mol.GetProp("_YADONPY_KIND"))
+    except Exception:
+        pass
+    return meta
+
+
+def _variant_payload_dict(
+    *,
+    charge: str = "RESP",
+    basis_set: str | None = None,
+    method: str | None = None,
+    polyelectrolyte_mode: bool | None = None,
+    polyelectrolyte_detection: str | None = None,
+    constraint_signature: str | None = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "charge": _variant_default_token(charge, default="RESP").upper(),
+        "basis_set": _variant_default_token(basis_set, default="Default"),
+        "method": _variant_default_token(method, default="Default"),
+    }
+    if polyelectrolyte_mode is not None:
+        payload["polyelectrolyte_mode"] = bool(polyelectrolyte_mode)
+    if polyelectrolyte_detection:
+        payload["polyelectrolyte_detection"] = str(polyelectrolyte_detection).strip()
+    if constraint_signature:
+        payload["constraint_signature"] = str(constraint_signature).strip()
+    return payload
 
 
 def _default_db_dir() -> Path:
@@ -284,13 +384,138 @@ class MolRecord:
         )
 
 
-def variant_id(*, charge: str = "RESP", basis_set: str | None = None, method: str | None = None) -> str:
+def variant_id(
+    *,
+    charge: str = "RESP",
+    basis_set: str | None = None,
+    method: str | None = None,
+    polyelectrolyte_mode: bool | None = None,
+    polyelectrolyte_detection: str | None = None,
+    constraint_signature: str | None = None,
+) -> str:
     """Stable short id for a charge variant."""
-    c = (charge or "RESP").strip().upper()
-    b = (basis_set or "Default").strip()
-    m = (method or "Default").strip()
-    payload = f"{c}|{b}|{m}".encode("utf-8")
-    return hashlib.sha256(payload).hexdigest()[:12]
+    payload = _variant_payload_dict(
+        charge=charge,
+        basis_set=basis_set,
+        method=method,
+        polyelectrolyte_mode=polyelectrolyte_mode,
+        polyelectrolyte_detection=polyelectrolyte_detection,
+        constraint_signature=constraint_signature,
+    )
+    raw = json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()[:12]
+
+
+def _variant_matches(
+    meta: dict[str, Any] | None,
+    *,
+    charge: str = "RESP",
+    basis_set: str | None = None,
+    method: str | None = None,
+    polyelectrolyte_mode: bool | None = None,
+    polyelectrolyte_detection: str | None = None,
+) -> bool:
+    if not isinstance(meta, dict):
+        return False
+    if _variant_default_token(meta.get("charge"), default="RESP").upper() != _variant_default_token(charge, default="RESP").upper():
+        return False
+    if _variant_default_token(meta.get("basis_set"), default="Default") != _variant_default_token(basis_set, default="Default"):
+        return False
+    if _variant_default_token(meta.get("method"), default="Default") != _variant_default_token(method, default="Default"):
+        return False
+    if polyelectrolyte_mode is not None and bool(meta.get("polyelectrolyte_mode", False)) != bool(polyelectrolyte_mode):
+        return False
+    if polyelectrolyte_detection is not None:
+        if _variant_default_token(meta.get("polyelectrolyte_detection"), default="auto") != _variant_default_token(polyelectrolyte_detection, default="auto"):
+            return False
+    return True
+
+
+def _select_variant(
+    rec: "MolRecord",
+    *,
+    charge: str = "RESP",
+    basis_set: str | None = None,
+    method: str | None = None,
+    polyelectrolyte_mode: bool | None = None,
+    polyelectrolyte_detection: str | None = None,
+) -> tuple[str, dict[str, Any] | None]:
+    variants = rec.variants or {}
+    exact_vid = variant_id(
+        charge=charge,
+        basis_set=basis_set,
+        method=method,
+        polyelectrolyte_mode=polyelectrolyte_mode,
+        polyelectrolyte_detection=polyelectrolyte_detection,
+    )
+    if exact_vid in variants:
+        return exact_vid, variants.get(exact_vid)
+
+    legacy_vid = variant_id(charge=charge, basis_set=basis_set, method=method)
+    if exact_vid == legacy_vid and legacy_vid in variants:
+        return legacy_vid, variants.get(legacy_vid)
+
+    candidates = [
+        (vid, meta)
+        for vid, meta in sorted(variants.items())
+        if _variant_matches(meta, charge=charge, basis_set=basis_set, method=method)
+    ]
+    if not candidates:
+        return legacy_vid, variants.get(legacy_vid)
+    if len(candidates) == 1:
+        return candidates[0]
+
+    if polyelectrolyte_mode is not None or polyelectrolyte_detection is not None:
+        strict = [
+            (vid, meta)
+            for vid, meta in candidates
+            if _variant_matches(
+                meta,
+                charge=charge,
+                basis_set=basis_set,
+                method=method,
+                polyelectrolyte_mode=polyelectrolyte_mode,
+                polyelectrolyte_detection=polyelectrolyte_detection,
+            )
+        ]
+        if strict:
+            return strict[0]
+
+    def _score(item: tuple[str, dict[str, Any]]) -> tuple[int, int, int, str]:
+        vid, meta = item
+        pe = int(bool(meta.get("polyelectrolyte_mode", False)))
+        ready = int(bool(meta.get("ready", False)))
+        group_count = int(meta.get("charge_group_count", 0) or 0)
+        if rec.kind == "psmiles":
+            return (pe, group_count, ready, vid)
+        return (ready, pe, group_count, vid)
+
+    return max(candidates, key=_score)
+
+
+def _restore_polyelectrolyte_variant(mol: Chem.Mol, meta: dict[str, Any] | None) -> None:
+    if not isinstance(meta, dict):
+        return
+    for prop, key in (
+        ("_yadonpy_charge_groups_json", "charge_groups"),
+        ("_yadonpy_resp_constraints_json", "resp_constraints"),
+        ("_yadonpy_polyelectrolyte_summary_json", "polyelectrolyte_summary"),
+    ):
+        try:
+            value = meta.get(key)
+            if value is not None:
+                mol.SetProp(prop, json.dumps(value, ensure_ascii=False))
+        except Exception:
+            continue
+    try:
+        if "polyelectrolyte_mode" in meta:
+            mol.SetProp("_YADONPY_POLYELECTROLYTE_MODE", "1" if bool(meta.get("polyelectrolyte_mode")) else "0")
+        if meta.get("polyelectrolyte_detection") is not None:
+            mol.SetProp("_YADONPY_POLYELECTROLYTE_DETECTION", str(meta.get("polyelectrolyte_detection")))
+        if meta.get("constraint_signature"):
+            mol.SetProp("_YADONPY_CONSTRAINT_SIGNATURE", str(meta.get("constraint_signature")))
+    except Exception:
+        pass
 
 
 class MolDB:
@@ -367,6 +592,8 @@ class MolDB:
         charge: str = "RESP",
         basis_set: str | None = None,
         method: str | None = None,
+        polyelectrolyte_mode: bool | None = None,
+        polyelectrolyte_detection: str | None = None,
     ) -> str:
         charges: List[float] = []
         for atom in mol.GetAtoms():
@@ -376,7 +603,19 @@ class MolDB:
                 charges.append(float(atom.GetDoubleProp(charge)))
             else:
                 charges.append(0.0)
-        vid = variant_id(charge=charge, basis_set=basis_set, method=method)
+        pe_meta = _polyelectrolyte_variant_meta_from_mol(
+            mol,
+            polyelectrolyte_mode=polyelectrolyte_mode,
+            polyelectrolyte_detection=polyelectrolyte_detection,
+        )
+        vid = variant_id(
+            charge=charge,
+            basis_set=basis_set,
+            method=method,
+            polyelectrolyte_mode=pe_meta.get("polyelectrolyte_mode"),
+            polyelectrolyte_detection=pe_meta.get("polyelectrolyte_detection"),
+            constraint_signature=pe_meta.get("constraint_signature"),
+        )
         payload = {
             "key": key,
             "variant_id": vid,
@@ -384,6 +623,13 @@ class MolDB:
             "basis_set": basis_set or "Default",
             "method": method or "Default",
             "charges": charges,
+            "polyelectrolyte_mode": bool(pe_meta.get("polyelectrolyte_mode", False)),
+            "polyelectrolyte_detection": pe_meta.get("polyelectrolyte_detection", "auto"),
+            "constraint_signature": pe_meta.get("constraint_signature"),
+            "charge_groups": pe_meta.get("charge_groups") or [],
+            "resp_constraints": pe_meta.get("resp_constraints") or {},
+            "polyelectrolyte_summary": pe_meta.get("polyelectrolyte_summary") or {},
+            "source_kind": pe_meta.get("source_kind"),
         }
 
         # Save the variant payload
@@ -401,8 +647,10 @@ class MolDB:
         charge: str = "RESP",
         basis_set: str | None = None,
         method: str | None = None,
+        vid: str | None = None,
     ) -> Chem.Mol:
-        vid = variant_id(charge=charge, basis_set=basis_set, method=method)
+        if not vid:
+            vid = variant_id(charge=charge, basis_set=basis_set, method=method)
         cp = self.charges_variant_path(key, vid)
         if not cp.exists():
             # fallback to legacy
@@ -416,6 +664,17 @@ class MolDB:
             if i < len(charges):
                 atom.SetDoubleProp("AtomicCharge", float(charges[i]))
                 atom.SetDoubleProp(payload.get("charge", "RESP"), float(charges[i]))
+        _restore_polyelectrolyte_variant(
+            mol,
+            {
+                "charge_groups": payload.get("charge_groups") or [],
+                "resp_constraints": payload.get("resp_constraints") or {},
+                "polyelectrolyte_summary": payload.get("polyelectrolyte_summary") or {},
+                "polyelectrolyte_mode": payload.get("polyelectrolyte_mode"),
+                "polyelectrolyte_detection": payload.get("polyelectrolyte_detection"),
+                "constraint_signature": payload.get("constraint_signature"),
+            },
+        )
         return mol
 
     def _persist_bonded_variant(self, mol: Chem.Mol, *, key: str, vid: str) -> Dict[str, Any]:
@@ -489,20 +748,30 @@ class MolDB:
         charge: str = "RESP",
         basis_set: str | None = None,
         method: str | None = None,
+        polyelectrolyte_mode: bool | None = None,
+        polyelectrolyte_detection: str | None = None,
     ) -> Tuple[Chem.Mol, MolRecord]:
         kind, canon, key = canonical_key(smiles_or_psmiles)
         rec = self.load_record(key)
         if rec is None:
             raise FileNotFoundError(f"Mol not found in DB: key={key} ({kind})")
 
+        selected_vid, selected_meta = _select_variant(
+            rec,
+            charge=charge,
+            basis_set=basis_set,
+            method=method,
+            polyelectrolyte_mode=polyelectrolyte_mode,
+            polyelectrolyte_detection=polyelectrolyte_detection,
+        )
+
         if require_ready:
-            vid = variant_id(charge=charge, basis_set=basis_set, method=method)
-            vmeta = (rec.variants or {}).get(vid)
+            vmeta = selected_meta
             if vmeta is None or (not bool(vmeta.get("ready", False))):
                 # Backwards-compat: respect legacy rec.ready for default variant only
-                if not (rec.ready and vid == variant_id(charge="RESP", basis_set=None, method=None)):
+                if not (rec.ready and selected_vid == variant_id(charge="RESP", basis_set=None, method=None)):
                     raise RuntimeError(
-                        f"Mol exists but not ready for variant={vid} ({charge}, {basis_set or 'Default'}, {method or 'Default'}): key={key}"
+                        f"Mol exists but not ready for variant={selected_vid} ({charge}, {basis_set or 'Default'}, {method or 'Default'}): key={key}"
                     )
         # Load geometry. Prefer the stable best.mol2 path, but recover gracefully if
         # that file is missing or corrupted while another MOL2 copy in the same record
@@ -543,12 +812,16 @@ class MolDB:
                     rec.connectors = rec.connectors or []
             _restore_connectors(mol, rec.connectors)
 
-        requested_vid = variant_id(charge=charge, basis_set=basis_set, method=method)
-        mol = self.attach_charges(mol, key, charge=charge, basis_set=basis_set, method=method)
-        self._restore_bonded_variant(mol, key=key, vid=requested_vid, rec=rec)
+        mol = self.attach_charges(mol, key, charge=charge, basis_set=basis_set, method=method, vid=selected_vid)
+        _restore_polyelectrolyte_variant(mol, selected_meta)
+        self._restore_bonded_variant(mol, key=key, vid=selected_vid, rec=rec)
         mol.SetProp('_YADONPY_KEY', key)
         mol.SetProp('_YADONPY_CANONICAL', rec.canonical)
         mol.SetProp('_YADONPY_KIND', rec.kind)
+        try:
+            mol.SetProp('_YADONPY_VARIANT_ID', selected_vid)
+        except Exception:
+            pass
         return mol, rec
 
     def build_or_load(self, smiles_or_psmiles: str, *, name: Optional[str] = None, prefer_db: bool = True) -> Tuple[Chem.Mol, MolRecord]:
@@ -580,6 +853,8 @@ class MolDB:
         charge: str = "RESP",
         basis_set: str | None = None,
         method: str | None = None,
+        polyelectrolyte_mode: bool | None = None,
+        polyelectrolyte_detection: str | None = None,
     ) -> MolRecord:
         """Persist current geometry + charges from an in-memory mol into the DB.
 
@@ -616,7 +891,20 @@ class MolDB:
         self.save_record(rec)
         self.save_geometry(key, mol, name=rec.name)
 
-        vid = self.save_charges(key, mol, charge=charge, basis_set=basis_set, method=method)
+        pe_meta = _polyelectrolyte_variant_meta_from_mol(
+            mol,
+            polyelectrolyte_mode=polyelectrolyte_mode,
+            polyelectrolyte_detection=polyelectrolyte_detection,
+        )
+        vid = self.save_charges(
+            key,
+            mol,
+            charge=charge,
+            basis_set=basis_set,
+            method=method,
+            polyelectrolyte_mode=pe_meta.get("polyelectrolyte_mode"),
+            polyelectrolyte_detection=pe_meta.get("polyelectrolyte_detection"),
+        )
 
         bonded_meta = self._persist_bonded_variant(mol, key=key, vid=vid)
 
@@ -628,6 +916,16 @@ class MolDB:
             "basis_set": basis_set or "Default",
             "method": method or "Default",
             "ready": True,
+            "polyelectrolyte_mode": bool(pe_meta.get("polyelectrolyte_mode", False)),
+            "polyelectrolyte_detection": pe_meta.get("polyelectrolyte_detection", "auto"),
+            "constraint_signature": pe_meta.get("constraint_signature"),
+            "charge_groups": pe_meta.get("charge_groups") or [],
+            "resp_constraints": pe_meta.get("resp_constraints") or {},
+            "polyelectrolyte_summary": pe_meta.get("polyelectrolyte_summary") or {},
+            "is_polyelectrolyte": bool(pe_meta.get("is_polyelectrolyte", False)),
+            "is_polymer": bool(pe_meta.get("is_polymer", False)),
+            "charge_group_count": int(pe_meta.get("charge_group_count", 0) or 0),
+            "source_kind": pe_meta.get("source_kind", rec.kind),
         }
         if bonded_meta:
             rec.variants[vid]["bonded"] = bonded_meta

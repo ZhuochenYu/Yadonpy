@@ -1,8 +1,8 @@
-# YadonPy API Reference (v0.8.71)
+# YadonPy API Reference (v0.8.72)
 
 ## 1. Scope
 
-This document describes the primary script-facing APIs in YadonPy `v0.8.71`. It focuses on stable or intended-to-be-stable entry points that are relevant for study scripts and workflow assembly.
+This document describes the primary script-facing APIs in YadonPy `v0.8.72`. It focuses on stable or intended-to-be-stable entry points that are relevant for study scripts and workflow assembly.
 
 The package exposes two layers:
 

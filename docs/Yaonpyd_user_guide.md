@@ -1,4 +1,4 @@
-# YadonPy User Guide (v0.8.71)
+# YadonPy User Guide (v0.8.72)
 
 This guide explains how to use YadonPy effectively in day-to-day study scripts.
 
@@ -6,7 +6,7 @@ Related documents:
 
 - README: package scope and installation
 - manual: `docs/Yadonpy_manul.md`
-- API reference: `docs/Yadonpy_API_v0.8.71.md`
+- API reference: `docs/Yadonpy_API_v0.8.72.md`
 
 ## 1. Build the right environment
 
@@ -31,6 +31,27 @@ python -c "from yadonpy.diagnostics import doctor; doctor(print_report=True)"
 ```
 
 For RESP/ESP workflows, `doctor()` should report both `psi4` and `psiresp`.
+
+If the study requires only force-field assignment and export, `psi4` and `psiresp` remain optional. If the study requires RESP or ESP, both are required.
+
+## 1.1 Rebuild the bundled MolDB species set
+
+YadonPy ships a bundled archive `yd_moldb.tar`. To rebuild the shipped species set into a fresh MolDB and add the supported battery-anion extensions, run:
+
+```bash
+python tools/moldb/rebuild_bundle_species.py --db-dir ~/.yadonpy/moldb --work-root ./work_rebuild_bundle_species
+```
+
+The script rebuilds the bundled species and additionally includes:
+
+- `ClO4-`
+- `BF4-`
+- `AsF6-`
+- `FSI-`
+- `TFSI-`
+- `Li+`
+
+`DRIH` is applied only to recognized high-symmetry polyhedral ions. `FSI-` and `TFSI-` remain on the standard RESP path.
 
 ## 2. Use an explicit script structure
 

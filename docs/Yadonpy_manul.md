@@ -1,4 +1,4 @@
-# YadonPy Manual (v0.8.71)
+# YadonPy Manual (v0.8.72)
 
 ## 1. Purpose
 
@@ -6,7 +6,7 @@ This manual describes the architectural rules of YadonPy. It is intended for use
 
 Related documents:
 
-- API reference: `docs/Yadonpy_API_v0.8.71.md`
+- API reference: `docs/Yadonpy_API_v0.8.72.md`
 - user guide: `docs/Yaonpyd_user_guide.md`
 
 ## 2. Architectural principles
@@ -30,6 +30,26 @@ MolDB is the persistent cache for expensive molecular preparation. Its role is t
 - charge variants;
 - charge/basis/method metadata;
 - bonded-patch sidecars when required.
+
+From `v0.8.72`, charge variants may also preserve grouped-polyelectrolyte metadata:
+
+- `polyelectrolyte_mode`
+- `polyelectrolyte_detection`
+- `constraint_signature`
+- grouped charge definitions
+- grouped RESP constraint payloads
+
+MolDB variant lookup now uses those fields as part of compatibility selection. This prevents an ordinary RESP variant from being mistaken for a grouped-polyelectrolyte RESP variant for the same monomer or repeat unit.
+
+### 2.2.1 Polyelectrolyte variant discipline
+
+For charged polymer monomers or repeat units, the persistent record must preserve three independent layers:
+
+- chemistry identity (`canonical`, `kind`, `connectors`)
+- QM provenance (`charge`, `basis_set`, `method`)
+- grouped-charge semantics (`polyelectrolyte_mode`, `polyelectrolyte_detection`, `constraint_signature`, `charge_groups`, `resp_constraints`)
+
+The grouped-charge semantics are treated as first-class cache identity, not as optional annotations.
 
 System-level GROMACS exports are treated as reproducible products, not as the primary persistent source.
 
@@ -142,6 +162,8 @@ These files are written during export and are intended for:
 - validating grouped charge constraints;
 - validating local scaling behavior;
 - external analysis by residue or charged-group.
+
+At the MolDB layer, the same grouped information is now preserved per charge variant when it exists on the source molecule. This is necessary because two RESP fits with the same `charge/basis/method` but different grouped-constraint logic should not collapse onto one indistinguishable database variant.
 
 ## 6. Residue model for polymers
 
