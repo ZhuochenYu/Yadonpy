@@ -1,6 +1,5 @@
 global-exclude *.py[cod]
 global-exclude .DS_Store
-include yd_moldb.tar
 prune .pytest_cache
 prune .yadonpy_cache
 prune tmp_workdir_smoke

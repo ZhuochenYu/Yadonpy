@@ -1,12 +1,12 @@
 # YadonPy
 
-Current release: **v0.8.74**
+Current release: **v0.8.75**
 
 YadonPy is a script-oriented molecular modeling and simulation workflow package for polymer, electrolyte, substrate, bulk-phase, and interface studies built around GROMACS. It accepts SMILES or PSMILES as the primary chemistry input, prepares reusable molecular assets, constructs packed systems, exports GROMACS-ready topologies, and runs staged workflows for equilibration and analysis.
 
 ## Release focus
 
-Version `0.8.74` keeps **PsiRESP** as the RESP/ESP backend, preserves grouped-polyelectrolyte RESP variants in MolDB, and tightens the build/export pipeline so restart, scaling, and interface assembly no longer silently reuse incomplete state.
+Version `0.8.75` keeps **PsiRESP** as the RESP/ESP backend, preserves grouped-polyelectrolyte RESP variants in MolDB, tightens the build/export pipeline, and removes the old bundled MolDB archive from the release tree in favor of explicit Example 07 rebuild inputs.
 
 This change was made because grouped charge constraints are required for rigorous polyelectrolyte workflows, and PsiRESP provides the necessary primitives:
 
@@ -25,7 +25,7 @@ The current release keeps the grouped-polyelectrolyte RESP/scaling path and adds
 - `site_map.json` and `export_manifest.json` in exported systems;
 - simulation-level local charge scaling of charged groups while preserving raw RESP templates;
 - MolDB variant records that now distinguish grouped polyelectrolyte RESP variants from ordinary RESP variants and restore those tags on load.
-- bundled-species rebuild tooling for the shipped MolDB archive, including additional battery anions such as `ClO4-`, `BF4-`, `AsF6-`, `FSI-`, and `TFSI-`.
+- explicit MolDB rebuild inputs under `examples/07_moldb_precompute_and_reuse/`, including a merged reference-species CSV with additional battery anions such as `ClO4-`, `BF4-`, `AsF6-`, `FSI-`, and `TFSI-`;
 - adaptive MSD outputs that distinguish atomic-ion, molecular COM, chain COM, residue COM, and charged-group COM motion;
 - site-level RDF/CN as the default coordination analysis path, with strict center-species resolution and one shared first-shell detector for plots and JSON summaries;
 - Nernst-Einstein conductivity for charged polymers computed from charged-group diffusion coefficients rather than whole-chain net charges.
@@ -50,34 +50,16 @@ The package covers:
 
 ## Installation
 
-### Baseline environment
-
-- Python `3.11`
-- `numpy`, `scipy`, `pandas`, `matplotlib`, `packaging`
-- `rdkit`
-- `parmed`
-- `mdtraj`
-
-### Optional but commonly required
-
-- `openbabel` for robust 3D recovery and inorganic handling
-- `psi4` for QM geometry/ESP generation
-- `psiresp` for RESP/ESP fitting
-- `dftd3-python` when the chosen QM method requires it
-- `gromacs` for MD execution
-
 ### Recommended conda environment
 
 ```bash
-conda create -n yadonpy python=3.11
+conda create -n yadonpy python=3.9
 conda activate yadonpy
 
-conda install -c conda-forge rdkit openbabel parmed mdtraj matplotlib pandas scipy packaging
-conda install -c psi4 psi4 dftd3-python
-conda install -c conda-forge psiresp
+conda install rdkit openbabel parmed mdtraj matplotlib pandas scipy packaging psi4 dftd3-python psiresp
+pip install pybel
 
 pip install -e .
-pip install -e .[accel]
 ```
 
 ### Environment check
@@ -259,13 +241,16 @@ This means:
 - cationic and anionic charged groups are reported separately;
 - a charged polymer without `charged_group_com_msd` metadata is excluded from the Nernst-Einstein sum and recorded as ignored rather than being approximated as one large polyion.
 
-## Rebuild the bundled MolDB species set
+## Rebuild reference MolDB species
 
-The repository ships a batch rebuild script:
+The release no longer ships `yd_moldb.tar`.
 
-`tools/moldb/rebuild_bundle_species.py`
+Instead, the reference MolDB species list is stored as plain CSV under:
 
-It reads `yd_moldb.tar`, rebuilds the bundled species list, and extends it with the battery-relevant extras:
+- `examples/07_moldb_precompute_and_reuse/template.csv`
+- `examples/07_moldb_precompute_and_reuse/reference_species.csv`
+
+`reference_species.csv` contains the old shipped reference species plus the additional battery-anion set:
 
 - `ClO4-`
 - `BF4-`
@@ -274,13 +259,13 @@ It reads `yd_moldb.tar`, rebuilds the bundled species list, and extends it with 
 - `TFSI-`
 - `Li+`
 
-Example:
+The one-time rebuild script lives beside those CSV files:
 
 ```bash
-python tools/moldb/rebuild_bundle_species.py --db-dir ~/.yadonpy/moldb --work-root ./work_rebuild_bundle_species
+python examples/07_moldb_precompute_and_reuse/03_rebuild_reference_moldb_species.py
 ```
 
-`DRIH` is applied only to recognized high-symmetry polyhedral ions. `FSI-` and `TFSI-` stay on the standard RESP path.
+It merges `template.csv` and `reference_species.csv`, deduplicates the SMILES list, writes the results into the active MolDB, applies `MERZ` to monatomic ions, applies `DRIH` only to recognized high-symmetry inorganic ions, and keeps `FSI-` / `TFSI-` on the standard RESP path.
 
 ## Examples
 
@@ -300,13 +285,13 @@ Relevant updates in this release:
 
 - `examples/05` now uses `polyelectrolyte_mode=True` for CMC monomer RESP and charge-scaled cell construction;
 - `examples/12` now uses the same grouped polyelectrolyte path and no longer requires manual charged-atom index handling in the script.
-- `tools/moldb/rebuild_bundle_species.py` rebuilds bundled MolDB species and adds `ClO4-`, `BF4-`, `AsF6-`, `FSI-`, `TFSI-`, and `Li+`.
+- `examples/07_moldb_precompute_and_reuse/03_rebuild_reference_moldb_species.py` rebuilds the merged reference MolDB species list and adds `ClO4-`, `BF4-`, `AsF6-`, `FSI-`, `TFSI-`, and `Li+`.
 
 ## Documentation
 
 - Manual: `docs/Yadonpy_manul.md`
 - User guide: `docs/Yaonpyd_user_guide.md`
-- API reference: `docs/Yadonpy_API_v0.8.74.md`
+- API reference: `docs/Yadonpy_API_v0.8.75.md`
 
 Recommended reading order:
 

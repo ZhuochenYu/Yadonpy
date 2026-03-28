@@ -1,3 +1,9 @@
+## 0.8.75 (2026-03-28)
+
+- core/data_dir + diagnostics + tests/test_data_dir + MANIFEST.in: remove bundled MolDB archive auto-import from initialization, stop surfacing `bundle_archive` / `bundle_state` in `doctor()`, and stop shipping `yd_moldb.tar` in the source manifest;
+- examples/07_moldb_precompute_and_reuse + examples/08_text_to_csv_and_build_moldb + README + docs: replace the old bundled-species rebuild path with plain-text CSV inputs under Example 07, repair the corrupted `template.csv`, add `reference_species.csv`, add `03_rebuild_reference_moldb_species.py` to rebuild the merged Example 07/reference species set into MolDB, and document the new Python 3.9 installation flow (`conda install ... psiresp`, `pip install pybel`, `pip install -e .`);
+- pyproject.toml + src/yadonpy/__init__.py + docs/Yadonpy_API_v0.8.75.md: bump the package release to `0.8.75`, lower the declared Python floor to `>=3.9`, and refresh the API document set to the new release file name.
+
 ## 0.8.74 (2026-03-28)
 
 - workflow/resume + runtime + tests/test_runtime.py: make strict input validation the default resume mode, stop treating "outputs exist but no state record" as reusable completion, and promote full file-signature based invalidation for critical workflow stages.

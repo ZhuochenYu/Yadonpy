@@ -3,7 +3,10 @@ from __future__ import annotations
 """Example 07 / Step 2: Polymer electrolyte workflow using MolDB.
 
 Prerequisite:
-  - Run 01_build_moldb.py first so monomers/solvents are "ready" in MolDB.
+  - Run 01_build_moldb.py first so the workflow-local monomers/solvents are
+    "ready" in MolDB.
+  - Run 03_rebuild_reference_moldb_species.py only when you also want the
+    larger reference solvent/salt set in the same MolDB.
 
 Notes:
     - This example intentionally avoids PF6- in the CSV. If you need PF6-,

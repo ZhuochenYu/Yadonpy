@@ -1,4 +1,4 @@
-# YadonPy User Guide (v0.8.74)
+# YadonPy User Guide (v0.8.75)
 
 This guide explains how to use YadonPy effectively in day-to-day study scripts.
 
@@ -6,22 +6,20 @@ Related documents:
 
 - README: package scope and installation
 - manual: `docs/Yadonpy_manul.md`
-- API reference: `docs/Yadonpy_API_v0.8.74.md`
+- API reference: `docs/Yadonpy_API_v0.8.75.md`
 
 ## 1. Build the right environment
 
 Recommended environment:
 
 ```bash
-conda create -n yadonpy python=3.11
+conda create -n yadonpy python=3.9
 conda activate yadonpy
 
-conda install -c conda-forge rdkit openbabel parmed mdtraj matplotlib pandas scipy packaging
-conda install -c psi4 psi4 dftd3-python
-conda install -c conda-forge psiresp
+conda install rdkit openbabel parmed mdtraj matplotlib pandas scipy packaging psi4 dftd3-python psiresp
+pip install pybel
 
 pip install -e .
-pip install -e .[accel]
 ```
 
 Check the environment:
@@ -39,15 +37,15 @@ From `v0.8.74`, two operational defaults changed:
 - restart-aware workflows default to strict input checking instead of permissive reuse;
 - ion packs created by `core.poly.ion(...)` must be passed explicitly via `ions=[...]`.
 
-## 1.1 Rebuild the bundled MolDB species set
+## 1.1 Rebuild the reference MolDB species set
 
-YadonPy ships a bundled archive `yd_moldb.tar`. To rebuild the shipped species set into a fresh MolDB and add the supported battery-anion extensions, run:
+YadonPy no longer ships `yd_moldb.tar`. The reference species list now lives as plain CSV files in Example 07. To rebuild the merged reference species set into a fresh MolDB and add the supported battery-anion extensions, run:
 
 ```bash
-python tools/moldb/rebuild_bundle_species.py --db-dir ~/.yadonpy/moldb --work-root ./work_rebuild_bundle_species
+python examples/07_moldb_precompute_and_reuse/03_rebuild_reference_moldb_species.py
 ```
 
-The script rebuilds the bundled species and additionally includes:
+The script rebuilds the merged Example 07 species list and additionally includes:
 
 - `ClO4-`
 - `BF4-`

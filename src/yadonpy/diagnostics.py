@@ -15,7 +15,7 @@ import shutil
 import sys
 from typing import Any, Optional
 
-from .core.data_dir import get_data_root, DataLayout, find_bundle_archive
+from .core.data_dir import get_data_root, DataLayout
 
 
 @dataclass(frozen=True)
@@ -63,7 +63,7 @@ def require_rdkit() -> None:
         raise ImportError(
             "RDKit is required by yadonpy (SMILES parsing/typing/polymer building).\n"
             "Recommended install (conda):\n"
-            "  conda install -c conda-forge rdkit\n"
+            "  conda install rdkit\n"
         )
 
     # Enforce a modern RDKit for robust 3D embedding of inorganic/polyatomic ions
@@ -83,7 +83,7 @@ def require_rdkit() -> None:
                 "RDKit >= 2025.03.1 is required by yadonpy for stable 3D embedding and ion handling.\n"
                 f"Detected RDKit: {ver!r}.\n"
                 "Please upgrade (recommended conda):\n"
-                "  conda install -c conda-forge rdkit>=2025.03.1\n"
+                "  conda install rdkit>=2025.03.1\n"
             )
     except ImportError:
         raise
@@ -98,7 +98,7 @@ def require_psi4_resp() -> None:
         raise ImportError(
             "Psi4 is required for QM-derived charges (RESP/ESP/Mulliken/Lowdin).\n"
             "Recommended install (conda):\n"
-            "  conda install -c psi4 psi4\n"
+            "  conda install psi4 dftd3-python psiresp\n"
             "If you only want a quick test, switch to charge_method='gasteiger'\n"
             "or charge_method='zero'.\n"
         )
@@ -106,7 +106,7 @@ def require_psi4_resp() -> None:
         raise ImportError(
             "Python package 'psiresp' is required for RESP/ESP charge fitting.\n"
             "Try (conda):\n"
-            "  conda install -c conda-forge psiresp\n"
+            "  conda install psiresp\n"
         )
 
 
@@ -119,8 +119,6 @@ def doctor(*, print_report: bool = True) -> dict[str, Any]:
         "data_root": str(layout.root),
         "moldb_dir": str(layout.moldb_dir),
         "initialized": layout.marker.exists(),
-        "bundle_archive": (str(find_bundle_archive()) if find_bundle_archive() is not None else None),
-        "bundle_state": str(layout.bundle_state) if layout.bundle_state.exists() else None,
         "executables": {
             "gmx": shutil.which("gmx"),
             "gmx_mpi": shutil.which("gmx_mpi"),
@@ -147,8 +145,6 @@ def doctor(*, print_report: bool = True) -> dict[str, Any]:
         print(f"  data_root: {checks['data_root']}", flush=True)
         print(f"  moldb_dir: {checks['moldb_dir']}", flush=True)
         print(f"  initialized: {checks['initialized']}", flush=True)
-        print(f"  bundle_archive: {checks['bundle_archive'] if checks['bundle_archive'] else 'NOT FOUND'}", flush=True)
-        print(f"  bundle_state: {checks['bundle_state'] if checks['bundle_state'] else 'NOT FOUND'}", flush=True)
         print("  executables:", flush=True)
         for k, v in checks["executables"].items():
             print(f"    {k}: {v if v else 'NOT FOUND'}", flush=True)

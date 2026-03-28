@@ -1,8 +1,16 @@
 from __future__ import annotations
 
-import argparse
+"""Example 07 / Step 3: Rebuild the reference MolDB species set from CSV files.
+
+This script merges:
+  - template.csv
+  - reference_species.csv
+
+and writes the deduplicated species set into the active MolDB.
+"""
+
+import csv
 import json
-import tarfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -11,8 +19,9 @@ from rdkit import Chem
 
 import yadonpy as yp
 from yadonpy.core import chem_utils as core_utils
-from yadonpy.core.data_dir import find_bundle_archive
 from yadonpy.core.polyelectrolyte import detect_charged_groups
+
+HERE = Path(__file__).resolve().parent
 
 
 @dataclass(frozen=True)
@@ -23,41 +32,19 @@ class SpeciesSpec:
     source: str
 
 
-EXTRA_SPECIES: tuple[SpeciesSpec, ...] = (
-    SpeciesSpec("ClO4", "[O-][Cl](=O)(=O)=O", "smiles", "extra"),
-    SpeciesSpec("BF4", "F[B-](F)(F)F", "smiles", "extra"),
-    SpeciesSpec("AsF6", "F[As-](F)(F)(F)(F)F", "smiles", "extra"),
-    SpeciesSpec("FSI", "FS(=O)(=O)[N-]S(=O)(=O)F", "smiles", "extra"),
-    SpeciesSpec("TFSI", "FC(F)(F)S(=O)(=O)[N-]S(=O)(=O)C(F)(F)F", "smiles", "extra"),
-    SpeciesSpec("Li", "[Li+]", "smiles", "extra"),
-)
-
-
-def _bundle_records(archive: Path) -> list[SpeciesSpec]:
-    records: list[SpeciesSpec] = []
-    with tarfile.open(archive, "r:*") as tf:
-        for member in tf.getmembers():
-            if not member.isfile() or not member.name.endswith("/manifest.json"):
+def _read_species_csv(path: Path, *, default_source: str) -> list[SpeciesSpec]:
+    rows: list[SpeciesSpec] = []
+    with path.open("r", encoding="utf-8", newline="") as fh:
+        reader = csv.DictReader(fh)
+        for raw in reader:
+            name = str(raw.get("name") or "").strip()
+            smiles = str(raw.get("smiles") or "").strip()
+            if not name or not smiles:
                 continue
-            fh = tf.extractfile(member)
-            if fh is None:
-                continue
-            try:
-                payload = json.load(fh)
-            except Exception:
-                continue
-            canonical = str(payload.get("canonical") or "").strip()
-            if not canonical:
-                continue
-            records.append(
-                SpeciesSpec(
-                    name=str(payload.get("name") or payload.get("key") or canonical).strip(),
-                    smiles=canonical,
-                    kind=str(payload.get("kind") or "smiles").strip(),
-                    source="bundle",
-                )
-            )
-    return records
+            kind = str(raw.get("kind") or ("psmiles" if "*" in smiles else "smiles")).strip()
+            source = str(raw.get("source") or default_source).strip()
+            rows.append(SpeciesSpec(name=name, smiles=smiles, kind=kind, source=source))
+    return rows
 
 
 def _dedupe_species(items: list[SpeciesSpec]) -> list[SpeciesSpec]:
@@ -154,31 +141,22 @@ def _assign_and_store(spec: SpeciesSpec, *, db_dir: Path, work_root: Path) -> di
     }
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description="Rebuild bundled MolDB species and selected extra battery-anion species.")
-    parser.add_argument("--archive", type=Path, default=None, help="Path to yd_moldb.tar. Default: auto-detect.")
-    parser.add_argument("--db-dir", type=Path, default=Path.home() / ".yadonpy" / "moldb", help="Target MolDB directory.")
-    parser.add_argument("--work-root", type=Path, default=Path("./work_rebuild_bundle_species"), help="Per-species working directory root.")
-    parser.add_argument("--limit", type=int, default=0, help="Optional limit for smoke runs.")
-    args = parser.parse_args()
+if __name__ == "__main__":
+    db_dir = Path.home() / ".yadonpy" / "moldb"
+    work_root = HERE / "work_dir" / "03_rebuild_reference_moldb_species"
+    db_dir.mkdir(parents=True, exist_ok=True)
+    work_root.mkdir(parents=True, exist_ok=True)
 
-    archive = args.archive or find_bundle_archive(cwd=Path.cwd())
-    if archive is None or not Path(archive).is_file():
-        raise FileNotFoundError("Could not locate yd_moldb.tar. Pass --archive explicitly.")
-
-    bundle_species = _bundle_records(Path(archive))
-    species = _dedupe_species(bundle_species + list(EXTRA_SPECIES))
-    if args.limit > 0:
-        species = species[: int(args.limit)]
-
-    args.db_dir.mkdir(parents=True, exist_ok=True)
-    args.work_root.mkdir(parents=True, exist_ok=True)
+    species = _dedupe_species(
+        _read_species_csv(HERE / "template.csv", default_source="example07")
+        + _read_species_csv(HERE / "reference_species.csv", default_source="reference")
+    )
 
     summary: list[dict[str, Any]] = []
     failures: list[dict[str, Any]] = []
     for spec in species:
         try:
-            result = _assign_and_store(spec, db_dir=args.db_dir, work_root=args.work_root)
+            result = _assign_and_store(spec, db_dir=db_dir, work_root=work_root)
             summary.append(result)
             print(f"[OK] {spec.name:16s} {spec.smiles}")
         except Exception as exc:
@@ -186,20 +164,15 @@ def main() -> int:
             print(f"[FAIL] {spec.name:16s} {spec.smiles} :: {exc}")
 
     out = {
-        "archive": str(Path(archive).resolve()),
-        "db_dir": str(args.db_dir.resolve()),
-        "work_root": str(args.work_root.resolve()),
+        "db_dir": str(db_dir.resolve()),
+        "work_root": str(work_root.resolve()),
         "success_count": len(summary),
         "failure_count": len(failures),
         "success": summary,
         "failures": failures,
     }
-    (args.work_root / "rebuild_bundle_species_summary.json").write_text(
+    (work_root / "rebuild_reference_moldb_species_summary.json").write_text(
         json.dumps(out, indent=2, ensure_ascii=False) + "\n",
         encoding="utf-8",
     )
-    return 0 if not failures else 1
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(0 if not failures else 1)

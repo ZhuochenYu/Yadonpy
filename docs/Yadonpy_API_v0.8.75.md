@@ -1,8 +1,20 @@
-# YadonPy API Reference (v0.8.74)
+# YadonPy API Reference (v0.8.75)
 
 ## 1. Scope
 
-This document describes the primary script-facing APIs in YadonPy `v0.8.74`. It focuses on stable or intended-to-be-stable entry points that are relevant for study scripts and workflow assembly.
+This document describes the primary script-facing APIs in YadonPy `v0.8.75`. It focuses on stable or intended-to-be-stable entry points that are relevant for study scripts and workflow assembly.
+
+Environment baseline used by the current release:
+
+```bash
+conda create -n yadonpy python=3.9
+conda activate yadonpy
+conda install rdkit openbabel parmed mdtraj matplotlib pandas scipy packaging psi4 dftd3-python psiresp
+pip install pybel
+pip install -e .
+```
+
+From `v0.8.75`, the release no longer ships `yd_moldb.tar`. Reference MolDB species are rebuilt explicitly from the Example 07 CSV inputs rather than auto-imported from a bundled archive.
 
 The package exposes two layers:
 
