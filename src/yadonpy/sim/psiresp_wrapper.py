@@ -33,6 +33,16 @@ def _require_psiresp() -> None:
         )
 
 
+def _ensure_psiresp_numpy_compat() -> None:
+    if hasattr(np, "in1d"):
+        return
+
+    def _in1d(ar1, ar2, assume_unique=False, invert=False):
+        return np.isin(ar1, ar2, assume_unique=assume_unique, invert=invert)
+
+    np.in1d = _in1d  # type: ignore[attr-defined]
+
+
 def _charge_constraints_for_molecule(
     mol,
     *,
@@ -74,6 +84,50 @@ def _charge_constraints_for_molecule(
     return options, {"summary": summary, "constraints": constraints_meta}
 
 
+def _compute_orientation_wavefunction_and_esp(
+    orientation,
+    *,
+    method: str,
+    basis: str,
+    ncores: int | None = None,
+    memory_mib: int | float | None = None,
+) -> None:
+    import qcelemental as qcel  # type: ignore
+    import qcengine as qcng  # type: ignore
+    from psiresp.qcutils import QCWaveFunction  # type: ignore
+
+    if orientation.grid is None:
+        raise ValueError("Orientation grid must be prepared before computing ESP.")
+
+    task_config: dict[str, Any] = {}
+    if ncores is not None:
+        try:
+            task_config["ncores"] = max(1, int(ncores))
+        except Exception:
+            pass
+    if memory_mib is not None:
+        try:
+            task_config["memory"] = max(float(memory_mib) / 1024.0, 0.1)
+        except Exception:
+            pass
+
+    atomic_input = qcel.models.AtomicInput(
+        molecule=orientation.qcmol,
+        driver="energy",
+        model={"method": str(method).strip().lower(), "basis": str(basis).strip()},
+        protocols={"wavefunction": "orbitals_and_eigenvalues"},
+        extras={"psiapi": True, "wfn_qcvars_only": True},
+    )
+    result = qcng.compute(
+        atomic_input,
+        "psi4",
+        raise_error=True,
+        task_config=task_config,
+    )
+    orientation.qc_wavefunction = QCWaveFunction.from_atomicresult(result)
+    orientation.compute_esp()
+
+
 def run_psiresp_fit(
     mol,
     *,
@@ -86,8 +140,11 @@ def run_psiresp_fit(
     name: str = "yadonpy",
     polyelectrolyte_mode: bool = False,
     polyelectrolyte_detection: str = "auto",
+    ncores: int | None = None,
+    memory_mib: int | float | None = None,
 ) -> dict[str, Any]:
     _require_psiresp()
+    _ensure_psiresp_numpy_compat()
     fit_kind_up = str(fit_kind).strip().upper()
     if fit_kind_up not in {"RESP", "ESP"}:
         raise ValueError(f"Unsupported psiresp fit kind: {fit_kind}")
@@ -118,10 +175,6 @@ def run_psiresp_fit(
         charge_constraints=constraints,
         working_directory=run_dir,
     )
-    job.qm_optimization_options.method = str(method)
-    job.qm_optimization_options.basis = str(basis)
-    job.qm_esp_options.method = str(method)
-    job.qm_esp_options.basis = str(basis)
     job.grid_options.use_radii = "msk"
     job.grid_options.vdw_scale_factors = [1.4, 1.6, 1.8, 2.0]
     job.grid_options.vdw_point_density = 20.0
@@ -132,7 +185,18 @@ def run_psiresp_fit(
         level=1,
     )
     job.generate_orientations()
-    job.compute_esps_and_charges(update_molecules=True)
+    for orientation in job.iter_orientations():
+        if orientation.grid is None:
+            orientation.compute_grid(grid_options=job.grid_options)
+        if orientation.qc_wavefunction is None or orientation.esp is None:
+            _compute_orientation_wavefunction_and_esp(
+                orientation,
+                method=str(method),
+                basis=str(basis),
+                ncores=ncores,
+                memory_mib=memory_mib,
+            )
+    job.compute_charges(update_molecules=True)
     dt2 = datetime.datetime.now()
     utils.radon_print(
         f"Normal termination of PsiRESP {fit_kind_up} charge calculation. Elapsed time = {str(dt2-dt1)}",

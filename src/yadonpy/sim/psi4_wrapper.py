@@ -1046,6 +1046,8 @@ class Psi4w():
                 name=str(self.name),
                 polyelectrolyte_mode=polyelectrolyte_mode,
                 polyelectrolyte_detection=polyelectrolyte_detection,
+                ncores=int(self.num_threads),
+                memory_mib=float(self.memory),
             )
             resp_q = np.asarray(result["resp"], dtype=float)
             esp_q = np.asarray(result["esp"], dtype=float)
@@ -1907,4 +1909,3 @@ def _override_get_global(key: Optional[str] = None) -> Union[str, Dict[str, Any]
         return _global_values.copy()
     else:
         return _global_values[key]
-
