@@ -302,8 +302,11 @@ def _build_polymer_chain(*, ff, polymer: PolymerSlabSpec, relax: SandwichRelaxat
     if polymer.dp is not None:
         dp = max(1, int(polymer.dp))
     else:
-        ratio = tuple(float(x) for x in polymer.monomer_ratio) if polymer.monomers else None
-        dp = max(1, int(poly.calc_n_from_num_atoms(monomers, int(polymer.chain_target_atoms), ratio=ratio, terminal1=terminal)))
+        if len(monomers) == 1:
+            dp = max(1, int(poly.calc_n_from_num_atoms(monomers[0], int(polymer.chain_target_atoms), terminal1=terminal)))
+        else:
+            ratio = tuple(float(x) for x in polymer.monomer_ratio)
+            dp = max(1, int(poly.calc_n_from_num_atoms(monomers, int(polymer.chain_target_atoms), ratio=ratio, terminal1=terminal)))
 
     rw_dir = chain_dir / "00_rw"
     term_dir = chain_dir / "01_term"
