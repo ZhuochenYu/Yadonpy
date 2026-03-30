@@ -50,6 +50,19 @@ from .prep import (
     recommend_polymer_diffusion_interface_recipe,
 )
 from .protocol import InterfaceDynamics, InterfaceProtocol, InterfaceStageSpec
+from .sandwich import (
+    ElectrolyteSlabSpec,
+    GraphitePolymerElectrolyteSandwichResult,
+    GraphiteSubstrateSpec,
+    MoleculeSpec,
+    PolymerSlabSpec,
+    SandwichPhaseReport,
+    SandwichRelaxationSpec,
+    build_graphite_peo_electrolyte_sandwich,
+    build_graphite_polymer_electrolyte_sandwich,
+    default_peo_electrolyte_spec,
+    default_peo_polymer_spec,
+)
 
 __all__ = [
     "AreaMismatchPolicy",
@@ -95,6 +108,17 @@ __all__ = [
     "export_interface_group_catalog",
     "InterfaceProtocol",
     "InterfaceStageSpec",
+    "GraphiteSubstrateSpec",
+    "PolymerSlabSpec",
+    "ElectrolyteSlabSpec",
+    "MoleculeSpec",
+    "SandwichPhaseReport",
+    "SandwichRelaxationSpec",
+    "GraphitePolymerElectrolyteSandwichResult",
+    "build_graphite_polymer_electrolyte_sandwich",
+    "build_graphite_peo_electrolyte_sandwich",
+    "default_peo_polymer_spec",
+    "default_peo_electrolyte_spec",
     "make_orthorhombic_pack_cell",
     "plan_rescaled_bulk_counts",
     "plan_resized_electrolyte_counts",

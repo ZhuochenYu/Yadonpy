@@ -47,6 +47,20 @@ def build_graphite(**kwargs):
     return _build_graphite(**kwargs)
 
 
+def build_graphite_polymer_electrolyte_sandwich(**kwargs):
+    """Thin wrapper around :func:`yadonpy.interface.sandwich.build_graphite_polymer_electrolyte_sandwich`."""
+    from .interface.sandwich import build_graphite_polymer_electrolyte_sandwich as _build_sandwich
+
+    return _build_sandwich(**kwargs)
+
+
+def build_graphite_peo_electrolyte_sandwich(**kwargs):
+    """Thin wrapper around :func:`yadonpy.interface.sandwich.build_graphite_peo_electrolyte_sandwich`."""
+    from .interface.sandwich import build_graphite_peo_electrolyte_sandwich as _build_sandwich
+
+    return _build_sandwich(**kwargs)
+
+
 def conformation_search(mol, **kwargs):
     """Thin wrapper around :func:`yadonpy.sim.qm.conformation_search`."""
     from .sim import qm
@@ -173,6 +187,8 @@ __all__ = [
     'assign_charges',
     'assign_forcefield',
     'build_graphite',
+    'build_graphite_peo_electrolyte_sandwich',
+    'build_graphite_polymer_electrolyte_sandwich',
     'conformation_search',
     'get_ff',
     'list_charge_methods',
