@@ -44,6 +44,8 @@ ClO4,[O-][Cl](=O)(=O)=O,smiles,anion
 BF4,F[B-](F)(F)F,smiles,anion
 AsF6,F[As-](F)(F)(F)(F)F,smiles,anion
 SbF6,F[Sb-](F)(F)(F)(F)F,smiles,anion
+BOB,O=C1O[B-]2(OC1=O)OC(=O)C(=O)O2,smiles,anion
+DFOB,O=C1C(=O)O[B-](F)(F)O1,smiles,anion
 NO3,[O-][N+](=O)[O-],smiles,anion
 OTf,O=S(=O)([O-])C(F)(F)F,smiles,anion
 FSI,FS(=O)(=O)[N-]S(=O)(=O)F,smiles,anion

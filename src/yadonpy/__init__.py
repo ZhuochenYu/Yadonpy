@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-__version__ = '0.8.75'
+__version__ = '0.8.76'
 
 from .sim import qm  # noqa: F401
 from .interface import InterfaceBuilder, InterfaceDynamics, InterfaceProtocol, InterfaceRouteSpec, build_graphite_peo_electrolyte_sandwich, build_graphite_polymer_electrolyte_sandwich, build_interface, build_interface_from_workdirs  # noqa: F401

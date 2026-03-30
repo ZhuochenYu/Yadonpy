@@ -1,12 +1,14 @@
 # YadonPy
 
-Current release: **v0.8.75**
+Current release: **v0.8.76**
 
 YadonPy is a script-oriented molecular modeling and simulation workflow package for polymer, electrolyte, substrate, bulk-phase, and interface studies built around GROMACS. It accepts SMILES or PSMILES as the primary chemistry input, prepares reusable molecular assets, constructs packed systems, exports GROMACS-ready topologies, and runs staged workflows for equilibration and analysis.
 
+Supported release baseline: Python 3.11+.
+
 ## Release focus
 
-Version `0.8.75` keeps **PsiRESP** as the RESP/ESP backend, preserves grouped-polyelectrolyte RESP variants in MolDB, tightens the build/export pipeline, and removes the old bundled MolDB archive from the release tree in favor of explicit Example 07 rebuild inputs.
+Version `0.8.76` keeps **PsiRESP** as the RESP/ESP backend, expands Example 07 into a broader one-shot electrolyte species catalog, aligns the documented QM environment around `psiresp-base`, and keeps the MolDB-first rebuild path explicit.
 
 This change was made because grouped charge constraints are required for rigorous polyelectrolyte workflows, and PsiRESP provides the necessary primitives:
 
@@ -297,7 +299,7 @@ Relevant updates in this release:
 
 - Manual: `docs/Yadonpy_manul.md`
 - User guide: `docs/Yaonpyd_user_guide.md`
-- API reference: `docs/Yadonpy_API_v0.8.75.md`
+- API reference: `docs/Yadonpy_API_v0.8.76.md`
 
 Recommended reading order:
 

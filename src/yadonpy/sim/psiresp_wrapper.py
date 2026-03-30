@@ -28,7 +28,7 @@ def _require_psiresp() -> None:
         detail = f" (root cause: {_psiresp_import_error!r})" if _psiresp_import_error else ""
         raise ImportError(
             "RESP/ESP fitting now requires optional dependency 'psiresp'. "
-            "Install e.g. via: conda install -c conda-forge psiresp && conda install -c psi4 psi4"
+            "Install e.g. via: conda install -c conda-forge psiresp-base && conda install -c psi4 psi4"
             + detail
         )
 

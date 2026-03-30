@@ -1,22 +1,24 @@
-# YadonPy User Guide (v0.8.75)
+# YadonPy User Guide (v0.8.76)
 
 This guide explains how to use YadonPy effectively in day-to-day study scripts.
+
+Release baseline: Python 3.11+.
 
 Related documents:
 
 - README: package scope and installation
 - manual: `docs/Yadonpy_manul.md`
-- API reference: `docs/Yadonpy_API_v0.8.75.md`
+- API reference: `docs/Yadonpy_API_v0.8.76.md`
 
 ## 1. Build the right environment
 
 Recommended environment:
 
 ```bash
-conda create -n yadonpy python=3.9
+conda create -n yadonpy python=3.11
 conda activate yadonpy
 
-conda install rdkit openbabel parmed mdtraj matplotlib pandas scipy packaging psi4 dftd3-python psiresp
+conda install rdkit openbabel parmed mdtraj matplotlib pandas scipy packaging psi4 dftd3-python psiresp-base
 pip install pybel
 
 pip install -e .

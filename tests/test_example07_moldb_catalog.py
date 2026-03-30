@@ -27,6 +27,8 @@ def test_example07_catalog_includes_new_polymer_and_salt_entries():
     names = {item.name for item in items}
 
     assert "SbF6" in names
+    assert "BOB" in names
+    assert "DFOB" in names
     assert "NO3" in names
     assert "OTf" in names
     assert "PAA" in names
@@ -75,3 +77,17 @@ def test_example07_qm_policy_marks_fallback_when_diffuse_basis_is_unavailable(mo
 def test_example07_qm_policy_skips_monatomic_merz_path():
     mod = _load_example07_module()
     assert mod._resolve_qm_spec("[Li+]") is None
+
+
+def test_example07_qm_policy_uses_diffuse_route_for_bob_family():
+    mod = _load_example07_module()
+
+    qm_bob = mod._resolve_qm_spec("O=C1O[B-]2(OC1=O)OC(=O)C(=O)O2")
+    qm_dfob = mod._resolve_qm_spec("O=C1C(=O)O[B-](F)(F)O1")
+
+    assert qm_bob is not None
+    assert qm_dfob is not None
+    assert qm_bob.opt_basis == "def2-SVPD"
+    assert qm_bob.charge_basis == "def2-TZVPD"
+    assert qm_dfob.opt_basis == "def2-SVPD"
+    assert qm_dfob.charge_basis == "def2-TZVPD"

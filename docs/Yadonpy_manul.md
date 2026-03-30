@@ -1,12 +1,14 @@
-# YadonPy Manual (v0.8.75)
+# YadonPy Manual (v0.8.76)
 
 ## 1. Purpose
 
 This manual describes the architectural rules of YadonPy. It is intended for users and developers who need to understand why the workflow is structured the way it is, what data are persistent, and where physical or software-level assumptions enter the pipeline.
 
+Release baseline: Python 3.11+.
+
 Related documents:
 
-- API reference: `docs/Yadonpy_API_v0.8.75.md`
+- API reference: `docs/Yadonpy_API_v0.8.76.md`
 - user guide: `docs/Yaonpyd_user_guide.md`
 
 ## 2. Architectural principles
@@ -41,7 +43,7 @@ From `v0.8.72`, charge variants may also preserve grouped-polyelectrolyte metada
 
 MolDB variant lookup now uses those fields as part of compatibility selection. This prevents an ordinary RESP variant from being mistaken for a grouped-polyelectrolyte RESP variant for the same monomer or repeat unit.
 
-From `v0.8.75`, the release no longer ships a bundled MolDB archive. Reference species are rebuilt explicitly from plain CSV inputs under `examples/07_moldb_precompute_and_reuse/`.
+From `v0.8.76`, the release no longer ships a bundled MolDB archive. Reference species are rebuilt explicitly from plain CSV inputs under `examples/07_moldb_precompute_and_reuse/`.
 
 ### 2.2.1 Polyelectrolyte variant discipline
 

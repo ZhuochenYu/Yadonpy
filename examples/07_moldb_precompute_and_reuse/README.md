@@ -47,7 +47,7 @@ Included categories:
 - Common ions / lithium-salt anions:
   - `Li+`, `Na+`
   - `PF6-`, `BF4-`, `ClO4-`, `AsF6-`, `SbF6-`
-  - `NO3-`, `OTf-`, `FSI-`, `TFSI-`
+  - `BOB-`, `DFOB-`, `NO3-`, `OTf-`, `FSI-`, `TFSI-`
 
 ## Special handling used by the builder
 

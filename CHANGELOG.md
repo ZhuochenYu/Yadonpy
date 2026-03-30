@@ -1,3 +1,9 @@
+## 0.8.76 (2026-03-31)
+
+- examples/07_moldb_precompute_and_reuse + tests/test_example07_moldb_catalog.py: expand the one-shot MolDB catalog with additional polymer-electrolyte repeat units and common battery-salt anions, including `SbF6-`, `BOB-`, `DFOB-`, `NO3-`, and `OTf-`, while keeping the script-first Example 07 entrypoint intact.
+- examples/07_moldb_precompute_and_reuse/01_build_moldb.py + README + docs: make the Example 07 builder choose explicit diffuse-first def2 QM levels per species, probe Psi4 basis availability for the actual element set, and record the chosen QM policy in the build summary without breaking the default MolDB variant lookup path.
+- pyproject.toml + src/yadonpy/__init__.py + README + docs + diagnostics/core/sim messages: bump the release to `0.8.76`, raise the declared Python baseline to `3.11+`, refresh the release docs to `docs/Yadonpy_API_v0.8.76.md`, and align installation hints around `psiresp-base`.
+
 ## 0.8.75 (2026-03-28)
 
 - core/data_dir + diagnostics + tests/test_data_dir + MANIFEST.in: remove bundled MolDB archive auto-import from initialization, stop surfacing `bundle_archive` / `bundle_state` in `doctor()`, and stop shipping `yd_moldb.tar` in the source manifest;

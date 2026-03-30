@@ -98,7 +98,7 @@ def require_psi4_resp() -> None:
         raise ImportError(
             "Psi4 is required for QM-derived charges (RESP/ESP/Mulliken/Lowdin).\n"
             "Recommended install (conda):\n"
-            "  conda install psi4 dftd3-python psiresp\n"
+            "  conda install psi4 dftd3-python psiresp-base\n"
             "If you only want a quick test, switch to charge_method='gasteiger'\n"
             "or charge_method='zero'.\n"
         )
@@ -106,7 +106,7 @@ def require_psi4_resp() -> None:
         raise ImportError(
             "Python package 'psiresp' is required for RESP/ESP charge fitting.\n"
             "Try (conda):\n"
-            "  conda install psiresp\n"
+            "  conda install psiresp-base\n"
         )
 
 
@@ -134,7 +134,7 @@ def doctor(*, print_report: bool = True) -> dict[str, Any]:
             ).__dict__,
             "psiresp": check_python_module(
                 "psiresp",
-                hint="conda install -c conda-forge psiresp",
+                hint="conda install -c conda-forge psiresp-base",
             ).__dict__,
         },
     }
