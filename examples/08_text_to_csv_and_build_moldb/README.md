@@ -17,9 +17,9 @@ Outputs:
 - `work_dir/01_build_moldb/*` (QM scratch)
 - MolDB entries stored under `~/.yadonpy/moldb/objects/`
 
-If you want the larger reference-species rebuild path rather than a pasted
-table, use Example 07 Step 3:
+If you want the larger one-shot electrolyte-library build rather than a pasted
+table, use Example 07 Step 1:
 
 ```bash
-python ../07_moldb_precompute_and_reuse/03_rebuild_reference_moldb_species.py
+python ../07_moldb_precompute_and_reuse/01_build_moldb.py
 ```

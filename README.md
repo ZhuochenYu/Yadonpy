@@ -25,7 +25,7 @@ The current release keeps the grouped-polyelectrolyte RESP/scaling path and adds
 - `site_map.json` and `export_manifest.json` in exported systems;
 - simulation-level local charge scaling of charged groups while preserving raw RESP templates;
 - MolDB variant records that now distinguish grouped polyelectrolyte RESP variants from ordinary RESP variants and restore those tags on load.
-- explicit MolDB rebuild inputs under `examples/07_moldb_precompute_and_reuse/`, including a merged reference-species CSV with additional battery anions such as `ClO4-`, `BF4-`, `AsF6-`, `FSI-`, and `TFSI-`;
+- a one-shot MolDB precompute catalog under `examples/07_moldb_precompute_and_reuse/` that covers common electrolyte monomers, polymer repeat units, solvents, additives, and anions such as `PF6-`, `BF4-`, `ClO4-`, `AsF6-`, `FSI-`, and `TFSI-`;
 - adaptive MSD outputs that distinguish atomic-ion, molecular COM, chain COM, residue COM, and charged-group COM motion;
 - site-level RDF/CN as the default coordination analysis path, with strict center-species resolution and one shared first-shell detector for plots and JSON summaries;
 - Nernst-Einstein conductivity for charged polymers computed from charged-group diffusion coefficients rather than whole-chain net charges.
@@ -245,27 +245,33 @@ This means:
 
 The release no longer ships `yd_moldb.tar`.
 
-Instead, the reference MolDB species list is stored as plain CSV under:
+Instead, the curated one-shot electrolyte species catalog is stored under:
 
-- `examples/07_moldb_precompute_and_reuse/template.csv`
-- `examples/07_moldb_precompute_and_reuse/reference_species.csv`
+- `examples/07_moldb_precompute_and_reuse/electrolyte_species.csv`
 
-`reference_species.csv` contains the old shipped reference species plus the additional battery-anion set:
+The catalog covers the recurring Example 02/05/06/10/11/12/13 species set, including:
 
+- `*CCO*`
+- `*COC*`
+- `[H][*]`
+- the CMC glucose monomer family
+- the Example 10/11 aromatic repeat unit
+- common carbonate / ether solvents and additives
 - `ClO4-`
 - `BF4-`
 - `AsF6-`
 - `FSI-`
 - `TFSI-`
 - `Li+`
+- `Na+`
 
-The one-time rebuild script lives beside those CSV files:
+The one-time build script is:
 
 ```bash
-python examples/07_moldb_precompute_and_reuse/03_rebuild_reference_moldb_species.py
+python examples/07_moldb_precompute_and_reuse/01_build_moldb.py
 ```
 
-It merges `template.csv` and `reference_species.csv`, deduplicates the SMILES list, writes the results into the active MolDB, applies `MERZ` to monatomic ions, applies `DRIH` only to recognized high-symmetry inorganic ions, and keeps `FSI-` / `TFSI-` on the standard RESP path.
+It reads `electrolyte_species.csv`, writes the results into the active MolDB, applies `MERZ` to monoatomic ions, applies `DRIH` only to recognized high-symmetry inorganic ions, keeps `FSI-` / `TFSI-` on the standard RESP path, and preserves `polyelectrolyte_mode=True` for charged polymer monomers.
 
 ## Examples
 
@@ -285,7 +291,7 @@ Relevant updates in this release:
 
 - `examples/05` now uses `polyelectrolyte_mode=True` for CMC monomer RESP and charge-scaled cell construction;
 - `examples/12` now uses the same grouped polyelectrolyte path and no longer requires manual charged-atom index handling in the script.
-- `examples/07_moldb_precompute_and_reuse/03_rebuild_reference_moldb_species.py` rebuilds the merged reference MolDB species list and adds `ClO4-`, `BF4-`, `AsF6-`, `FSI-`, `TFSI-`, and `Li+`.
+- `examples/07_moldb_precompute_and_reuse/01_build_moldb.py` now acts as the one-shot MolDB builder for the broad electrolyte species library.
 
 ## Documentation
 

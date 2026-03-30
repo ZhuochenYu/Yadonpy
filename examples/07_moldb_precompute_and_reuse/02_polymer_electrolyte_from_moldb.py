@@ -3,15 +3,12 @@ from __future__ import annotations
 """Example 07 / Step 2: Polymer electrolyte workflow using MolDB.
 
 Prerequisite:
-  - Run 01_build_moldb.py first so the workflow-local monomers/solvents are
-    "ready" in MolDB.
-  - Run 03_rebuild_reference_moldb_species.py only when you also want the
-    larger reference solvent/salt set in the same MolDB.
+  - Run 01_build_moldb.py first so the example species are already "ready" in
+    MolDB.
 
 Notes:
-    - This example intentionally avoids PF6- in the CSV. If you need PF6-,
-        precompute it with Example 01 and then reuse it through the MolDB-backed
-        `ff.mol(...)` plus `ff.ff_assign(..., bonded='DRIH')` pattern.
+    - Example 07 now assumes the precompute step has already filled MolDB with
+        a broad electrolyte library, including PF6-.
 """
 
 from pathlib import Path
@@ -22,11 +19,9 @@ from yadonpy.core.data_dir import ensure_initialized
 from yadonpy.diagnostics import doctor
 from yadonpy.ff.gaff2_mod import GAFF2_mod
 from yadonpy.ff.merz import MERZ
-from yadonpy.moldb import MolDB
 from yadonpy.sim.preset import eq
 from yadonpy.io.mol2 import write_mol2
 from yadonpy.io.gmx import write_gmx
-from yadonpy.core import poly
 
 
 # ---------------- user inputs ----------------
@@ -57,10 +52,6 @@ press = 1.0
 mpi = 1
 omp = 16
 
-# QM resources for MolDB autocalculate (Psi4)
-omp_psi4 = 64
-mem_mb = 20000
-
 gpu = 1
 gpu_id = 0
 
@@ -73,7 +64,20 @@ charge_scale = [1.0, 1.0, 1.0, 0.8]
 
 BASE_DIR = Path(__file__).resolve().parent
 work_dir = BASE_DIR / "work_dir"
-work_root = work_dir / "00_autocalculate_moldb"
+
+
+def _load_ready_from_moldb(ff, smiles: str, *, label: str, bonded: str | None = None):
+    try:
+        mol = ff.mol(smiles, charge="RESP", require_ready=True, prefer_db=True)
+    except Exception as exc:
+        raise RuntimeError(
+            f"{label} is expected to be precomputed in MolDB by "
+            "examples/07_moldb_precompute_and_reuse/01_build_moldb.py."
+        ) from exc
+    mol = ff.ff_assign(mol, bonded=bonded, report=False)
+    if not mol:
+        raise RuntimeError(f"Cannot assign force field parameters for MolDB-backed {label}.")
+    return mol
 
 
 if __name__ == "__main__":
@@ -85,27 +89,12 @@ if __name__ == "__main__":
     poly_term_dir = work_dir.child("copoly_term")
     ac_build_dir = work_dir.child("00_build_cell")
 
-    # --- Ensure MolDB has required molecules (idempotent) ---
-    db = MolDB()
-    db.read_calc_temp = str(BASE_DIR / "template.csv")
-    db.autocalculate(work_dir=work_root, omp=omp_psi4, mem=mem_mb, add_to_moldb=True)
-
     # --- load precomputed molecules from MolDB (as lightweight handles) ---
-    monomer_A = ff.mol(smiles_A)
-    monomer_B = ff.mol(smiles_B)
-    ter1 = ff.mol(ter_smiles)
-    solvent_A = ff.mol(solvent_smiles_A)
-    solvent_B = ff.mol(solvent_smiles_B)
-
-    ok = all([
-        ff.ff_assign(monomer_A),
-        ff.ff_assign(monomer_B),
-        ff.ff_assign(ter1),
-        ff.ff_assign(solvent_A),
-        ff.ff_assign(solvent_B),
-    ])
-    if not ok:
-        raise RuntimeError("MolDB entry not ready. Please run 01_build_moldb.py first.")
+    monomer_A = _load_ready_from_moldb(ff, smiles_A, label="monomer_A")
+    monomer_B = _load_ready_from_moldb(ff, smiles_B, label="monomer_B")
+    ter1 = _load_ready_from_moldb(ff, ter_smiles, label="ter1")
+    solvent_A = _load_ready_from_moldb(ff, solvent_smiles_A, label="solvent_A")
+    solvent_B = _load_ready_from_moldb(ff, solvent_smiles_B, label="solvent_B")
 
     # --- Li+ from MERZ ---
     cation_A = cation_ff.mol(cation_smiles_A)
@@ -114,8 +103,7 @@ if __name__ == "__main__":
 
     # --- Optional: reuse a MolDB-backed anion (example: PF6-) ---
     # anion_smiles_A = "F[P-](F)(F)(F)(F)F"
-    # anion_A = ff.mol(anion_smiles_A, charge='RESP', require_ready=True, prefer_db=True)
-    # anion_A = ff.ff_assign(anion_A, bonded='DRIH')
+    # anion_A = _load_ready_from_moldb(ff, anion_smiles_A, label="PF6", bonded="DRIH")
 
     # --- Build polymer (restart-friendly, manual API style) ---
     dp = max(1, int(poly.calc_n_from_num_atoms([monomer_A, monomer_B], 1000, ratio=ratio, terminal1=ter1)))
