@@ -24,6 +24,11 @@ Included categories:
   - `*CCO*`
   - `*COC*`
   - `[H][*]`
+- Additional polymer-electrolyte repeat units:
+  - `PAA`, `PAAH`
+  - `PVDF`, `PAN`
+  - `PTMC`, `PCL`
+  - `PVAc`, `PMMA`, `PS`
 - Example 05/12/13 CMC monomer set:
   - `glucose_0`
   - `glucose_2`
@@ -41,16 +46,25 @@ Included categories:
   - `DOL`, `THF`, `Dioxane`, `CPME`, `TTE`
 - Common ions / lithium-salt anions:
   - `Li+`, `Na+`
-  - `PF6-`, `BF4-`, `ClO4-`, `AsF6-`, `FSI-`, `TFSI-`
+  - `PF6-`, `BF4-`, `ClO4-`, `AsF6-`, `SbF6-`
+  - `NO3-`, `OTf-`, `FSI-`, `TFSI-`
 
 ## Special handling used by the builder
 
 - monoatomic ions such as `Li+` and `Na+` use `MERZ`
-- high-symmetry inorganic anions such as `PF6-`, `BF4-`, `ClO4-`, `AsF6-` use
+- high-symmetry inorganic anions such as `PF6-`, `BF4-`, `ClO4-`, `AsF6-`, `SbF6-` use
   RESP plus `DRIH`
 - `FSI-` and `TFSI-` stay on the standard RESP path
 - charged polymer monomers are stored with `polyelectrolyte_mode=True`
 - the hydrogen terminator `[H][*]` follows the stable placeholder shortcut path
+- QM levels are chosen explicitly at build time:
+  - neutral species use `wb97m-d3bj / def2-SVP -> def2-TZVP`
+  - anions prefer `wb97m-d3bj / def2-SVPD -> def2-TZVPD`
+  - if a diffuse def2 basis is unavailable for the actual element set, the
+    builder falls back to the first Psi4-supported option in the built-in
+    ladder and records the chosen levels in the build summary JSON
+- `AsF6-` and `SbF6-` stay on the diffuse def2 route when the active Psi4 build
+  supports those elements, rather than being hard-coded into a downgrade path
 
 ## Reuse in a workflow
 
