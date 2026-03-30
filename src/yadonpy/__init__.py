@@ -5,12 +5,13 @@ from __future__ import annotations
 __version__ = '0.8.76'
 
 from .sim import qm  # noqa: F401
-from .interface import InterfaceBuilder, InterfaceDynamics, InterfaceProtocol, InterfaceRouteSpec, build_graphite_peo_electrolyte_sandwich, build_graphite_polymer_electrolyte_sandwich, build_interface, build_interface_from_workdirs  # noqa: F401
+from .interface import InterfaceBuilder, InterfaceDynamics, InterfaceProtocol, InterfaceRouteSpec, build_graphite_cmcna_electrolyte_sandwich, build_graphite_peo_electrolyte_sandwich, build_graphite_polymer_electrolyte_sandwich, build_interface, build_interface_from_workdirs  # noqa: F401
 from .runtime import get_run_options, set_run_options, run_options  # noqa: F401
 from .api import (  # noqa: F401
     assign_charges,
     assign_forcefield,
     build_graphite,
+    build_graphite_cmcna_electrolyte_sandwich,
     build_graphite_peo_electrolyte_sandwich,
     build_graphite_polymer_electrolyte_sandwich,
     conformation_search,
@@ -27,6 +28,7 @@ __all__ = [
     'assign_charges',
     'assign_forcefield',
     'build_graphite',
+    'build_graphite_cmcna_electrolyte_sandwich',
     'build_graphite_peo_electrolyte_sandwich',
     'build_graphite_polymer_electrolyte_sandwich',
     'conformation_search',

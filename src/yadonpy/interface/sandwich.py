@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import math
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Sequence
 
@@ -10,6 +10,7 @@ from ..core import poly, utils
 from ..core.graphite import GraphiteBuildResult, build_graphite, register_cell_species_metadata, stack_cell_blocks
 from ..core.molspec import molecular_weight
 from ..core.naming import get_name
+from ..core.polyelectrolyte import detect_charged_groups
 from ..core.workdir import workdir
 from ..gmx.index import _write_ndx
 from ..gmx.mdp_templates import MINIM_STEEP_MDP, NPT_MDP, NVT_MDP, MdpSpec, default_mdp_params
@@ -55,8 +56,14 @@ class GraphiteSubstrateSpec:
 class PolymerSlabSpec:
     name: str = "PEO"
     monomer_smiles: str = "*CCO*"
+    monomers: tuple[MoleculeSpec, ...] = ()
+    monomer_ratio: tuple[float, ...] = (1.0,)
     terminal_smiles: str = "[H][*]"
+    terminal: MoleculeSpec | None = None
     chain_target_atoms: int = 280
+    dp: int | None = None
+    chain_count: int | None = None
+    counterion: MoleculeSpec | None = None
     target_density_g_cm3: float = 1.10
     slab_z_nm: float = 3.6
     min_chain_count: int = 2
@@ -92,6 +99,10 @@ class ElectrolyteSlabSpec:
     salt_molarity_M: float = 1.0
     min_salt_pairs: int = 3
     initial_pack_density_g_cm3: float | None = None
+    pack_retry: int = 30
+    pack_retry_step: int = 2400
+    pack_threshold_ang: float = 1.55
+    pack_dec_rate: float = 0.72
 
 
 @dataclass(frozen=True)
@@ -132,6 +143,7 @@ class GraphitePolymerElectrolyteSandwichResult:
     stack_export: SystemExportResult
     relaxed_gro: Path
     manifest_path: Path
+    stack_checks: dict[str, object] = field(default_factory=dict)
     notes: tuple[str, ...] = ()
 
 
@@ -143,6 +155,55 @@ def default_peo_electrolyte_spec(**kwargs) -> ElectrolyteSlabSpec:
     return ElectrolyteSlabSpec(**kwargs)
 
 
+def default_cmcna_polymer_spec(**kwargs) -> PolymerSlabSpec:
+    base = PolymerSlabSpec(
+        name="CMC",
+        monomers=(
+            MoleculeSpec(name="glucose_0", smiles="*OC1OC(CO)C(*)C(O)C1O"),
+            MoleculeSpec(name="glucose_2", smiles="*OC1OC(CO)C(*)C(O)C1OCC(=O)[O-]"),
+            MoleculeSpec(name="glucose_3", smiles="*OC1OC(CO)C(*)C(OCC(=O)[O-])C1O"),
+            MoleculeSpec(name="glucose_6", smiles="*OC1OC(COCC(=O)[O-])C(*)C(O)C1O"),
+        ),
+        monomer_ratio=(12.0, 26.0, 27.0, 35.0),
+        terminal=MoleculeSpec(name="CMC_terminal", smiles="[H][*]", require_ready=False, prefer_db=False),
+        dp=60,
+        target_density_g_cm3=1.45,
+        slab_z_nm=4.2,
+        min_chain_count=2,
+        charge_scale=1.0,
+        initial_pack_z_scale=1.24,
+        pack_retry=60,
+        pack_retry_step=3200,
+        pack_threshold_ang=1.58,
+        pack_dec_rate=0.70,
+        counterion=MoleculeSpec(name="Na", smiles="[Na+]", use_ion_ff=True, charge_scale=1.0),
+    )
+    return replace(base, **kwargs)
+
+
+def default_carbonate_lipf6_electrolyte_spec(**kwargs) -> ElectrolyteSlabSpec:
+    base = ElectrolyteSlabSpec(
+        solvents=(
+            MoleculeSpec(name="EC", smiles="O=C1OCCO1"),
+            MoleculeSpec(name="DEC", smiles="CCOC(=O)OCC"),
+            MoleculeSpec(name="EMC", smiles="CCOC(=O)OC"),
+        ),
+        salt_cation=MoleculeSpec(name="Li", smiles="[Li+]", use_ion_ff=True, charge_scale=0.8),
+        salt_anion=MoleculeSpec(name="PF6", smiles="F[P-](F)(F)(F)(F)F", bonded="DRIH", charge_scale=0.8, prefer_db=True, require_ready=True),
+        solvent_mass_ratio=(3.0, 2.0, 5.0),
+        target_density_g_cm3=1.32,
+        slab_z_nm=4.8,
+        salt_molarity_M=1.0,
+        min_salt_pairs=6,
+        initial_pack_density_g_cm3=0.88,
+        pack_retry=40,
+        pack_retry_step=2600,
+        pack_threshold_ang=1.55,
+        pack_dec_rate=0.70,
+    )
+    return replace(base, **kwargs)
+
+
 def _estimate_chain_count(*, chain_mw: float, target_density_g_cm3: float, box_nm: tuple[float, float, float], minimum: int) -> int:
     volume_cm3 = float(box_nm[0] * box_nm[1] * box_nm[2]) * 1.0e-21
     target_mass_g = float(target_density_g_cm3) * volume_cm3
@@ -151,6 +212,22 @@ def _estimate_chain_count(*, chain_mw: float, target_density_g_cm3: float, box_n
         return int(max(1, minimum))
     estimate = int(max(1, round(target_mass_amu / float(chain_mw))))
     return int(max(int(minimum), estimate))
+
+
+def _smiles_formal_charge(smiles: str) -> int:
+    mol = utils.mol_from_smiles(smiles, coord=False)
+    return int(sum(int(atom.GetFormalCharge()) for atom in mol.GetAtoms()))
+
+
+def _is_polyelectrolyte_spec(spec: MoleculeSpec) -> bool:
+    if "*" not in str(spec.smiles):
+        return False
+    try:
+        mol = utils.mol_from_smiles(spec.smiles, coord=False)
+    except Exception:
+        return False
+    summary = detect_charged_groups(mol, detection="auto")
+    return bool(summary.get("groups"))
 
 
 def _prepare_small_molecule(spec: MoleculeSpec, *, ff, ion_ff):
@@ -172,32 +249,183 @@ def _prepare_small_molecule(spec: MoleculeSpec, *, ff, ion_ff):
 
 
 def _build_polymer_chain(*, ff, polymer: PolymerSlabSpec, relax: SandwichRelaxationSpec, chain_dir: Path):
-    monomer = ff.ff_assign(
-        ff.mol(polymer.monomer_smiles, name=f"{polymer.name}_monomer", require_ready=False, prefer_db=False),
-        report=False,
-    )
-    if not monomer:
-        raise RuntimeError(f"Cannot assign force field parameters for polymer monomer {polymer.monomer_smiles}.")
+    if polymer.monomers:
+        monomer_specs = tuple(polymer.monomers)
+    else:
+        monomer_specs = (
+            MoleculeSpec(
+                name=f"{polymer.name}_monomer",
+                smiles=polymer.monomer_smiles,
+                require_ready=False,
+                prefer_db=False,
+            ),
+        )
+    if polymer.terminal is not None:
+        terminal_spec = polymer.terminal
+    else:
+        terminal_spec = MoleculeSpec(
+            name=f"{polymer.name}_terminal",
+            smiles=polymer.terminal_smiles,
+            require_ready=False,
+            prefer_db=False,
+        )
 
-    terminal = utils.mol_from_smiles(polymer.terminal_smiles, name=f"{polymer.name}_terminal")
+    monomers = []
+    for spec in monomer_specs:
+        monomer = ff.ff_assign(
+            ff.mol(
+                spec.smiles,
+                name=spec.name,
+                charge=spec.charge_method,
+                require_ready=spec.require_ready,
+                prefer_db=spec.prefer_db,
+            ),
+            report=False,
+            bonded=spec.bonded,
+            polyelectrolyte_mode=_is_polyelectrolyte_spec(spec),
+        )
+        if not monomer:
+            raise RuntimeError(f"Cannot assign force field parameters for polymer monomer {spec.smiles}.")
+        monomers.append(monomer)
+
+    terminal = utils.mol_from_smiles(terminal_spec.smiles, name=terminal_spec.name)
     qm.assign_charges(
         terminal,
-        charge="RESP",
+        charge=terminal_spec.charge_method,
         opt=True,
         work_dir=chain_dir,
         omp=int(relax.psi4_omp),
         memory=int(relax.psi4_memory_mb),
         log_name=None,
     )
-    dp = max(1, int(poly.calc_n_from_num_atoms(monomer, int(polymer.chain_target_atoms), terminal1=terminal)))
+
+    if polymer.dp is not None:
+        dp = max(1, int(polymer.dp))
+    else:
+        ratio = tuple(float(x) for x in polymer.monomer_ratio) if polymer.monomers else None
+        dp = max(1, int(poly.calc_n_from_num_atoms(monomers, int(polymer.chain_target_atoms), ratio=ratio, terminal1=terminal)))
+
     rw_dir = chain_dir / "00_rw"
     term_dir = chain_dir / "01_term"
-    chain = poly.polymerize_rw(monomer, dp, tacticity=polymer.tacticity, work_dir=rw_dir)
+    if len(monomers) == 1:
+        chain = poly.polymerize_rw(monomers[0], dp, tacticity=polymer.tacticity, work_dir=rw_dir)
+    else:
+        ratio = tuple(float(x) for x in polymer.monomer_ratio)
+        if len(ratio) != len(monomers):
+            raise ValueError("polymer.monomer_ratio must match polymer.monomers length")
+        chain = poly.random_copolymerize_rw(
+            monomers,
+            dp,
+            ratio=ratio,
+            tacticity=polymer.tacticity,
+            name=polymer.name,
+            work_dir=rw_dir,
+        )
     chain = poly.terminate_rw(chain, terminal, name=polymer.name, work_dir=term_dir)
     chain = ff.ff_assign(chain, report=False)
     if not chain:
         raise RuntimeError(f"Cannot assign force field parameters for polymer chain {polymer.name}.")
     return chain, dp
+
+
+def _polymer_chain_formal_charge(mol) -> int:
+    return int(sum(int(atom.GetFormalCharge()) for atom in mol.GetAtoms()))
+
+
+def _prepare_polymer_phase_species(*, ff, ion_ff, polymer: PolymerSlabSpec, relax: SandwichRelaxationSpec, chain_dir: Path, box_nm: tuple[float, float, float]):
+    polymer_chain, polymer_dp = _build_polymer_chain(ff=ff, polymer=polymer, relax=relax, chain_dir=chain_dir)
+    if polymer.chain_count is not None:
+        chain_count = max(1, int(polymer.chain_count))
+    else:
+        chain_count = _estimate_chain_count(
+            chain_mw=float(molecular_weight(polymer_chain, strict=True)),
+            target_density_g_cm3=float(polymer.target_density_g_cm3),
+            box_nm=box_nm,
+            minimum=int(polymer.min_chain_count),
+        )
+
+    species = [polymer_chain]
+    counts = [int(chain_count)]
+    charge_scale = [float(polymer.charge_scale)]
+    notes: list[str] = []
+
+    chain_formal_charge = int(_polymer_chain_formal_charge(polymer_chain))
+    if chain_formal_charge != 0:
+        if polymer.counterion is None:
+            raise RuntimeError(
+                f"Polymer {polymer.name} carries formal charge {chain_formal_charge} per chain but no counterion was configured."
+            )
+        counterion = _prepare_small_molecule(polymer.counterion, ff=ff, ion_ff=ion_ff)
+        ion_charge = int(_smiles_formal_charge(polymer.counterion.smiles))
+        if ion_charge == 0:
+            raise RuntimeError(f"Configured polymer counterion {polymer.counterion.name} is neutral.")
+        total_polymer_charge = int(chain_formal_charge * chain_count)
+        if total_polymer_charge * ion_charge > 0:
+            raise RuntimeError(
+                f"Configured counterion {polymer.counterion.name} has the same charge sign as polymer {polymer.name}."
+            )
+        if abs(total_polymer_charge) % abs(ion_charge) != 0:
+            raise RuntimeError(
+                f"Polymer charge {total_polymer_charge} is not divisible by counterion charge {ion_charge} for {polymer.counterion.name}."
+            )
+        counterion_count = int(abs(total_polymer_charge) // abs(ion_charge))
+        if counterion_count > 0:
+            species.append(counterion)
+            counts.append(counterion_count)
+            charge_scale.append(float(polymer.counterion.charge_scale))
+            notes.append(
+                f"polymer formal charge per chain={chain_formal_charge}; added {counterion_count} {polymer.counterion.name} counterions to neutralize the slab"
+            )
+
+    return {
+        "chain": polymer_chain,
+        "dp": int(polymer_dp),
+        "chain_count": int(chain_count),
+        "species": species,
+        "counts": counts,
+        "charge_scale": charge_scale,
+        "notes": tuple(notes),
+    }
+
+
+def _read_gro_z_coords(gro_path: Path) -> list[float]:
+    lines = Path(gro_path).read_text(encoding="utf-8", errors="replace").splitlines()
+    if len(lines) < 3:
+        raise ValueError(f"Invalid .gro file: {gro_path}")
+    nat = int(lines[1].strip())
+    z: list[float] = []
+    for i in range(nat):
+        raw = lines[2 + i]
+        try:
+            z.append(float(raw[36:44]))
+        except Exception:
+            z.append(float(raw[-8:]))
+    return z
+
+
+def _build_stack_checks(*, gro_path: Path, ndx_groups: dict[str, list[int]]) -> dict[str, object]:
+    z_coords = _read_gro_z_coords(gro_path)
+    payload: dict[str, object] = {"gro_path": str(gro_path)}
+    phase_stats: dict[str, dict[str, float]] = {}
+    for name in ("GRAPHITE", "POLYMER", "ELECTROLYTE"):
+        members = [int(idx) for idx in ndx_groups.get(name, []) if 1 <= int(idx) <= len(z_coords)]
+        if not members:
+            continue
+        values = [float(z_coords[idx - 1]) for idx in members]
+        phase_stats[name] = {
+            "min_z_nm": min(values),
+            "mean_z_nm": sum(values) / float(len(values)),
+            "max_z_nm": max(values),
+        }
+    payload["phases"] = phase_stats
+    if len(phase_stats) == 3:
+        observed = [name for name, _mean in sorted(((name, data["mean_z_nm"]) for name, data in phase_stats.items()), key=lambda item: item[1])]
+        payload["observed_order"] = observed
+        payload["expected_order"] = ["GRAPHITE", "POLYMER", "ELECTROLYTE"]
+        payload["is_expected_order"] = observed == ["GRAPHITE", "POLYMER", "ELECTROLYTE"]
+        payload["graphite_polymer_gap_nm"] = float(phase_stats["POLYMER"]["min_z_nm"] - phase_stats["GRAPHITE"]["max_z_nm"])
+        payload["polymer_electrolyte_gap_nm"] = float(phase_stats["ELECTROLYTE"]["min_z_nm"] - phase_stats["POLYMER"]["max_z_nm"])
+    return payload
 
 
 def _append_group(groups: list[tuple[str, list[int]]], existing: dict[str, list[int]], name: str, members: Sequence[str]) -> None:
@@ -470,30 +698,34 @@ def build_graphite_polymer_electrolyte_sandwich(
         top_padding_ang=float(graphite.top_padding_ang),
     )
 
-    polymer_chain, polymer_dp = _build_polymer_chain(ff=ff, polymer=polymer, relax=relax, chain_dir=polymer_chain_dir)
     polymer_target_box_nm = (
         float(graphite_result.box_nm[0]),
         float(graphite_result.box_nm[1]),
         float(polymer.slab_z_nm),
     )
-    chain_count = _estimate_chain_count(
-        chain_mw=float(molecular_weight(polymer_chain, strict=True)),
-        target_density_g_cm3=float(polymer.target_density_g_cm3),
+    polymer_phase_build = _prepare_polymer_phase_species(
+        ff=ff,
+        ion_ff=ion_ff,
+        polymer=polymer,
+        relax=relax,
+        chain_dir=polymer_chain_dir,
         box_nm=polymer_target_box_nm,
-        minimum=int(polymer.min_chain_count),
     )
+    polymer_chain = polymer_phase_build["chain"]
+    polymer_dp = int(polymer_phase_build["dp"])
+    chain_count = int(polymer_phase_build["chain_count"])
     polymer_build_box_nm = (
         float(polymer_target_box_nm[0]),
         float(polymer_target_box_nm[1]),
         float(polymer_target_box_nm[2]) * float(polymer.initial_pack_z_scale),
     )
     polymer_slab = poly.amorphous_cell(
-        [polymer_chain],
-        [int(chain_count)],
+        list(polymer_phase_build["species"]),
+        list(polymer_phase_build["counts"]),
         cell=make_orthorhombic_pack_cell(polymer_build_box_nm),
         density=None,
         neutralize=False,
-        charge_scale=[float(polymer.charge_scale)],
+        charge_scale=list(polymer_phase_build["charge_scale"]),
         work_dir=polymer_build_dir,
         retry=int(polymer.pack_retry),
         retry_step=int(polymer.pack_retry_step),
@@ -502,9 +734,9 @@ def build_graphite_polymer_electrolyte_sandwich(
     )
     register_cell_species_metadata(
         polymer_slab,
-        [polymer_chain],
-        [int(chain_count)],
-        charge_scale=[float(polymer.charge_scale)],
+        list(polymer_phase_build["species"]),
+        list(polymer_phase_build["counts"]),
+        charge_scale=list(polymer_phase_build["charge_scale"]),
         pack_mode="sandwich_polymer_slab",
     )
     fixed_xy = fixed_xy_semiisotropic_npt_overrides(pressure_bar=float(relax.pressure_bar))
@@ -533,8 +765,8 @@ def build_graphite_polymer_electrolyte_sandwich(
     )
     polymer_report = _phase_report(
         label="polymer",
-        counts=[int(chain_count)],
-        mols=[polymer_chain],
+        counts=list(polymer_phase_build["counts"]),
+        mols=list(polymer_phase_build["species"]),
         work_dir=polymer_eq_dir,
         target_density_g_cm3=float(polymer.target_density_g_cm3),
     )
@@ -573,10 +805,10 @@ def build_graphite_polymer_electrolyte_sandwich(
         neutralize=False,
         charge_scale=electrolyte_charge_scale,
         work_dir=electrolyte_build_dir,
-        retry=30,
-        retry_step=2400,
-        threshold=1.55,
-        dec_rate=0.72,
+        retry=int(electrolyte.pack_retry),
+        retry_step=int(electrolyte.pack_retry_step),
+        threshold=float(electrolyte.pack_threshold_ang),
+        dec_rate=float(electrolyte.pack_dec_rate),
     )
     register_cell_species_metadata(
         electrolyte_slab,
@@ -622,9 +854,9 @@ def build_graphite_polymer_electrolyte_sandwich(
         z_gaps_ang=[float(relax.graphite_to_polymer_gap_ang), float(relax.polymer_to_electrolyte_gap_ang)],
         top_padding_ang=float(relax.top_padding_ang),
     )
-    stacked_counts = [int(graphite_result.layer_count), int(chain_count)] + list(electrolyte_prep.direct_plan.target_counts)
-    stacked_mols = [graphite_result.layer_mol, polymer_chain] + electrolyte_mols
-    stacked_charge_scale = [1.0, float(polymer.charge_scale)] + electrolyte_charge_scale
+    stacked_counts = [int(graphite_result.layer_count)] + list(polymer_phase_build["counts"]) + list(electrolyte_prep.direct_plan.target_counts)
+    stacked_mols = [graphite_result.layer_mol] + list(polymer_phase_build["species"]) + electrolyte_mols
+    stacked_charge_scale = [1.0] + list(polymer_phase_build["charge_scale"]) + electrolyte_charge_scale
     register_cell_species_metadata(
         stacked.cell,
         stacked_mols,
@@ -656,12 +888,14 @@ def build_graphite_polymer_electrolyte_sandwich(
         freeze_group="GRAPHITE",
         restart=restart,
     )
+    stack_checks = _build_stack_checks(gro_path=relaxed_gro, ndx_groups=ndx_groups)
 
     manifest_path = stack_dir / "sandwich_manifest.json"
     notes = (
         "polymer and electrolyte were first equilibrated independently with XY locked to the graphite footprint, then stacked explicitly into a three-phase sandwich",
         "graphite stays frozen during the stacked relaxation so the liquid and polymer phases can relax density mainly along the surface normal",
         f"polymer chain target atoms={int(polymer.chain_target_atoms)} -> built DP={int(polymer_dp)} and chain_count={int(chain_count)}",
+        *tuple(str(x) for x in polymer_phase_build["notes"]),
     )
     manifest_path.write_text(
         json.dumps(
@@ -677,6 +911,7 @@ def build_graphite_polymer_electrolyte_sandwich(
                 "stack_export_dir": str(stack_dir),
                 "relaxed_gro": str(relaxed_gro),
                 "ndx_groups": {name: len(idxs) for name, idxs in ndx_groups.items()},
+                "stack_checks": stack_checks,
                 "notes": list(notes),
             },
             indent=2,
@@ -693,6 +928,7 @@ def build_graphite_polymer_electrolyte_sandwich(
         stack_export=export,
         relaxed_gro=relaxed_gro,
         manifest_path=manifest_path,
+        stack_checks=stack_checks,
         notes=notes,
     )
 
@@ -720,6 +956,29 @@ def build_graphite_peo_electrolyte_sandwich(
     )
 
 
+def build_graphite_cmcna_electrolyte_sandwich(
+    *,
+    work_dir,
+    ff,
+    ion_ff,
+    graphite: GraphiteSubstrateSpec = GraphiteSubstrateSpec(),
+    polymer: PolymerSlabSpec | None = None,
+    electrolyte: ElectrolyteSlabSpec | None = None,
+    relax: SandwichRelaxationSpec = SandwichRelaxationSpec(),
+    restart: bool | None = None,
+) -> GraphitePolymerElectrolyteSandwichResult:
+    return build_graphite_polymer_electrolyte_sandwich(
+        work_dir=work_dir,
+        ff=ff,
+        ion_ff=ion_ff,
+        graphite=graphite,
+        polymer=(polymer if polymer is not None else default_cmcna_polymer_spec()),
+        electrolyte=(electrolyte if electrolyte is not None else default_carbonate_lipf6_electrolyte_spec()),
+        relax=relax,
+        restart=restart,
+    )
+
+
 __all__ = [
     "ElectrolyteSlabSpec",
     "GraphitePolymerElectrolyteSandwichResult",
@@ -728,8 +987,11 @@ __all__ = [
     "PolymerSlabSpec",
     "SandwichPhaseReport",
     "SandwichRelaxationSpec",
+    "build_graphite_cmcna_electrolyte_sandwich",
     "build_graphite_peo_electrolyte_sandwich",
     "build_graphite_polymer_electrolyte_sandwich",
+    "default_carbonate_lipf6_electrolyte_spec",
+    "default_cmcna_polymer_spec",
     "default_peo_electrolyte_spec",
     "default_peo_polymer_spec",
 ]

@@ -14,6 +14,7 @@ from yadonpy.interface.sandwich import (
     SandwichPhaseReport,
     SandwichRelaxationSpec,
     _augment_sandwich_ndx,
+    _build_stack_checks,
     _sandwich_relaxation_stages,
     build_graphite_polymer_electrolyte_sandwich,
 )
@@ -91,6 +92,35 @@ def test_sandwich_relaxation_stages_freeze_graphite_and_keep_xy_fixed():
     assert stages[2].mdp.params["compressibility"] == "0 4.5e-05"
 
 
+def test_build_stack_checks_reports_phase_order(tmp_path: Path):
+    gro = tmp_path / "final.gro"
+    gro.write_text(
+        "\n".join(
+            [
+                "dummy",
+                "6",
+                "    1GRA     C    1   0.000   0.000   0.100",
+                "    1GRA     C    2   0.000   0.000   0.120",
+                "    2PEO     C    3   0.000   0.000   0.450",
+                "    2PEO     C    4   0.000   0.000   0.520",
+                "    3EL      C    5   0.000   0.000   0.900",
+                "    3EL      C    6   0.000   0.000   0.980",
+                "2.00000 2.00000 2.00000",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    checks = _build_stack_checks(
+        gro_path=gro,
+        ndx_groups={"GRAPHITE": [1, 2], "POLYMER": [3, 4], "ELECTROLYTE": [5, 6]},
+    )
+    assert checks["is_expected_order"] is True
+    assert checks["observed_order"] == ["GRAPHITE", "POLYMER", "ELECTROLYTE"]
+    assert checks["graphite_polymer_gap_nm"] > 0.0
+    assert checks["polymer_electrolyte_gap_nm"] > 0.0
+
+
 def test_build_graphite_polymer_electrolyte_sandwich_orchestrates_fixed_xy_phases(tmp_path: Path, monkeypatch):
     import yadonpy.interface.sandwich as sandwich
 
@@ -115,7 +145,19 @@ def test_build_graphite_polymer_electrolyte_sandwich_orchestrates_fixed_xy_phase
             box_nm=(2.0, 2.0, 1.2),
         ),
     )
-    monkeypatch.setattr(sandwich, "_build_polymer_chain", lambda **kwargs: (polymer_chain, 8))
+    monkeypatch.setattr(
+        sandwich,
+        "_prepare_polymer_phase_species",
+        lambda **kwargs: {
+            "chain": polymer_chain,
+            "dp": 8,
+            "chain_count": 2,
+            "species": [polymer_chain],
+            "counts": [2],
+            "charge_scale": [1.0],
+            "notes": (),
+        },
+    )
     monkeypatch.setattr(
         sandwich.poly,
         "amorphous_cell",
@@ -176,6 +218,7 @@ def test_build_graphite_polymer_electrolyte_sandwich_orchestrates_fixed_xy_phase
 
     monkeypatch.setattr(sandwich, "export_system_from_cell_meta", _fake_export)
     monkeypatch.setattr(sandwich, "_run_stacked_relaxation", lambda **kwargs: Path(kwargs["work_dir"]) / "04_exchange" / "md.gro")
+    monkeypatch.setattr(sandwich, "_build_stack_checks", lambda **kwargs: {"is_expected_order": True})
 
     result = build_graphite_polymer_electrolyte_sandwich(
         work_dir=tmp_path / "sandwich",
@@ -205,3 +248,4 @@ def test_build_graphite_polymer_electrolyte_sandwich_orchestrates_fixed_xy_phase
     assert '"polymer_phase"' in manifest
     assert '"electrolyte_phase"' in manifest
     assert '"ndx_groups"' in manifest
+    assert result.stack_checks["is_expected_order"] is True

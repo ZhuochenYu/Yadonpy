@@ -1,13 +1,9 @@
 from __future__ import annotations
 
-"""Example 08: Convert a pasted text table -> template.csv, then build MolDB.
+"""Example 07 / Step 2: pasted text table -> CSV -> MolDB.
 
-This script intentionally keeps *everything* in one place.
-
-Notes
------
-- MolDB default directory: ~/.yadonpy/moldb (or $YADONPY_MOLDB)
-- Output scratch: ./work_dir/01_build_moldb/
+This keeps the quick text-import path in the same merged Example 07 workflow as
+the curated electrolyte catalog builder.
 """
 
 import csv
@@ -49,29 +45,25 @@ glucose_236,*OC1OC(COCC(=O)[O-])C(*)C(OCC(=O)[O-])C1OCC(=O)[O-],0,1,RESP,Default
 
 
 def write_template_csv(text: str, out_csv: Path) -> None:
-    """Normalize headers to lower-case and write to out_csv."""
     text = text.strip().replace("\r\n", "\n").replace("\r", "\n") + "\n"
     reader = csv.DictReader(io.StringIO(text))
-
-    # Normalize header
     fieldnames = [str(h).strip().lower() for h in (reader.fieldnames or [])]
-    # Expected by MolDB.autocalculate
     if "name" not in fieldnames or "smiles" not in fieldnames:
         raise ValueError(f"Header must include Name/SMILES (got: {reader.fieldnames})")
 
     rows = []
-    for r in reader:
-        rr = {str(k).strip().lower(): ("" if v is None else str(v).strip()) for k, v in r.items()}
-        if not rr.get("name") or not rr.get("smiles"):
+    for row in reader:
+        normalized = {str(k).strip().lower(): ("" if v is None else str(v).strip()) for k, v in row.items()}
+        if not normalized.get("name") or not normalized.get("smiles"):
             continue
-        rows.append(rr)
+        rows.append(normalized)
 
     out_csv.parent.mkdir(parents=True, exist_ok=True)
-    with out_csv.open("w", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=fieldnames)
-        w.writeheader()
-        for r in rows:
-            w.writerow({k: r.get(k, "") for k in fieldnames})
+    with out_csv.open("w", newline="", encoding="utf-8") as fh:
+        writer = csv.DictWriter(fh, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({key: row.get(key, "") for key in fieldnames})
 
 
 if __name__ == "__main__":
@@ -82,15 +74,12 @@ if __name__ == "__main__":
     db = MolDB()
     print(f"MolDB directory: {db.db_dir}")
 
-    work_root = HERE / "work_dir" / "01_build_moldb"
+    work_root = HERE / "work_dir" / "02_text_table_to_moldb"
     work_root.mkdir(parents=True, exist_ok=True)
 
-    # Resource knobs (Psi4)
     omp_psi4 = 64
     mem_mb = 20000
 
     db.read_calc_temp = str(template_csv)
-    # Explicitly add results into ~/.yadonpy/moldb
     db.autocalculate(work_dir=work_root, omp=omp_psi4, mem=mem_mb, add_to_moldb=True)
-
     print("All done.")
