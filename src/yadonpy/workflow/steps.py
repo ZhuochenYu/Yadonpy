@@ -99,31 +99,6 @@ def resp_from_smiles(
     wd = _as_path(work_dir)
     rst = Restart(wd, restart=restart)
 
-    def _is_h_terminator(m: Chem.Mol, smi: str) -> bool:
-        """Detect the special H-termination unit like "[H][*]" / "[*][H]".
-
-        Internally YadonPy represents '*' linkers as isotope-labeled H atoms
-        (e.g. "[H][*]" -> "[H][3H]"). This 2-atom H/H fragment is only used
-        to carry the linker pattern and RESP cache; it does not need GAFF/GAFF2
-        typing and GAFF/GAFF2 does not define parameters for H-H.
-        """
-        if "*" not in str(smi):
-            return False
-        try:
-            if int(m.GetNumAtoms()) != 2:
-                return False
-            if int(m.GetNumBonds()) != 1:
-                return False
-            atoms = list(m.GetAtoms())
-            if any(a.GetSymbol() != "H" for a in atoms):
-                return False
-            # Require at least one isotope-labeled H to ensure it's the linker placeholder.
-            if not any(int(a.GetIsotope()) >= 3 for a in atoms):
-                return False
-            return True
-        except Exception:
-            return False
-
     mol2_dir = wd / "charged_mol2_qm"
     cache_dir = wd / "qm_cache"
     opt_sdf = cache_dir / f"{log_name}.opt.sdf"
@@ -168,7 +143,7 @@ def resp_from_smiles(
 
         # Always ensure FF typing exists for downstream steps, except for the
         # special hydrogen terminator fragment (no GAFF/GAFF2 parameters for H-H).
-        if not _is_h_terminator(mol0, smiles):
+        if not qm.is_h_terminator_placeholder(mol0, smiles_hint=smiles):
             try:
                 ok = bool(ff_obj.ff_assign(mol0))
                 if not ok:
@@ -213,16 +188,8 @@ def resp_from_smiles(
         # Hydrogen terminator shortcut: "[H][*]" / "[*][H]" becomes a 2-atom H/H fragment
         # (one H is isotope-labeled to represent the linker). This fragment is ONLY a linker token;
         # it does not need QM charges nor GAFF typing.
-        if _is_h_terminator(mol, smiles):
-            _ensure_has_conformer(mol)
-            for a in mol.GetAtoms():
-                a.SetDoubleProp("AtomicCharge", 0.0)
-                a.SetDoubleProp("AtomicCharge_raw", 0.0)
-                try:
-                    a.SetDoubleProp("RESP", 0.0)
-                    a.SetDoubleProp("RESP_raw", 0.0)
-                except Exception:
-                    pass
+        if qm.is_h_terminator_placeholder(mol, smiles_hint=smiles):
+            qm.apply_placeholder_zero_charges(mol, charge_label=str(charge))
             cache_dir.mkdir(parents=True, exist_ok=True)
             mol2_dir.mkdir(parents=True, exist_ok=True)
             _write_sdf_one(mol, opt_sdf)
@@ -859,5 +826,4 @@ def elongation_gmx(
         description="GROMACS elongation",
         verbose=True,
     )
-
 

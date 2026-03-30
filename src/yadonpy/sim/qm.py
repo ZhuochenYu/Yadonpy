@@ -67,6 +67,62 @@ def _qm_done(title: str, t0: float, *, detail: str | None = None) -> None:
     _qm_log('=' * 88, level=1)
 
 
+def ensure_has_conformer(mol) -> None:
+    try:
+        if int(mol.GetNumConformers()) > 0:
+            return
+    except Exception:
+        return
+    conf = Chem.Conformer(int(mol.GetNumAtoms()))
+    for i in range(int(mol.GetNumAtoms())):
+        conf.SetAtomPosition(i, Geom.Point3D(0.0, 0.0, 0.0))
+    mol.AddConformer(conf, assignId=True)
+
+
+def is_h_terminator_placeholder(mol, *, smiles_hint: str | None = None) -> bool:
+    """Return True for the special H/H linker placeholder used by ``[H][*]``.
+
+    YadonPy stores ``*`` connection points as isotope-labeled H atoms. Most
+    terminal groups like ``*C`` or ``*O`` therefore become normal closed-shell
+    molecules and can proceed through QM/RESP as usual. The pure hydrogen
+    terminator is different: ``[H][*]`` becomes a two-atom H/H placeholder that
+    exists only to mark the linker pattern during polymer termination.
+    """
+    try:
+        if int(mol.GetNumAtoms()) != 2 or int(mol.GetNumBonds()) != 1:
+            return False
+        atoms = list(mol.GetAtoms())
+        if any(a.GetSymbol() != "H" for a in atoms):
+            return False
+        if any(int(a.GetFormalCharge()) != 0 for a in atoms):
+            return False
+        if any(int(a.GetNumRadicalElectrons()) != 0 for a in atoms):
+            return False
+        if any(int(a.GetTotalDegree()) > 1 for a in atoms):
+            return False
+        return any(int(a.GetIsotope()) >= 3 for a in atoms)
+    except Exception:
+        return False
+
+
+def apply_placeholder_zero_charges(mol, *, charge_label: str = "RESP") -> None:
+    """Assign stable zero charges to placeholder/linker-only fragments."""
+    label = str(charge_label or "").strip().upper()
+    ensure_has_conformer(mol)
+    for atom in mol.GetAtoms():
+        atom.SetDoubleProp("AtomicCharge", 0.0)
+        atom.SetDoubleProp("AtomicCharge_raw", 0.0)
+        if label in ("RESP", "ESP"):
+            atom.SetDoubleProp("RESP", 0.0)
+            atom.SetDoubleProp("RESP_raw", 0.0)
+            atom.SetDoubleProp("ESP", 0.0)
+            atom.SetDoubleProp("ESP_raw", 0.0)
+        elif label == "MULLIKEN":
+            atom.SetDoubleProp("MullikenCharge", 0.0)
+        elif label == "LOWDIN":
+            atom.SetDoubleProp("LowdinCharge", 0.0)
+
+
 def _sanitize_dirname(name: str) -> str:
     """Sanitize a user-supplied name into a filesystem-friendly directory name."""
     s = str(name) if name is not None else ""
@@ -136,6 +192,7 @@ def _save_atomic_charges_json(mol, path, *, charge_label: str, log_name: str, ex
     from pathlib import Path
 
     p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
     charges = []
     for a in mol.GetAtoms():
         try:
@@ -523,6 +580,28 @@ def assign_charges(
                 _qm_log(f"[SKIP] Reused cached charges | file={charges_json.name}", level=1)
             except Exception as e:
                 utils.yadon_print(f"QM restart warning: cached assign_charges restore failed for {log_name}: {e}; recomputing.", level=2)
+
+    if is_h_terminator_placeholder(mol, smiles_hint=_smi):
+        apply_placeholder_zero_charges(mol, charge_label=str(charge))
+        _qm_log("[SKIP] Hydrogen terminator placeholder uses zero-charge shortcut; QM/RESP skipped", level=1)
+        try:
+            if charged_sdf is not None:
+                _write_sdf_one(mol, charged_sdf)
+        except Exception as e:
+            utils.yadon_print(f"QM restart warning: failed to save charged SDF for {log_name}: {e}", level=2)
+        try:
+            if charges_json is not None:
+                _save_atomic_charges_json(
+                    mol,
+                    charges_json,
+                    charge_label=str(charge),
+                    log_name=str(log_name),
+                    extra_meta=dict(charge_cache_meta, shortcut="h_terminator_placeholder"),
+                )
+        except Exception:
+            pass
+        _qm_done("QM charge assignment", t_qm, detail=f"charge_model={charge} | shortcut=h_terminator")
+        return True
 
     # ------------------------------------------------------------------
     # For small inorganic ions (PF6-, BF4-, ClO4-...) RDKit/MMFF can be
@@ -2144,5 +2223,3 @@ def _pick_first_available_basis(candidates: List[str], elements: Optional[List[s
             return b
     # Fall back to the last candidate (even if missing), let Psi4 error be explicit.
     return candidates[-1]
-
-

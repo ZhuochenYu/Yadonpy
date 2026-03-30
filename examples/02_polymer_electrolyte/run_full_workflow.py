@@ -40,6 +40,9 @@ anion_smiles_A = "F[P-](F)(F)(F)(F)F"  # PF6- (GAFF2-family; default uses GAFF2_
 # Termination unit (one '*').
 # - Hydrogen termination: "[H][*]" or "[*][H]"
 # - Other terminations: "*C", "*O", ...
+#   The pure hydrogen terminator is treated as a linker placeholder internally,
+#   so `qm.assign_charges(..., charge="RESP")` now uses a zero-charge shortcut
+#   instead of sending the 2-atom H/H fragment into QM.
 ter_smiles = "[H][*]"
 
 # composition in the copolymer chain (mole fraction)

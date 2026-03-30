@@ -49,6 +49,11 @@ conda install -c conda-forge openbabel
 pip install pybel
 ```
 
+### Termination Units
+
+- `"[H][*]"` / `"[*][H]"` is a special hydrogen-termination placeholder. Internally it becomes a 2-atom H/H linker token, so YadonPy now skips QM for this case and assigns stable zero charges instead of trying to run RESP on a nonphysical H-H fragment.
+- Normal terminal groups such as `"*C"`, `"*O"`, `"*CO"` are not special-cased this way. They remain ordinary closed-shell molecules with one linker marker and can still go through the normal QM/RESP workflow.
+
 
 ## Restart handling
 
