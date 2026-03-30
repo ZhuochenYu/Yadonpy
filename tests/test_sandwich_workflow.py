@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 from rdkit import Chem
 from rdkit import Geometry as Geom
 
@@ -13,7 +14,9 @@ from yadonpy.interface.sandwich import (
     PolymerSlabSpec,
     SandwichPhaseReport,
     SandwichRelaxationSpec,
+    _covered_lateral_replicas,
     _compact_packed_cell_z_by_molecule_centers,
+    _initial_bulk_pack_density,
     _augment_sandwich_ndx,
     _build_stack_checks,
     _sandwich_relaxation_stages,
@@ -181,7 +184,18 @@ def test_compact_packed_cell_z_by_molecule_centers_preserves_order_and_target_bo
     assert "pre-relaxation" in note
 
 
-def test_build_graphite_polymer_electrolyte_sandwich_orchestrates_fixed_xy_phases(tmp_path: Path, monkeypatch):
+def test_covered_lateral_replicas_ceil_to_cover_target_lengths():
+    reps = _covered_lateral_replicas(source_box_nm=(1.8, 2.3, 3.5), target_lengths_nm=(4.0, 4.5))
+    assert reps == (3, 2)
+
+
+def test_initial_bulk_pack_density_defaults_are_more_permissive_than_targets():
+    assert _initial_bulk_pack_density(target_density_g_cm3=1.08, phase="polymer") == pytest.approx(0.648)
+    assert _initial_bulk_pack_density(target_density_g_cm3=1.12, phase="electrolyte") == pytest.approx(0.896)
+    assert _initial_bulk_pack_density(target_density_g_cm3=1.12, phase="electrolyte", requested_density_g_cm3=0.82) == pytest.approx(0.82)
+
+
+def test_build_graphite_polymer_electrolyte_sandwich_orchestrates_bulk_then_slab_prep(tmp_path: Path, monkeypatch):
     import yadonpy.interface.sandwich as sandwich
 
     graphite_cell = _dummy_mol("GRAPH", z_ang=1.0, cell_box_ang=(20.0, 20.0, 12.0))
@@ -218,11 +232,13 @@ def test_build_graphite_polymer_electrolyte_sandwich_orchestrates_fixed_xy_phase
             "notes": (),
         },
     )
-    monkeypatch.setattr(
-        sandwich.poly,
-        "amorphous_cell",
-        lambda mols, counts, **kwargs: polymer_cell if len(mols) == 1 else electrolyte_cell,
-    )
+    pack_calls: list[dict] = []
+
+    def _fake_amorphous_cell(mols, counts, **kwargs):
+        pack_calls.append({"mols": mols, "counts": counts, **kwargs})
+        return polymer_cell if len(mols) == 1 else electrolyte_cell
+
+    monkeypatch.setattr(sandwich.poly, "amorphous_cell", _fake_amorphous_cell)
     eq_calls: list[dict] = []
 
     def _fake_eq(**kwargs):
@@ -241,17 +257,42 @@ def test_build_graphite_polymer_electrolyte_sandwich_orchestrates_fixed_xy_phase
             relax_mdp_overrides={"pcoupltype": "semiisotropic", "compressibility": "0 4.5e-05", "ref_p": "1 1"},
         ),
     )
+    polymer_prepared = SimpleNamespace(
+        top_path=tmp_path / "polymer.top",
+        gro_path=tmp_path / "polymer.gro",
+        meta_path=tmp_path / "polymer_meta.json",
+        box_nm=(2.0, 2.0, 3.0),
+    )
+    electrolyte_prepared = SimpleNamespace(
+        top_path=tmp_path / "electrolyte.top",
+        gro_path=tmp_path / "electrolyte.gro",
+        meta_path=tmp_path / "electrolyte_meta.json",
+        box_nm=(2.0, 2.0, 4.0),
+    )
     monkeypatch.setattr(
         sandwich,
-        "_phase_report",
+        "_prepare_slab_from_equilibrated_bulk",
+        lambda **kwargs: (
+            polymer_prepared if kwargs["label"] == "polymer" else electrolyte_prepared,
+            f"{kwargs['label']} slab prepared",
+        ),
+    )
+    monkeypatch.setattr(
+        sandwich,
+        "_prepared_slab_phase_report",
         lambda **kwargs: SandwichPhaseReport(
             label=kwargs["label"],
-            box_nm=(2.0, 2.0, 3.0),
-            density_g_cm3=1.0,
-            species_names=tuple(getattr(mol, "GetProp")("_yadonpy_name") if mol.HasProp("_yadonpy_name") else mol.GetProp("_Name") for mol in kwargs["mols"]),
-            counts=tuple(int(x) for x in kwargs["counts"]),
+            box_nm=(2.0, 2.0, 3.0 if kwargs["label"] == "polymer" else 4.0),
+            density_g_cm3=(1.02 if kwargs["label"] == "polymer" else 1.11),
+            species_names=("PEO",) if kwargs["label"] == "polymer" else ("DME", "Li", "FSI"),
+            counts=(2,) if kwargs["label"] == "polymer" else (4, 2, 2),
             target_density_g_cm3=kwargs["target_density_g_cm3"],
         ),
+    )
+    monkeypatch.setattr(
+        sandwich,
+        "_load_block_from_top_gro",
+        lambda **kwargs: polymer_cell if "polymer" in kwargs["gro_path"].name else electrolyte_cell,
     )
 
     def _fake_export(**kwargs):
@@ -293,16 +334,20 @@ def test_build_graphite_polymer_electrolyte_sandwich_orchestrates_fixed_xy_phase
             solvent_mass_ratio=(1.0,),
             target_density_g_cm3=1.15,
             slab_z_nm=4.0,
+            initial_pack_density_g_cm3=0.82,
         ),
         relax=SandwichRelaxationSpec(gpu=0, omp=2, psi4_omp=2),
         restart=False,
     )
 
     assert len(eq_calls) == 2
-    assert eq_calls[0]["eq21_npt_mdp_overrides"]["pcoupltype"] == "semiisotropic"
-    assert eq_calls[0]["eq21_npt_mdp_overrides"]["compressibility"] == "0 0.00045"
-    assert eq_calls[1]["eq21_npt_mdp_overrides"]["pcoupltype"] == "semiisotropic"
-    assert eq_calls[1]["eq21_npt_mdp_overrides"]["compressibility"] == "0 4.5e-05"
+    assert len(pack_calls) == 2
+    assert pack_calls[0]["density"] < 1.05
+    assert pack_calls[1]["density"] == pytest.approx(0.82)
+    assert eq_calls[0]["label"] == "Polymer bulk"
+    assert eq_calls[1]["label"] == "Electrolyte bulk"
+    assert eq_calls[0]["eq21_exec_kwargs"]["eq21_npt_time_scale"] == 0.4
+    assert eq_calls[1]["eq21_exec_kwargs"]["eq21_npt_time_scale"] == 0.4
     assert result.polymer_phase.target_density_g_cm3 == 1.05
     assert result.electrolyte_phase.target_density_g_cm3 == 1.15
     assert result.manifest_path.exists()

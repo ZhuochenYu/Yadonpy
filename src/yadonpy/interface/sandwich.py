@@ -25,8 +25,9 @@ from ..runtime import resolve_restart
 from ..sim import qm
 from ..sim.preset.eq import _find_latest_equilibrated_gro
 from .bulk_resize import build_bulk_equilibrium_profile, fixed_xy_semiisotropic_npt_overrides, read_equilibrated_box_nm
+from . import builder as interface_builder
 from .postprocess import read_ndx_groups
-from .prep import equilibrate_bulk_with_eq21, make_orthorhombic_pack_cell, plan_fixed_xy_direct_electrolyte_preparation
+from .prep import equilibrate_bulk_with_eq21, plan_fixed_xy_direct_electrolyte_preparation
 
 
 _AVOGADRO = 6.02214076e23
@@ -639,6 +640,72 @@ def _phase_report(*, label: str, counts: Sequence[int], mols: Sequence, work_dir
     )
 
 
+def _covered_lateral_replicas(*, source_box_nm: tuple[float, float, float], target_lengths_nm: tuple[float, float]) -> tuple[int, int]:
+    reps: list[int] = []
+    for src, target in zip(source_box_nm[:2], target_lengths_nm):
+        src_len = max(float(src), 1.0e-9)
+        reps.append(max(1, int(math.ceil(max(float(target), 0.0) / src_len))))
+    return int(reps[0]), int(reps[1])
+
+
+def _initial_bulk_pack_density(
+    *,
+    target_density_g_cm3: float,
+    phase: str,
+    requested_density_g_cm3: float | None = None,
+) -> float:
+    if requested_density_g_cm3 is not None and float(requested_density_g_cm3) > 0.0:
+        return float(requested_density_g_cm3)
+    phase_key = str(phase).strip().lower()
+    target = float(target_density_g_cm3)
+    if phase_key == "polymer":
+        return max(0.50, min(0.75, target * 0.60))
+    return max(0.65, min(0.90, target * 0.80))
+
+
+def _prepare_slab_from_equilibrated_bulk(
+    *,
+    label: str,
+    bulk_work_dir: Path,
+    target_lengths_nm: tuple[float, float],
+    target_thickness_nm: float,
+    out_dir: Path,
+    restart: bool | None = None,
+    surface_shell_nm: float = 0.80,
+    core_guard_nm: float = 0.50,
+):
+    out_dir = Path(out_dir)
+    snapshot_builder = interface_builder.InterfaceBuilder(work_dir=out_dir / "00_snapshot", restart=restart)
+    source = snapshot_builder.bulk_source(name=label, work_dir=bulk_work_dir)
+    source_box_nm = read_equilibrated_box_nm(gro_path=source.representative_gro)
+    replicas_xy = _covered_lateral_replicas(source_box_nm=source_box_nm, target_lengths_nm=target_lengths_nm)
+    spec = interface_builder.SlabBuildSpec(
+        axis="Z",
+        target_thickness_nm=float(target_thickness_nm),
+        surface_shell_nm=float(surface_shell_nm),
+        core_guard_nm=float(core_guard_nm),
+        prefer_densest_window=True,
+        lateral_recentering=True,
+    )
+    prepared = interface_builder._prepare_slab(
+        source=source,
+        spec=spec,
+        route="route_a",
+        name=str(label),
+        out_dir=out_dir / "01_slab",
+        target_lengths_nm=(float(target_lengths_nm[0]), float(target_lengths_nm[1])),
+        replicas_xy=replicas_xy,
+        target_thickness_nm=float(target_thickness_nm),
+        area_policy=interface_builder.AreaMismatchPolicy(reference_side="bottom", max_lateral_strain=0.08),
+    )
+    note = (
+        f"{label} slab was cut from equilibrated bulk snapshot {source.representative_gro.name} "
+        f"with replicas_xy={replicas_xy} to match target footprint "
+        f"({float(target_lengths_nm[0]):.3f}, {float(target_lengths_nm[1]):.3f}) nm"
+    )
+    return prepared, note
+
+
 def _molecule_atom_blocks(*, species: Sequence, counts: Sequence[int]) -> list[tuple[int, int]]:
     blocks: list[tuple[int, int]] = []
     cursor = 0
@@ -733,23 +800,23 @@ def _compact_packed_cell_z_by_molecule_centers(
 
 def _load_relaxed_block(*, work_dir: Path, fallback_cell):
     gro_path = _find_latest_equilibrated_gro(Path(work_dir))
-    if gro_path is None or not Path(gro_path).exists():
+    top_path = Path(work_dir) / "02_system" / "system.top"
+    if gro_path is None or not Path(gro_path).exists() or not top_path.exists():
         return fallback_cell
+    return _load_block_from_top_gro(top_path=top_path, gro_path=Path(gro_path), fallback_cell=fallback_cell)
 
+
+def _load_block_from_top_gro(*, top_path: Path, gro_path: Path, fallback_cell=None):
     mol2_path = Path(gro_path).with_suffix(".mol2")
     if not mol2_path.exists():
-        top_path = Path(work_dir) / "02_system" / "system.top"
-        if top_path.exists():
-            try:
-                write_mol2_from_top_gro_parmed(
-                    top_path=top_path,
-                    gro_path=Path(gro_path),
-                    out_mol2=mol2_path,
-                    overwrite=True,
-                )
-            except Exception:
-                return fallback_cell
-        else:
+        try:
+            write_mol2_from_top_gro_parmed(
+                top_path=top_path,
+                gro_path=Path(gro_path),
+                out_mol2=mol2_path,
+                overwrite=True,
+            )
+        except Exception:
             return fallback_cell
 
     try:
@@ -785,11 +852,43 @@ def _load_relaxed_block(*, work_dir: Path, fallback_cell):
         return fallback_cell
 
     try:
-        if fallback_cell.HasProp("_yadonpy_cell_meta"):
+        if fallback_cell is not None and fallback_cell.HasProp("_yadonpy_cell_meta"):
             relaxed.SetProp("_yadonpy_cell_meta", str(fallback_cell.GetProp("_yadonpy_cell_meta")))
     except Exception:
         pass
     return relaxed
+
+
+def _prepared_slab_phase_report(
+    *,
+    label: str,
+    prepared_slab,
+    species_names: Sequence[str],
+    target_density_g_cm3: float | None,
+) -> SandwichPhaseReport:
+    payload = json.loads(Path(prepared_slab.meta_path).read_text(encoding="utf-8"))
+    counts_map = {str(name): int(count) for name, count in dict(payload.get("molecule_counts") or {}).items()}
+    ordered_names: list[str] = []
+    ordered_counts: list[int] = []
+    for name in species_names:
+        count = int(counts_map.get(str(name), 0))
+        if count > 0:
+            ordered_names.append(str(name))
+            ordered_counts.append(int(count))
+    if not ordered_names:
+        for name, count in counts_map.items():
+            if int(count) > 0:
+                ordered_names.append(str(name))
+                ordered_counts.append(int(count))
+    density = payload.get("density_g_cm3")
+    return SandwichPhaseReport(
+        label=str(label),
+        box_nm=tuple(float(x) for x in payload.get("box_nm", prepared_slab.box_nm)),
+        density_g_cm3=(0.0 if density is None else float(density)),
+        species_names=tuple(ordered_names),
+        counts=tuple(ordered_counts),
+        target_density_g_cm3=(None if target_density_g_cm3 is None else float(target_density_g_cm3)),
+    )
 
 
 def build_graphite_polymer_electrolyte_sandwich(
@@ -847,16 +946,14 @@ def build_graphite_polymer_electrolyte_sandwich(
     polymer_chain = polymer_phase_build["chain"]
     polymer_dp = int(polymer_phase_build["dp"])
     chain_count = int(polymer_phase_build["chain_count"])
-    polymer_build_box_nm = (
-        float(polymer_target_box_nm[0]),
-        float(polymer_target_box_nm[1]),
-        float(polymer_target_box_nm[2]) * float(polymer.initial_pack_z_scale),
+    polymer_build_density = _initial_bulk_pack_density(
+        target_density_g_cm3=float(polymer.target_density_g_cm3),
+        phase="polymer",
     )
-    polymer_slab = poly.amorphous_cell(
+    polymer_bulk = poly.amorphous_cell(
         list(polymer_phase_build["species"]),
         list(polymer_phase_build["counts"]),
-        cell=make_orthorhombic_pack_cell(polymer_build_box_nm),
-        density=None,
+        density=float(polymer_build_density),
         neutralize=False,
         charge_scale=list(polymer_phase_build["charge_scale"]),
         work_dir=polymer_build_dir,
@@ -865,22 +962,12 @@ def build_graphite_polymer_electrolyte_sandwich(
         threshold=float(polymer.pack_threshold_ang),
         dec_rate=float(polymer.pack_dec_rate),
     )
-    polymer_slab, polymer_compaction_note = _compact_packed_cell_z_by_molecule_centers(
-        cell=polymer_slab,
-        species=list(polymer_phase_build["species"]),
-        counts=list(polymer_phase_build["counts"]),
-        target_box_nm=polymer_target_box_nm,
-    )
     register_cell_species_metadata(
-        polymer_slab,
+        polymer_bulk,
         list(polymer_phase_build["species"]),
         list(polymer_phase_build["counts"]),
         charge_scale=list(polymer_phase_build["charge_scale"]),
-        pack_mode="sandwich_polymer_slab",
-    )
-    polymer_bulk_fixed_xy = fixed_xy_semiisotropic_npt_overrides(
-        pressure_bar=float(relax.pressure_bar),
-        z_compressibility_bar_inv=4.5e-4,
+        pack_mode="sandwich_polymer_bulk",
     )
     bulk_eq21_exec_kwargs = {
         "time": float(relax.bulk_eq21_final_ns),
@@ -891,8 +978,8 @@ def build_graphite_polymer_electrolyte_sandwich(
         **{str(k): float(v) for k, v in dict(relax.bulk_eq21_exec_kwargs).items()},
     }
     _ = equilibrate_bulk_with_eq21(
-        label="Polymer slab",
-        ac=polymer_slab,
+        label="Polymer bulk",
+        ac=polymer_bulk,
         work_dir=polymer_eq_dir,
         temp=float(relax.temperature_k),
         press=float(relax.pressure_bar),
@@ -901,20 +988,29 @@ def build_graphite_polymer_electrolyte_sandwich(
         gpu=int(relax.gpu),
         gpu_id=(0 if relax.gpu_id is None else int(relax.gpu_id)),
         additional_loops=int(relax.bulk_additional_loops),
-        eq21_npt_mdp_overrides=polymer_bulk_fixed_xy,
-        additional_mdp_overrides=polymer_bulk_fixed_xy,
         final_npt_ns=float(relax.bulk_eq21_final_ns),
-        final_npt_mdp_overrides=polymer_bulk_fixed_xy,
         eq21_exec_kwargs=bulk_eq21_exec_kwargs,
     )
-    polymer_report = _phase_report(
+    polymer_slab, polymer_slab_note = _prepare_slab_from_equilibrated_bulk(
         label="polymer",
-        counts=list(polymer_phase_build["counts"]),
-        mols=list(polymer_phase_build["species"]),
-        work_dir=polymer_eq_dir,
+        bulk_work_dir=polymer_eq_dir,
+        target_lengths_nm=(float(graphite_result.box_nm[0]), float(graphite_result.box_nm[1])),
+        target_thickness_nm=float(polymer.slab_z_nm),
+        out_dir=polymer_eq_dir / "05_prepare_slab",
+        restart=restart,
+    )
+    polymer_species_names = [str(get_name(mol, default=f"POLY_{idx + 1}")) for idx, mol in enumerate(polymer_phase_build["species"])]
+    polymer_report = _prepared_slab_phase_report(
+        label="polymer",
+        prepared_slab=polymer_slab,
+        species_names=polymer_species_names,
         target_density_g_cm3=float(polymer.target_density_g_cm3),
     )
-    polymer_relaxed_block = _load_relaxed_block(work_dir=polymer_eq_dir, fallback_cell=polymer_slab)
+    polymer_relaxed_block = _load_block_from_top_gro(
+        top_path=polymer_slab.top_path,
+        gro_path=polymer_slab.gro_path,
+        fallback_cell=polymer_bulk,
+    )
 
     solvent_mols = tuple(_prepare_small_molecule(spec, ff=ff, ion_ff=ion_ff) for spec in electrolyte.solvents)
     salt_cation = _prepare_small_molecule(electrolyte.salt_cation, ff=ff, ion_ff=ion_ff)
@@ -941,11 +1037,15 @@ def build_graphite_polymer_electrolyte_sandwich(
         float(electrolyte.salt_cation.charge_scale),
         float(electrolyte.salt_anion.charge_scale),
     ]
-    electrolyte_slab = poly.amorphous_cell(
+    electrolyte_build_density = _initial_bulk_pack_density(
+        target_density_g_cm3=float(electrolyte.target_density_g_cm3),
+        phase="electrolyte",
+        requested_density_g_cm3=electrolyte.initial_pack_density_g_cm3,
+    )
+    electrolyte_bulk = poly.amorphous_cell(
         electrolyte_mols,
         list(electrolyte_prep.direct_plan.target_counts),
-        cell=make_orthorhombic_pack_cell(electrolyte_prep.pack_plan.initial_pack_box_nm),
-        density=None,
+        density=float(electrolyte_build_density),
         neutralize=False,
         charge_scale=electrolyte_charge_scale,
         work_dir=electrolyte_build_dir,
@@ -955,15 +1055,15 @@ def build_graphite_polymer_electrolyte_sandwich(
         dec_rate=float(electrolyte.pack_dec_rate),
     )
     register_cell_species_metadata(
-        electrolyte_slab,
+        electrolyte_bulk,
         electrolyte_mols,
         list(electrolyte_prep.direct_plan.target_counts),
         charge_scale=electrolyte_charge_scale,
-        pack_mode="sandwich_electrolyte_slab",
+        pack_mode="sandwich_electrolyte_bulk",
     )
     _ = equilibrate_bulk_with_eq21(
-        label="Electrolyte slab",
-        ac=electrolyte_slab,
+        label="Electrolyte bulk",
+        ac=electrolyte_bulk,
         work_dir=electrolyte_eq_dir,
         temp=float(relax.temperature_k),
         press=float(relax.pressure_bar),
@@ -972,29 +1072,55 @@ def build_graphite_polymer_electrolyte_sandwich(
         gpu=int(relax.gpu),
         gpu_id=(0 if relax.gpu_id is None else int(relax.gpu_id)),
         additional_loops=int(relax.bulk_additional_loops),
-        eq21_npt_mdp_overrides=electrolyte_prep.relax_mdp_overrides,
-        additional_mdp_overrides=electrolyte_prep.relax_mdp_overrides,
         final_npt_ns=float(relax.bulk_eq21_final_ns),
-        final_npt_mdp_overrides=electrolyte_prep.relax_mdp_overrides,
         eq21_exec_kwargs=bulk_eq21_exec_kwargs,
     )
-    electrolyte_report = _phase_report(
+    electrolyte_slab, electrolyte_slab_note = _prepare_slab_from_equilibrated_bulk(
         label="electrolyte",
-        counts=list(electrolyte_prep.direct_plan.target_counts),
-        mols=electrolyte_mols,
-        work_dir=electrolyte_eq_dir,
+        bulk_work_dir=electrolyte_eq_dir,
+        target_lengths_nm=(float(graphite_result.box_nm[0]), float(graphite_result.box_nm[1])),
+        target_thickness_nm=float(electrolyte.slab_z_nm),
+        out_dir=electrolyte_eq_dir / "05_prepare_slab",
+        restart=restart,
+    )
+    electrolyte_species_names = [str(get_name(mol, default=f"EL_{idx + 1}")) for idx, mol in enumerate(electrolyte_mols)]
+    electrolyte_report = _prepared_slab_phase_report(
+        label="electrolyte",
+        prepared_slab=electrolyte_slab,
+        species_names=electrolyte_species_names,
         target_density_g_cm3=float(electrolyte.target_density_g_cm3),
     )
-    electrolyte_relaxed_block = _load_relaxed_block(work_dir=electrolyte_eq_dir, fallback_cell=electrolyte_slab)
+    electrolyte_relaxed_block = _load_block_from_top_gro(
+        top_path=electrolyte_slab.top_path,
+        gro_path=electrolyte_slab.gro_path,
+        fallback_cell=electrolyte_bulk,
+    )
+
+    polymer_count_map = {str(name): int(count) for name, count in zip(polymer_report.species_names, polymer_report.counts)}
+    electrolyte_count_map = {str(name): int(count) for name, count in zip(electrolyte_report.species_names, electrolyte_report.counts)}
+    polymer_selected_counts = [int(polymer_count_map.get(name, 0)) for name in polymer_species_names]
+    electrolyte_selected_counts = [int(electrolyte_count_map.get(name, 0)) for name in electrolyte_species_names]
 
     stacked = stack_cell_blocks(
         [graphite_result.cell, polymer_relaxed_block, electrolyte_relaxed_block],
         z_gaps_ang=[float(relax.graphite_to_polymer_gap_ang), float(relax.polymer_to_electrolyte_gap_ang)],
         top_padding_ang=float(relax.top_padding_ang),
     )
-    stacked_counts = [int(graphite_result.layer_count)] + list(polymer_phase_build["counts"]) + list(electrolyte_prep.direct_plan.target_counts)
-    stacked_mols = [graphite_result.layer_mol] + list(polymer_phase_build["species"]) + electrolyte_mols
-    stacked_charge_scale = [1.0] + list(polymer_phase_build["charge_scale"]) + electrolyte_charge_scale
+    stacked_mols = [graphite_result.layer_mol]
+    stacked_counts = [int(graphite_result.layer_count)]
+    stacked_charge_scale = [1.0]
+    for mol, count, scale in zip(polymer_phase_build["species"], polymer_selected_counts, polymer_phase_build["charge_scale"]):
+        if int(count) <= 0:
+            continue
+        stacked_mols.append(mol)
+        stacked_counts.append(int(count))
+        stacked_charge_scale.append(float(scale))
+    for mol, count, scale in zip(electrolyte_mols, electrolyte_selected_counts, electrolyte_charge_scale):
+        if int(count) <= 0:
+            continue
+        stacked_mols.append(mol)
+        stacked_counts.append(int(count))
+        stacked_charge_scale.append(float(scale))
     register_cell_species_metadata(
         stacked.cell,
         stacked_mols,
@@ -1030,11 +1156,14 @@ def build_graphite_polymer_electrolyte_sandwich(
 
     manifest_path = stack_dir / "sandwich_manifest.json"
     notes = (
-        "polymer and electrolyte were first equilibrated independently with XY locked to the graphite footprint, then stacked explicitly into a three-phase sandwich",
+        "polymer and electrolyte were first equilibrated as standalone bulk phases, then graphite-matched slabs were cut from dense equilibrium windows before three-phase stacking",
         "graphite stays frozen during the stacked relaxation so the liquid and polymer phases can relax density mainly along the surface normal",
         f"polymer chain target atoms={int(polymer.chain_target_atoms)} -> built DP={int(polymer_dp)} and chain_count={int(chain_count)}",
+        f"polymer bulk initial pack density={float(polymer_build_density):.4f} g/cm^3 -> target equilibrium density={float(polymer.target_density_g_cm3):.4f} g/cm^3",
+        f"electrolyte bulk initial pack density={float(electrolyte_build_density):.4f} g/cm^3 -> target equilibrium density={float(electrolyte.target_density_g_cm3):.4f} g/cm^3",
         *tuple(str(x) for x in polymer_phase_build["notes"]),
-        *(() if polymer_compaction_note is None else (str(polymer_compaction_note),)),
+        str(polymer_slab_note),
+        str(electrolyte_slab_note),
     )
     manifest_path.write_text(
         json.dumps(
