@@ -54,6 +54,7 @@ def generate_system_ndx(
     current = 1
 
     groups: List[Tuple[str, List[int]]] = []
+    system_atoms: List[int] = []
 
     ions: List[int] = []
     cations: List[int] = []
@@ -77,6 +78,7 @@ def generate_system_ndx(
             for i in range(mt.natoms):
                 idx = current
                 mol_atoms.append(idx)
+                system_atoms.append(idx)
                 atype = mt.atomtypes[i]
                 aname = mt.atomnames[i]
                 if (not include_h_atomtypes) and _is_h_atom(aname, atype):
@@ -110,6 +112,9 @@ def generate_system_ndx(
         groups.append(("CATIONS", sorted(set(cations))))
     if anions:
         groups.append(("ANIONS", sorted(set(anions))))
+
+    if system_atoms:
+        groups.insert(0, ("System", sorted(set(system_atoms))))
 
     _write_ndx(ndx_path, groups)
 

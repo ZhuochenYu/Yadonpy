@@ -114,10 +114,12 @@ def test_stack_cell_blocks_and_export_graphite_plus_solvent(tmp_path: Path):
     )
 
     top_text = out.system_top.read_text(encoding="utf-8")
+    ndx_text = out.system_ndx.read_text(encoding="utf-8")
     meta = json.loads(stacked.cell.GetProp("_yadonpy_cell_meta"))
 
     assert out.system_top.exists()
     assert out.system_gro.exists()
+    assert "[ System ]" in ndx_text
     assert meta["species"][0]["name"] == "graphite_layer"
     assert meta["species"][1]["name"] == "solvent_A"
     assert "graphite_layer" in top_text

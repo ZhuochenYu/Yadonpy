@@ -450,6 +450,12 @@ def _augment_sandwich_ndx(
 ) -> dict[str, list[int]]:
     existing = read_ndx_groups(ndx_path)
     merged_groups: list[tuple[str, list[int]]] = [(name, list(idxs)) for name, idxs in existing.items()]
+
+    if "System" not in existing:
+        system_atoms = sorted({int(idx) for idxs in existing.values() for idx in idxs})
+        if system_atoms:
+            merged_groups.insert(0, ("System", system_atoms))
+
     _append_group(merged_groups, existing, "GRAPHITE", [graphite_name, f"MOL_{graphite_name}"])
     _append_group(merged_groups, existing, "POLYMER", [polymer_name, f"MOL_{polymer_name}"])
     expanded = []

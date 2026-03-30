@@ -74,6 +74,7 @@ def test_augment_sandwich_ndx_adds_phase_groups(tmp_path: Path):
         polymer_name="PEO",
         electrolyte_names=["DME", "Li", "FSI"],
     )
+    assert groups["System"] == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
     assert groups["GRAPHITE"] == [1, 2]
     assert groups["POLYMER"] == [3, 4, 5]
     assert groups["ELECTROLYTE"] == [6, 7, 8, 9, 10, 11]
