@@ -56,7 +56,7 @@ The package covers:
 conda create -n yadonpy python=3.9
 conda activate yadonpy
 
-conda install rdkit openbabel parmed mdtraj matplotlib pandas scipy packaging psi4 dftd3-python psiresp
+conda install rdkit openbabel parmed mdtraj matplotlib pandas scipy packaging psi4 dftd3-python psiresp-base
 pip install pybel
 
 pip install -e .
