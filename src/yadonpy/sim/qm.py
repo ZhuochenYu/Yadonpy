@@ -346,9 +346,27 @@ def _load_energy_json(path: Path):
         return None
     try:
         obj = json.loads(p.read_text(encoding='utf-8'))
-        return obj.get('energy')
+        energy = obj.get('energy')
+        if isinstance(energy, list):
+            try:
+                return np.asarray(energy, dtype=float)
+            except Exception:
+                return energy
+        return energy
     except Exception:
         return None
+
+
+def _json_safe_value(value):
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, (np.floating, np.integer)):
+        return value.item()
+    if isinstance(value, (list, tuple)):
+        return [_json_safe_value(v) for v in value]
+    if isinstance(value, dict):
+        return {str(k): _json_safe_value(v) for k, v in value.items()}
+    return value
 
 
 def _save_energy_json(path: Path, energy, *, log_name: str) -> None:
@@ -356,7 +374,7 @@ def _save_energy_json(path: Path, energy, *, log_name: str) -> None:
     p.parent.mkdir(parents=True, exist_ok=True)
     obj = {
         'log_name': str(log_name),
-        'energy': energy,
+        'energy': _json_safe_value(energy),
     }
     p.write_text(json.dumps(obj, indent=2, ensure_ascii=False) + '\n', encoding='utf-8')
 

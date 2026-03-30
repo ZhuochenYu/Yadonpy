@@ -1216,16 +1216,37 @@ def _estimate_rw_rigidity(mol) -> float:
     return float(np.clip(rigidity, 0.0, 1.0))
 
 
-def _resolve_rw_retry_budget(mols, retry, rollback, rollback_shaking, retry_step, retry_opt_step):
+def _resolve_rw_retry_budget(mols, retry, rollback, rollback_shaking, retry_step, retry_opt_step, *, total_steps: int | None = None):
     mols = [mol for mol in _resolve_mol_list(mols) if isinstance(mol, Chem.Mol)]
     rigidity = max((_estimate_rw_rigidity(mol) for mol in mols), default=0.5)
 
     if rigidity >= 0.72:
-        caps = {'retry': 80, 'rollback': 4, 'retry_step': 120, 'retry_opt_step': 8}
+        recommended = {'retry': 80, 'rollback': 4, 'retry_step': 120, 'retry_opt_step': 8}
     elif rigidity >= 0.38:
-        caps = {'retry': 60, 'rollback': 3, 'retry_step': 90, 'retry_opt_step': 4}
+        recommended = {'retry': 60, 'rollback': 3, 'retry_step': 90, 'retry_opt_step': 4}
     else:
-        caps = {'retry': 40, 'rollback': 3, 'retry_step': 60, 'retry_opt_step': 2}
+        # Keep the historical defaults for flexible chains. Lowering the retry
+        # budget here made easy polymerizations less robust in practice.
+        recommended = {'retry': 60, 'rollback': 3, 'retry_step': 80, 'retry_opt_step': 4}
+
+    try:
+        steps = max(int(total_steps or 0), 0)
+    except Exception:
+        steps = 0
+    if steps >= 120:
+        recommended = {
+            'retry': max(recommended['retry'], 160),
+            'rollback': max(recommended['rollback'], 4),
+            'retry_step': max(recommended['retry_step'], 240),
+            'retry_opt_step': max(recommended['retry_opt_step'], 8),
+        }
+    elif steps >= 80:
+        recommended = {
+            'retry': max(recommended['retry'], 120),
+            'rollback': max(recommended['rollback'], 4),
+            'retry_step': max(recommended['retry_step'], 160),
+            'retry_opt_step': max(recommended['retry_opt_step'], 6),
+        }
 
     original = {
         'retry': int(retry),
@@ -1234,10 +1255,10 @@ def _resolve_rw_retry_budget(mols, retry, rollback, rollback_shaking, retry_step
         'retry_opt_step': int(retry_opt_step),
     }
     effective = {
-        'retry': max(0, min(original['retry'], caps['retry'])),
-        'rollback': max(1, min(original['rollback'], caps['rollback'])),
-        'retry_step': max(1, min(original['retry_step'], caps['retry_step'])),
-        'retry_opt_step': max(0, min(original['retry_opt_step'], caps['retry_opt_step'])),
+        'retry': max(0, max(original['retry'], recommended['retry'])),
+        'rollback': max(1, max(original['rollback'], recommended['rollback'])),
+        'retry_step': max(1, max(original['retry_step'], recommended['retry_step'])),
+        'retry_opt_step': max(0, max(original['retry_opt_step'], recommended['retry_opt_step'])),
     }
     changed = {key: (original[key], effective[key]) for key in effective if original[key] != effective[key]}
 
@@ -2196,13 +2217,23 @@ def random_walk_polymerization(mols, m_idx, chi_inv, start_num=0, init_poly=None
 
     mols = _resolve_mol_list(mols)
     init_poly = _resolve_mol_like(init_poly) if init_poly is not None else None
-    budget = _resolve_rw_retry_budget(mols, retry, rollback, rollback_shaking, retry_step, retry_opt_step)
-    retry = budget['retry']
-    rollback = budget['rollback']
-    rollback_shaking = budget['rollback_shaking']
-    retry_step = budget['retry_step']
-    retry_opt_step = budget['retry_opt_step']
-    if start_num == 0 and budget['changed']:
+    budget = None
+    if start_num == 0 and init_poly is None:
+        budget = _resolve_rw_retry_budget(
+            mols,
+            retry,
+            rollback,
+            rollback_shaking,
+            retry_step,
+            retry_opt_step,
+            total_steps=len(m_idx),
+        )
+        retry = budget['retry']
+        rollback = budget['rollback']
+        rollback_shaking = budget['rollback_shaking']
+        retry_step = budget['retry_step']
+        retry_opt_step = budget['retry_opt_step']
+    if budget and budget['changed']:
         details = ', '.join(f'{key} {old}->{new}' for key, (old, new) in budget['changed'].items())
         utils.radon_print(
             f'Adaptive random-walk budget applied (rigidity={budget["rigidity"]:.2f}): {details}',
@@ -2451,7 +2482,8 @@ def random_walk_polymerization(mols, m_idx, chi_inv, start_num=0, init_poly=None
 
             poly = random_walk_polymerization(
                 mols, m_idx, chi_inv, start_num=start_num, init_poly=rb_poly, headhead=headhead, confId=confId,
-                dist_min=dist_min, retry=retry, rollback=rollback, retry_step=retry_step, retry_opt_step=retry_opt_step, tacticity=tacticity,
+                dist_min=dist_min, retry=retry, rollback=rollback, rollback_shaking=rollback_shaking,
+                retry_step=retry_step, retry_opt_step=retry_opt_step, tacticity=tacticity,
                 res_name_init=res_name_init, res_name=res_name, label=label, label_init=label_init,
                 ff=ff, work_dir=work_dir, omp=omp, mpi=mpi, gpu=gpu, restart=restart
             )

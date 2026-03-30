@@ -1600,25 +1600,33 @@ def test_resolve_rw_retry_budget_scales_with_rigidity():
 
     flexible_budget = poly._resolve_rw_retry_budget(
         [flexible],
-        retry=100,
-        rollback=5,
+        retry=20,
+        rollback=1,
         rollback_shaking=False,
-        retry_step=200,
-        retry_opt_step=20,
+        retry_step=20,
+        retry_opt_step=0,
     )
     rigid_budget = poly._resolve_rw_retry_budget(
         [rigid],
-        retry=100,
-        rollback=5,
+        retry=20,
+        rollback=1,
         rollback_shaking=False,
-        retry_step=200,
-        retry_opt_step=20,
+        retry_step=20,
+        retry_opt_step=0,
     )
 
-    assert flexible_budget['retry'] <= 40
-    assert flexible_budget['rollback'] <= 3
-    assert flexible_budget['retry_step'] <= 60
-    assert flexible_budget['retry_opt_step'] <= 2
+    assert flexible_budget['retry'] == 60
+    assert flexible_budget['rollback'] == 3
+    assert flexible_budget['retry_step'] == 80
+    assert flexible_budget['retry_opt_step'] == 4
+    assert flexible_budget['changed'] == {
+        'retry': (20, 60),
+        'rollback': (1, 3),
+        'retry_step': (20, 80),
+        'retry_opt_step': (0, 4),
+    }
+    assert rigid_budget['retry'] == 80
+    assert rigid_budget['rollback'] == 4
     assert rigid_budget['retry_step'] > flexible_budget['retry_step']
     assert rigid_budget['retry_opt_step'] > flexible_budget['retry_opt_step']
     assert rigid_budget['rigidity'] > flexible_budget['rigidity']
