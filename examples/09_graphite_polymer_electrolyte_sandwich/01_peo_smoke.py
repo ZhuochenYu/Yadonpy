@@ -57,6 +57,13 @@ if __name__ == "__main__":
             psi4_memory_mb=24000,
             bulk_eq21_final_ns=0.0,
             bulk_additional_loops=0,
+            bulk_eq21_exec_kwargs={
+                "eq21_tmax": 600.0,
+                "eq21_pmax": 10000.0,
+                "eq21_pre_nvt_ps": 2.0,
+                "sim_time": 0.04,
+                "eq21_npt_time_scale": 0.20,
+            },
             stacked_pre_nvt_ps=10.0,
             stacked_z_relax_ps=40.0,
             stacked_exchange_ps=60.0,

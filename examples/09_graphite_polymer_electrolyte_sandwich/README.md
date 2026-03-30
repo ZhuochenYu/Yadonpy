@@ -12,7 +12,9 @@ coherent workflow family built around the same high-level sandwich builder:
 
 The scripts are intentionally short. Most of the workflow logic now lives in
 `yadonpy.interface.sandwich`, so the examples focus on study setup rather than
-repeating the same packing and relaxation boilerplate.
+repeating the same packing and relaxation boilerplate. The old route-A,
+route-B, charged CMC interface, and graphite stack cases are now treated as
+parameter choices on one substrate-assisted sandwich path.
 
 ## Scripts
 
@@ -31,6 +33,9 @@ repeating the same packing and relaxation boilerplate.
   variant. Build it first with Example 01 or the merged Example 07 catalog.
 - The PEO smoke is the quickest way to validate the whole sandwich path on a
   remote GPU node before switching to the more demanding CMC-Na case.
+- The CMC scripts use the same grouped-polyelectrolyte RESP and counterion-aware
+  packing path as Example 05, but now place that polymer into the same graphite
+  sandwich builder used by the neutral PEO case.
 - The manifest written under each work directory includes:
   - polymer/electrolyte bulk density reports
   - final `GRAPHITE -> POLYMER -> ELECTROLYTE` phase-order checks

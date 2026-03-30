@@ -1,6 +1,9 @@
 # Example 07: One-shot MolDB precompute for common electrolyte species
 
-This example is now organized around one practical entry point:
+This merged example now keeps both the curated catalog path and the quick
+text-import path in one place.
+
+The main entry point is:
 
 ```bash
 python 01_build_moldb.py
@@ -66,14 +69,25 @@ Included categories:
 - `AsF6-` and `SbF6-` stay on the diffuse def2 route when the active Psi4 build
   supports those elements, rather than being hard-coded into a downgrade path
 
+## Additional text-table import
+
+For quick local expansion from a pasted CSV-like text block, use:
+
+```bash
+python 02_text_table_to_moldb.py
+```
+
+This script converts the inline table into `template.csv` and then feeds it
+into MolDB autocalculation.
+
 ## Reuse in a workflow
 
-After the one-shot build finishes, `02_polymer_electrolyte_from_moldb.py`
+After the one-shot build finishes, `04_polymer_electrolyte_from_moldb.py`
 directly reuses ready entries from MolDB instead of building a small temporary
 CSV on the side:
 
 ```bash
-python 02_polymer_electrolyte_from_moldb.py
+python 04_polymer_electrolyte_from_moldb.py
 ```
 
 The script now expects the required species to already exist in MolDB and will

@@ -37,8 +37,8 @@ def test_release_manifest_excludes_cached_and_temp_artifacts():
 
     assert 'prune .pytest_cache' in manifest
     assert 'prune .yadonpy_cache' in manifest
-    assert 'prune examples/12_cmcna_interface/.yadonpy_cache' in manifest
-    assert 'prune examples/12_cmcna_interface/work_dir_smoke' in manifest
+    assert 'prune examples/07_moldb_precompute_and_reuse/work_dir' in manifest
+    assert 'prune examples/09_graphite_polymer_electrolyte_sandwich/work_dir' in manifest
     assert 'prune src/yadonpy.egg-info' in manifest
     assert 'prune tmp_workdir_smoke' in manifest
     assert 'global-exclude __pycache__' in manifest
@@ -113,15 +113,34 @@ def test_interface_examples_keep_linear_script_style():
     )
     offenders: list[str] = []
     for rel in (
-        'examples/10_interface_route_a/run_interface_route_a.py',
-        'examples/11_interface_route_b/run_interface_route_b.py',
-        'examples/12_cmcna_interface/run_cmcna_interface.py',
+        'examples/09_graphite_polymer_electrolyte_sandwich/01_peo_smoke.py',
+        'examples/09_graphite_polymer_electrolyte_sandwich/02_peo_carbonate_full.py',
+        'examples/09_graphite_polymer_electrolyte_sandwich/03_cmcna_smoke.py',
+        'examples/09_graphite_polymer_electrolyte_sandwich/04_cmcna_full.py',
     ):
         text = (root / rel).read_text(encoding='utf-8')
         if any(pattern in text for pattern in helper_patterns):
             offenders.append(rel)
 
     assert offenders == []
+
+
+def test_release_docs_do_not_reference_retired_example_paths():
+    root = Path(__file__).resolve().parents[1]
+    readme = (root / 'README.md').read_text(encoding='utf-8')
+    guide = (root / 'docs' / 'Yaonpyd_user_guide.md').read_text(encoding='utf-8')
+
+    retired = (
+        'examples/08_text_to_csv_and_build_moldb',
+        'examples/10_interface_route_a',
+        'examples/11_interface_route_b',
+        'examples/12_cmcna_interface',
+        'examples/13_graphite_cmc_electrolyte',
+    )
+
+    for rel in retired:
+        assert rel not in readme
+        assert rel not in guide
 
 
 def test_examples_do_not_manually_set_names_or_pass_name_into_ff_mol():

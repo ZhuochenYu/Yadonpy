@@ -117,6 +117,7 @@ class SandwichRelaxationSpec:
     psi4_memory_mb: int = 16000
     bulk_eq21_final_ns: float = 0.10
     bulk_additional_loops: int = 1
+    bulk_eq21_exec_kwargs: dict[str, float] = field(default_factory=dict)
     graphite_to_polymer_gap_ang: float = 3.8
     polymer_to_electrolyte_gap_ang: float = 4.2
     top_padding_ang: float = 12.0
@@ -743,6 +744,14 @@ def build_graphite_polymer_electrolyte_sandwich(
         pack_mode="sandwich_polymer_slab",
     )
     fixed_xy = fixed_xy_semiisotropic_npt_overrides(pressure_bar=float(relax.pressure_bar))
+    bulk_eq21_exec_kwargs = {
+        "time": float(relax.bulk_eq21_final_ns),
+        "eq21_pre_nvt_ps": 5.0,
+        "eq21_tmax": max(float(relax.temperature_k), 650.0),
+        "eq21_pmax": 5000.0,
+        "eq21_npt_time_scale": 0.4,
+        **{str(k): float(v) for k, v in dict(relax.bulk_eq21_exec_kwargs).items()},
+    }
     _ = equilibrate_bulk_with_eq21(
         label="Polymer slab",
         ac=polymer_slab,
@@ -758,13 +767,7 @@ def build_graphite_polymer_electrolyte_sandwich(
         additional_mdp_overrides=fixed_xy,
         final_npt_ns=float(relax.bulk_eq21_final_ns),
         final_npt_mdp_overrides=fixed_xy,
-        eq21_exec_kwargs={
-            "time": float(relax.bulk_eq21_final_ns),
-            "eq21_pre_nvt_ps": 5.0,
-            "eq21_tmax": max(float(relax.temperature_k), 650.0),
-            "eq21_pmax": 5000.0,
-            "eq21_npt_time_scale": 0.4,
-        },
+        eq21_exec_kwargs=bulk_eq21_exec_kwargs,
     )
     polymer_report = _phase_report(
         label="polymer",
@@ -835,13 +838,7 @@ def build_graphite_polymer_electrolyte_sandwich(
         additional_mdp_overrides=electrolyte_prep.relax_mdp_overrides,
         final_npt_ns=float(relax.bulk_eq21_final_ns),
         final_npt_mdp_overrides=electrolyte_prep.relax_mdp_overrides,
-        eq21_exec_kwargs={
-            "time": float(relax.bulk_eq21_final_ns),
-            "eq21_pre_nvt_ps": 5.0,
-            "eq21_tmax": max(float(relax.temperature_k), 650.0),
-            "eq21_pmax": 5000.0,
-            "eq21_npt_time_scale": 0.4,
-        },
+        eq21_exec_kwargs=bulk_eq21_exec_kwargs,
     )
     electrolyte_report = _phase_report(
         label="electrolyte",

@@ -266,19 +266,16 @@ Use route selection helpers rather than in-script ad hoc route logic where possi
 
 Recommended order:
 
-1. `examples/07_moldb_precompute_and_reuse`
-2. `examples/08_text_to_csv_and_build_moldb`
-3. `examples/01_Li_salt`
-4. `examples/02_polymer_electrolyte`
-5. `examples/05_cmcna_electrolyte`
-6. `examples/10_interface_route_a`
-7. `examples/11_interface_route_b`
-8. `examples/12_cmcna_interface`
-9. `examples/13_graphite_cmc_electrolyte`
+1. `examples/01_Li_salt`
+2. `examples/02_polymer_electrolyte`
+3. `examples/05_cmcna_electrolyte`
+4. `examples/07_moldb_precompute_and_reuse`
+5. `examples/08_oplsaa_assign`
+6. `examples/09_graphite_polymer_electrolyte_sandwich`
 
 Specific to `v0.8.73`:
 
-- `examples/05` and `examples/12` are the reference scripts for grouped polyelectrolyte RESP, local scaling, and charged-group-aware post-processing.
+- `examples/05` and `examples/09` are the reference scripts for grouped polyelectrolyte RESP, local scaling, and charged-group-aware post-processing.
 
 ## 11. Common failure modes
 

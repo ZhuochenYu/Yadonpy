@@ -1,4 +1,4 @@
-# Example 09: OPLS-AA assignment for ethylene carbonate (EC)
+# Example 08: OPLS-AA assignment for ethylene carbonate (EC)
 
 This example focuses on **OPLS-AA atom typing and bonded assignment only**.
 
@@ -14,7 +14,7 @@ It intentionally stops after force-field assignment. It does **not** build an am
 ## Run
 
 ```bash
-cd examples/09_oplsaa_assign
+cd examples/08_oplsaa_assign
 python run_ec_oplsaa_assign.py
 ```
 

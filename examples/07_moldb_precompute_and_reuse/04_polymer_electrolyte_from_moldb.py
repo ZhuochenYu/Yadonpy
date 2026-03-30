@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""Example 07 / Step 2: Polymer electrolyte workflow using MolDB.
+"""Example 07 / Step 4: Polymer electrolyte workflow using MolDB.
 
 Prerequisite:
   - Run 01_build_moldb.py first so the example species are already "ready" in

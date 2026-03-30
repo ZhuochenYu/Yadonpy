@@ -8,7 +8,7 @@ Supported release baseline: Python 3.11+.
 
 ## Release focus
 
-Version `0.8.76` keeps **PsiRESP** as the RESP/ESP backend, expands Example 07 into a broader one-shot electrolyte species catalog, aligns the documented QM environment around `psiresp-base`, and keeps the MolDB-first rebuild path explicit.
+Version `0.8.76` keeps **PsiRESP** as the RESP/ESP backend, expands Example 07 into a broader one-shot electrolyte species catalog, aligns the documented QM environment around `psiresp-base`, and starts consolidating the shipped interface examples around one graphite-polymer-electrolyte sandwich workflow family.
 
 This change was made because grouped charge constraints are required for rigorous polyelectrolyte workflows, and PsiRESP provides the necessary primitives:
 
@@ -251,13 +251,13 @@ Instead, the curated one-shot electrolyte species catalog is stored under:
 
 - `examples/07_moldb_precompute_and_reuse/electrolyte_species.csv`
 
-The catalog covers the recurring Example 02/05/06/10/11/12/13 species set, including:
+The catalog covers the recurring Example 02/05/06/09 species set, including:
 
 - `*CCO*`
 - `*COC*`
 - `[H][*]`
 - the CMC glucose monomer family
-- the Example 10/11 aromatic repeat unit
+- the aromatic repeat unit used by the legacy neutral interface studies
 - common carbonate / ether solvents and additives
 - `ClO4-`
 - `BF4-`
@@ -279,20 +279,17 @@ It reads `electrolyte_species.csv`, writes the results into the active MolDB, ap
 
 Recommended reading order:
 
-1. `examples/07_moldb_precompute_and_reuse`
-2. `examples/08_text_to_csv_and_build_moldb`
-3. `examples/01_Li_salt`
-4. `examples/02_polymer_electrolyte`
-5. `examples/05_cmcna_electrolyte`
-6. `examples/10_interface_route_a`
-7. `examples/11_interface_route_b`
-8. `examples/12_cmcna_interface`
-9. `examples/13_graphite_cmc_electrolyte`
+1. `examples/01_Li_salt`
+2. `examples/02_polymer_electrolyte`
+3. `examples/05_cmcna_electrolyte`
+4. `examples/07_moldb_precompute_and_reuse`
+5. `examples/08_oplsaa_assign`
+6. `examples/09_graphite_polymer_electrolyte_sandwich`
 
 Relevant updates in this release:
 
 - `examples/05` now uses `polyelectrolyte_mode=True` for CMC monomer RESP and charge-scaled cell construction;
-- `examples/12` now uses the same grouped polyelectrolyte path and no longer requires manual charged-atom index handling in the script.
+- `examples/09_graphite_polymer_electrolyte_sandwich` now replaces the old Example 10/11/12/13 split with a single substrate-assisted sandwich workflow family.
 - `examples/07_moldb_precompute_and_reuse/01_build_moldb.py` now acts as the one-shot MolDB builder for the broad electrolyte species library.
 
 ## Documentation

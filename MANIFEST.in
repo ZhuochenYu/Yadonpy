@@ -3,8 +3,8 @@ global-exclude .DS_Store
 prune .pytest_cache
 prune .yadonpy_cache
 prune tmp_workdir_smoke
-prune examples/12_cmcna_interface/.yadonpy_cache
-prune examples/12_cmcna_interface/work_dir_smoke
+prune examples/07_moldb_precompute_and_reuse/work_dir
+prune examples/09_graphite_polymer_electrolyte_sandwich/work_dir
 prune tmp_export_check
 prune tmp_export_check2
 prune src/yadonpy.egg-info
