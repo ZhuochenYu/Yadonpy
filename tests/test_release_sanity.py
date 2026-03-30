@@ -6,14 +6,21 @@ import re
 import yadonpy
 
 
-def test_release_version_is_consistent_in_core_files():
+def test_release_metadata_is_consistent_in_core_files():
     root = Path(__file__).resolve().parents[1]
     version = yadonpy.__version__
+    readme = (root / 'README.md').read_text(encoding='utf-8')
+    api = (root / 'docs' / 'API_REFERENCE.md').read_text(encoding='utf-8')
+    guide = (root / 'docs' / 'USER_GUIDE.md').read_text(encoding='utf-8')
+    architecture = (root / 'docs' / 'ARCHITECTURE.md').read_text(encoding='utf-8')
+    technical = (root / 'docs' / 'TECHNICAL_NOTES.md').read_text(encoding='utf-8')
 
-    assert f'Current release: **v{version}**' in (root / 'README.md').read_text(encoding='utf-8')
-    assert f'# YadonPy API (v{version})' in (root / 'docs' / f'Yadonpy_API_v{version}.md').read_text(encoding='utf-8')
-    assert f'# YadonPy Manual (v{version})' in (root / 'docs' / 'Yadonpy_manul.md').read_text(encoding='utf-8')
-    assert f'# YadonPy User Guide (v{version})' in (root / 'docs' / 'Yaonpyd_user_guide.md').read_text(encoding='utf-8')
+    assert '# YadonPy' in readme
+    assert '# YadonPy API Reference' in api
+    assert '# YadonPy User Guide' in guide
+    assert '# YadonPy Architecture' in architecture
+    assert '# YadonPy Technical Notes' in technical
+    assert 'Current release:' not in readme
     assert f'version = "{version}"' in (root / 'pyproject.toml').read_text(encoding='utf-8')
 
 
@@ -21,27 +28,56 @@ def test_release_declares_python_311_minimum_and_docs_match():
     root = Path(__file__).resolve().parents[1]
     pyproject = (root / 'pyproject.toml').read_text(encoding='utf-8')
     readme = (root / 'README.md').read_text(encoding='utf-8')
-    manual = (root / 'docs' / 'Yadonpy_manul.md').read_text(encoding='utf-8')
-    guide = (root / 'docs' / 'Yaonpyd_user_guide.md').read_text(encoding='utf-8')
+    guide = (root / 'docs' / 'USER_GUIDE.md').read_text(encoding='utf-8')
+    api = (root / 'docs' / 'API_REFERENCE.md').read_text(encoding='utf-8')
 
     assert 'requires-python = ">=3.11"' in pyproject
-    assert 'Python 3.11+' in readme
-    assert 'Python 3.11+' in manual
-    assert 'Python 3.11+' in guide
+    assert 'python=3.11' in readme
+    assert 'python=3.11' in guide
+    assert 'psiresp-base' in readme
+    assert 'psiresp-base' in guide
+    assert 'pip install pybel' not in readme
+    assert 'pip install pybel' not in guide
+    assert 'psiresp-base' in api
 
 
 
-def test_release_manifest_excludes_cached_and_temp_artifacts():
+def test_repo_excludes_local_only_release_files_from_git():
     root = Path(__file__).resolve().parents[1]
-    manifest = (root / 'MANIFEST.in').read_text(encoding='utf-8')
+    gitignore = (root / '.gitignore').read_text(encoding='utf-8')
 
-    assert 'prune .pytest_cache' in manifest
-    assert 'prune .yadonpy_cache' in manifest
-    assert 'prune examples/07_moldb_precompute_and_reuse/work_dir' in manifest
-    assert 'prune examples/08_graphite_polymer_electrolyte_sandwich/work_dir' in manifest
-    assert 'prune src/yadonpy.egg-info' in manifest
-    assert 'prune tmp_workdir_smoke' in manifest
-    assert 'global-exclude __pycache__' in manifest
+    assert not (root / 'MANIFEST.in').exists()
+    assert not (root / 'YADONPY_MAINTENANCE_PRINCIPLES.md').exists()
+    assert 'MANIFEST.in' in gitignore
+    assert 'YADONPY_MAINTENANCE_PRINCIPLES.md' in gitignore
+
+
+def test_docs_have_single_current_structure_and_old_release_docs_are_removed():
+    root = Path(__file__).resolve().parents[1]
+    docs = root / 'docs'
+
+    assert (docs / 'API_REFERENCE.md').is_file()
+    assert (docs / 'USER_GUIDE.md').is_file()
+    assert (docs / 'ARCHITECTURE.md').is_file()
+    assert (docs / 'TECHNICAL_NOTES.md').is_file()
+
+    old = (
+        'Yadonpy_manul.md',
+        'Yaonpyd_user_guide.md',
+        'oplsaa2024_moltemplate_import.md',
+        'si_h_qm_probe_20260325.md',
+        'si_h_qm_probe_20260325_summary.json',
+        'si_h_qm_probe_20260325_typed_summary.json',
+        'Yadonpy_API_v0.8.69.md',
+        'Yadonpy_API_v0.8.70.md',
+        'Yadonpy_API_v0.8.71.md',
+        'Yadonpy_API_v0.8.72.md',
+        'Yadonpy_API_v0.8.73.md',
+        'Yadonpy_API_v0.8.75.md',
+        'Yadonpy_API_v0.8.76.md',
+    )
+    for name in old:
+        assert not (docs / name).exists()
 
 
 def test_oplsaa_rule_table_is_externalized():
@@ -128,7 +164,7 @@ def test_interface_examples_keep_linear_script_style():
 def test_release_docs_do_not_reference_retired_example_paths():
     root = Path(__file__).resolve().parents[1]
     readme = (root / 'README.md').read_text(encoding='utf-8')
-    guide = (root / 'docs' / 'Yaonpyd_user_guide.md').read_text(encoding='utf-8')
+    guide = (root / 'docs' / 'USER_GUIDE.md').read_text(encoding='utf-8')
 
     retired = (
         'examples/08_text_to_csv_and_build_moldb',
@@ -142,6 +178,25 @@ def test_release_docs_do_not_reference_retired_example_paths():
     for rel in retired:
         assert rel not in readme
         assert rel not in guide
+
+
+def test_docs_reference_current_doc_set_and_not_retired_doc_names():
+    root = Path(__file__).resolve().parents[1]
+    readme = (root / 'README.md').read_text(encoding='utf-8')
+    api = (root / 'docs' / 'API_REFERENCE.md').read_text(encoding='utf-8')
+    guide = (root / 'docs' / 'USER_GUIDE.md').read_text(encoding='utf-8')
+    architecture = (root / 'docs' / 'ARCHITECTURE.md').read_text(encoding='utf-8')
+    technical = (root / 'docs' / 'TECHNICAL_NOTES.md').read_text(encoding='utf-8')
+
+    for text in (readme, api, guide, architecture, technical):
+        assert 'Yadonpy_manul.md' not in text
+        assert 'Yaonpyd_user_guide.md' not in text
+        assert 'Yadonpy_API_v' not in text
+
+    assert 'docs/USER_GUIDE.md' in readme
+    assert 'docs/API_REFERENCE.md' in readme
+    assert 'docs/ARCHITECTURE.md' in readme
+    assert 'docs/TECHNICAL_NOTES.md' in readme
 
 
 def test_examples_do_not_manually_set_names_or_pass_name_into_ff_mol():

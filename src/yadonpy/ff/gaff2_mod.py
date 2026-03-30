@@ -58,7 +58,7 @@ class GAFF2_mod(GAFF2):
         # remote Linux Psi4 + modified Seminario probe run on 2026-03-25:
         #   probes: [SiH4], C[SiH3], O[SiH3], [SiH3]O[SiH3]
         #   level : wB97M-D3BJ / def2-SVP (opt + Hessian)
-        #   record: docs/si_h_qm_probe_20260325.md
+        #   record: docs/TECHNICAL_NOTES.md
         #
         # The common `hi,si,oss,si` torsion is still a conservative surrogate
         # cloned from `X,c3,os,X`, because modified Seminario only supplies bond
