@@ -87,19 +87,29 @@ def test_run_psiresp_fit_uses_precomputed_psi4_path(monkeypatch, tmp_path):
 
     calls = []
 
-    def fake_compute_orientation(orientation, *, method, basis, ncores=None, memory_mib=None):
+    def fake_populate_orientation(
+        orientation,
+        *,
+        grid_options,
+        method,
+        basis,
+        ncores=None,
+        memory_mib=None,
+    ):
         calls.append(
             {
                 "method": method,
                 "basis": basis,
                 "ncores": ncores,
                 "memory_mib": memory_mib,
+                "grid_options": grid_options,
             }
         )
+        orientation.grid = np.array([[0.0, 0.0, 0.0]])
         orientation.qc_wavefunction = object()
         orientation.esp = np.array([0.1])
 
-    monkeypatch.setattr(wrapper, "_compute_orientation_wavefunction_and_esp", fake_compute_orientation)
+    monkeypatch.setattr(wrapper, "_populate_orientation_with_precomputed_esp", fake_populate_orientation)
 
     mol = Chem.MolFromSmiles("CC")
     result = wrapper.run_psiresp_fit(
@@ -115,14 +125,14 @@ def test_run_psiresp_fit_uses_precomputed_psi4_path(monkeypatch, tmp_path):
 
     assert np.allclose(result["resp"], [-0.3, 0.3])
     assert np.allclose(result["esp"], [-0.2, 0.2])
-    assert calls == [
-        {
-            "method": "wb97m-d3bj",
-            "basis": "def2-TZVPD",
-            "ncores": 36,
-            "memory_mib": 20000,
-        }
-    ]
+    assert len(calls) == 1
+    assert calls[0]["method"] == "wb97m-d3bj"
+    assert calls[0]["basis"] == "def2-TZVPD"
+    assert calls[0]["ncores"] == 36
+    assert calls[0]["memory_mib"] == 20000
+    assert calls[0]["grid_options"].use_radii == "msk"
+    assert calls[0]["grid_options"].vdw_scale_factors == [1.4, 1.6, 1.8, 2.0]
+    assert calls[0]["grid_options"].vdw_point_density == 20.0
 
 
 def test_ensure_psiresp_numpy_compat_restores_in1d(monkeypatch):

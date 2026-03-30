@@ -43,6 +43,23 @@ def _ensure_psiresp_numpy_compat() -> None:
     np.in1d = _in1d  # type: ignore[attr-defined]
 
 
+def _make_psiresp_molecule(
+    mol,
+    *,
+    charge: int,
+    multiplicity: int,
+):
+    mol_copy = Chem.Mol(mol)
+    pmol = psiresp.Molecule.from_rdkit(
+        mol_copy,
+        charge=charge,
+        multiplicity=multiplicity,
+        optimize_geometry=False,
+        keep_original_orientation=True,
+    )
+    return mol_copy, pmol
+
+
 def _charge_constraints_for_molecule(
     mol,
     *,
@@ -84,20 +101,47 @@ def _charge_constraints_for_molecule(
     return options, {"summary": summary, "constraints": constraints_meta}
 
 
-def _compute_orientation_wavefunction_and_esp(
+def _build_psiresp_job(
+    *,
+    pmol,
+    fit_kind: str,
+    constraints,
+    run_dir: Path,
+):
+    job_cls = psiresp.TwoStageRESP if fit_kind == "RESP" else psiresp.ESP
+    job = job_cls(
+        molecules=[pmol],
+        charge_constraints=constraints,
+        working_directory=run_dir,
+    )
+    job.grid_options.use_radii = "msk"
+    job.grid_options.vdw_scale_factors = [1.4, 1.6, 1.8, 2.0]
+    job.grid_options.vdw_point_density = 20.0
+    return job
+
+
+def _ensure_orientation_grid(orientation, *, grid_options) -> np.ndarray:
+    if orientation.grid is None:
+        orientation.compute_grid(grid_options=grid_options)
+    return np.asarray(orientation.grid, dtype=float)
+
+
+def _compute_orientation_esp_from_psi4(
     orientation,
     *,
     method: str,
     basis: str,
     ncores: int | None = None,
     memory_mib: int | float | None = None,
-) -> None:
+) -> tuple[Any, np.ndarray]:
     import qcelemental as qcel  # type: ignore
     import qcengine as qcng  # type: ignore
     from psiresp.qcutils import QCWaveFunction  # type: ignore
+    from psiresp import psi4utils  # type: ignore
 
     if orientation.grid is None:
         raise ValueError("Orientation grid must be prepared before computing ESP.")
+    grid = np.asarray(orientation.grid, dtype=float)
 
     task_config: dict[str, Any] = {}
     if ncores is not None:
@@ -124,8 +168,31 @@ def _compute_orientation_wavefunction_and_esp(
         raise_error=True,
         task_config=task_config,
     )
-    orientation.qc_wavefunction = QCWaveFunction.from_atomicresult(result)
-    orientation.compute_esp()
+    qc_wavefunction = QCWaveFunction.from_atomicresult(result)
+    esp = np.asarray(psi4utils.compute_esp(qc_wavefunction, grid), dtype=float)
+    return qc_wavefunction, esp
+
+
+def _populate_orientation_with_precomputed_esp(
+    orientation,
+    *,
+    grid_options,
+    method: str,
+    basis: str,
+    ncores: int | None = None,
+    memory_mib: int | float | None = None,
+) -> None:
+    grid = _ensure_orientation_grid(orientation, grid_options=grid_options)
+    qc_wavefunction, esp = _compute_orientation_esp_from_psi4(
+        orientation,
+        method=method,
+        basis=basis,
+        ncores=ncores,
+        memory_mib=memory_mib,
+    )
+    orientation.grid = grid
+    orientation.qc_wavefunction = qc_wavefunction
+    orientation.esp = esp
 
 
 def run_psiresp_fit(
@@ -143,6 +210,12 @@ def run_psiresp_fit(
     ncores: int | None = None,
     memory_mib: int | float | None = None,
 ) -> dict[str, Any]:
+    """Run PsiRESP fitting with Psi4-computed ESPs.
+
+    This follows the PsiRESP examples where orientations/grids are prepared on
+    the PsiRESP side, QM is executed externally, and only the precomputed ESPs
+    are handed back to `compute_charges()`.
+    """
     _require_psiresp()
     _ensure_psiresp_numpy_compat()
     fit_kind_up = str(fit_kind).strip().upper()
@@ -155,13 +228,10 @@ def run_psiresp_fit(
     run_dir = work_root / "psiresp"
     run_dir.mkdir(parents=True, exist_ok=True)
 
-    mol_copy = Chem.Mol(mol)
-    pmol = psiresp.Molecule.from_rdkit(
-        mol_copy,
+    mol_copy, pmol = _make_psiresp_molecule(
+        mol,
         charge=charge,
         multiplicity=multiplicity,
-        optimize_geometry=False,
-        keep_original_orientation=True,
     )
     constraints, constraint_meta = _charge_constraints_for_molecule(
         mol_copy,
@@ -169,15 +239,12 @@ def run_psiresp_fit(
         polyelectrolyte_mode=bool(polyelectrolyte_mode),
         polyelectrolyte_detection=str(polyelectrolyte_detection or "auto"),
     )
-    job_cls = psiresp.TwoStageRESP if fit_kind_up == "RESP" else psiresp.ESP
-    job = job_cls(
-        molecules=[pmol],
-        charge_constraints=constraints,
-        working_directory=run_dir,
+    job = _build_psiresp_job(
+        pmol=pmol,
+        fit_kind=fit_kind_up,
+        constraints=constraints,
+        run_dir=run_dir,
     )
-    job.grid_options.use_radii = "msk"
-    job.grid_options.vdw_scale_factors = [1.4, 1.6, 1.8, 2.0]
-    job.grid_options.vdw_point_density = 20.0
 
     dt1 = datetime.datetime.now()
     utils.radon_print(
@@ -186,11 +253,10 @@ def run_psiresp_fit(
     )
     job.generate_orientations()
     for orientation in job.iter_orientations():
-        if orientation.grid is None:
-            orientation.compute_grid(grid_options=job.grid_options)
-        if orientation.qc_wavefunction is None or orientation.esp is None:
-            _compute_orientation_wavefunction_and_esp(
+        if orientation.esp is None:
+            _populate_orientation_with_precomputed_esp(
                 orientation,
+                grid_options=job.grid_options,
                 method=str(method),
                 basis=str(basis),
                 ncores=ncores,
