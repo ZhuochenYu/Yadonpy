@@ -53,7 +53,7 @@ The package covers:
 ### Recommended conda environment
 
 ```bash
-conda create -n yadonpy python=3.9
+conda create -n yadonpy python=3.11
 conda activate yadonpy
 
 conda install rdkit openbabel parmed mdtraj matplotlib pandas scipy packaging psi4 dftd3-python psiresp-base
