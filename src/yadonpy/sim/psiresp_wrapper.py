@@ -131,46 +131,65 @@ def _compute_orientation_esp_from_psi4(
     *,
     method: str,
     basis: str,
+    run_dir: Path | None = None,
     ncores: int | None = None,
     memory_mib: int | float | None = None,
-) -> tuple[Any, np.ndarray]:
-    import qcelemental as qcel  # type: ignore
-    import qcengine as qcng  # type: ignore
-    from psiresp.qcutils import QCWaveFunction  # type: ignore
+) -> np.ndarray:
+    import psi4  # type: ignore
     from psiresp import psi4utils  # type: ignore
 
     if orientation.grid is None:
         raise ValueError("Orientation grid must be prepared before computing ESP.")
     grid = np.asarray(orientation.grid, dtype=float)
 
-    task_config: dict[str, Any] = {}
+    try:
+        psi4.core.clean()
+        psi4.core.clean_options()
+    except Exception:
+        pass
     if ncores is not None:
         try:
-            task_config["ncores"] = max(1, int(ncores))
+            psi4.set_num_threads(max(1, int(ncores)))
         except Exception:
             pass
     if memory_mib is not None:
         try:
-            task_config["memory"] = max(float(memory_mib) / 1024.0, 0.1)
+            psi4.set_memory(f"{max(int(float(memory_mib)), 100)} MB")
         except Exception:
             pass
+    try:
+        if run_dir is not None:
+            run_dir.mkdir(parents=True, exist_ok=True)
+            psi4.core.set_output_file(str(run_dir / "psiresp_psi4_sp.log"), False)
+    except Exception:
+        pass
 
-    atomic_input = qcel.models.AtomicInput(
-        molecule=orientation.qcmol,
-        driver="energy",
-        model={"method": str(method).strip().lower(), "basis": str(basis).strip()},
-        protocols={"wavefunction": "orbitals_and_eigenvalues"},
-        extras={"psiapi": True, "wfn_qcvars_only": True},
-    )
-    result = qcng.compute(
-        atomic_input,
-        "psi4",
-        raise_error=True,
-        task_config=task_config,
-    )
-    qc_wavefunction = QCWaveFunction.from_atomicresult(result)
-    esp = np.asarray(psi4utils.compute_esp(qc_wavefunction, grid), dtype=float)
-    return qc_wavefunction, esp
+    pmol = psi4utils.psi4mol_from_qcmol(orientation.qcmol)
+    try:
+        pmol.reset_point_group("c1")
+    except Exception:
+        pass
+    try:
+        pmol.fix_orientation(True)
+        pmol.fix_com(True)
+    except Exception:
+        pass
+    try:
+        pmol.update_geometry()
+    except Exception:
+        pass
+
+    psi4.set_options({"basis": str(basis).strip(), "scf_type": "df", "fail_on_maxiter": True})
+    _energy, wfn = psi4.energy(str(method).strip().lower(), molecule=pmol, return_wfn=True)
+    esp_calc = psi4.core.ESPPropCalc(wfn)
+    psi4grid = psi4.core.Matrix.from_array(grid)
+    esp = np.asarray(esp_calc.compute_esp_over_grid_in_memory(psi4grid), dtype=float)
+    try:
+        psi4.core.clean()
+        psi4.core.clean_options()
+    except Exception:
+        pass
+    return esp
 
 
 def _populate_orientation_with_precomputed_esp(
@@ -179,19 +198,20 @@ def _populate_orientation_with_precomputed_esp(
     grid_options,
     method: str,
     basis: str,
+    run_dir: Path | None = None,
     ncores: int | None = None,
     memory_mib: int | float | None = None,
 ) -> None:
     grid = _ensure_orientation_grid(orientation, grid_options=grid_options)
-    qc_wavefunction, esp = _compute_orientation_esp_from_psi4(
+    esp = _compute_orientation_esp_from_psi4(
         orientation,
         method=method,
         basis=basis,
+        run_dir=run_dir,
         ncores=ncores,
         memory_mib=memory_mib,
     )
     orientation.grid = grid
-    orientation.qc_wavefunction = qc_wavefunction
     orientation.esp = esp
 
 
@@ -259,6 +279,7 @@ def run_psiresp_fit(
                 grid_options=job.grid_options,
                 method=str(method),
                 basis=str(basis),
+                run_dir=run_dir,
                 ncores=ncores,
                 memory_mib=memory_mib,
             )

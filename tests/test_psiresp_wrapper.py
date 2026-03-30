@@ -93,6 +93,7 @@ def test_run_psiresp_fit_uses_precomputed_psi4_path(monkeypatch, tmp_path):
         grid_options,
         method,
         basis,
+        run_dir=None,
         ncores=None,
         memory_mib=None,
     ):
@@ -100,6 +101,7 @@ def test_run_psiresp_fit_uses_precomputed_psi4_path(monkeypatch, tmp_path):
             {
                 "method": method,
                 "basis": basis,
+                "run_dir": run_dir,
                 "ncores": ncores,
                 "memory_mib": memory_mib,
                 "grid_options": grid_options,
@@ -128,6 +130,7 @@ def test_run_psiresp_fit_uses_precomputed_psi4_path(monkeypatch, tmp_path):
     assert len(calls) == 1
     assert calls[0]["method"] == "wb97m-d3bj"
     assert calls[0]["basis"] == "def2-TZVPD"
+    assert calls[0]["run_dir"] == tmp_path / "psiresp"
     assert calls[0]["ncores"] == 36
     assert calls[0]["memory_mib"] == 20000
     assert calls[0]["grid_options"].use_radii == "msk"
