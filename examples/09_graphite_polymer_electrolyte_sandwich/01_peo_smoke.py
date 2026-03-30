@@ -34,7 +34,7 @@ if __name__ == "__main__":
         polymer=default_peo_polymer_spec(
             name="PEO",
             chain_target_atoms=220,
-            chain_count=2,
+            min_chain_count=4,
             target_density_g_cm3=1.08,
             slab_z_nm=3.2,
             initial_pack_z_scale=1.18,
