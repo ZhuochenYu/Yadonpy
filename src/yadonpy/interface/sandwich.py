@@ -6,6 +6,9 @@ from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Sequence
 
+import numpy as np
+from rdkit import Geometry as Geom
+
 from ..core import poly, utils
 from ..core.graphite import GraphiteBuildResult, build_graphite, register_cell_species_metadata, stack_cell_blocks
 from ..core.molspec import molecular_weight
@@ -407,15 +410,43 @@ def _read_gro_z_coords(gro_path: Path) -> list[float]:
     return z
 
 
+def _read_gro_box_nm(gro_path: Path) -> tuple[float, float, float]:
+    lines = Path(gro_path).read_text(encoding="utf-8", errors="replace").splitlines()
+    if len(lines) < 3:
+        raise ValueError(f"Invalid .gro file: {gro_path}")
+    parts = lines[-1].split()
+    if len(parts) < 3:
+        raise ValueError(f"Invalid .gro box line: {gro_path}")
+    return float(parts[0]), float(parts[1]), float(parts[2])
+
+
+def _unwrap_phase_z(values: Sequence[float], *, box_z_nm: float) -> list[float]:
+    arr = np.asarray(list(values), dtype=float)
+    if arr.size == 0 or box_z_nm <= 0.0:
+        return [float(x) for x in arr]
+    if float(np.max(arr) - np.min(arr)) <= 0.5 * float(box_z_nm):
+        return [float(x) for x in arr]
+    ordered = np.sort(arr)
+    cyclic = np.concatenate([ordered, ordered[:1] + float(box_z_nm)])
+    gaps = np.diff(cyclic)
+    split = int(np.argmax(gaps))
+    if float(gaps[split]) <= 0.5 * float(box_z_nm):
+        return [float(x) for x in arr]
+    threshold = float(ordered[split])
+    arr = np.where(arr <= threshold, arr + float(box_z_nm), arr)
+    return [float(x) for x in arr]
+
+
 def _build_stack_checks(*, gro_path: Path, ndx_groups: dict[str, list[int]]) -> dict[str, object]:
     z_coords = _read_gro_z_coords(gro_path)
+    _box_x_nm, _box_y_nm, box_z_nm = _read_gro_box_nm(gro_path)
     payload: dict[str, object] = {"gro_path": str(gro_path)}
     phase_stats: dict[str, dict[str, float]] = {}
     for name in ("GRAPHITE", "POLYMER", "ELECTROLYTE"):
         members = [int(idx) for idx in ndx_groups.get(name, []) if 1 <= int(idx) <= len(z_coords)]
         if not members:
             continue
-        values = [float(z_coords[idx - 1]) for idx in members]
+        values = _unwrap_phase_z([float(z_coords[idx - 1]) for idx in members], box_z_nm=float(box_z_nm))
         phase_stats[name] = {
             "min_z_nm": min(values),
             "mean_z_nm": sum(values) / float(len(values)),
@@ -608,6 +639,98 @@ def _phase_report(*, label: str, counts: Sequence[int], mols: Sequence, work_dir
     )
 
 
+def _molecule_atom_blocks(*, species: Sequence, counts: Sequence[int]) -> list[tuple[int, int]]:
+    blocks: list[tuple[int, int]] = []
+    cursor = 0
+    for mol, count in zip(species, counts):
+        nat = int(mol.GetNumAtoms())
+        for _ in range(int(count)):
+            blocks.append((cursor, cursor + nat))
+            cursor += nat
+    return blocks
+
+
+def _compact_packed_cell_z_by_molecule_centers(
+    *,
+    cell,
+    species: Sequence,
+    counts: Sequence[int],
+    target_box_nm: tuple[float, float, float],
+) -> tuple[object, str | None]:
+    if cell is None or int(getattr(cell, "GetNumConformers", lambda: 0)()) <= 0:
+        return cell, None
+
+    blocks = _molecule_atom_blocks(species=species, counts=counts)
+    if not blocks or int(blocks[-1][1]) != int(cell.GetNumAtoms()):
+        return cell, None
+
+    conf = cell.GetConformer(0)
+    coords = np.asarray(conf.GetPositions(), dtype=float).copy()
+    if coords.size == 0:
+        return cell, None
+
+    current_box = getattr(cell, "cell", None)
+    if current_box is None:
+        return cell, None
+
+    old_zlo = float(current_box.zlo)
+    old_zhi = float(current_box.zhi)
+    old_z_len = max(float(old_zhi - old_zlo), 1.0e-6)
+    target_x_ang = float(target_box_nm[0]) * 10.0
+    target_y_ang = float(target_box_nm[1]) * 10.0
+    target_z_ang = float(target_box_nm[2]) * 10.0
+    fragment_spans = [float(np.max(coords[start:stop, 2]) - np.min(coords[start:stop, 2])) for start, stop in blocks]
+    max_fragment_span = max(fragment_spans) if fragment_spans else 0.0
+    prefit_z_ang = max(target_z_ang * 1.5, target_z_ang + max_fragment_span * 0.8)
+    prefit_z_ang = min(old_z_len, prefit_z_ang)
+    if target_z_ang <= 0.0 or old_z_len <= prefit_z_ang * 1.10:
+        return cell, None
+
+    old_center = 0.5 * (old_zlo + old_zhi)
+    new_center = 0.5 * prefit_z_ang
+    scale = prefit_z_ang / old_z_len
+    if scale >= 0.999:
+        return cell, None
+
+    remapped = coords.copy()
+    for start, stop in blocks:
+        frag = coords[start:stop, 2]
+        frag_center = float(np.mean(frag))
+        new_frag_center = (frag_center - old_center) * scale + new_center
+        remapped[start:stop, 2] = frag + (new_frag_center - frag_center)
+
+    new_min = float(np.min(remapped[:, 2]))
+    new_max = float(np.max(remapped[:, 2]))
+    span = max(new_max - new_min, 1.0e-6)
+    if span > prefit_z_ang:
+        anchor = float(np.min(coords[:, 2]))
+        atom_scale = prefit_z_ang / span
+        remapped[:, 2] = (remapped[:, 2] - anchor) * atom_scale
+        new_min = float(np.min(remapped[:, 2]))
+        new_max = float(np.max(remapped[:, 2]))
+
+    shift = new_center - 0.5 * (new_min + new_max)
+    remapped[:, 2] += shift
+    new_min = float(np.min(remapped[:, 2]))
+    new_max = float(np.max(remapped[:, 2]))
+    if new_min < 0.0:
+        remapped[:, 2] -= new_min
+    if new_max > prefit_z_ang:
+        remapped[:, 2] -= (new_max - prefit_z_ang)
+
+    for idx, xyz in enumerate(remapped):
+        conf.SetAtomPosition(idx, Geom.Point3D(float(xyz[0]), float(xyz[1]), float(xyz[2])))
+
+    setattr(cell, "cell", utils.Cell(target_x_ang, 0.0, target_y_ang, 0.0, prefit_z_ang, 0.0))
+    poly.set_cell_param_conf(cell, 0, target_x_ang, 0.0, target_y_ang, 0.0, prefit_z_ang, 0.0)
+    note = (
+        "polymer slab pack expanded along z during placement; remapped molecule centers "
+        f"from {old_z_len / 10.0:.3f} nm to a pre-relaxation {prefit_z_ang / 10.0:.3f} nm "
+        f"before EQ21 (target slab thickness {target_box_nm[2]:.3f} nm)"
+    )
+    return cell, note
+
+
 def _load_relaxed_block(*, work_dir: Path, fallback_cell):
     gro_path = _find_latest_equilibrated_gro(Path(work_dir))
     if gro_path is None or not Path(gro_path).exists():
@@ -742,6 +865,12 @@ def build_graphite_polymer_electrolyte_sandwich(
         threshold=float(polymer.pack_threshold_ang),
         dec_rate=float(polymer.pack_dec_rate),
     )
+    polymer_slab, polymer_compaction_note = _compact_packed_cell_z_by_molecule_centers(
+        cell=polymer_slab,
+        species=list(polymer_phase_build["species"]),
+        counts=list(polymer_phase_build["counts"]),
+        target_box_nm=polymer_target_box_nm,
+    )
     register_cell_species_metadata(
         polymer_slab,
         list(polymer_phase_build["species"]),
@@ -749,7 +878,10 @@ def build_graphite_polymer_electrolyte_sandwich(
         charge_scale=list(polymer_phase_build["charge_scale"]),
         pack_mode="sandwich_polymer_slab",
     )
-    fixed_xy = fixed_xy_semiisotropic_npt_overrides(pressure_bar=float(relax.pressure_bar))
+    polymer_bulk_fixed_xy = fixed_xy_semiisotropic_npt_overrides(
+        pressure_bar=float(relax.pressure_bar),
+        z_compressibility_bar_inv=4.5e-4,
+    )
     bulk_eq21_exec_kwargs = {
         "time": float(relax.bulk_eq21_final_ns),
         "eq21_pre_nvt_ps": 5.0,
@@ -769,10 +901,10 @@ def build_graphite_polymer_electrolyte_sandwich(
         gpu=int(relax.gpu),
         gpu_id=(0 if relax.gpu_id is None else int(relax.gpu_id)),
         additional_loops=int(relax.bulk_additional_loops),
-        eq21_npt_mdp_overrides=fixed_xy,
-        additional_mdp_overrides=fixed_xy,
+        eq21_npt_mdp_overrides=polymer_bulk_fixed_xy,
+        additional_mdp_overrides=polymer_bulk_fixed_xy,
         final_npt_ns=float(relax.bulk_eq21_final_ns),
-        final_npt_mdp_overrides=fixed_xy,
+        final_npt_mdp_overrides=polymer_bulk_fixed_xy,
         eq21_exec_kwargs=bulk_eq21_exec_kwargs,
     )
     polymer_report = _phase_report(
@@ -902,6 +1034,7 @@ def build_graphite_polymer_electrolyte_sandwich(
         "graphite stays frozen during the stacked relaxation so the liquid and polymer phases can relax density mainly along the surface normal",
         f"polymer chain target atoms={int(polymer.chain_target_atoms)} -> built DP={int(polymer_dp)} and chain_count={int(chain_count)}",
         *tuple(str(x) for x in polymer_phase_build["notes"]),
+        *(() if polymer_compaction_note is None else (str(polymer_compaction_note),)),
     )
     manifest_path.write_text(
         json.dumps(

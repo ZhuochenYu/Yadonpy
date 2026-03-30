@@ -270,12 +270,11 @@ Recommended order:
 2. `examples/02_polymer_electrolyte`
 3. `examples/05_cmcna_electrolyte`
 4. `examples/07_moldb_precompute_and_reuse`
-5. `examples/08_oplsaa_assign`
-6. `examples/09_graphite_polymer_electrolyte_sandwich`
+5. `examples/08_graphite_polymer_electrolyte_sandwich`
 
-Specific to `v0.8.73`:
+Specific to the current merged layout:
 
-- `examples/05` and `examples/09` are the reference scripts for grouped polyelectrolyte RESP, local scaling, and charged-group-aware post-processing.
+- `examples/05` and `examples/08` are the reference scripts for grouped polyelectrolyte RESP, local scaling, and charged-group-aware post-processing.
 
 ## 11. Common failure modes
 

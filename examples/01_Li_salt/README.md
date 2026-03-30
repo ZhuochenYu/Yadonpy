@@ -2,7 +2,7 @@
 
 This example is a focused PF6- workflow for the exact pattern you want to keep in later scripts.
 
-It is also the prerequisite PF6 builder for Example 12.
+It is also the prerequisite PF6 builder for the later MolDB-backed electrolyte and sandwich workflows.
 
 It does two passes:
 

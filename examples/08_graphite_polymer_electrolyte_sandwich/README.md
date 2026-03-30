@@ -1,4 +1,4 @@
-# Example 09: Graphite-Polymer-Electrolyte Sandwich Workflows
+# Example 08: Graphite-Polymer-Electrolyte Sandwich Workflows
 
 This merged example replaces the old Example 10/11/12/13 split with one
 coherent workflow family built around the same high-level sandwich builder:

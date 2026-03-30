@@ -13,6 +13,7 @@ from yadonpy.interface.sandwich import (
     PolymerSlabSpec,
     SandwichPhaseReport,
     SandwichRelaxationSpec,
+    _compact_packed_cell_z_by_molecule_centers,
     _augment_sandwich_ndx,
     _build_stack_checks,
     _sandwich_relaxation_stages,
@@ -120,6 +121,64 @@ def test_build_stack_checks_reports_phase_order(tmp_path: Path):
     assert checks["observed_order"] == ["GRAPHITE", "POLYMER", "ELECTROLYTE"]
     assert checks["graphite_polymer_gap_nm"] > 0.0
     assert checks["polymer_electrolyte_gap_nm"] > 0.0
+
+
+def test_build_stack_checks_unwraps_phase_crossing_periodic_boundary(tmp_path: Path):
+    def _gro_line(resnr: int, resname: str, atomname: str, atomnr: int, z_nm: float) -> str:
+        return f"{resnr:5d}{resname:<5}{atomname:>5}{atomnr:5d}{0.0:8.3f}{0.0:8.3f}{z_nm:8.3f}"
+
+    gro = tmp_path / "wrapped.gro"
+    gro.write_text(
+        "\n".join(
+            [
+                "dummy",
+                "6",
+                _gro_line(1, "GRA", "C", 1, 0.200),
+                _gro_line(1, "GRA", "C", 2, 0.535),
+                _gro_line(2, "PEO", "C", 3, 4.100),
+                _gro_line(2, "PEO", "C", 4, 7.346),
+                _gro_line(3, "EL", "C", 5, 9.482),
+                _gro_line(3, "EL", "C", 6, 0.381),
+                "2.00000 2.00000 10.00000",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    checks = _build_stack_checks(
+        gro_path=gro,
+        ndx_groups={"GRAPHITE": [1, 2], "POLYMER": [3, 4], "ELECTROLYTE": [5, 6]},
+    )
+    assert checks["polymer_electrolyte_gap_nm"] > 0.0
+    assert checks["phases"]["ELECTROLYTE"]["mean_z_nm"] > checks["phases"]["POLYMER"]["mean_z_nm"]
+
+
+def test_compact_packed_cell_z_by_molecule_centers_preserves_order_and_target_box():
+    species = [_dummy_mol("PEO_monomer")]
+    cell = Chem.RWMol()
+    for _ in range(2):
+        atom = Chem.Atom("C")
+        atom.SetNoImplicit(True)
+        cell.AddAtom(atom)
+    out = cell.GetMol()
+    conf = Chem.Conformer(out.GetNumAtoms())
+    conf.Set3D(True)
+    conf.SetAtomPosition(0, Geom.Point3D(0.0, 0.0, 5.0))
+    conf.SetAtomPosition(1, Geom.Point3D(0.0, 0.0, 105.0))
+    out.AddConformer(conf, assignId=True)
+    setattr(out, "cell", SimpleNamespace(xhi=20.0, xlo=0.0, yhi=20.0, ylo=0.0, zhi=120.0, zlo=0.0))
+    sandwich, note = _compact_packed_cell_z_by_molecule_centers(
+        cell=out,
+        species=species,
+        counts=[2],
+        target_box_nm=(2.0, 2.0, 3.0),
+    )
+    z = [float(sandwich.GetConformer(0).GetAtomPosition(i).z) for i in range(sandwich.GetNumAtoms())]
+    assert sandwich.cell.zhi == 45.0
+    assert 0.0 <= min(z) < max(z) <= 45.0
+    assert z[0] < z[1]
+    assert note is not None
+    assert "pre-relaxation" in note
 
 
 def test_build_graphite_polymer_electrolyte_sandwich_orchestrates_fixed_xy_phases(tmp_path: Path, monkeypatch):
@@ -241,7 +300,9 @@ def test_build_graphite_polymer_electrolyte_sandwich_orchestrates_fixed_xy_phase
 
     assert len(eq_calls) == 2
     assert eq_calls[0]["eq21_npt_mdp_overrides"]["pcoupltype"] == "semiisotropic"
+    assert eq_calls[0]["eq21_npt_mdp_overrides"]["compressibility"] == "0 0.00045"
     assert eq_calls[1]["eq21_npt_mdp_overrides"]["pcoupltype"] == "semiisotropic"
+    assert eq_calls[1]["eq21_npt_mdp_overrides"]["compressibility"] == "0 4.5e-05"
     assert result.polymer_phase.target_density_g_cm3 == 1.05
     assert result.electrolyte_phase.target_density_g_cm3 == 1.15
     assert result.manifest_path.exists()

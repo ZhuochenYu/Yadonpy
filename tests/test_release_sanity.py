@@ -38,7 +38,7 @@ def test_release_manifest_excludes_cached_and_temp_artifacts():
     assert 'prune .pytest_cache' in manifest
     assert 'prune .yadonpy_cache' in manifest
     assert 'prune examples/07_moldb_precompute_and_reuse/work_dir' in manifest
-    assert 'prune examples/09_graphite_polymer_electrolyte_sandwich/work_dir' in manifest
+    assert 'prune examples/08_graphite_polymer_electrolyte_sandwich/work_dir' in manifest
     assert 'prune src/yadonpy.egg-info' in manifest
     assert 'prune tmp_workdir_smoke' in manifest
     assert 'global-exclude __pycache__' in manifest
@@ -113,10 +113,10 @@ def test_interface_examples_keep_linear_script_style():
     )
     offenders: list[str] = []
     for rel in (
-        'examples/09_graphite_polymer_electrolyte_sandwich/01_peo_smoke.py',
-        'examples/09_graphite_polymer_electrolyte_sandwich/02_peo_carbonate_full.py',
-        'examples/09_graphite_polymer_electrolyte_sandwich/03_cmcna_smoke.py',
-        'examples/09_graphite_polymer_electrolyte_sandwich/04_cmcna_full.py',
+        'examples/08_graphite_polymer_electrolyte_sandwich/01_peo_smoke.py',
+        'examples/08_graphite_polymer_electrolyte_sandwich/02_peo_carbonate_full.py',
+        'examples/08_graphite_polymer_electrolyte_sandwich/03_cmcna_smoke.py',
+        'examples/08_graphite_polymer_electrolyte_sandwich/04_cmcna_full.py',
     ):
         text = (root / rel).read_text(encoding='utf-8')
         if any(pattern in text for pattern in helper_patterns):
@@ -132,6 +132,7 @@ def test_release_docs_do_not_reference_retired_example_paths():
 
     retired = (
         'examples/08_text_to_csv_and_build_moldb',
+        'examples/08_oplsaa_assign',
         'examples/10_interface_route_a',
         'examples/11_interface_route_b',
         'examples/12_cmcna_interface',

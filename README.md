@@ -251,13 +251,13 @@ Instead, the curated one-shot electrolyte species catalog is stored under:
 
 - `examples/07_moldb_precompute_and_reuse/electrolyte_species.csv`
 
-The catalog covers the recurring Example 02/05/06/09 species set, including:
+The catalog covers the recurring Example 02/05/06/08 species set, including:
 
 - `*CCO*`
 - `*COC*`
 - `[H][*]`
 - the CMC glucose monomer family
-- the aromatic repeat unit used by the legacy neutral interface studies
+- the aromatic repeat unit used by the merged sandwich workflow family
 - common carbonate / ether solvents and additives
 - `ClO4-`
 - `BF4-`
@@ -283,14 +283,13 @@ Recommended reading order:
 2. `examples/02_polymer_electrolyte`
 3. `examples/05_cmcna_electrolyte`
 4. `examples/07_moldb_precompute_and_reuse`
-5. `examples/08_oplsaa_assign`
-6. `examples/09_graphite_polymer_electrolyte_sandwich`
+5. `examples/08_graphite_polymer_electrolyte_sandwich`
 
 Relevant updates in this release:
 
 - `examples/05` now uses `polyelectrolyte_mode=True` for CMC monomer RESP and charge-scaled cell construction;
-- `examples/09_graphite_polymer_electrolyte_sandwich` now replaces the old Example 10/11/12/13 split with a single substrate-assisted sandwich workflow family.
-- `examples/07_moldb_precompute_and_reuse/01_build_moldb.py` now acts as the one-shot MolDB builder for the broad electrolyte species library.
+- `examples/08_graphite_polymer_electrolyte_sandwich` now replaces the old Example 10/11/12/13 split with a single substrate-assisted sandwich workflow family.
+- `examples/07_moldb_precompute_and_reuse` now combines the one-shot MolDB builder, text-table import, MolDB reuse, and the compact OPLS-AA assignment demos in one place.
 
 ## Documentation
 

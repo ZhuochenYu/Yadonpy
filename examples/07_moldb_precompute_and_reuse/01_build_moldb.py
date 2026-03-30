@@ -6,8 +6,8 @@ This script is intended as the "do it once" entry point for the species that
 show up repeatedly across the YadonPy electrolyte examples:
 
 - neutral monomers / terminal groups used by Example 02/06;
-- CMC monomer set used by Example 05/12/13;
-- the aromatic polymer repeat unit used by Example 10/11;
+- CMC monomer set used by Example 05 and the merged sandwich workflows;
+- the aromatic polymer repeat unit used by the sandwich workflow family;
 - common carbonate / ether solvents and additives;
 - common Li-salt anions plus monoatomic counter-ions.
 """
