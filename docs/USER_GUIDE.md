@@ -240,6 +240,20 @@ Install the supported package:
 conda install psiresp-base
 ```
 
+If the import error mentions `PydanticUserError`, `jobname = 'optimization'`,
+or missing type annotations, your environment likely has `pydantic>=2`, which
+breaks current `psiresp-base`. Fix it with:
+
+```bash
+conda install -c conda-forge "pydantic<2" "psiresp-base"
+```
+
+If conda cannot solve that environment cleanly, this also works in practice:
+
+```bash
+pip install "pydantic<2"
+```
+
 ### RESP works for ordinary terminal groups but hydrogen termination is awkward
 
 That is expected. The internal hydrogen terminator placeholder is special because it is

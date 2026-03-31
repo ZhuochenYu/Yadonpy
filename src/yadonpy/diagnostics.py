@@ -44,6 +44,45 @@ def _try_import(mod: str) -> tuple[bool, Optional[str]]:
         return False, repr(e)
 
 
+def _major_version(version: Optional[str]) -> Optional[int]:
+    if not version:
+        return None
+    token = str(version).split(".", 1)[0].strip()
+    return int(token) if token.isdigit() else None
+
+
+def _pydantic_version() -> Optional[str]:
+    return _try_import_version("pydantic")
+
+
+def _psiresp_import_looks_like_pydantic_v2_conflict(import_error: Optional[str]) -> bool:
+    text = str(import_error or "")
+    markers = (
+        "PydanticUserError",
+        "All model fields require a type annotation",
+        "jobname = 'optimization'",
+    )
+    if any(marker in text for marker in markers):
+        return True
+    pyd_ver = _pydantic_version()
+    return bool((_major_version(pyd_ver) or 0) >= 2 and "psiresp" in text.lower())
+
+
+def _psiresp_hint(import_error: Optional[str] = None) -> str:
+    if _psiresp_import_looks_like_pydantic_v2_conflict(import_error):
+        pyd_ver = _pydantic_version()
+        extra = f" Detected pydantic={pyd_ver}." if pyd_ver else ""
+        return (
+            "Known incompatibility: current psiresp-base requires pydantic<2."
+            f"{extra}\n"
+            "Recommended fix:\n"
+            '  conda install -c conda-forge "pydantic<2" "psiresp-base"\n'
+            "If conda cannot resolve it cleanly, try:\n"
+            '  pip install "pydantic<2"\n'
+        )
+    return "conda install -c conda-forge psiresp-base"
+
+
 def check_python_module(mod: str, *, import_name: Optional[str] = None, hint: Optional[str] = None) -> DepStatus:
     """Check if a Python module is importable.
 
@@ -56,6 +95,20 @@ def check_python_module(mod: str, *, import_name: Optional[str] = None, hint: Op
     import_ok, err = _try_import(import_name or mod) if installed else (False, None)
     ver = _try_import_version(import_name or mod) if import_ok else None
     return DepStatus(name=mod, installed=installed, import_ok=import_ok, version=ver, import_error=err, hint=hint)
+
+
+def check_psiresp_module() -> DepStatus:
+    installed = find_spec("psiresp") is not None
+    import_ok, err = _try_import("psiresp") if installed else (False, None)
+    ver = _try_import_version("psiresp") if import_ok else None
+    return DepStatus(
+        name="psiresp",
+        installed=installed,
+        import_ok=import_ok,
+        version=ver,
+        import_error=err,
+        hint=_psiresp_hint(err),
+    )
 
 
 def require_rdkit() -> None:
@@ -108,6 +161,13 @@ def require_psi4_resp() -> None:
             "Try (conda):\n"
             "  conda install psiresp-base\n"
         )
+    import_ok, err = _try_import("psiresp")
+    if not import_ok:
+        raise ImportError(
+            "Python package 'psiresp' is installed but could not be imported.\n"
+            f"{_psiresp_hint(err)}"
+            f"Root cause: {err}\n"
+        )
 
 
 def doctor(*, print_report: bool = True) -> dict[str, Any]:
@@ -132,10 +192,7 @@ def doctor(*, print_report: bool = True) -> dict[str, Any]:
                 "psi4",
                 hint="conda install -c psi4 psi4",
             ).__dict__,
-            "psiresp": check_python_module(
-                "psiresp",
-                hint="conda install -c conda-forge psiresp-base",
-            ).__dict__,
+            "psiresp": check_psiresp_module().__dict__,
         },
     }
 
@@ -157,7 +214,7 @@ def doctor(*, print_report: bool = True) -> dict[str, Any]:
             ver = d.get("version")
             extra = f" (v{ver})" if ver else ""
             print(f"    {k}: {status}{extra}", flush=True)
-            if (not d["installed"]) and d.get("hint"):
+            if d.get("hint") and (not d["installed"] or not d.get("import_ok", False)):
                 print(f"      hint: {d['hint']}", flush=True)
             if d.get("installed") and (not d.get("import_ok", False)) and d.get("import_error"):
                 print(f"      import error: {d['import_error']}", flush=True)

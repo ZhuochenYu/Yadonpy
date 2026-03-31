@@ -9,6 +9,7 @@ from rdkit import Chem
 
 from ..core import utils
 from ..core.polyelectrolyte import annotate_polyelectrolyte_metadata
+from ..diagnostics import _psiresp_hint
 
 psiresp = None
 _psiresp_import_error: Exception | None = None
@@ -28,7 +29,7 @@ def _require_psiresp() -> None:
         detail = f" (root cause: {_psiresp_import_error!r})" if _psiresp_import_error else ""
         raise ImportError(
             "RESP/ESP fitting now requires optional dependency 'psiresp'. "
-            "Install e.g. via: conda install -c conda-forge psiresp-base && conda install -c psi4 psi4"
+            + _psiresp_hint(repr(_psiresp_import_error) if _psiresp_import_error else None)
             + detail
         )
 

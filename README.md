@@ -39,6 +39,12 @@ python -c "from yadonpy.diagnostics import doctor; doctor(print_report=True)"
 ```
 
 For RESP and ESP workflows, `doctor()` should report both `psi4` and `psiresp` as available.
+If `doctor()` reports `psiresp: BROKEN` with a `PydanticUserError`, install a
+compatible Pydantic:
+
+```bash
+conda install -c conda-forge "pydantic<2" "psiresp-base"
+```
 
 ## Quick Start
 
