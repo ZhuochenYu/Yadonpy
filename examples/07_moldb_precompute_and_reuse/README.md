@@ -1,7 +1,11 @@
 # Example 07: MolDB precompute and reuse
 
-This example keeps the curated catalog path and the quick text-import path in
-one place. It is focused on MolDB precomputation and MolDB-backed reuse.
+This example is focused on one clean path:
+
+- read the curated species catalog;
+- build each species in ordinary YadonPy script style;
+- run RESP and optional bonded-patch workflows when requested;
+- store the finished result into MolDB for later reuse.
 
 The main entry point is:
 
@@ -14,6 +18,17 @@ It reads a single catalog file:
 - `electrolyte_species.csv`
 
 and writes a broad reusable species set into the active MolDB.
+
+The catalog now carries the workflow-driving fields directly:
+
+- `ff_name`
+- `charge`
+- `bonded`
+- `polyelectrolyte_mode`
+
+That means the CSV itself tells the script whether a row should follow the
+plain RESP path, the `RESP + DRIH` path, or the grouped-polyelectrolyte RESP
+path.
 
 ## What gets precomputed
 
@@ -56,10 +71,12 @@ Included categories:
 
 - monoatomic ions such as `Li+` and `Na+` use `MERZ`
 - high-symmetry inorganic anions such as `PF6-`, `BF4-`, `ClO4-`, `AsF6-`, `SbF6-` use
-  RESP plus `DRIH`
+  the explicit `bonded=DRIH` setting from the CSV and are stored to MolDB only
+  after that DRIH-aware `ff_assign(...)` step has completed
 - `FSI-` and `TFSI-` stay on the standard RESP path
 - charged polymer monomers are stored with `polyelectrolyte_mode=True`
 - the hydrogen terminator `[H][*]` follows the stable placeholder shortcut path
+- the script uses an explicit `psi4_omp` setting and does not manage GPU IDs
 - QM levels are chosen explicitly at build time:
   - neutral species use `wb97m-d3bj / def2-SVP -> def2-TZVP`
   - anions prefer `wb97m-d3bj / def2-SVPD -> def2-TZVPD`
@@ -68,17 +85,6 @@ Included categories:
     ladder and records the chosen levels in the build summary JSON
 - `AsF6-` and `SbF6-` stay on the diffuse def2 route when the active Psi4 build
   supports those elements, rather than being hard-coded into a downgrade path
-
-## Additional text-table import
-
-For quick local expansion from a pasted CSV-like text block, use:
-
-```bash
-python 02_text_table_to_moldb.py
-```
-
-This script converts the inline table into `template.csv` and then feeds it
-into MolDB autocalculation.
 
 ## Reuse in a workflow
 

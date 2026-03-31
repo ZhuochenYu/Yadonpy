@@ -1,6 +1,0 @@
-name,smiles,opt,confsearch,charge_method,basis_set,method
-monomer_A,*CCO*,0,1,RESP,Default,Default
-monomer_B,*COC*,0,1,RESP,Default,Default
-ter_H,[H][*],0,0,RESP,Default,Default
-EMC,CCOC(=O)OC,0,1,RESP,Default,Default
-EC,O=C1OCCO1,0,1,RESP,Default,Default

@@ -36,6 +36,25 @@ def test_example07_catalog_includes_new_polymer_and_salt_entries():
     assert "PTMC" in names
 
 
+def test_example07_catalog_exposes_bonded_and_forcefield_columns():
+    mod = _load_example07_module()
+    items = {item.name: item for item in mod._read_species_csv(mod.CATALOG_CSV)}
+
+    assert items["PF6"].bonded == "DRIH"
+    assert items["ClO4"].bonded == "DRIH"
+    assert items["Li"].ff_name == "merz"
+    assert items["PAA"].polyelectrolyte_mode is True
+
+
+def test_example07_removes_legacy_text_table_inputs():
+    root = Path(__file__).resolve().parents[1]
+    example_dir = root / "examples" / "07_moldb_precompute_and_reuse"
+
+    assert not (example_dir / "02_text_table_to_moldb.py").exists()
+    assert not (example_dir / "template.csv").exists()
+    assert not (example_dir / "reference_species.csv").exists()
+
+
 def test_example07_qm_policy_prefers_diffuse_def2_for_asf6(monkeypatch):
     mod = _load_example07_module()
     seen = []
