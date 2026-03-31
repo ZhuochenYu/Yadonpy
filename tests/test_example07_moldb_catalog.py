@@ -4,6 +4,7 @@ import importlib.util
 import sys
 from pathlib import Path
 import csv
+from types import SimpleNamespace
 
 
 def _load_example07_module():
@@ -253,3 +254,55 @@ def test_example07_forcefield_check_groups_are_explicit():
     assert ffcheck_mod._catalog_report_group(items["EC"], formal_charge=0) == "neutral_molecules"
     assert ffcheck_mod._catalog_report_group(items["PF6"], formal_charge=-1) == "drih_anions"
     assert ffcheck_mod._catalog_report_group(items["PAA"], formal_charge=-1) == "polyelectrolyte_monomers"
+
+
+def test_example07_run_one_species_uses_charge_first_then_moldb(monkeypatch, tmp_path):
+    mod = _load_example07_module()
+    captured: dict[str, object] = {}
+
+    def fake_assign_charges(mol, **kwargs):
+        captured["assign_kwargs"] = dict(kwargs)
+        for atom in mol.GetAtoms():
+            atom.SetDoubleProp("AtomicCharge", float(atom.GetFormalCharge()))
+        if kwargs.get("bonded_params") == "drih":
+            mol.SetProp("_yadonpy_bonded_method", "DRIH")
+            mol.SetProp("_yadonpy_bonded_requested", "drih")
+            mol.SetProp("_yadonpy_bonded_signature", "drih")
+        return True
+
+    class FakeMolDB:
+        def __init__(self, db_dir):
+            captured["db_dir"] = Path(db_dir)
+
+        def update_from_mol(self, mol, **kwargs):
+            captured["update_kwargs"] = dict(kwargs)
+            captured["bonded_method"] = mol.GetProp("_yadonpy_bonded_method") if mol.HasProp("_yadonpy_bonded_method") else None
+            return SimpleNamespace(key="fake-key")
+
+    monkeypatch.setattr(mod.yp, "assign_charges", fake_assign_charges)
+    monkeypatch.setattr(mod, "MolDB", FakeMolDB)
+
+    spec = mod.SpeciesSpec(
+        name="BF4",
+        smiles="F[B-](F)(F)F",
+        kind="smiles",
+        source="test",
+        charge="RESP",
+        bonded="DRIH",
+        polyelectrolyte_mode=False,
+    )
+
+    result = mod.run_one_species(
+        spec,
+        db_dir=tmp_path / "moldb",
+        job_wd=tmp_path / "work",
+        psi4_omp=4,
+        psi4_memory_mb=4000,
+    )
+
+    assert captured["assign_kwargs"]["bonded_params"] == "drih"
+    assert captured["assign_kwargs"]["log_name"] == "BF4"
+    assert captured["update_kwargs"]["charge"] == "RESP"
+    assert captured["bonded_method"] == "DRIH"
+    assert result["record_key"] == "fake-key"
+    assert result["bonded_mode"] == "drih"

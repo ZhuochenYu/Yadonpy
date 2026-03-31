@@ -20,7 +20,6 @@ from yadonpy.sim.qm import _pick_first_available_basis
 
 HERE = Path(__file__).resolve().parent
 CATALOG_CSV = HERE / "electrolyte_species.csv"
-RESP_FF_NAME = "gaff2_mod"
 
 
 @dataclass(frozen=True)
@@ -72,6 +71,15 @@ def _read_species_csv(path: Path) -> list[SpeciesSpec]:
                 )
             )
     return items
+
+
+def _bonded_mode(spec: SpeciesSpec) -> str:
+    token = str(spec.bonded or "").strip().lower()
+    if token in {"drih", "drih-like", "dri"}:
+        return "drih"
+    return "ff_assigned"
+
+
 def _resolve_qm_spec(smiles: str) -> QMSpec | None:
     mol = yp.mol_from_smiles(smiles, coord=False)
     elements: list[str] = []
@@ -124,39 +132,35 @@ def run_one_species(
     formal_charge = int(sum(int(atom.GetFormalCharge()) for atom in mol.GetAtoms()))
     charge_groups = detect_charged_groups(mol, detection="auto") if spec.polyelectrolyte_mode else {}
     qm_spec = _resolve_qm_spec(spec.smiles)
-    ff = yp.get_ff(RESP_FF_NAME)
+    bonded_mode = _bonded_mode(spec)
     ok = bool(
-        ff.ff_assign(
+        yp.assign_charges(
             mol,
             charge=spec.charge,
-            bonded=spec.bonded,
-            bonded_work_dir=species_wd,
-            bonded_omp_psi4=psi4_omp,
-            bonded_memory_mb=psi4_memory_mb,
-            total_charge=formal_charge,
-            total_multiplicity=1,
-            report=False,
+            opt=True,
             work_dir=species_wd,
+            log_name=spec.name,
             omp=psi4_omp,
             memory=psi4_memory_mb,
             opt_method=(qm_spec.method if qm_spec else "wb97m-d3bj"),
             charge_method=(qm_spec.method if qm_spec else "wb97m-d3bj"),
             opt_basis=(qm_spec.opt_basis if qm_spec else "def2-SVP"),
             charge_basis=(qm_spec.charge_basis if qm_spec else "def2-TZVP"),
+            total_charge=formal_charge,
+            total_multiplicity=1,
             polyelectrolyte_mode=spec.polyelectrolyte_mode,
             polyelectrolyte_detection="auto",
+            bonded_params=bonded_mode,
         )
     )
 
     if not ok:
-        raise RuntimeError(f"ff_assign failed for {spec.name} {spec.smiles}")
+        raise RuntimeError(f"assign_charges failed for {spec.name} {spec.smiles}")
 
-    db_ff = yp.get_ff(RESP_FF_NAME)
-    record = db_ff.store_to_db(
+    record = MolDB(db_dir).update_from_mol(
         mol,
         smiles_or_psmiles=spec.smiles,
         name=spec.name,
-        db_dir=db_dir,
         charge=spec.charge,
         polyelectrolyte_mode=spec.polyelectrolyte_mode,
         polyelectrolyte_detection="auto",
@@ -171,6 +175,7 @@ def run_one_species(
         "polyelectrolyte_mode": spec.polyelectrolyte_mode,
         "formal_charge": formal_charge,
         "charge_group_count": len(charge_groups.get("groups") or []),
+        "bonded_mode": bonded_mode,
         "qm_method": (qm_spec.method if qm_spec else None),
         "qm_opt_basis": (qm_spec.opt_basis if qm_spec else None),
         "qm_charge_basis": (qm_spec.charge_basis if qm_spec else None),

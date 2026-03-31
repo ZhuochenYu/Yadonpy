@@ -1,3 +1,9 @@
+## 0.8.79 (2026-03-31)
+
+- examples/07_moldb_precompute_and_reuse/01_build_moldb.py: stop routing MolDB precomputation through full `ff.ff_assign(...)`; the builder now follows the intended `mol_from_smiles -> assign_charges -> optional DRIH bonded patch -> MolDB.update_from_mol` path, which removes unnecessary GAFF typing failures for species such as `BF4-`, `ClO4-`, `AsF6-`, `SbF6-`, `BOB-`, `DFOB-`, `FSI-`, `TFSI-`, and the hydrogen terminator placeholder;
+- examples/07_moldb_precompute_and_reuse/README.md: document the corrected charge-first / bonded-patch-first MolDB workflow boundary;
+- tests/test_example07_moldb_catalog.py: add a regression test that locks the new Example 07 `run_one_species()` behavior to the charge-first path.
+
 ## 0.8.78 (2026-03-31)
 
 - moldb/store.py: make `MolDB.check()` print rows sorted by the `name` column so catalog inspection follows human-friendly alphabetical order;

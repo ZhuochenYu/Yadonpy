@@ -105,11 +105,12 @@ Included categories:
 
 - high-symmetry inorganic anions such as `PF6-`, `BF4-`, `ClO4-`, `AsF6-`, `SbF6-` use
   the explicit `bonded=DRIH` setting from the CSV and are stored to MolDB only
-  after that DRIH-aware `ff_assign(...)` step has completed
+  after charge assignment plus the DRIH bonded-patch stage has completed
 - `FSI-` and `TFSI-` stay on the standard RESP path
 - charged polymer monomers are stored with `polyelectrolyte_mode=True`
 - the hydrogen terminator `[H][*]` follows the stable placeholder shortcut path
-- the build scripts use `GAFF2_mod` internally for the RESP-backed catalog
+- the build scripts do not require a full force-field typing pass; they only run
+  `assign_charges(...)` plus optional bonded-patch generation before storing to MolDB
 - the script uses an explicit `psi4_omp` setting and does not manage GPU IDs
 - QM levels are chosen explicitly at build time:
   - neutral species use `wb97m-d3bj / def2-SVP -> def2-TZVP`
