@@ -139,14 +139,19 @@ def test_example07_parallel_planner_assigns_profiles_and_core_budgets():
     assert parallel_mod._reserved_driver_cores(36) == 2
     assert parallel_mod._planner_cpu_budget(36) == 34
     assert tasks["Li"].profile == "light"
+    assert tasks["Li"].batch == "light_ions"
     assert tasks["Li"].required_cores == 1
     assert tasks["PF6"].profile == "drih"
+    assert tasks["PF6"].batch == "heavy_qm"
     assert tasks["PF6"].required_cores == 8
     assert tasks["PAA"].profile == "polyelectrolyte"
+    assert tasks["PAA"].batch == "charged_polymer_qm"
     assert tasks["PAA"].required_cores == 6
     assert tasks["monomer_A"].profile == "polymer"
+    assert tasks["monomer_A"].batch == "polymer_qm"
     assert tasks["monomer_A"].required_cores == 5
     assert tasks["EC"].profile == "standard"
+    assert tasks["EC"].batch == "standard_qm"
     assert tasks["EC"].required_cores == 4
 
 
@@ -160,4 +165,47 @@ def test_example07_parallel_planner_builds_pending_payloads_without_zip_ordering
 
     assert len(pending) == len(species)
     assert {item["name"] for item in pending} == {item.name for item in species}
-    assert pending[0]["required_cores"] >= pending[-1]["required_cores"]
+    assert pending[0]["priority"] <= pending[-1]["priority"]
+    assert pending[0]["attempt"] == 1
+    assert pending[0]["max_attempts"] == 2
+
+
+def test_example07_parallel_planner_uses_priority_batches_with_backfill():
+    parallel_mod = _load_example07_parallel_module()
+
+    pending = [
+        {"name": "light", "priority": 4, "required_cores": 1},
+        {"name": "standard", "priority": 3, "required_cores": 3},
+        {"name": "drih_big", "priority": 0, "required_cores": 8},
+        {"name": "drih_small", "priority": 0, "required_cores": 4},
+    ]
+    parallel_mod._sort_pending_in_place(pending)
+
+    eligible = parallel_mod._eligible_pending_for_launch(pending, available_cores=4)
+
+    assert [item["name"] for item in eligible] == ["drih_small"]
+
+    eligible_backfill = parallel_mod._eligible_pending_for_launch(pending, available_cores=2)
+
+    assert [item["name"] for item in eligible_backfill] == ["light"]
+
+
+def test_example07_parallel_planner_retries_once_with_reduced_threads():
+    parallel_mod = _load_example07_parallel_module()
+
+    task = {
+        "name": "PF6",
+        "required_cores": 8,
+        "psi4_omp": 8,
+        "attempt": 1,
+        "max_attempts": 2,
+    }
+    retry_task = parallel_mod._maybe_schedule_retry(task, error="boom")
+
+    assert retry_task is not None
+    assert retry_task["required_cores"] == 4
+    assert retry_task["psi4_omp"] == 4
+    assert retry_task["attempt"] == 2
+    assert retry_task["retry_reason"] == "boom"
+
+    assert parallel_mod._maybe_schedule_retry(retry_task, error="boom again") is None

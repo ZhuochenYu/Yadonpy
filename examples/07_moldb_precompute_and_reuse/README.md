@@ -28,7 +28,10 @@ and writes a broad reusable species set into the active MolDB.
 The parallel script probes the currently visible CPU cores, reserves a small
 driver margin, assigns a per-species `psi4_omp` budget based on task type, and
 schedules workers so the overall CPU budget stays filled without blindly giving
-every job all threads.
+every job all threads. It also runs category-aware batches with backfilling:
+heavier DRIH and charged-polymer jobs are launched first, lower-priority jobs
+fill remaining idle cores, and a failed worker is automatically retried once
+with a reduced thread count.
 
 The catalog now carries the workflow-driving fields directly:
 

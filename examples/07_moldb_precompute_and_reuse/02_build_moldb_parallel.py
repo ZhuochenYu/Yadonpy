@@ -31,6 +31,8 @@ class ParallelTask:
     bonded: str | None
     polyelectrolyte_mode: bool
     profile: str
+    batch: str
+    priority: int
     required_cores: int
     psi4_omp: int
 
@@ -90,10 +92,30 @@ def _task_threads(*, profile: str, cpu_total: int) -> int:
     return min(4, max(2, cpu_total // 8))
 
 
+def _task_batch(profile: str) -> tuple[str, int]:
+    if profile == "drih":
+        return ("heavy_qm", 0)
+    if profile == "polyelectrolyte":
+        return ("charged_polymer_qm", 1)
+    if profile == "polymer":
+        return ("polymer_qm", 2)
+    if profile == "standard":
+        return ("standard_qm", 3)
+    return ("light_ions", 4)
+
+
+def _retry_threads(current_cores: int) -> int:
+    current = max(1, int(current_cores))
+    if current <= 1:
+        return 1
+    return max(1, current // 2)
+
+
 def _build_parallel_tasks(species, *, cpu_total: int) -> list[ParallelTask]:
     tasks: list[ParallelTask] = []
     for spec in species:
         profile = _task_profile(spec)
+        batch, priority = _task_batch(profile)
         omp = min(cpu_total, _task_threads(profile=profile, cpu_total=cpu_total))
         tasks.append(
             ParallelTask(
@@ -103,11 +125,13 @@ def _build_parallel_tasks(species, *, cpu_total: int) -> list[ParallelTask]:
                 bonded=spec.bonded,
                 polyelectrolyte_mode=bool(spec.polyelectrolyte_mode),
                 profile=profile,
+                batch=batch,
+                priority=priority,
                 required_cores=omp,
                 psi4_omp=omp,
             )
         )
-    tasks.sort(key=lambda item: (-item.required_cores, item.name.lower()))
+    tasks.sort(key=lambda item: (item.priority, -item.required_cores, item.name.lower()))
     return tasks
 
 
@@ -127,12 +151,61 @@ def _build_pending_payloads(species, tasks: list[ParallelTask]) -> list[dict]:
                 "bonded": spec.bonded,
                 "polyelectrolyte_mode": spec.polyelectrolyte_mode,
                 "profile": task.profile,
+                "batch": task.batch,
+                "priority": task.priority,
                 "required_cores": task.required_cores,
                 "psi4_omp": task.psi4_omp,
+                "attempt": 1,
+                "max_attempts": 2,
             }
         )
-    pending.sort(key=lambda item: (-int(item["required_cores"]), str(item["name"]).lower()))
+    pending.sort(
+        key=lambda item: (
+            int(item["priority"]),
+            -int(item["required_cores"]),
+            str(item["name"]).lower(),
+        )
+    )
     return pending
+
+
+def _sort_pending_in_place(pending: list[dict]) -> None:
+    pending.sort(
+        key=lambda item: (
+            int(item["priority"]),
+            -int(item["required_cores"]),
+            str(item["name"]).lower(),
+        )
+    )
+
+
+def _eligible_pending_for_launch(pending: list[dict], available_cores: int) -> list[dict]:
+    if not pending:
+        return []
+    present_priorities = sorted({int(item["priority"]) for item in pending})
+    for priority in present_priorities:
+        same_priority = [item for item in pending if int(item["priority"]) == priority]
+        fitting = [item for item in same_priority if int(item["required_cores"]) <= int(available_cores)]
+        if fitting:
+            return fitting
+    return [item for item in pending if int(item["required_cores"]) <= int(available_cores)]
+
+
+def _maybe_schedule_retry(task: dict, *, error: str) -> dict | None:
+    attempt = int(task.get("attempt", 1))
+    max_attempts = int(task.get("max_attempts", 2))
+    current_cores = int(task["required_cores"])
+    next_cores = _retry_threads(current_cores)
+    if attempt >= max_attempts or next_cores >= current_cores:
+        return None
+
+    retried = dict(task)
+    retried["attempt"] = attempt + 1
+    retried["required_cores"] = next_cores
+    retried["psi4_omp"] = next_cores
+    retried["retry_of_cores"] = current_cores
+    retried["retry_reason"] = error
+    return retried
 
 
 def _worker_entry(*, task_payload: dict, db_dir: str, job_wd: str, psi4_memory_mb: int, result_queue):
@@ -164,6 +237,7 @@ def _worker_entry(*, task_payload: dict, db_dir: str, job_wd: str, psi4_memory_m
                 "ok": True,
                 "result": result,
                 "required_cores": int(task_payload["required_cores"]),
+                "attempt": int(task_payload.get("attempt", 1)),
             }
         )
     except Exception as exc:
@@ -173,6 +247,7 @@ def _worker_entry(*, task_payload: dict, db_dir: str, job_wd: str, psi4_memory_m
                 "ok": False,
                 "error": repr(exc),
                 "required_cores": int(task_payload["required_cores"]),
+                "attempt": int(task_payload.get("attempt", 1)),
             }
         )
 
@@ -217,7 +292,7 @@ def main() -> int:
     )
     for task in tasks:
         print(
-            f"[PLAN] {task.name:20s} profile={task.profile:15s} "
+            f"[PLAN] {task.name:20s} batch={task.batch:18s} profile={task.profile:15s} "
             f"cores={task.required_cores:2d} psi4_omp={task.psi4_omp:2d} bonded={task.bonded or '-'}"
         )
 
@@ -229,10 +304,11 @@ def main() -> int:
     available_cores = int(planner_cpu_budget)
     summary: list[dict] = []
     failures: list[dict] = []
+    retry_count = 0
 
     while pending or running:
         launched = False
-        for task in list(pending):
+        for task in list(_eligible_pending_for_launch(pending, available_cores)):
             required = int(task["required_cores"])
             if required > available_cores:
                 continue
@@ -257,8 +333,8 @@ def main() -> int:
             pending.remove(task)
             launched = True
             print(
-                f"[START] {task['name']:20s} profile={task['profile']:15s} "
-                f"cores={required:2d} remaining={available_cores:2d}"
+                f"[START] {task['name']:20s} batch={task['batch']:18s} profile={task['profile']:15s} "
+                f"attempt={task['attempt']}/{task['max_attempts']} cores={required:2d} remaining={available_cores:2d}"
             )
 
         if not running and not pending:
@@ -276,20 +352,40 @@ def main() -> int:
                 state["process"].join(timeout=1.0)
                 available_cores += int(state["required_cores"])
             if bool(message.get("ok")):
-                summary.append(message["result"])
-                print(f"[DONE]  {name:20s} released={message['required_cores']:2d} available={available_cores:2d}")
-            else:
-                failures.append(
-                    {
-                        "name": name,
-                        "smiles": (state["task"]["smiles"] if state is not None else None),
-                        "ff_name": (state["task"]["ff_name"] if state is not None else None),
-                        "charge": (state["task"]["charge"] if state is not None else None),
-                        "bonded": (state["task"]["bonded"] if state is not None else None),
-                        "error": message.get("error"),
-                    }
+                result = dict(message["result"])
+                result["attempt"] = int(message.get("attempt", 1))
+                summary.append(result)
+                print(
+                    f"[DONE]  {name:20s} released={message['required_cores']:2d} "
+                    f"available={available_cores:2d} attempt={message.get('attempt', 1)}"
                 )
-                print(f"[FAIL]  {name:20s} released={message['required_cores']:2d} available={available_cores:2d} :: {message.get('error')}")
+            else:
+                retry_task = _maybe_schedule_retry(state["task"], error=str(message.get("error"))) if state is not None else None
+                if retry_task is not None:
+                    retry_count += 1
+                    pending.append(retry_task)
+                    _sort_pending_in_place(pending)
+                    print(
+                        f"[RETRY] {name:20s} failed at {message['required_cores']:2d} cores; "
+                        f"retrying with {retry_task['required_cores']:2d} cores "
+                        f"(attempt {retry_task['attempt']}/{retry_task['max_attempts']})"
+                    )
+                else:
+                    failures.append(
+                        {
+                            "name": name,
+                            "smiles": (state["task"]["smiles"] if state is not None else None),
+                            "ff_name": (state["task"]["ff_name"] if state is not None else None),
+                            "charge": (state["task"]["charge"] if state is not None else None),
+                            "bonded": (state["task"]["bonded"] if state is not None else None),
+                            "attempt": int(message.get("attempt", 1)),
+                            "error": message.get("error"),
+                        }
+                    )
+                    print(
+                        f"[FAIL]  {name:20s} released={message['required_cores']:2d} "
+                        f"available={available_cores:2d} attempt={message.get('attempt', 1)} :: {message.get('error')}"
+                    )
 
         for name, state in list(running.items()):
             proc = state["process"]
@@ -298,20 +394,33 @@ def main() -> int:
             proc.join(timeout=0.1)
             running.pop(name, None)
             available_cores += int(state["required_cores"])
-            failures.append(
-                {
-                    "name": name,
-                    "smiles": state["task"]["smiles"],
-                    "ff_name": state["task"]["ff_name"],
-                    "charge": state["task"]["charge"],
-                    "bonded": state["task"]["bonded"],
-                    "error": f"worker exited without reporting (exitcode={proc.exitcode})",
-                }
-            )
-            print(
-                f"[FAIL]  {name:20s} released={state['required_cores']:2d} available={available_cores:2d} :: "
-                f"worker exited without reporting (exitcode={proc.exitcode})"
-            )
+            error = f"worker exited without reporting (exitcode={proc.exitcode})"
+            retry_task = _maybe_schedule_retry(state["task"], error=error)
+            if retry_task is not None:
+                retry_count += 1
+                pending.append(retry_task)
+                _sort_pending_in_place(pending)
+                print(
+                    f"[RETRY] {name:20s} exited at {state['required_cores']:2d} cores; "
+                    f"retrying with {retry_task['required_cores']:2d} cores "
+                    f"(attempt {retry_task['attempt']}/{retry_task['max_attempts']})"
+                )
+            else:
+                failures.append(
+                    {
+                        "name": name,
+                        "smiles": state["task"]["smiles"],
+                        "ff_name": state["task"]["ff_name"],
+                        "charge": state["task"]["charge"],
+                        "bonded": state["task"]["bonded"],
+                        "attempt": int(state["task"].get("attempt", 1)),
+                        "error": error,
+                    }
+                )
+                print(
+                    f"[FAIL]  {name:20s} released={state['required_cores']:2d} available={available_cores:2d} :: "
+                    f"{error}"
+                )
 
         if not launched and running:
             time.sleep(0.1)
@@ -326,6 +435,7 @@ def main() -> int:
         "psi4_memory_mb": int(psi4_memory_mb),
         "success_count": len(summary),
         "failure_count": len(failures),
+        "retry_count": int(retry_count),
         "success": summary,
         "failures": failures,
     }
@@ -338,6 +448,7 @@ def main() -> int:
     print(f"Catalog CSV   : {module.CATALOG_CSV}")
     print(f"Visible cores : {cpu_total}")
     print(f"Plan budget   : {planner_cpu_budget}")
+    print(f"Retries       : {retry_count}")
     print(f"Success       : {len(summary)}")
     print(f"Failures      : {len(failures)}")
     return 0 if not failures else 1
