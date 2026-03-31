@@ -25,11 +25,12 @@ The recommended environment uses Python 3.11.
 conda create -n yadonpy python=3.11
 conda activate yadonpy
 
-conda install rdkit openbabel parmed mdtraj matplotlib pandas scipy packaging psi4 dftd3-python psiresp-base
+conda install rdkit openbabel parmed mdtraj matplotlib pandas scipy packaging psi4 dftd3-python "pydantic<2" psiresp-base
 pip install -e .
 ```
 
-`psiresp-base` is the supported RESP fitting package. `openbabel` already provides the
+`psiresp-base` is the supported RESP fitting package, and current supported setups
+should keep `pydantic<2` for PsiRESP compatibility. `openbabel` already provides the
 Open Babel Python bindings used by YadonPy, so no separate `pybel` package is required.
 
 Check the environment after installation:
