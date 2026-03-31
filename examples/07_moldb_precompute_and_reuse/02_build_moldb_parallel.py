@@ -27,7 +27,7 @@ BUILD_SCRIPT = HERE / "01_build_moldb.py"
 class ParallelTask:
     name: str
     smiles: str
-    ff_name: str
+    charge: str
     bonded: str | None
     polyelectrolyte_mode: bool
     profile: str
@@ -67,7 +67,7 @@ def _planner_cpu_budget(cpu_total: int) -> int:
 
 
 def _task_profile(spec) -> str:
-    if str(spec.ff_name).strip().lower() == "merz":
+    if str(spec.charge).strip().upper() == "MERZ":
         return "light"
     if str(spec.bonded or "").strip().upper() == "DRIH":
         return "drih"
@@ -121,7 +121,7 @@ def _build_parallel_tasks(species, *, cpu_total: int) -> list[ParallelTask]:
             ParallelTask(
                 name=spec.name,
                 smiles=spec.smiles,
-                ff_name=spec.ff_name,
+                charge=spec.charge,
                 bonded=spec.bonded,
                 polyelectrolyte_mode=bool(spec.polyelectrolyte_mode),
                 profile=profile,
@@ -146,7 +146,6 @@ def _build_pending_payloads(species, tasks: list[ParallelTask]) -> list[dict]:
                 "smiles": spec.smiles,
                 "kind": spec.kind,
                 "source": spec.source,
-                "ff_name": spec.ff_name,
                 "charge": spec.charge,
                 "bonded": spec.bonded,
                 "polyelectrolyte_mode": spec.polyelectrolyte_mode,
@@ -219,7 +218,6 @@ def _worker_entry(*, task_payload: dict, db_dir: str, job_wd: str, psi4_memory_m
             smiles=task_payload["smiles"],
             kind=task_payload["kind"],
             source=task_payload["source"],
-            ff_name=task_payload["ff_name"],
             charge=task_payload["charge"],
             bonded=task_payload["bonded"],
             polyelectrolyte_mode=task_payload["polyelectrolyte_mode"],
@@ -375,7 +373,6 @@ def main() -> int:
                         {
                             "name": name,
                             "smiles": (state["task"]["smiles"] if state is not None else None),
-                            "ff_name": (state["task"]["ff_name"] if state is not None else None),
                             "charge": (state["task"]["charge"] if state is not None else None),
                             "bonded": (state["task"]["bonded"] if state is not None else None),
                             "attempt": int(message.get("attempt", 1)),
@@ -410,7 +407,6 @@ def main() -> int:
                     {
                         "name": name,
                         "smiles": state["task"]["smiles"],
-                        "ff_name": state["task"]["ff_name"],
                         "charge": state["task"]["charge"],
                         "bonded": state["task"]["bonded"],
                         "attempt": int(state["task"].get("attempt", 1)),

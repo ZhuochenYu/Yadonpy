@@ -7,6 +7,10 @@ This example is focused on one clean path:
 - run RESP and optional bonded-patch workflows when requested;
 - store the finished result into MolDB for later reuse.
 
+The catalog is intentionally limited to species and charge-workflow metadata.
+It does not carry force-field names. Example 07 now treats charge preparation
+and force-field assignment as separate concerns.
+
 The main entry point is:
 
 ```bash
@@ -17,6 +21,13 @@ For an automatically planned CPU-parallel run on the current machine, use:
 
 ```bash
 python 02_build_moldb_parallel.py
+```
+
+To spot-check whether the precomputed catalog can later be force-field typed
+cleanly, use:
+
+```bash
+python 05_check_forcefield_assignment.py
 ```
 
 It reads a single catalog file:
@@ -33,16 +44,16 @@ heavier DRIH and charged-polymer jobs are launched first, lower-priority jobs
 fill remaining idle cores, and a failed worker is automatically retried once
 with a reduced thread count.
 
-The catalog now carries the workflow-driving fields directly:
+The catalog now carries only the workflow-driving fields that belong to charge
+preparation itself:
 
-- `ff_name`
 - `charge`
 - `bonded`
 - `polyelectrolyte_mode`
 
 That means the CSV itself tells the script whether a row should follow the
-plain RESP path, the `RESP + DRIH` path, or the grouped-polyelectrolyte RESP
-path.
+plain RESP path, the `RESP + DRIH` path, the grouped-polyelectrolyte RESP
+path, or the monatomic `MERZ` charge path.
 
 ## What gets precomputed
 
@@ -83,13 +94,16 @@ Included categories:
 
 ## Special handling used by the builder
 
-- monoatomic ions such as `Li+` and `Na+` use `MERZ`
+- monoatomic ions such as `Li+` and `Na+` are marked in the CSV with
+  `charge=MERZ`
 - high-symmetry inorganic anions such as `PF6-`, `BF4-`, `ClO4-`, `AsF6-`, `SbF6-` use
   the explicit `bonded=DRIH` setting from the CSV and are stored to MolDB only
   after that DRIH-aware `ff_assign(...)` step has completed
 - `FSI-` and `TFSI-` stay on the standard RESP path
 - charged polymer monomers are stored with `polyelectrolyte_mode=True`
 - the hydrogen terminator `[H][*]` follows the stable placeholder shortcut path
+- the build scripts choose their internal force-field objects themselves:
+  `GAFF2_mod` for RESP-backed species and `MERZ` for monatomic ions
 - the script uses an explicit `psi4_omp` setting and does not manage GPU IDs
 - QM levels are chosen explicitly at build time:
   - neutral species use `wb97m-d3bj / def2-SVP -> def2-TZVP`
@@ -112,6 +126,13 @@ python 04_polymer_electrolyte_from_moldb.py
 
 The script now expects the required species to already exist in MolDB and will
 raise a clear error if they do not.
+
+If you also want a quick regression pass on force-field assignment itself after
+the MolDB build, run:
+
+```bash
+python 05_check_forcefield_assignment.py
+```
 
 ## OPLS-AA workflows
 
@@ -136,3 +157,4 @@ and now redirects to `01_build_moldb.py`.
 - Build summary: `examples/07_moldb_precompute_and_reuse/work_dir/01_build_moldb/build_moldb_summary.json`
 - Parallel plan: `examples/07_moldb_precompute_and_reuse/work_dir/02_build_moldb_parallel/parallel_plan.json`
 - Parallel summary: `examples/07_moldb_precompute_and_reuse/work_dir/02_build_moldb_parallel/parallel_build_summary.json`
+- Force-field check summary: `examples/07_moldb_precompute_and_reuse/work_dir/05_check_forcefield_assignment/forcefield_check_summary.json`

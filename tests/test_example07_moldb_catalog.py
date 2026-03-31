@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import sys
 from pathlib import Path
+import csv
 
 
 def _load_example07_module():
@@ -52,14 +53,18 @@ def test_example07_catalog_includes_new_polymer_and_salt_entries():
     assert "PTMC" in names
 
 
-def test_example07_catalog_exposes_bonded_and_forcefield_columns():
+def test_example07_catalog_exposes_charge_and_bonded_columns_without_forcefield_column():
     mod = _load_example07_module()
     items = {item.name: item for item in mod._read_species_csv(mod.CATALOG_CSV)}
+    with mod.CATALOG_CSV.open("r", encoding="utf-8", newline="") as fh:
+        reader = csv.DictReader(fh)
+        fieldnames = reader.fieldnames or []
 
     assert items["PF6"].bonded == "DRIH"
     assert items["ClO4"].bonded == "DRIH"
-    assert items["Li"].ff_name == "merz"
+    assert items["Li"].charge == "MERZ"
     assert items["PAA"].polyelectrolyte_mode is True
+    assert "ff_name" not in fieldnames
 
 
 def test_example07_removes_legacy_text_table_inputs():
@@ -70,6 +75,7 @@ def test_example07_removes_legacy_text_table_inputs():
     assert not (example_dir / "template.csv").exists()
     assert not (example_dir / "reference_species.csv").exists()
     assert (example_dir / "02_build_moldb_parallel.py").exists()
+    assert (example_dir / "05_check_forcefield_assignment.py").exists()
 
 
 def test_example07_qm_policy_prefers_diffuse_def2_for_asf6(monkeypatch):
@@ -112,6 +118,8 @@ def test_example07_qm_policy_marks_fallback_when_diffuse_basis_is_unavailable(mo
 
 def test_example07_qm_policy_skips_monatomic_merz_path():
     mod = _load_example07_module()
+    items = {item.name: item for item in mod._read_species_csv(mod.CATALOG_CSV)}
+    assert mod._charge_route(items["Li"]) == "ion_charge"
     assert mod._resolve_qm_spec("[Li+]") is None
 
 
