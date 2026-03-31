@@ -10,6 +10,7 @@ import os
 import re
 import sys
 
+from .._version import __version__ as _YADONPY_VERSION
 from . import const
 from .exceptions import YadonPyError
 
@@ -58,6 +59,7 @@ _TAG_STYLE = {
 
 
 _TAG_RE = re.compile(r"\[(?P<tag>[A-Za-z0-9_+-]{2,10})\s*\]")
+_version_banner_printed = False
 
 
 def _colorize_tags(s: str) -> str:
@@ -74,6 +76,15 @@ def _colorize_tags(s: str) -> str:
 
     return _TAG_RE.sub(_repl, s)
 
+
+def emit_version_banner() -> None:
+    global _version_banner_printed
+    if _version_banner_printed:
+        return
+    print(_colorize_tags(f"YadonPy info: [INFO] version={_YADONPY_VERSION}"), flush=True)
+    _version_banner_printed = True
+
+
 def yadon_print(text, level=0):
     """Unified console logger.
 
@@ -87,9 +98,11 @@ def yadon_print(text, level=0):
     elif level == 2:
         text = 'YadonPy warning: ' + str(text)
     elif level == 3:
+        emit_version_banner()
         raise YadonPyError(str(text))
 
     if level >= const.print_level or const.debug:
+        emit_version_banner()
         print(_colorize_tags(str(text)), flush=True)
 
 

@@ -693,7 +693,7 @@ def assign_charges(mol, charge='gasteiger', confId=0, opt=True, work_dir=None, t
 
     elif charge in ['RESP', 'ESP', 'Mulliken', 'Lowdin']:
         if not qm_avail:
-            utils.radon_print('Cannot import psi4_wrapper. Install the QM stack with "conda install -c psi4 psi4 dftd3-python" and "conda install -c conda-forge psiresp-base".', level=3)
+            utils.radon_print('Cannot import psi4_wrapper. Install the QM stack with "conda install -c conda-forge rdkit openbabel parmed mdtraj matplotlib pandas scipy packaging psi4=1.10 dftd3-python psiresp-base", then run "python -m pip install \\"pydantic==1.10.26\\"".', level=3)
             return False
 
         # ------------------------------------------------------------------
@@ -1570,7 +1570,7 @@ def conformation_search(mol, ff=None, nconf=1000, dft_nconf=0, etkdg_ver=2, rmst
     if dft_nconf > 0:
         opt_success = 0
         if not qm_avail:
-            utils.radon_print('Cannot import psi4_wrapper. Install the QM stack with "conda install -c psi4 psi4 dftd3-python" and "conda install -c conda-forge psiresp-base".', level=3)
+            utils.radon_print('Cannot import psi4_wrapper. Install the QM stack with "conda install -c conda-forge rdkit openbabel parmed mdtraj matplotlib pandas scipy packaging psi4=1.10 dftd3-python psiresp-base", then run "python -m pip install \\"pydantic==1.10.26\\"".', level=3)
             Chem.SanitizeMol(mol_c)
             return mol_c, re_energy
 

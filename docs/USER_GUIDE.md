@@ -12,8 +12,9 @@ Recommended setup:
 conda create -n yadonpy python=3.11
 conda activate yadonpy
 
-conda install rdkit openbabel parmed mdtraj matplotlib pandas scipy packaging psi4 dftd3-python psiresp-base
-pip install -e .
+conda install -c conda-forge rdkit openbabel parmed mdtraj matplotlib pandas scipy packaging psi4=1.10 dftd3-python psiresp-base
+python -m pip install "pydantic==1.10.26"
+python -m pip install -e .
 ```
 
 Then check the environment:
@@ -234,24 +235,18 @@ Prefer the remote machine for:
 
 ### `doctor()` says `psiresp` is missing or broken
 
-Install the supported package:
+Install the supported package set:
 
 ```bash
-conda install psiresp-base
+conda install -c conda-forge rdkit openbabel parmed mdtraj matplotlib pandas scipy packaging psi4=1.10 dftd3-python psiresp-base
 ```
 
 If the import error mentions `PydanticUserError`, `jobname = 'optimization'`,
 or missing type annotations, your environment likely has `pydantic>=2`, which
-breaks current `psiresp-base`. Fix it with:
+breaks current `psiresp-base`. The verified working fix is:
 
 ```bash
-conda install -c conda-forge "pydantic<2" "psiresp-base"
-```
-
-If conda cannot solve that environment cleanly, this also works in practice:
-
-```bash
-pip install "pydantic<2"
+python -m pip install "pydantic==1.10.26"
 ```
 
 ### RESP works for ordinary terminal groups but hydrogen termination is awkward

@@ -1,3 +1,8 @@
+## 0.8.77 (2026-03-31)
+
+- README + docs/USER_GUIDE + diagnostics/core messages: replace the generic PsiRESP installation guidance with the remote-verified minimal setup for `psi4=1.10` environments, namely the conda stack plus an explicit `python -m pip install "pydantic==1.10.26"` step;
+- src/yadonpy/_version.py + src/yadonpy/__init__.py + core/logging_utils + diagnostics: centralize the package version, bump the release to `0.8.77`, print a one-time runtime version banner, and show the version directly in `doctor()` output.
+
 ## 0.8.76 (2026-03-31)
 
 - examples/07_moldb_precompute_and_reuse + tests/test_example07_moldb_catalog.py: expand the one-shot MolDB catalog with additional polymer-electrolyte repeat units and common battery-salt anions, including `SbF6-`, `BOB-`, `DFOB-`, `NO3-`, and `OTf-`, while keeping the script-first Example 07 entrypoint intact.

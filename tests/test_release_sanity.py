@@ -36,6 +36,11 @@ def test_release_declares_python_311_minimum_and_docs_match():
     assert 'python=3.11' in guide
     assert 'psiresp-base' in readme
     assert 'psiresp-base' in guide
+    assert 'psi4=1.10' in readme
+    assert 'psi4=1.10' in guide
+    assert 'python -m pip install "pydantic==1.10.26"' in readme
+    assert 'python -m pip install "pydantic==1.10.26"' in guide
+    assert 'pydantic<2' not in readme
     assert 'pip install pybel' not in readme
     assert 'pip install pybel' not in guide
     assert 'psiresp-base' in api

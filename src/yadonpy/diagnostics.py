@@ -15,6 +15,8 @@ import shutil
 import sys
 from typing import Any, Optional
 
+from ._version import __version__
+from .core.logging_utils import emit_version_banner
 from .core.data_dir import get_data_root, DataLayout
 
 
@@ -73,14 +75,16 @@ def _psiresp_hint(import_error: Optional[str] = None) -> str:
         pyd_ver = _pydantic_version()
         extra = f" Detected pydantic={pyd_ver}." if pyd_ver else ""
         return (
-            "Known incompatibility: current psiresp-base requires pydantic<2."
+            "Known incompatibility: the default conda solve for psiresp-base can pull in pydantic>=2,"
+            " but the verified working YadonPy RESP setup uses pydantic==1.10.26."
             f"{extra}\n"
             "Recommended fix:\n"
-            '  conda install -c conda-forge "pydantic<2" "psiresp-base"\n'
-            "If conda cannot resolve it cleanly, try:\n"
-            '  pip install "pydantic<2"\n'
+            '  python -m pip install "pydantic==1.10.26"\n'
         )
-    return "conda install -c conda-forge psiresp-base"
+    return (
+        "conda install -c conda-forge rdkit openbabel parmed mdtraj matplotlib pandas scipy "
+        'packaging psi4=1.10 dftd3-python psiresp-base && python -m pip install "pydantic==1.10.26"'
+    )
 
 
 def check_python_module(mod: str, *, import_name: Optional[str] = None, hint: Optional[str] = None) -> DepStatus:
@@ -197,7 +201,8 @@ def doctor(*, print_report: bool = True) -> dict[str, Any]:
     }
 
     if print_report:
-        print("[yadonpy] doctor report", flush=True)
+        emit_version_banner()
+        print(f"[yadonpy] doctor report (v{__version__})", flush=True)
         print(f"  python: {checks['python']}", flush=True)
         print(f"  data_root: {checks['data_root']}", flush=True)
         print(f"  moldb_dir: {checks['moldb_dir']}", flush=True)

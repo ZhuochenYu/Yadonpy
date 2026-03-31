@@ -25,13 +25,15 @@ The recommended environment uses Python 3.11.
 conda create -n yadonpy python=3.11
 conda activate yadonpy
 
-conda install rdkit openbabel parmed mdtraj matplotlib pandas scipy packaging psi4 dftd3-python "pydantic<2" psiresp-base
-pip install -e .
+conda install -c conda-forge rdkit openbabel parmed mdtraj matplotlib pandas scipy packaging psi4=1.10 dftd3-python psiresp-base
+python -m pip install "pydantic==1.10.26"
+python -m pip install -e .
 ```
 
-`psiresp-base` is the supported RESP fitting package, and current supported setups
-should keep `pydantic<2` for PsiRESP compatibility. `openbabel` already provides the
-Open Babel Python bindings used by YadonPy, so no separate `pybel` package is required.
+This exact sequence was re-tested on the remote Linux compute node and is the
+current minimal working setup for Example 01 and RESP fitting. `openbabel`
+already provides the Open Babel Python bindings used by YadonPy, so no separate
+`pybel` package is required.
 
 Check the environment after installation:
 
@@ -40,11 +42,11 @@ python -c "from yadonpy.diagnostics import doctor; doctor(print_report=True)"
 ```
 
 For RESP and ESP workflows, `doctor()` should report both `psi4` and `psiresp` as available.
-If `doctor()` reports `psiresp: BROKEN` with a `PydanticUserError`, install a
-compatible Pydantic:
+If `doctor()` reports `psiresp: BROKEN` with a `PydanticUserError`, pin the
+verified working Pydantic version:
 
 ```bash
-conda install -c conda-forge "pydantic<2" "psiresp-base"
+python -m pip install "pydantic==1.10.26"
 ```
 
 ## Quick Start
