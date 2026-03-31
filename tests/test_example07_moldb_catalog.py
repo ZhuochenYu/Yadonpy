@@ -21,6 +21,22 @@ def _load_example07_module():
     return module
 
 
+def _load_example07_parallel_module():
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "examples"
+        / "07_moldb_precompute_and_reuse"
+        / "02_build_moldb_parallel.py"
+    )
+    spec = importlib.util.spec_from_file_location("example07_build_moldb_parallel", path)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
 def test_example07_catalog_includes_new_polymer_and_salt_entries():
     mod = _load_example07_module()
     items = mod._read_species_csv(mod.CATALOG_CSV)
@@ -53,6 +69,7 @@ def test_example07_removes_legacy_text_table_inputs():
     assert not (example_dir / "02_text_table_to_moldb.py").exists()
     assert not (example_dir / "template.csv").exists()
     assert not (example_dir / "reference_species.csv").exists()
+    assert (example_dir / "02_build_moldb_parallel.py").exists()
 
 
 def test_example07_qm_policy_prefers_diffuse_def2_for_asf6(monkeypatch):
@@ -110,3 +127,37 @@ def test_example07_qm_policy_uses_diffuse_route_for_bob_family():
     assert qm_bob.charge_basis == "def2-TZVPD"
     assert qm_dfob.opt_basis == "def2-SVPD"
     assert qm_dfob.charge_basis == "def2-TZVPD"
+
+
+def test_example07_parallel_planner_assigns_profiles_and_core_budgets():
+    build_mod = _load_example07_module()
+    parallel_mod = _load_example07_parallel_module()
+
+    species = build_mod._read_species_csv(build_mod.CATALOG_CSV)
+    tasks = {task.name: task for task in parallel_mod._build_parallel_tasks(species, cpu_total=34)}
+
+    assert parallel_mod._reserved_driver_cores(36) == 2
+    assert parallel_mod._planner_cpu_budget(36) == 34
+    assert tasks["Li"].profile == "light"
+    assert tasks["Li"].required_cores == 1
+    assert tasks["PF6"].profile == "drih"
+    assert tasks["PF6"].required_cores == 8
+    assert tasks["PAA"].profile == "polyelectrolyte"
+    assert tasks["PAA"].required_cores == 6
+    assert tasks["monomer_A"].profile == "polymer"
+    assert tasks["monomer_A"].required_cores == 5
+    assert tasks["EC"].profile == "standard"
+    assert tasks["EC"].required_cores == 4
+
+
+def test_example07_parallel_planner_builds_pending_payloads_without_zip_ordering():
+    build_mod = _load_example07_module()
+    parallel_mod = _load_example07_parallel_module()
+
+    species = build_mod._read_species_csv(build_mod.CATALOG_CSV)
+    tasks = parallel_mod._build_parallel_tasks(species, cpu_total=18)
+    pending = parallel_mod._build_pending_payloads(species, tasks)
+
+    assert len(pending) == len(species)
+    assert {item["name"] for item in pending} == {item.name for item in species}
+    assert pending[0]["required_cores"] >= pending[-1]["required_cores"]

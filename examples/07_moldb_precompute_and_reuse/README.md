@@ -13,11 +13,22 @@ The main entry point is:
 python 01_build_moldb.py
 ```
 
+For an automatically planned CPU-parallel run on the current machine, use:
+
+```bash
+python 02_build_moldb_parallel.py
+```
+
 It reads a single catalog file:
 
 - `electrolyte_species.csv`
 
 and writes a broad reusable species set into the active MolDB.
+
+The parallel script probes the currently visible CPU cores, reserves a small
+driver margin, assigns a per-species `psi4_omp` budget based on task type, and
+schedules workers so the overall CPU budget stays filled without blindly giving
+every job all threads.
 
 The catalog now carries the workflow-driving fields directly:
 
@@ -120,3 +131,5 @@ and now redirects to `01_build_moldb.py`.
 - MolDB: `~/.yadonpy/moldb/objects/` (or the directory specified by `YADONPY_MOLDB`)
 - Example work directory: `examples/07_moldb_precompute_and_reuse/work_dir/`
 - Build summary: `examples/07_moldb_precompute_and_reuse/work_dir/01_build_moldb/build_moldb_summary.json`
+- Parallel plan: `examples/07_moldb_precompute_and_reuse/work_dir/02_build_moldb_parallel/parallel_plan.json`
+- Parallel summary: `examples/07_moldb_precompute_and_reuse/work_dir/02_build_moldb_parallel/parallel_build_summary.json`
