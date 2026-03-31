@@ -29,6 +29,7 @@ from .naming import ensure_name, get_name
 from .topology import Cell
 
 _ALLOWED_CAPS = ("H", "OH", "CHO", "COOH")
+_GRAPHITE_PERIODIC_TOKEN = "PERIODIC"
 _GRAPHITE_CIF = "graphite_cod_9000046.cif"
 _GRAPHITE_BOND_MIN = 1.10
 _GRAPHITE_BOND_MAX = 1.70
@@ -369,6 +370,72 @@ def _cap_edges(mol: Chem.Mol, edge_cap: str | Sequence[str], *, random_cap_probs
     return capped, {key: value for key, value in summary.items() if value > 0}
 
 
+def _prepare_periodic_graphite_layer(
+    layer_base: Chem.Mol,
+    *,
+    ff_obj,
+    charge: str | None,
+    name: str | None,
+) -> Chem.Mol:
+    """Assign a frozen graphite-surface proxy without edge caps.
+
+    This mode is intended for basal-plane substrate simulations where the
+    graphitic slab acts as a laterally periodic, frozen solid surface. We
+    intentionally keep the carbon skeleton uncapped, reuse the force-field
+    atom/bond parameters from a capped reference layer, and leave the sheet's
+    higher-order terms to the export pipeline's GAFF-family rebuild helpers.
+    """
+
+    reference_capped, _ = _cap_edges(
+        layer_base,
+        edge_cap="H",
+        random_cap_probs=None,
+        random_seed=None,
+    )
+    reference_typed = utils.deepcopy_mol(reference_capped)
+    ok = bool(ff_obj.ff_assign(reference_typed, charge=charge, report=False))
+    if not ok:
+        raise RuntimeError("Can not assign force field parameters for the periodic graphite reference layer.")
+
+    atom_template = None
+    bond_template = None
+    for atom in reference_typed.GetAtoms():
+        if atom.GetSymbol() == "C":
+            atom_template = atom
+            break
+    for bond in reference_typed.GetBonds():
+        a1 = bond.GetBeginAtom()
+        a2 = bond.GetEndAtom()
+        if a1.GetSymbol() == "C" and a2.GetSymbol() == "C":
+            bond_template = bond
+            break
+    if atom_template is None or bond_template is None:
+        raise RuntimeError("Failed to recover graphite carbon force-field templates from the capped reference layer.")
+
+    layer = utils.deepcopy_mol(layer_base)
+    for atom in layer.GetAtoms():
+        atom.SetNoImplicit(True)
+        if atom_template.HasProp("ff_type"):
+            atom.SetProp("ff_type", str(atom_template.GetProp("ff_type")))
+        if atom_template.HasProp("ff_sigma"):
+            atom.SetDoubleProp("ff_sigma", float(atom_template.GetDoubleProp("ff_sigma")))
+        if atom_template.HasProp("ff_epsilon"):
+            atom.SetDoubleProp("ff_epsilon", float(atom_template.GetDoubleProp("ff_epsilon")))
+        atom.SetDoubleProp("AtomicCharge", 0.0)
+        atom.SetDoubleProp("AtomicCharge_raw", 0.0)
+    for bond in layer.GetBonds():
+        if bond_template.HasProp("ff_type"):
+            bond.SetProp("ff_type", str(bond_template.GetProp("ff_type")))
+        if bond_template.HasProp("ff_r0"):
+            bond.SetDoubleProp("ff_r0", float(bond_template.GetDoubleProp("ff_r0")))
+        if bond_template.HasProp("ff_k"):
+            bond.SetDoubleProp("ff_k", float(bond_template.GetDoubleProp("ff_k")))
+
+    layer.SetProp("ff_name", str(getattr(ff_obj, "name", "gaff2_mod")))
+    ensure_name(layer, name=(str(name) if name else None), prefer_var=False)
+    return layer
+
+
 def _box_from_coords(coord: np.ndarray, *, lateral_margin_ang: float, bottom_margin_ang: float, top_padding_ang: float) -> tuple[np.ndarray, tuple[float, float, float, float, float, float]]:
     coord = np.asarray(coord, dtype=float)
     mins = np.min(coord, axis=0)
@@ -571,23 +638,42 @@ def build_graphite(
     if not dangling:
         raise RuntimeError("Graphite builder failed to identify edge sites in the graphene layer")
 
-    capped_layer, cap_summary = _cap_edges(
-        layer_base,
-        edge_cap=edge_cap,
-        random_cap_probs=random_cap_probs,
-        random_seed=random_seed,
-    )
+    edge_cap_token = None
+    if isinstance(edge_cap, str):
+        edge_cap_token = str(edge_cap).strip().upper()
 
     ff_obj = ff
     if ff_obj is None:
         from ..api import get_ff
 
         ff_obj = get_ff(ff_name)
-    layer_mol = utils.deepcopy_mol(capped_layer)
-    ok = bool(ff_obj.ff_assign(layer_mol, charge=charge, report=False))
-    if not ok:
-        raise RuntimeError("Can not assign force field parameters for the graphite layer.")
-    ensure_name(layer_mol, name=(str(name) if name else None), prefer_var=False)
+
+    if edge_cap_token == _GRAPHITE_PERIODIC_TOKEN:
+        if str(orientation).strip().lower() != "basal":
+            raise ValueError("edge_cap='periodic' is only supported for basal graphite substrates.")
+        layer_mol = _prepare_periodic_graphite_layer(
+            layer_base,
+            ff_obj=ff_obj,
+            charge=charge,
+            name=name,
+        )
+        cap_summary = {_GRAPHITE_PERIODIC_TOKEN: int(len(dangling))}
+        effective_lateral_margin_ang = 0.0 if abs(float(lateral_margin_ang) - 4.0) < 1.0e-9 else float(lateral_margin_ang)
+        effective_bottom_margin_ang = 0.0 if abs(float(bottom_margin_ang) - 2.0) < 1.0e-9 else float(bottom_margin_ang)
+    else:
+        capped_layer, cap_summary = _cap_edges(
+            layer_base,
+            edge_cap=edge_cap,
+            random_cap_probs=random_cap_probs,
+            random_seed=random_seed,
+        )
+        layer_mol = utils.deepcopy_mol(capped_layer)
+        ok = bool(ff_obj.ff_assign(layer_mol, charge=charge, report=False))
+        if not ok:
+            raise RuntimeError("Can not assign force field parameters for the graphite layer.")
+        ensure_name(layer_mol, name=(str(name) if name else None), prefer_var=False)
+        effective_lateral_margin_ang = float(lateral_margin_ang)
+        effective_bottom_margin_ang = float(bottom_margin_ang)
 
     cell = None
     for layer_idx in range(int(n_layers)):
@@ -606,8 +692,8 @@ def build_graphite(
 
     coord, bounds = _box_from_coords(
         coord,
-        lateral_margin_ang=float(lateral_margin_ang),
-        bottom_margin_ang=float(bottom_margin_ang),
+        lateral_margin_ang=effective_lateral_margin_ang,
+        bottom_margin_ang=effective_bottom_margin_ang,
         top_padding_ang=float(top_padding_ang),
     )
     _set_coords(cell, coord)

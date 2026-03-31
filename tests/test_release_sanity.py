@@ -178,6 +178,7 @@ def test_interface_examples_keep_linear_script_style():
         'examples/08_graphite_polymer_electrolyte_sandwich/02_peo_carbonate_full.py',
         'examples/08_graphite_polymer_electrolyte_sandwich/03_cmcna_smoke.py',
         'examples/08_graphite_polymer_electrolyte_sandwich/04_cmcna_full.py',
+        'examples/08_graphite_polymer_electrolyte_sandwich/05_cmcna_glucose6_periodic_case.py',
     ):
         text = (root / rel).read_text(encoding='utf-8')
         if any(pattern in text for pattern in helper_patterns):

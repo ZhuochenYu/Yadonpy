@@ -1,3 +1,8 @@
+## 0.8.80 (2026-03-31)
+
+- core/graphite.py + tests/test_graphite.py: add a formal `edge_cap=\"periodic\"` graphite mode for basal-plane substrate work, keeping the graphitic carbon sheet uncapped while assigning carbon nonbonded/bonded parameters from a capped reference layer so the substrate exports cleanly without hydrogen edge saturation;
+- examples/08_graphite_polymer_electrolyte_sandwich/05_cmcna_glucose6_periodic_case.py + README + tests/test_release_sanity.py: add a dedicated `CMC-Na(glucose_6 only) + 1 M LiPF6 in EC:EMC:DEC = 3:2:5 + 4-layer periodic-edge graphite` case script, plus a `YADONPY_PROFILE=smoke` option for fast remote validation before launching the full production-sized build.
+
 ## 0.8.79 (2026-03-31)
 
 - examples/07_moldb_precompute_and_reuse/01_build_moldb.py: stop routing MolDB precomputation through full `ff.ff_assign(...)`; the builder now follows the intended `mol_from_smiles -> assign_charges -> optional DRIH bonded patch -> MolDB.update_from_mol` path, which removes unnecessary GAFF typing failures for species such as `BF4-`, `ClO4-`, `AsF6-`, `SbF6-`, `BOB-`, `DFOB-`, `FSI-`, `TFSI-`, and the hydrogen terminator placeholder;

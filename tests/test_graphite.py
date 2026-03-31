@@ -79,6 +79,43 @@ def test_build_graphite_edge_supports_random_oxygen_caps():
     assert out.box_nm[2] > out.box_nm[1] * 0.3
 
 
+def test_build_graphite_periodic_exports_without_hydrogen_caps(tmp_path: Path):
+    ff = GAFF2_mod()
+
+    graphite = yp.build_graphite(
+        nx=4,
+        ny=4,
+        n_layers=2,
+        orientation="basal",
+        edge_cap="periodic",
+        ff=ff,
+        name="graphite_periodic",
+        top_padding_ang=4.0,
+    )
+    register_cell_species_metadata(
+        graphite.cell,
+        [graphite.layer_mol],
+        [graphite.layer_count],
+        pack_mode="graphite_periodic_test",
+    )
+    out = export_system_from_cell_meta(
+        cell_mol=graphite.cell,
+        out_dir=tmp_path / "graphite_periodic",
+        ff_name=ff.name,
+        charge_method="RESP",
+        write_system_mol2=False,
+    )
+
+    symbols = [atom.GetSymbol() for atom in graphite.layer_mol.GetAtoms()]
+    top_text = out.system_top.read_text(encoding="utf-8")
+
+    assert graphite.edge_cap_summary["PERIODIC"] > 0
+    assert set(symbols) == {"C"}
+    assert all(atom.HasProp("ff_type") for atom in graphite.layer_mol.GetAtoms())
+    assert out.system_top.exists()
+    assert "graphite_periodic" in top_text or "M1" in top_text
+
+
 def test_stack_cell_blocks_and_export_graphite_plus_solvent(tmp_path: Path):
     ff = GAFF2_mod()
 

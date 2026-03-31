@@ -26,6 +26,8 @@ parameter choices on one substrate-assisted sandwich path.
   - small charged-polymer smoke using CMC-Na monomers and LiPF6 carbonate electrolyte
 - `04_cmcna_full.py`
   - fuller CMC-Na study on the same three-phase builder
+- `05_cmcna_glucose6_periodic_case.py`
+  - target case: `1 M LiPF6 in EC:EMC:DEC = 3:2:5` above 8 chains of `DP=50` CMC-Na built only from the `glucose_6` repeat unit, on top of a 4-layer graphite substrate using the new uncapped `edge_cap="periodic"` mode
 
 ## Notes
 
@@ -36,6 +38,9 @@ parameter choices on one substrate-assisted sandwich path.
 - The CMC scripts use the same grouped-polyelectrolyte RESP and counterion-aware
   packing path as Example 05, but now place that polymer into the same graphite
   sandwich builder used by the neutral PEO case.
+- `05_cmcna_glucose6_periodic_case.py` also accepts `YADONPY_PROFILE=smoke` so
+  the same chemistry can be validated with a much smaller remote-friendly system
+  before launching the exact production-sized case.
 - The manifest written under each work directory includes:
   - polymer/electrolyte bulk density reports
   - final `GRAPHITE -> POLYMER -> ELECTROLYTE` phase-order checks
