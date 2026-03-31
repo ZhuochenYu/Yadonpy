@@ -1,8 +1,7 @@
-# Example 07: MolDB precompute, reuse, and OPLS-AA assignment
+# Example 07: MolDB precompute and reuse
 
-This merged example now keeps both the curated catalog path and the quick
-text-import path in one place, and also absorbs the compact OPLS-AA typing
-demos that used to live in a separate example.
+This example keeps the curated catalog path and the quick text-import path in
+one place. It is focused on MolDB precomputation and MolDB-backed reuse.
 
 The main entry point is:
 
@@ -94,20 +93,16 @@ python 04_polymer_electrolyte_from_moldb.py
 The script now expects the required species to already exist in MolDB and will
 raise a clear error if they do not.
 
-## OPLS-AA assignment demos
+## OPLS-AA workflows
 
-The same example family also includes two short OPLS-AA scripts:
+The compact OPLS-AA examples now live in:
 
 ```bash
-python 05_oplsaa_ec_assign.py
-python 06_oplsaa_moldb_and_ion.py
+examples/09_oplsaa_assignment/
 ```
 
-- `05_oplsaa_ec_assign.py`
-  - direct OPLS-AA typing and bonded assignment for ethylene carbonate (EC)
-- `06_oplsaa_moldb_and_ion.py`
-  - preserve external RESP charges from MolDB while assigning OPLS-AA atom
-    types / bonded terms, and show direct OPLS-AA assignment for `Na+`
+This keeps Example 07 focused on MolDB itself and keeps the OPLS-AA scripts in
+their own smaller example family.
 
 ## Legacy alias
 

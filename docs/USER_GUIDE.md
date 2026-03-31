@@ -122,6 +122,7 @@ pf6 = yp.load_from_moldb(
 ```
 
 Use Example 07 when you want to precompute a broader catalog of reusable species first.
+Use Example 09 when the task is specifically OPLS-AA typing or OPLS-AA export rather than MolDB catalog construction.
 
 ## 5. Build Polymer-Electrolyte Systems
 

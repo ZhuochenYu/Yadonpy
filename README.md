@@ -137,8 +137,9 @@ resumed or audited without guessing which intermediate files are authoritative.
 - `examples/04_elongation_gmx`: elongation and deformation workflow.
 - `examples/05_cmcna_electrolyte`: CMC-Na polymer-electrolyte construction.
 - `examples/06_polymer_electrolyte_nvt`: polymer-electrolyte workflow with NVT-focused staging.
-- `examples/07_moldb_precompute_and_reuse`: one-shot MolDB catalog build and reuse scripts.
+- `examples/07_moldb_precompute_and_reuse`: one-shot MolDB catalog build and MolDB-backed reuse scripts.
 - `examples/08_graphite_polymer_electrolyte_sandwich`: graphite-polymer-electrolyte sandwich workflows for PEO and CMC-Na.
+- `examples/09_oplsaa_assignment`: compact OPLS-AA assignment workflows written in the same script-first style as the main examples.
 
 ## Documentation
 

@@ -161,6 +161,23 @@ def test_interface_examples_keep_linear_script_style():
     assert offenders == []
 
 
+def test_oplsaa_examples_use_script_first_yadonpy_style():
+    root = Path(__file__).resolve().parents[1]
+    offenders: list[str] = []
+    for rel in (
+        'examples/09_oplsaa_assignment/01_oplsaa_ec.py',
+        'examples/09_oplsaa_assignment/02_oplsaa_moldb_and_ion.py',
+    ):
+        text = (root / rel).read_text(encoding='utf-8')
+        if 'from rdkit' in text or 'import rdkit' in text or 'Chem.' in text:
+            offenders.append(rel)
+            continue
+        if 'def _' in text:
+            offenders.append(rel)
+
+    assert offenders == []
+
+
 def test_release_docs_do_not_reference_retired_example_paths():
     root = Path(__file__).resolve().parents[1]
     readme = (root / 'README.md').read_text(encoding='utf-8')
