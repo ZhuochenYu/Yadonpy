@@ -2,6 +2,7 @@ import json
 
 from rdkit import Chem
 
+from yadonpy.ff.report import render_ff_assignment_report
 from yadonpy.ff.gaff2_mod import GAFF2_mod
 from yadonpy.ff.oplsaa import OPLSAA, validate_oplsaa_rule_table
 from yadonpy.core.resources import ff_data_path
@@ -163,3 +164,37 @@ def test_oplsaa2024_assigns_silane_co2_and_updated_ions():
     li = Chem.MolFromSmiles("[Li+]")
     assert ff.assign_ptypes(li, charge="opls")
     assert li.GetAtomWithIdx(0).GetProp("ff_type") == "opls_1106"
+
+
+def test_render_ff_assignment_report_summarizes_charged_side_groups():
+    mol = Chem.MolFromSmiles("CC(=O)[O-]")
+    mol.SetIntProp("num_units", 4)
+    mol.SetProp("_yadonpy_smiles", "*CC(=O)[O-]*")
+    charges = [0.0, 0.2, -0.6, -0.6]
+    for atom, charge in zip(mol.GetAtoms(), charges):
+        atom.SetProp("ff_type", "test")
+        atom.SetProp("ff_btype", "test")
+        atom.SetDoubleProp("AtomicCharge", charge)
+
+    report = render_ff_assignment_report(mol)
+
+    assert "Charge check:" in report
+    assert "Charged side groups:" in report
+    assert "carboxylate" in report
+    assert "CO2" in report
+    assert "total_assigned_charge: -1.00000" in report
+
+
+def test_render_ff_assignment_report_only_checks_total_charge_for_neutral_molecules():
+    mol = Chem.MolFromSmiles("CCO")
+    charges = [0.05, -0.10, 0.05]
+    for atom, charge in zip(mol.GetAtoms(), charges):
+        atom.SetProp("ff_type", "test")
+        atom.SetProp("ff_btype", "test")
+        atom.SetDoubleProp("AtomicCharge", charge)
+
+    report = render_ff_assignment_report(mol)
+
+    assert "Charge check:" in report
+    assert "total_assigned_charge: 0.00000" in report
+    assert "Charged side groups:" not in report

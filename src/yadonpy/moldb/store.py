@@ -1277,6 +1277,8 @@ class MolDB:
                     bonded = f", bonded={bonded_method.strip()}"
             return f"{c}/{b}/{m}({r}{bonded})"
 
+        records.sort(key=lambda rec: (str(rec.name or "").casefold(), str(rec.canonical or "").casefold(), str(rec.key or "").casefold()))
+
         rows: List[Dict[str, str]] = []
         for rec in records:
             variants = rec.variants or {}

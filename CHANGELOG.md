@@ -1,3 +1,9 @@
+## 0.8.78 (2026-03-31)
+
+- moldb/store.py: make `MolDB.check()` print rows sorted by the `name` column so catalog inspection follows human-friendly alphabetical order;
+- ff/report.py: extend the built-in `ff.ff_assign(..., report=True)` output with a charge-check section that always prints total assigned/formal charge and, for polymer-like molecules with charged side groups, prints grouped side-group composition and charge summaries;
+- tests/test_moldb.py + tests/test_forcefields.py: lock the new MolDB sort order and the new force-field report charge summary behavior.
+
 ## 0.8.77 (2026-03-31)
 
 - README + docs/USER_GUIDE + diagnostics/core messages: replace the generic PsiRESP installation guidance with the remote-verified minimal setup for `psi4=1.10` environments, namely the conda stack plus an explicit `python -m pip install "pydantic==1.10.26"` step;
