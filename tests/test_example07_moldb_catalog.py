@@ -38,6 +38,22 @@ def _load_example07_parallel_module():
     return module
 
 
+def _load_example07_ffcheck_module():
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "examples"
+        / "07_moldb_precompute_and_reuse"
+        / "05_check_forcefield_assignment.py"
+    )
+    spec = importlib.util.spec_from_file_location("example07_ffcheck", path)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
 def test_example07_catalog_includes_new_polymer_and_salt_entries():
     mod = _load_example07_module()
     items = mod._read_species_csv(mod.CATALOG_CSV)
@@ -219,3 +235,21 @@ def test_example07_parallel_planner_retries_once_with_reduced_threads():
     assert retry_task["retry_reason"] == "boom"
 
     assert parallel_mod._maybe_schedule_retry(retry_task, error="boom again") is None
+
+
+def test_example07_forcefield_check_groups_are_explicit():
+    build_mod = _load_example07_module()
+    ffcheck_mod = _load_example07_ffcheck_module()
+
+    items = {item.name: item for item in build_mod._read_species_csv(build_mod.CATALOG_CSV)}
+
+    assert ffcheck_mod.GROUP_ORDER == (
+        "neutral_molecules",
+        "drih_anions",
+        "polyelectrolyte_monomers",
+        "monatomic_ions",
+    )
+    assert [item.name for item in ffcheck_mod.DIRECT_ION_SPECS] == ["Li", "Na"]
+    assert ffcheck_mod._catalog_report_group(items["EC"], formal_charge=0) == "neutral_molecules"
+    assert ffcheck_mod._catalog_report_group(items["PF6"], formal_charge=-1) == "drih_anions"
+    assert ffcheck_mod._catalog_report_group(items["PAA"], formal_charge=-1) == "polyelectrolyte_monomers"

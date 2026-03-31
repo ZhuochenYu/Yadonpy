@@ -33,6 +33,13 @@ cleanly, use:
 python 05_check_forcefield_assignment.py
 ```
 
+This check writes a total summary and four category reports:
+
+- `neutral_molecules`
+- `drih_anions`
+- `polyelectrolyte_monomers`
+- `monatomic_ions`
+
 It reads a single catalog file:
 
 - `electrolyte_species.csv`
@@ -161,3 +168,8 @@ and now redirects to `01_build_moldb.py`.
 - Parallel plan: `examples/07_moldb_precompute_and_reuse/work_dir/02_build_moldb_parallel/parallel_plan.json`
 - Parallel summary: `examples/07_moldb_precompute_and_reuse/work_dir/02_build_moldb_parallel/parallel_build_summary.json`
 - Force-field check summary: `examples/07_moldb_precompute_and_reuse/work_dir/05_check_forcefield_assignment/forcefield_check_summary.json`
+- Force-field category reports:
+  - `.../05_check_forcefield_assignment/neutral_molecules.json`
+  - `.../05_check_forcefield_assignment/drih_anions.json`
+  - `.../05_check_forcefield_assignment/polyelectrolyte_monomers.json`
+  - `.../05_check_forcefield_assignment/monatomic_ions.json`
