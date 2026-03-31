@@ -137,7 +137,7 @@ if __name__ == "__main__":
     try:
         qabs = sum(abs(a.GetDoubleProp('AtomicCharge')) for a in glucose.GetAtoms() if a.HasProp('AtomicCharge'))
         if qabs < 1.0e-6:
-            raise RuntimeError('Monomer charges are missing after QM. Check psi4/resp installation and restart cache.')
+            raise RuntimeError('Monomer charges are missing after QM. Check the psi4/psiresp-base installation and restart cache.')
     except Exception:
         pass
 

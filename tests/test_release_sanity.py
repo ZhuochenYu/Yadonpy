@@ -41,6 +41,26 @@ def test_release_declares_python_311_minimum_and_docs_match():
     assert 'psiresp-base' in api
 
 
+def test_repo_uses_openbabel_bindings_and_not_standalone_pybel_package():
+    root = Path(__file__).resolve().parents[1]
+    offenders: list[str] = []
+    for path in sorted(root.rglob('*.py')):
+        if '.git' in path.parts or '__pycache__' in path.parts:
+            continue
+        if path.name == 'test_release_sanity.py':
+            continue
+        text = path.read_text(encoding='utf-8')
+        if 'from pybel import' in text:
+            offenders.append(str(path.relative_to(root)))
+            continue
+        if 'import pybel' in text and 'from openbabel import pybel' not in text:
+            offenders.append(str(path.relative_to(root)))
+
+    assert offenders == []
+    chem_utils = (root / 'src' / 'yadonpy' / 'core' / 'chem_utils.py').read_text(encoding='utf-8')
+    assert 'from openbabel import pybel as openbabel_pybel' in chem_utils
+
+
 
 def test_repo_excludes_local_only_release_files_from_git():
     root = Path(__file__).resolve().parents[1]

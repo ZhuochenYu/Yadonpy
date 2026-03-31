@@ -1210,7 +1210,8 @@ def conformation_search(mol, ff=None, nconf=1000, dft_nconf=0, etkdg_ver=2, rmst
 
     # Special-case small inorganic ions (PF6-, BF4-, ClO4-, simple metal ions).
     # Strategy:
-    #   - Prefer OpenBabel (pybel) to build a reasonable 3D geometry.
+    #   - Prefer the Open Babel Python bindings bundled with `openbabel`
+    #     to build a reasonable 3D geometry.
     #   - Use a single conformer (no conformer search).
     #   - Skip RDKit MMFF/UFF pre-optimization (often unreliable for these ions).
     #   - Still allow *DFT geometry optimization* starting from the OpenBabel geometry.

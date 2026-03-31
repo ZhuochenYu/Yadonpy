@@ -46,8 +46,10 @@ Recommended install:
 
 ```bash
 conda install -c conda-forge openbabel
-pip install pybel
 ```
+
+No separate `pip install pybel` step is needed. YadonPy uses the Open Babel
+Python bindings that come with the `openbabel` package itself.
 
 ### Termination Units
 

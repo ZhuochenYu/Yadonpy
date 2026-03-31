@@ -16,7 +16,7 @@ PF6 = ff.ff_assign(PF6, bonded="DRIH")
 
 and export the GROMACS-ready files from that MolDB-backed object.
 
-If the optional `psi4` / `resp` stack is not installed, the example now falls back to `gasteiger` charges so the MolDB round-trip and direct `ff.mol(...)` / `ff.ff_assign(...)` workflow can still be executed end-to-end. In a fully provisioned QM environment, it still uses the original RESP route and the exact two-line PF6 reuse pattern shown above.
+If the optional `psi4` / `psiresp-base` stack is not installed, the example now falls back to `gasteiger` charges so the MolDB round-trip and direct `ff.mol(...)` / `ff.ff_assign(...)` workflow can still be executed end-to-end. In a fully provisioned QM environment, it still uses the original RESP route and the exact two-line PF6 reuse pattern shown above.
 
 ## Run
 
@@ -28,7 +28,7 @@ python run_pf6_to_moldb.py
 ## Outputs
 
 - `work_pf6_only/00_molecules/` – exported MOL2 files for the built PF6 and the MolDB-backed PF6
-- `work_pf6_only/01_pf6_build_exports/` – `.gro/.itp/.top` written immediately after the first charge-assignment + DRIH build (`RESP` when `psi4/resp` is available, otherwise `gasteiger` fallback)
+- `work_pf6_only/01_pf6_build_exports/` – `.gro/.itp/.top` written immediately after the first charge-assignment + DRIH build (`RESP` when `psi4/psiresp-base` is available, otherwise `gasteiger` fallback)
 - `work_pf6_only/02_pf6_from_moldb_gmx/` – `.gro/.itp/.top` written after the MolDB-backed `ff.mol(...)` / `ff.ff_assign(...)` reload
 - MolDB entry in `~/.yadonpy/moldb` (or `$YADONPY_MOLDB`)
 

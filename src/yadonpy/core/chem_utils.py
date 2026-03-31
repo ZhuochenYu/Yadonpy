@@ -827,12 +827,15 @@ def ensure_3d_coords(mol, *, smiles_hint: str = None, engine: str = "auto") -> b
                 smi = str(smiles_hint).strip()
                 if (not smi) or ('*' in smi):
                     return False
-                from openbabel import pybel  # type: ignore
+                # Use the Open Babel Python bindings shipped with the `openbabel`
+                # package. This is intentionally not the unrelated standalone
+                # `pybel` package from PyPI.
+                from openbabel import pybel as openbabel_pybel  # type: ignore
             except Exception:
                 return False
 
             try:
-                ob = pybel.readstring('smi', smi)
+                ob = openbabel_pybel.readstring('smi', smi)
                 # For some species, adding H stabilizes 3D builder; ignore failures.
                 try:
                     ob.addh()

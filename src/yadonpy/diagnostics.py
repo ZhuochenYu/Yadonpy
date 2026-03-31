@@ -93,7 +93,7 @@ def require_rdkit() -> None:
 
 
 def require_psi4_resp() -> None:
-    """Require Psi4 + PsiRESP stack for QM-derived charges."""
+    """Require Psi4 + psiresp-base for QM-derived charges."""
     if find_spec("psi4") is None:
         raise ImportError(
             "Psi4 is required for QM-derived charges (RESP/ESP/Mulliken/Lowdin).\n"
