@@ -37,8 +37,6 @@ THF,C1CCOC1,smiles,solvent,RESP,,false
 Dioxane,C1COCCO1,smiles,solvent,RESP,,false
 CPME,COC1CCCC1,smiles,diluent,RESP,,false
 TTE,FC(F)C(F)(F)COC(F)(F)C(F)F,smiles,diluent,RESP,,false
-Li,[Li+],smiles,ion,MERZ,,false
-Na,[Na+],smiles,ion,MERZ,,false
 PF6,F[P-](F)(F)(F)(F)F,smiles,anion,RESP,DRIH,false
 ClO4,[O-][Cl](=O)(=O)=O,smiles,anion,RESP,DRIH,false
 BF4,F[B-](F)(F)F,smiles,anion,RESP,DRIH,false

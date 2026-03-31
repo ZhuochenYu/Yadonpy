@@ -10,6 +10,9 @@ This example is focused on one clean path:
 The catalog is intentionally limited to species and charge-workflow metadata.
 It does not carry force-field names. Example 07 now treats charge preparation
 and force-field assignment as separate concerns.
+Monatomic ions such as `Li+` and `Na+` are intentionally excluded from this
+catalog because there is no point precomputing single-atom charges for them in
+MolDB.
 
 The main entry point is:
 
@@ -52,8 +55,8 @@ preparation itself:
 - `polyelectrolyte_mode`
 
 That means the CSV itself tells the script whether a row should follow the
-plain RESP path, the `RESP + DRIH` path, the grouped-polyelectrolyte RESP
-path, or the monatomic `MERZ` charge path.
+plain RESP path, the `RESP + DRIH` path, or the grouped-polyelectrolyte RESP
+path.
 
 ## What gets precomputed
 
@@ -86,24 +89,20 @@ Included categories:
 - Common solvents / diluents / additives:
   - `EC`, `EMC`, `DEC`, `DMC`, `PC`, `FEC`, `VC`, `DTD`
   - `DME`, `Diglyme`, `Triglyme`, `Tetraglyme`
-  - `DOL`, `THF`, `Dioxane`, `CPME`, `TTE`
-- Common ions / lithium-salt anions:
-  - `Li+`, `Na+`
+- `DOL`, `THF`, `Dioxane`, `CPME`, `TTE`
+- Common lithium-salt anions:
   - `PF6-`, `BF4-`, `ClO4-`, `AsF6-`, `SbF6-`
   - `BOB-`, `DFOB-`, `NO3-`, `OTf-`, `FSI-`, `TFSI-`
 
 ## Special handling used by the builder
 
-- monoatomic ions such as `Li+` and `Na+` are marked in the CSV with
-  `charge=MERZ`
 - high-symmetry inorganic anions such as `PF6-`, `BF4-`, `ClO4-`, `AsF6-`, `SbF6-` use
   the explicit `bonded=DRIH` setting from the CSV and are stored to MolDB only
   after that DRIH-aware `ff_assign(...)` step has completed
 - `FSI-` and `TFSI-` stay on the standard RESP path
 - charged polymer monomers are stored with `polyelectrolyte_mode=True`
 - the hydrogen terminator `[H][*]` follows the stable placeholder shortcut path
-- the build scripts choose their internal force-field objects themselves:
-  `GAFF2_mod` for RESP-backed species and `MERZ` for monatomic ions
+- the build scripts use `GAFF2_mod` internally for the RESP-backed catalog
 - the script uses an explicit `psi4_omp` setting and does not manage GPU IDs
 - QM levels are chosen explicitly at build time:
   - neutral species use `wb97m-d3bj / def2-SVP -> def2-TZVP`
@@ -133,6 +132,10 @@ the MolDB build, run:
 ```bash
 python 05_check_forcefield_assignment.py
 ```
+
+`Li+` and `Na+` stay outside this Example 07 precompute flow. In ordinary
+workflows they should still be assigned directly at usage time through
+`MERZ().mol(...)` plus `MERZ().ff_assign(...)`.
 
 ## OPLS-AA workflows
 

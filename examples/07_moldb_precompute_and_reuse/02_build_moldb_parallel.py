@@ -67,8 +67,6 @@ def _planner_cpu_budget(cpu_total: int) -> int:
 
 
 def _task_profile(spec) -> str:
-    if str(spec.charge).strip().upper() == "MERZ":
-        return "light"
     if str(spec.bonded or "").strip().upper() == "DRIH":
         return "drih"
     if bool(spec.polyelectrolyte_mode):
@@ -99,9 +97,7 @@ def _task_batch(profile: str) -> tuple[str, int]:
         return ("charged_polymer_qm", 1)
     if profile == "polymer":
         return ("polymer_qm", 2)
-    if profile == "standard":
-        return ("standard_qm", 3)
-    return ("light_ions", 4)
+    return ("standard_qm", 3)
 
 
 def _retry_threads(current_cores: int) -> int:

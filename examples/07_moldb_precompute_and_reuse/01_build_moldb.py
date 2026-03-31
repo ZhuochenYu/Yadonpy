@@ -21,7 +21,6 @@ from yadonpy.sim.qm import _pick_first_available_basis
 HERE = Path(__file__).resolve().parent
 CATALOG_CSV = HERE / "electrolyte_species.csv"
 RESP_FF_NAME = "gaff2_mod"
-ION_CHARGE_MODEL = "MERZ"
 
 
 @dataclass(frozen=True)
@@ -73,15 +72,6 @@ def _read_species_csv(path: Path) -> list[SpeciesSpec]:
                 )
             )
     return items
-
-
-def _charge_route(spec: SpeciesSpec) -> str:
-    charge_token = str(spec.charge).strip().upper()
-    if charge_token == ION_CHARGE_MODEL:
-        return "ion_charge"
-    return "resp_charge"
-
-
 def _resolve_qm_spec(smiles: str) -> QMSpec | None:
     mol = yp.mol_from_smiles(smiles, coord=False)
     elements: list[str] = []
@@ -133,36 +123,30 @@ def run_one_species(
     mol = yp.mol_from_smiles(spec.smiles, name=spec.name)
     formal_charge = int(sum(int(atom.GetFormalCharge()) for atom in mol.GetAtoms()))
     charge_groups = detect_charged_groups(mol, detection="auto") if spec.polyelectrolyte_mode else {}
-    charge_route = _charge_route(spec)
-    qm_spec = None if charge_route == "ion_charge" else _resolve_qm_spec(spec.smiles)
-
-    if charge_route == "ion_charge":
-        ion_ff = yp.get_ff("merz")
-        ok = bool(ion_ff.ff_assign(mol, report=False))
-    else:
-        ff = yp.get_ff(RESP_FF_NAME)
-        ok = bool(
-            ff.ff_assign(
-                mol,
-                charge=spec.charge,
-                bonded=spec.bonded,
-                bonded_work_dir=species_wd,
-                bonded_omp_psi4=psi4_omp,
-                bonded_memory_mb=psi4_memory_mb,
-                total_charge=formal_charge,
-                total_multiplicity=1,
-                report=False,
-                work_dir=species_wd,
-                omp=psi4_omp,
-                memory=psi4_memory_mb,
-                opt_method=(qm_spec.method if qm_spec else "wb97m-d3bj"),
-                charge_method=(qm_spec.method if qm_spec else "wb97m-d3bj"),
-                opt_basis=(qm_spec.opt_basis if qm_spec else "def2-SVP"),
-                charge_basis=(qm_spec.charge_basis if qm_spec else "def2-TZVP"),
-                polyelectrolyte_mode=spec.polyelectrolyte_mode,
-                polyelectrolyte_detection="auto",
-            )
+    qm_spec = _resolve_qm_spec(spec.smiles)
+    ff = yp.get_ff(RESP_FF_NAME)
+    ok = bool(
+        ff.ff_assign(
+            mol,
+            charge=spec.charge,
+            bonded=spec.bonded,
+            bonded_work_dir=species_wd,
+            bonded_omp_psi4=psi4_omp,
+            bonded_memory_mb=psi4_memory_mb,
+            total_charge=formal_charge,
+            total_multiplicity=1,
+            report=False,
+            work_dir=species_wd,
+            omp=psi4_omp,
+            memory=psi4_memory_mb,
+            opt_method=(qm_spec.method if qm_spec else "wb97m-d3bj"),
+            charge_method=(qm_spec.method if qm_spec else "wb97m-d3bj"),
+            opt_basis=(qm_spec.opt_basis if qm_spec else "def2-SVP"),
+            charge_basis=(qm_spec.charge_basis if qm_spec else "def2-TZVP"),
+            polyelectrolyte_mode=spec.polyelectrolyte_mode,
+            polyelectrolyte_detection="auto",
         )
+    )
 
     if not ok:
         raise RuntimeError(f"ff_assign failed for {spec.name} {spec.smiles}")
@@ -183,7 +167,6 @@ def run_one_species(
         "kind": spec.kind,
         "source": spec.source,
         "charge": spec.charge,
-        "charge_route": charge_route,
         "bonded": spec.bonded,
         "polyelectrolyte_mode": spec.polyelectrolyte_mode,
         "formal_charge": formal_charge,
@@ -191,7 +174,7 @@ def run_one_species(
         "qm_method": (qm_spec.method if qm_spec else None),
         "qm_opt_basis": (qm_spec.opt_basis if qm_spec else None),
         "qm_charge_basis": (qm_spec.charge_basis if qm_spec else None),
-        "qm_policy": (qm_spec.reason if qm_spec else "ion charge shortcut"),
+        "qm_policy": (qm_spec.reason if qm_spec else None),
         "record_key": record.key,
         "psi4_omp": int(psi4_omp),
         "psi4_memory_mb": int(psi4_memory_mb),
@@ -229,8 +212,7 @@ def main() -> int:
                 )
             )
             print(
-                f"[OK] {spec.name:20s} charge={spec.charge:5s} "
-                f"route={_charge_route(spec):12s} bonded={spec.bonded or '-'}"
+                f"[OK] {spec.name:20s} charge={spec.charge:5s} bonded={spec.bonded or '-'}"
             )
         except Exception as exc:
             failures.append(
@@ -238,14 +220,12 @@ def main() -> int:
                     "name": spec.name,
                     "smiles": spec.smiles,
                     "charge": spec.charge,
-                    "charge_route": _charge_route(spec),
                     "bonded": spec.bonded,
                     "error": repr(exc),
                 }
             )
             print(
-                f"[FAIL] {spec.name:20s} charge={spec.charge:5s} "
-                f"route={_charge_route(spec):12s} bonded={spec.bonded or '-'} :: {exc}"
+                f"[FAIL] {spec.name:20s} charge={spec.charge:5s} bonded={spec.bonded or '-'} :: {exc}"
             )
 
     out = {

@@ -36,7 +36,6 @@ if __name__ == "__main__":
     ensure_initialized()
 
     ff = yp.get_ff("gaff2_mod")
-    ion_ff = yp.get_ff("merz")
 
     build_mod = _load_build_module()
     species = build_mod._read_species_csv(build_mod.CATALOG_CSV)
@@ -49,18 +48,13 @@ if __name__ == "__main__":
 
     for spec in species:
         try:
-            charge_route = build_mod._charge_route(spec)
-            if charge_route == "ion_charge":
-                mol = ion_ff.mol(spec.smiles)
-                ok = bool(ion_ff.ff_assign(mol, report=False))
-            else:
-                mol = ff.mol(
-                    spec.smiles,
-                    charge=spec.charge,
-                    require_ready=True,
-                    prefer_db=True,
-                )
-                ok = bool(ff.ff_assign(mol, bonded=spec.bonded, report=False))
+            mol = ff.mol(
+                spec.smiles,
+                charge=spec.charge,
+                require_ready=True,
+                prefer_db=True,
+            )
+            ok = bool(ff.ff_assign(mol, bonded=spec.bonded, report=False))
 
             if not ok:
                 raise RuntimeError("ff_assign returned False")
@@ -70,14 +64,12 @@ if __name__ == "__main__":
                     "name": spec.name,
                     "smiles": spec.smiles,
                     "charge": spec.charge,
-                    "charge_route": charge_route,
                     "bonded": spec.bonded,
                     "atom_count": int(mol.GetNumAtoms()),
                 }
             )
             print(
-                f"[OK] {spec.name:20s} charge={spec.charge:5s} "
-                f"route={charge_route:12s} bonded={spec.bonded or '-'}"
+                f"[OK] {spec.name:20s} charge={spec.charge:5s} bonded={spec.bonded or '-'}"
             )
         except Exception as exc:
             failures.append(
@@ -90,8 +82,7 @@ if __name__ == "__main__":
                 }
             )
             print(
-                f"[FAIL] {spec.name:20s} charge={spec.charge:5s} "
-                f"bonded={spec.bonded or '-'} :: {exc}"
+                f"[FAIL] {spec.name:20s} charge={spec.charge:5s} bonded={spec.bonded or '-'} :: {exc}"
             )
 
     out = {

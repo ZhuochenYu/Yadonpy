@@ -51,6 +51,8 @@ def test_example07_catalog_includes_new_polymer_and_salt_entries():
     assert "PAA" in names
     assert "PVDF" in names
     assert "PTMC" in names
+    assert "Li" not in names
+    assert "Na" not in names
 
 
 def test_example07_catalog_exposes_charge_and_bonded_columns_without_forcefield_column():
@@ -62,7 +64,6 @@ def test_example07_catalog_exposes_charge_and_bonded_columns_without_forcefield_
 
     assert items["PF6"].bonded == "DRIH"
     assert items["ClO4"].bonded == "DRIH"
-    assert items["Li"].charge == "MERZ"
     assert items["PAA"].polyelectrolyte_mode is True
     assert "ff_name" not in fieldnames
 
@@ -116,11 +117,15 @@ def test_example07_qm_policy_marks_fallback_when_diffuse_basis_is_unavailable(mo
     assert qm_spec.reason.endswith("fallback")
 
 
-def test_example07_qm_policy_skips_monatomic_merz_path():
+def test_example07_qm_policy_uses_neutral_and_anion_routes_only():
     mod = _load_example07_module()
-    items = {item.name: item for item in mod._read_species_csv(mod.CATALOG_CSV)}
-    assert mod._charge_route(items["Li"]) == "ion_charge"
-    assert mod._resolve_qm_spec("[Li+]") is None
+    qm_neutral = mod._resolve_qm_spec("O=C1OCCO1")
+    qm_anion = mod._resolve_qm_spec("F[P-](F)(F)(F)(F)F")
+
+    assert qm_neutral is not None
+    assert qm_neutral.opt_basis == "def2-SVP"
+    assert qm_anion is not None
+    assert qm_anion.opt_basis == "def2-SVPD"
 
 
 def test_example07_qm_policy_uses_diffuse_route_for_bob_family():
@@ -146,9 +151,6 @@ def test_example07_parallel_planner_assigns_profiles_and_core_budgets():
 
     assert parallel_mod._reserved_driver_cores(36) == 2
     assert parallel_mod._planner_cpu_budget(36) == 34
-    assert tasks["Li"].profile == "light"
-    assert tasks["Li"].batch == "light_ions"
-    assert tasks["Li"].required_cores == 1
     assert tasks["PF6"].profile == "drih"
     assert tasks["PF6"].batch == "heavy_qm"
     assert tasks["PF6"].required_cores == 8
@@ -182,10 +184,10 @@ def test_example07_parallel_planner_uses_priority_batches_with_backfill():
     parallel_mod = _load_example07_parallel_module()
 
     pending = [
-        {"name": "light", "priority": 4, "required_cores": 1},
         {"name": "standard", "priority": 3, "required_cores": 3},
         {"name": "drih_big", "priority": 0, "required_cores": 8},
         {"name": "drih_small", "priority": 0, "required_cores": 4},
+        {"name": "standard_small", "priority": 3, "required_cores": 2},
     ]
     parallel_mod._sort_pending_in_place(pending)
 
@@ -195,7 +197,7 @@ def test_example07_parallel_planner_uses_priority_batches_with_backfill():
 
     eligible_backfill = parallel_mod._eligible_pending_for_launch(pending, available_cores=2)
 
-    assert [item["name"] for item in eligible_backfill] == ["light"]
+    assert [item["name"] for item in eligible_backfill] == ["standard_small"]
 
 
 def test_example07_parallel_planner_retries_once_with_reduced_threads():
