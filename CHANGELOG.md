@@ -1,3 +1,8 @@
+## 0.8.82 (2026-04-03)
+
+- interface/sandwich + tests/test_sandwich_workflow: make the graphite-polymer-electrolyte sandwich builder default to the more physical `real bulk -> dense slab cut -> graphite-XY confined slab pre-relaxation -> stack -> final relax` path, including explicit per-phase confined-slab summaries and a low-noise `sandwich_progress.json` progress file;
+- examples/08_graphite_polymer_electrolyte_sandwich/05_cmcna_glucose6_periodic_case.py + Example 08 README + tests/test_release_sanity.py: lock the `glucose_6 + EC/EMC/DEC + PF6` production case to MolDB-only inputs (`prefer_db=True`, `require_ready=True`) so the large graphite/CMC/LiPF6 case fails fast instead of silently falling back to new QM work.
+
 ## 0.8.81 (2026-04-02)
 
 - core/data_dir + package init + tests/test_data_dir: replace the repository-level `moldb.tar` bundle with a plain `moldb/` directory, restore non-destructive default-MolDB seeding into `~/.yadonpy/moldb`, and auto-run that initialization on first package import for editable/source installs;

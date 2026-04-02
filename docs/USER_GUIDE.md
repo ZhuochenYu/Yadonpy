@@ -163,6 +163,7 @@ YadonPy now exposes a high-level sandwich builder that packages the recommended 
 - equilibrate each phase independently,
 - derive slabs from equilibrated bulk instead of trusting only initial packed cells,
 - preserve the graphite footprint as the lateral reference,
+- rebox each soft-phase slab onto that shared XY footprint and run a short confined-slab pre-relaxation with explicit vacuum and Z walls,
 - assemble the stack with explicit gaps,
 - relax the combined system in stages.
 

@@ -50,7 +50,7 @@ if __name__ == "__main__":
                     name="glucose_6",
                     smiles="*OC1OC(COCC(=O)[O-])C(*)C(O)C1O",
                     prefer_db=True,
-                    require_ready=False,
+                    require_ready=True,
                 ),
             ),
             monomer_ratio=(1.0,),
@@ -68,9 +68,9 @@ if __name__ == "__main__":
         ),
         electrolyte=default_carbonate_lipf6_electrolyte_spec(
             solvents=(
-                MoleculeSpec(name="EC", smiles="O=C1OCCO1", prefer_db=True, require_ready=False),
-                MoleculeSpec(name="EMC", smiles="CCOC(=O)OC", prefer_db=True, require_ready=False),
-                MoleculeSpec(name="DEC", smiles="CCOC(=O)OCC", prefer_db=True, require_ready=False),
+                MoleculeSpec(name="EC", smiles="O=C1OCCO1", prefer_db=True, require_ready=True),
+                MoleculeSpec(name="EMC", smiles="CCOC(=O)OC", prefer_db=True, require_ready=True),
+                MoleculeSpec(name="DEC", smiles="CCOC(=O)OCC", prefer_db=True, require_ready=True),
             ),
             solvent_mass_ratio=(3.0, 2.0, 5.0),
             salt_anion=MoleculeSpec(
@@ -79,7 +79,7 @@ if __name__ == "__main__":
                 bonded="DRIH",
                 charge_scale=0.8,
                 prefer_db=True,
-                require_ready=False,
+                require_ready=True,
             ),
             slab_z_nm=(4.6 if SMOKE else 5.4),
             min_salt_pairs=(4 if SMOKE else 8),

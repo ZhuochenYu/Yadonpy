@@ -192,6 +192,21 @@ def test_interface_examples_keep_linear_script_style():
     assert offenders == []
 
 
+def test_example05_cmcna_periodic_case_is_moldb_only_for_core_species():
+    root = Path(__file__).resolve().parents[1]
+    text = (
+        root / 'examples' / '08_graphite_polymer_electrolyte_sandwich' / '05_cmcna_glucose6_periodic_case.py'
+    ).read_text(encoding='utf-8')
+
+    assert 'name="glucose_6"' in text
+    assert 'name="EC"' in text
+    assert 'name="EMC"' in text
+    assert 'name="DEC"' in text
+    assert 'name="PF6"' in text
+    assert text.count('prefer_db=True') >= 5
+    assert text.count('require_ready=True') >= 5
+
+
 def test_oplsaa_examples_use_script_first_yadonpy_style():
     root = Path(__file__).resolve().parents[1]
     offenders: list[str] = []

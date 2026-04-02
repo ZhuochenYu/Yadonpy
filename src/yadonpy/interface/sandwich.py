@@ -16,7 +16,7 @@ from ..core.naming import get_name
 from ..core.polyelectrolyte import detect_charged_groups
 from ..core.workdir import workdir
 from ..gmx.index import _write_ndx
-from ..gmx.mdp_templates import MINIM_STEEP_MDP, NPT_MDP, NVT_MDP, MdpSpec, default_mdp_params
+from ..gmx.mdp_templates import MINIM_STEEP_MDP, NPT_MDP, NPT_NO_CONSTRAINTS_MDP, NVT_MDP, NVT_NO_CONSTRAINTS_MDP, MdpSpec, default_mdp_params
 from ..gmx.workflows._util import RunResources
 from ..gmx.workflows.eq import EqStage, EquilibrationJob
 from ..io.gromacs_system import SystemExportResult, export_system_from_cell_meta
@@ -150,6 +150,17 @@ class GraphitePolymerElectrolyteSandwichResult:
     manifest_path: Path
     stack_checks: dict[str, object] = field(default_factory=dict)
     notes: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class _ConfinedPhaseResult:
+    label: str
+    relaxed_block: object
+    report: SandwichPhaseReport
+    summary: dict[str, object]
+    summary_path: Path
+    top_path: Path
+    gro_path: Path
 
 
 def default_peo_polymer_spec(**kwargs) -> PolymerSlabSpec:
@@ -798,6 +809,360 @@ def _compact_packed_cell_z_by_molecule_centers(
     return cell, note
 
 
+def _confined_phase_durations_ps(relax: SandwichRelaxationSpec) -> tuple[float, float]:
+    pre_nvt_ps = max(4.0, 0.5 * float(relax.stacked_pre_nvt_ps))
+    density_relax_ps = max(12.0, 0.25 * float(relax.stacked_z_relax_ps))
+    return float(pre_nvt_ps), float(density_relax_ps)
+
+
+def _phase_wall_block(*, wall_atomtype: str, wall_mode: str = "12-6", wall_r_linpot_nm: float = 0.05) -> str:
+    return "\n".join(
+        (
+            "nwall                    = 2",
+            f"wall_type                = {str(wall_mode)}",
+            f"wall_atomtype            = {str(wall_atomtype)} {str(wall_atomtype)}",
+            "ewald-geometry           = 3dc",
+            f"wall-r-linpot            = {float(wall_r_linpot_nm):.6g}",
+        )
+    )
+
+
+def _phase_confined_relaxation_stages(
+    *,
+    relax: SandwichRelaxationSpec,
+    wall_atomtype: str,
+) -> list[EqStage]:
+    base = default_mdp_params()
+    pre_nvt_ps, density_relax_ps = _confined_phase_durations_ps(relax)
+    fixed_xy = fixed_xy_semiisotropic_npt_overrides(pressure_bar=float(relax.pressure_bar))
+    wall_mdp = _phase_wall_block(wall_atomtype=wall_atomtype)
+    common = {
+        **base,
+        "pbc": "xy",
+        "periodic_molecules": "yes",
+        "periodic-molecules": "yes",
+        "wall_mdp": wall_mdp,
+    }
+    return [
+        EqStage(
+            "01_em",
+            "minim",
+            MdpSpec(
+                MINIM_STEEP_MDP,
+                {
+                    **common,
+                    "nsteps": 60000,
+                    "emtol": 500.0,
+                    "emstep": 0.001,
+                    "extra_mdp": "",
+                },
+            ),
+        ),
+        EqStage(
+            "02_pre_nvt",
+            "nvt",
+            MdpSpec(
+                NVT_NO_CONSTRAINTS_MDP,
+                {
+                    **common,
+                    "dt": 0.001,
+                    "nsteps": max(int(round(float(pre_nvt_ps) / 0.001)), 2000),
+                    "ref_t": float(relax.temperature_k),
+                    "gen_temp": float(relax.temperature_k),
+                    "gen_vel": "yes",
+                    "extra_mdp": "",
+                },
+            ),
+        ),
+        EqStage(
+            "03_density_relax",
+            "npt",
+            MdpSpec(
+                NPT_NO_CONSTRAINTS_MDP,
+                {
+                    **common,
+                    **fixed_xy,
+                    "dt": 0.001,
+                    "nsteps": max(int(round(float(density_relax_ps) / 0.001)), 4000),
+                    "ref_t": float(relax.temperature_k),
+                    "gen_temp": float(relax.temperature_k),
+                    "gen_vel": "no",
+                    "ref_p": fixed_xy["ref_p"],
+                    "compressibility": fixed_xy["compressibility"],
+                    "pcoupltype": fixed_xy["pcoupltype"],
+                    "extra_mdp": "",
+                },
+            ),
+        ),
+    ]
+
+
+def _gro_positions_nm(gro_path: Path) -> list[tuple[float, float, float]]:
+    lines = Path(gro_path).read_text(encoding="utf-8", errors="replace").splitlines()
+    if len(lines) < 3:
+        raise ValueError(f"Invalid .gro file: {gro_path}")
+    nat = int(lines[1].strip())
+    out: list[tuple[float, float, float]] = []
+    for i in range(nat):
+        raw = lines[2 + i]
+        out.append((float(raw[20:28]), float(raw[28:36]), float(raw[36:44])))
+    return out
+
+
+def _rebox_block_for_phase_confinement(
+    *,
+    block,
+    target_xy_nm: tuple[float, float],
+    target_thickness_nm: float,
+    vacuum_padding_ang: float,
+):
+    confined = utils.deepcopy_mol(block)
+    conf = confined.GetConformer(0)
+    coords = np.asarray(conf.GetPositions(), dtype=float).copy()
+    if coords.size == 0:
+        raise RuntimeError("Cannot confine an empty slab block.")
+
+    mins = np.min(coords, axis=0)
+    maxs = np.max(coords, axis=0)
+    spans = maxs - mins
+    target_x_ang = float(target_xy_nm[0]) * 10.0
+    target_y_ang = float(target_xy_nm[1]) * 10.0
+    slot_z_ang = max(float(target_thickness_nm) * 10.0, float(spans[2]))
+    box_z_ang = slot_z_ang + 2.0 * float(vacuum_padding_ang)
+
+    if float(spans[0]) > target_x_ang + 1.0e-6 or float(spans[1]) > target_y_ang + 1.0e-6:
+        raise RuntimeError(
+            "Prepared slab is laterally larger than the graphite-matched target footprint "
+            f"({float(spans[0]) / 10.0:.4f}, {float(spans[1]) / 10.0:.4f}) nm vs "
+            f"({float(target_xy_nm[0]):.4f}, {float(target_xy_nm[1]):.4f}) nm."
+        )
+
+    lateral_shift = np.array(
+        [
+            0.5 * target_x_ang - 0.5 * float(mins[0] + maxs[0]),
+            0.5 * target_y_ang - 0.5 * float(mins[1] + maxs[1]),
+            float(vacuum_padding_ang) + 0.5 * (slot_z_ang - float(spans[2])) - float(mins[2]),
+        ],
+        dtype=float,
+    )
+    coords += lateral_shift
+    for idx, xyz in enumerate(coords):
+        conf.SetAtomPosition(idx, Geom.Point3D(float(xyz[0]), float(xyz[1]), float(xyz[2])))
+
+    setattr(confined, "cell", utils.Cell(target_x_ang, 0.0, target_y_ang, 0.0, box_z_ang, 0.0))
+    poly.set_cell_param_conf(confined, 0, target_x_ang, 0.0, target_y_ang, 0.0, box_z_ang, 0.0)
+    summary = {
+        "target_xy_nm": [float(target_xy_nm[0]), float(target_xy_nm[1])],
+        "target_thickness_nm": float(target_thickness_nm),
+        "occupied_thickness_nm": float(spans[2]) / 10.0,
+        "confined_box_nm": [target_x_ang / 10.0, target_y_ang / 10.0, box_z_ang / 10.0],
+        "vacuum_padding_ang": float(vacuum_padding_ang),
+    }
+    note = (
+        "reboxed the prepared slab onto the graphite master footprint and inserted "
+        f"{float(vacuum_padding_ang) / 10.0:.3f} nm top/bottom vacuum before confined slab relaxation"
+    )
+    return confined, summary, note
+
+
+def _phase_local_density_summary(
+    *,
+    gro_path: Path,
+    species: Sequence,
+    counts: Sequence[int],
+    center_window_fraction: float = 0.5,
+) -> dict[str, object]:
+    positions = _gro_positions_nm(gro_path)
+    box_nm = _read_gro_box_nm(gro_path)
+    if not positions:
+        return {
+            "box_nm": [float(x) for x in box_nm],
+            "occupied_density_g_cm3": 0.0,
+            "center_bulk_like_density_g_cm3": 0.0,
+            "wrapped_across_z_boundary": False,
+        }
+
+    blocks = _molecule_atom_blocks(species=species, counts=counts)
+    total_atoms = sum(stop - start for start, stop in blocks)
+    if total_atoms != len(positions):
+        return {
+            "box_nm": [float(x) for x in box_nm],
+            "occupied_density_g_cm3": 0.0,
+            "center_bulk_like_density_g_cm3": 0.0,
+            "wrapped_across_z_boundary": False,
+            "block_alignment_ok": False,
+        }
+
+    z_all = [float(pos[2]) for pos in positions]
+    occupied_min = float(min(z_all))
+    occupied_max = float(max(z_all))
+    occupied_thickness = max(occupied_max - occupied_min, 1.0e-6)
+    total_mass_amu = sum(float(molecular_weight(mol, strict=True)) * int(count) for mol, count in zip(species, counts))
+    occupied_volume_cm3 = float(box_nm[0] * box_nm[1] * occupied_thickness) * 1.0e-21
+    occupied_density = 0.0 if occupied_volume_cm3 <= 0.0 else float(total_mass_amu / _AVOGADRO / occupied_volume_cm3)
+
+    center_window = max(occupied_thickness * float(center_window_fraction), 1.0e-6)
+    center_mid = 0.5 * (occupied_min + occupied_max)
+    center_lo = center_mid - 0.5 * center_window
+    center_hi = center_mid + 0.5 * center_window
+    center_mass_amu = 0.0
+    positions_arr = np.asarray(positions, dtype=float)
+    for mol, (start, stop) in zip(
+        [mol for mol, count in zip(species, counts) for _ in range(int(count))],
+        blocks,
+    ):
+        masses = np.asarray([float(atom.GetMass()) for atom in mol.GetAtoms()], dtype=float)
+        z = positions_arr[start:stop, 2]
+        if z.size != masses.size or z.size == 0:
+            continue
+        com_z = float(np.average(z, weights=masses))
+        if center_lo <= com_z <= center_hi:
+            center_mass_amu += float(np.sum(masses))
+    center_volume_cm3 = float(box_nm[0] * box_nm[1] * center_window) * 1.0e-21
+    center_density = 0.0 if center_volume_cm3 <= 0.0 else float(center_mass_amu / _AVOGADRO / center_volume_cm3)
+    return {
+        "box_nm": [float(x) for x in box_nm],
+        "occupied_z_range_nm": [occupied_min, occupied_max],
+        "occupied_thickness_nm": occupied_thickness,
+        "occupied_density_g_cm3": occupied_density,
+        "center_bulk_like_window_nm": [center_lo, center_hi],
+        "center_bulk_like_density_g_cm3": center_density,
+        "wrapped_across_z_boundary": bool((occupied_max - occupied_min) > 0.90 * float(box_nm[2])),
+        "block_alignment_ok": True,
+    }
+
+
+def _confined_phase_report(
+    *,
+    label: str,
+    species_names: Sequence[str],
+    counts: Sequence[int],
+    target_density_g_cm3: float | None,
+    summary: dict[str, object],
+) -> SandwichPhaseReport:
+    confined_box = tuple(float(x) for x in summary.get("box_nm", (0.0, 0.0, 0.0)))
+    occupied_thickness = float(summary.get("occupied_thickness_nm", confined_box[2]))
+    occupied_box = (float(confined_box[0]), float(confined_box[1]), float(occupied_thickness))
+    return SandwichPhaseReport(
+        label=str(label),
+        box_nm=occupied_box,
+        density_g_cm3=float(summary.get("occupied_density_g_cm3", 0.0)),
+        species_names=tuple(str(x) for x in species_names),
+        counts=tuple(int(x) for x in counts),
+        target_density_g_cm3=(None if target_density_g_cm3 is None else float(target_density_g_cm3)),
+    )
+
+
+def _run_confined_phase_relaxation(
+    *,
+    label: str,
+    prepared_slab,
+    species: Sequence,
+    counts: Sequence[int],
+    charge_scale: Sequence[float],
+    target_xy_nm: tuple[float, float],
+    target_density_g_cm3: float,
+    target_thickness_nm: float,
+    ff_name: str,
+    relax: SandwichRelaxationSpec,
+    work_dir: Path,
+    restart: bool | None = None,
+) -> _ConfinedPhaseResult:
+    from .protocol import _resolve_route_b_wall_atomtype
+
+    base_block = _load_block_from_top_gro(
+        top_path=prepared_slab.top_path,
+        gro_path=prepared_slab.gro_path,
+        fallback_cell=None,
+    )
+    if base_block is None:
+        raise RuntimeError(f"Cannot load prepared slab geometry for confined {label} relaxation.")
+
+    confined_block, rebox_summary, rebox_note = _rebox_block_for_phase_confinement(
+        block=base_block,
+        target_xy_nm=target_xy_nm,
+        target_thickness_nm=float(target_thickness_nm),
+        vacuum_padding_ang=max(12.0, float(relax.top_padding_ang)),
+    )
+    register_cell_species_metadata(
+        confined_block,
+        list(species),
+        list(counts),
+        charge_scale=list(charge_scale),
+        pack_mode=f"{label}_confined_slab",
+    )
+
+    export = export_system_from_cell_meta(
+        cell_mol=confined_block,
+        out_dir=work_dir / "00_export",
+        ff_name=str(ff_name),
+        charge_method="RESP",
+        write_system_mol2=False,
+    )
+    wall_atomtype, _available = _resolve_route_b_wall_atomtype(export.system_top, None)
+    if wall_atomtype is None:
+        raise RuntimeError(f"Could not resolve a valid wall atomtype for confined {label} slab relaxation.")
+
+    stages = _phase_confined_relaxation_stages(relax=relax, wall_atomtype=wall_atomtype)
+    resources = RunResources(
+        ntmpi=int(relax.mpi),
+        ntomp=int(relax.omp),
+        use_gpu=bool(relax.gpu),
+        gpu_id=(str(relax.gpu_id) if relax.gpu_id is not None else None),
+    )
+    job = EquilibrationJob(
+        gro=export.system_gro,
+        top=export.system_top,
+        ndx=export.system_ndx,
+        provenance_ndx=export.system_ndx,
+        out_dir=work_dir / "01_relax",
+        stages=stages,
+        resources=resources,
+    )
+    job.run(restart=bool(resolve_restart(restart)))
+    relaxed_gro = work_dir / "01_relax" / stages[-1].name / "md.gro"
+    relaxed_block = _load_block_from_top_gro(
+        top_path=export.system_top,
+        gro_path=relaxed_gro,
+        fallback_cell=confined_block,
+    )
+    if relaxed_block is None:
+        raise RuntimeError(f"Could not load relaxed confined {label} slab from {relaxed_gro}.")
+
+    density_summary = _phase_local_density_summary(gro_path=relaxed_gro, species=species, counts=counts)
+    summary = {
+        "label": str(label),
+        "note": str(rebox_note),
+        "target_density_g_cm3": float(target_density_g_cm3),
+        "target_xy_nm": [float(target_xy_nm[0]), float(target_xy_nm[1])],
+        "target_thickness_nm": float(target_thickness_nm),
+        "wall_atomtype": str(wall_atomtype),
+        **rebox_summary,
+        **density_summary,
+        "relaxed_gro": str(relaxed_gro),
+        "top_path": str(export.system_top),
+    }
+    summary_path = work_dir / f"{label}_phase_confined_summary.json"
+    summary_path.parent.mkdir(parents=True, exist_ok=True)
+    summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
+    report = _confined_phase_report(
+        label=label,
+        species_names=[str(get_name(mol, default=f"{label}_{idx + 1}")) for idx, mol in enumerate(species)],
+        counts=counts,
+        target_density_g_cm3=float(target_density_g_cm3),
+        summary=summary,
+    )
+    return _ConfinedPhaseResult(
+        label=str(label),
+        relaxed_block=relaxed_block,
+        report=report,
+        summary=summary,
+        summary_path=summary_path,
+        top_path=export.system_top,
+        gro_path=relaxed_gro,
+    )
+
+
 def _load_relaxed_block(*, work_dir: Path, fallback_cell):
     gro_path = _find_latest_equilibrated_gro(Path(work_dir))
     top_path = Path(work_dir) / "02_system" / "system.top"
@@ -1000,17 +1365,30 @@ def build_graphite_polymer_electrolyte_sandwich(
         restart=restart,
     )
     polymer_species_names = [str(get_name(mol, default=f"POLY_{idx + 1}")) for idx, mol in enumerate(polymer_phase_build["species"])]
-    polymer_report = _prepared_slab_phase_report(
+    polymer_prepared_report = _prepared_slab_phase_report(
         label="polymer",
         prepared_slab=polymer_slab,
         species_names=polymer_species_names,
         target_density_g_cm3=float(polymer.target_density_g_cm3),
     )
-    polymer_relaxed_block = _load_block_from_top_gro(
-        top_path=polymer_slab.top_path,
-        gro_path=polymer_slab.gro_path,
-        fallback_cell=polymer_bulk,
+    polymer_count_map = {str(name): int(count) for name, count in zip(polymer_prepared_report.species_names, polymer_prepared_report.counts)}
+    polymer_selected_counts = [int(polymer_count_map.get(name, 0)) for name in polymer_species_names]
+    polymer_confined = _run_confined_phase_relaxation(
+        label="polymer",
+        prepared_slab=polymer_slab,
+        species=list(polymer_phase_build["species"]),
+        counts=list(polymer_selected_counts),
+        charge_scale=list(polymer_phase_build["charge_scale"]),
+        target_xy_nm=(float(graphite_result.box_nm[0]), float(graphite_result.box_nm[1])),
+        target_density_g_cm3=float(polymer.target_density_g_cm3),
+        target_thickness_nm=float(polymer.slab_z_nm),
+        ff_name=str(ff.name),
+        relax=relax,
+        work_dir=polymer_eq_dir / "06_confined_slab",
+        restart=restart,
     )
+    polymer_report = polymer_confined.report
+    polymer_relaxed_block = polymer_confined.relaxed_block
 
     solvent_mols = tuple(_prepare_small_molecule(spec, ff=ff, ion_ff=ion_ff) for spec in electrolyte.solvents)
     salt_cation = _prepare_small_molecule(electrolyte.salt_cation, ff=ff, ion_ff=ion_ff)
@@ -1084,22 +1462,30 @@ def build_graphite_polymer_electrolyte_sandwich(
         restart=restart,
     )
     electrolyte_species_names = [str(get_name(mol, default=f"EL_{idx + 1}")) for idx, mol in enumerate(electrolyte_mols)]
-    electrolyte_report = _prepared_slab_phase_report(
+    electrolyte_prepared_report = _prepared_slab_phase_report(
         label="electrolyte",
         prepared_slab=electrolyte_slab,
         species_names=electrolyte_species_names,
         target_density_g_cm3=float(electrolyte.target_density_g_cm3),
     )
-    electrolyte_relaxed_block = _load_block_from_top_gro(
-        top_path=electrolyte_slab.top_path,
-        gro_path=electrolyte_slab.gro_path,
-        fallback_cell=electrolyte_bulk,
-    )
-
-    polymer_count_map = {str(name): int(count) for name, count in zip(polymer_report.species_names, polymer_report.counts)}
-    electrolyte_count_map = {str(name): int(count) for name, count in zip(electrolyte_report.species_names, electrolyte_report.counts)}
-    polymer_selected_counts = [int(polymer_count_map.get(name, 0)) for name in polymer_species_names]
+    electrolyte_count_map = {str(name): int(count) for name, count in zip(electrolyte_prepared_report.species_names, electrolyte_prepared_report.counts)}
     electrolyte_selected_counts = [int(electrolyte_count_map.get(name, 0)) for name in electrolyte_species_names]
+    electrolyte_confined = _run_confined_phase_relaxation(
+        label="electrolyte",
+        prepared_slab=electrolyte_slab,
+        species=list(electrolyte_mols),
+        counts=list(electrolyte_selected_counts),
+        charge_scale=list(electrolyte_charge_scale),
+        target_xy_nm=(float(graphite_result.box_nm[0]), float(graphite_result.box_nm[1])),
+        target_density_g_cm3=float(electrolyte.target_density_g_cm3),
+        target_thickness_nm=float(electrolyte.slab_z_nm),
+        ff_name=str(ff.name),
+        relax=relax,
+        work_dir=electrolyte_eq_dir / "06_confined_slab",
+        restart=restart,
+    )
+    electrolyte_report = electrolyte_confined.report
+    electrolyte_relaxed_block = electrolyte_confined.relaxed_block
 
     stacked = stack_cell_blocks(
         [graphite_result.cell, polymer_relaxed_block, electrolyte_relaxed_block],
@@ -1155,8 +1541,10 @@ def build_graphite_polymer_electrolyte_sandwich(
     stack_checks = _build_stack_checks(gro_path=relaxed_gro, ndx_groups=ndx_groups)
 
     manifest_path = stack_dir / "sandwich_manifest.json"
+    progress_path = stack_dir / "sandwich_progress.json"
     notes = (
         "polymer and electrolyte were first equilibrated as standalone bulk phases, then graphite-matched slabs were cut from dense equilibrium windows before three-phase stacking",
+        "each dense slab then underwent a separate fixed-XY confined pre-relaxation with z walls and explicit vacuum so the final stack no longer relies on z-periodic healing",
         "graphite stays frozen during the stacked relaxation so the liquid and polymer phases can relax density mainly along the surface normal",
         f"polymer chain target atoms={int(polymer.chain_target_atoms)} -> built DP={int(polymer_dp)} and chain_count={int(chain_count)}",
         f"polymer bulk initial pack density={float(polymer_build_density):.4f} g/cm^3 -> target equilibrium density={float(polymer.target_density_g_cm3):.4f} g/cm^3",
@@ -1164,6 +1552,8 @@ def build_graphite_polymer_electrolyte_sandwich(
         *tuple(str(x) for x in polymer_phase_build["notes"]),
         str(polymer_slab_note),
         str(electrolyte_slab_note),
+        f"polymer confined summary={polymer_confined.summary_path}",
+        f"electrolyte confined summary={electrolyte_confined.summary_path}",
     )
     manifest_path.write_text(
         json.dumps(
@@ -1175,12 +1565,32 @@ def build_graphite_polymer_electrolyte_sandwich(
                 "graphite_box_nm": [float(x) for x in graphite_result.box_nm],
                 "polymer_phase": asdict(polymer_report),
                 "electrolyte_phase": asdict(electrolyte_report),
+                "polymer_phase_confined": polymer_confined.summary,
+                "electrolyte_phase_confined": electrolyte_confined.summary,
+                "polymer_phase_confined_summary": str(polymer_confined.summary_path),
+                "electrolyte_phase_confined_summary": str(electrolyte_confined.summary_path),
                 "stack_box_nm": [float(x) for x in stacked.box_nm],
                 "stack_export_dir": str(stack_dir),
                 "relaxed_gro": str(relaxed_gro),
                 "ndx_groups": {name: len(idxs) for name, idxs in ndx_groups.items()},
                 "stack_checks": stack_checks,
                 "notes": list(notes),
+            },
+            indent=2,
+            ensure_ascii=False,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    progress_path.write_text(
+        json.dumps(
+            {
+                "stage": "completed",
+                "polymer_phase_confined_summary": str(polymer_confined.summary_path),
+                "electrolyte_phase_confined_summary": str(electrolyte_confined.summary_path),
+                "manifest_path": str(manifest_path),
+                "relaxed_gro": str(relaxed_gro),
+                "stack_checks": stack_checks,
             },
             indent=2,
             ensure_ascii=False,

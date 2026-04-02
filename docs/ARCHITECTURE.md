@@ -97,7 +97,8 @@ YadonPy’s current interface philosophy is bulk first:
 1. equilibrate each phase independently;
 2. extract slabs from equilibrated bulk;
 3. align lateral dimensions carefully;
-4. assemble the interface or sandwich structure;
+4. for graphite-assisted sandwich systems, pre-relax each soft-phase slab in a confined `pbc=xy` box before final assembly;
+5. assemble the interface or sandwich structure;
 5. run staged relaxation.
 
 This avoids a common failure mode where an interface is assembled from unrealistic

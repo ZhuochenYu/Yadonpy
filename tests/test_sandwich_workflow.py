@@ -19,6 +19,8 @@ from yadonpy.interface.sandwich import (
     _initial_bulk_pack_density,
     _augment_sandwich_ndx,
     _build_stack_checks,
+    _phase_confined_relaxation_stages,
+    _rebox_block_for_phase_confinement,
     _sandwich_relaxation_stages,
     build_graphite_polymer_electrolyte_sandwich,
 )
@@ -93,6 +95,19 @@ def test_sandwich_relaxation_stages_freeze_graphite_and_keep_xy_fixed():
     assert [stage.name for stage in stages] == ["01_em", "02_pre_nvt", "03_z_relax", "04_exchange"]
     assert "freezegrps               = GRAPHITE" in stages[0].mdp.params["extra_mdp"]
     assert "freezegrps               = GRAPHITE" in stages[2].mdp.params["extra_mdp"]
+    assert stages[2].mdp.params["pcoupltype"] == "semiisotropic"
+    assert stages[2].mdp.params["compressibility"] == "0 4.5e-05"
+
+
+def test_phase_confined_relaxation_stages_use_xy_walls_and_fixed_xy_npt():
+    stages = _phase_confined_relaxation_stages(
+        relax=SandwichRelaxationSpec(stacked_pre_nvt_ps=10.0, stacked_z_relax_ps=40.0),
+        wall_atomtype="c3",
+    )
+    assert [stage.name for stage in stages] == ["01_em", "02_pre_nvt", "03_density_relax"]
+    assert stages[1].mdp.params["pbc"] == "xy"
+    assert "wall_type                = 12-6" in stages[1].mdp.params["wall_mdp"]
+    assert "wall_atomtype            = c3 c3" in stages[1].mdp.params["wall_mdp"]
     assert stages[2].mdp.params["pcoupltype"] == "semiisotropic"
     assert stages[2].mdp.params["compressibility"] == "0 4.5e-05"
 
@@ -182,6 +197,27 @@ def test_compact_packed_cell_z_by_molecule_centers_preserves_order_and_target_bo
     assert z[0] < z[1]
     assert note is not None
     assert "pre-relaxation" in note
+
+
+def test_rebox_block_for_phase_confinement_centers_slab_and_adds_vacuum():
+    block = _dummy_mol("PEO", z_ang=6.0, cell_box_ang=(18.0, 18.0, 18.0))
+    conf = block.GetConformer(0)
+    conf.SetAtomPosition(0, Geom.Point3D(1.0, 2.0, 6.0))
+    confined, summary, note = _rebox_block_for_phase_confinement(
+        block=block,
+        target_xy_nm=(2.0, 2.0),
+        target_thickness_nm=1.5,
+        vacuum_padding_ang=12.0,
+    )
+    pos = confined.GetConformer(0).GetAtomPosition(0)
+    assert confined.cell.xhi == pytest.approx(20.0)
+    assert confined.cell.yhi == pytest.approx(20.0)
+    assert confined.cell.zhi == pytest.approx(39.0)
+    assert 0.0 < float(pos.x) < 20.0
+    assert 0.0 < float(pos.y) < 20.0
+    assert 12.0 < float(pos.z) < 27.0
+    assert summary["target_xy_nm"] == [2.0, 2.0]
+    assert "vacuum" in note
 
 
 def test_covered_lateral_replicas_ceil_to_cover_target_lengths():
@@ -277,6 +313,27 @@ def test_build_graphite_polymer_electrolyte_sandwich_orchestrates_bulk_then_slab
             f"{kwargs['label']} slab prepared",
         ),
     )
+    confined_calls: list[dict] = []
+    monkeypatch.setattr(
+        sandwich,
+        "_run_confined_phase_relaxation",
+        lambda **kwargs: (
+            confined_calls.append(kwargs)
+            or SimpleNamespace(
+                relaxed_block=polymer_cell if kwargs["label"] == "polymer" else electrolyte_cell,
+                report=SandwichPhaseReport(
+                    label=kwargs["label"],
+                    box_nm=(2.0, 2.0, 3.0 if kwargs["label"] == "polymer" else 4.0),
+                    density_g_cm3=(1.02 if kwargs["label"] == "polymer" else 1.11),
+                    species_names=("PEO",) if kwargs["label"] == "polymer" else ("DME", "Li", "FSI"),
+                    counts=(2,) if kwargs["label"] == "polymer" else (4, 2, 2),
+                    target_density_g_cm3=kwargs["target_density_g_cm3"],
+                ),
+                summary={"occupied_density_g_cm3": 1.02 if kwargs["label"] == "polymer" else 1.11},
+                summary_path=tmp_path / f"{kwargs['label']}_summary.json",
+            )
+        ),
+    )
     monkeypatch.setattr(
         sandwich,
         "_prepared_slab_phase_report",
@@ -342,6 +399,7 @@ def test_build_graphite_polymer_electrolyte_sandwich_orchestrates_bulk_then_slab
 
     assert len(eq_calls) == 2
     assert len(pack_calls) == 2
+    assert len(confined_calls) == 2
     assert pack_calls[0]["density"] < 1.05
     assert pack_calls[1]["density"] == pytest.approx(0.82)
     assert eq_calls[0]["label"] == "Polymer bulk"
@@ -354,5 +412,8 @@ def test_build_graphite_polymer_electrolyte_sandwich_orchestrates_bulk_then_slab
     manifest = result.manifest_path.read_text(encoding="utf-8")
     assert '"polymer_phase"' in manifest
     assert '"electrolyte_phase"' in manifest
+    assert '"polymer_phase_confined"' in manifest
+    assert '"electrolyte_phase_confined"' in manifest
     assert '"ndx_groups"' in manifest
+    assert (tmp_path / "sandwich" / "05_sandwich" / "sandwich_progress.json").exists()
     assert result.stack_checks["is_expected_order"] is True

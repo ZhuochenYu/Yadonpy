@@ -3,12 +3,14 @@
 This merged example replaces the old Example 10/11/12/13 split with one
 coherent workflow family built around the same high-level sandwich builder:
 
-1. equilibrate the polymer slab with `XY` locked to the graphite footprint;
-2. equilibrate the electrolyte slab against the same `XY`;
-3. stack `graphite -> polymer -> electrolyte` explicitly;
-4. relax the stacked system with graphite frozen so the soft phases can settle
+1. equilibrate true 3D polymer and electrolyte bulk phases independently;
+2. cut dense graphite-matched slabs from those equilibrated bulk snapshots;
+3. rebox each slab onto the graphite footprint and run a short confined slab
+   pre-relaxation with `pbc=xy`, explicit vacuum, and Z walls;
+4. stack `graphite -> polymer -> electrolyte` explicitly;
+5. relax the stacked system with graphite frozen so the soft phases can settle
    mainly along the surface normal;
-5. record bulk densities and final phase ordering in `sandwich_manifest.json`.
+6. record phase summaries, confined-slab diagnostics, and final phase ordering.
 
 The scripts are intentionally short. Most of the workflow logic now lives in
 `yadonpy.interface.sandwich`, so the examples focus on study setup rather than
@@ -33,6 +35,10 @@ parameter choices on one substrate-assisted sandwich path.
 
 - These scripts expect `PF6-` to already exist in MolDB with the RESP + DRIH
   variant. Build it first with Example 01 or the merged Example 07 catalog.
+- `05_cmcna_glucose6_periodic_case.py` is intentionally MolDB-only for the
+  chemistry inputs it names: `glucose_6`, `EC`, `EMC`, `DEC`, and `PF6` must
+  already be present and ready in MolDB, otherwise the script fails fast instead
+  of silently falling back to new QM work.
 - The PEO smoke is the quickest way to validate the whole sandwich path on a
   remote GPU node before switching to the more demanding CMC-Na case.
 - The CMC scripts use the same grouped-polyelectrolyte RESP and counterion-aware
@@ -43,5 +49,6 @@ parameter choices on one substrate-assisted sandwich path.
   before launching the exact production-sized case.
 - The manifest written under each work directory includes:
   - polymer/electrolyte bulk density reports
+  - confined slab summaries for each soft phase
   - final `GRAPHITE -> POLYMER -> ELECTROLYTE` phase-order checks
   - the chosen stacked export paths and main relaxation outputs

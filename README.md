@@ -129,9 +129,10 @@ solvents, ions, and salts. A typical workflow is:
 For interface work, the recommended pattern is:
 
 1. equilibrate each phase independently;
-2. derive consistent lateral dimensions from equilibrated bulk boxes;
-3. cut slabs from the equilibrated phases;
-4. assemble the final interface or sandwich structure;
+2. derive consistent lateral dimensions from the graphite footprint or equilibrated bulk boxes;
+3. cut dense slabs from the equilibrated phases;
+4. rebox each soft-phase slab onto the final XY footprint and run a short confined-slab pre-relaxation with explicit vacuum and Z walls;
+5. assemble the final interface or sandwich structure;
 5. run staged relaxation with restrained early dynamics and a later release stage.
 
 This is the model used by the high-level graphite-polymer-electrolyte sandwich builder.
