@@ -1,0 +1,38 @@
+{
+  "key": "6ceff8887f06d9d5",
+  "kind": "psmiles",
+  "canonical": "*OCCC(=O)O*",
+  "name": "PTMC",
+  "charge_method": "RESP",
+  "charge_unit": "e",
+  "ready": true,
+  "connectors": [
+    {
+      "idx": 0,
+      "isotope": 3
+    },
+    {
+      "idx": 7,
+      "isotope": 3
+    }
+  ],
+  "variants": {
+    "56a209e16a4a": {
+      "variant_id": "56a209e16a4a",
+      "charge": "RESP",
+      "basis_set": "Default",
+      "method": "Default",
+      "ready": true,
+      "polyelectrolyte_mode": false,
+      "polyelectrolyte_detection": "auto",
+      "constraint_signature": null,
+      "charge_groups": [],
+      "resp_constraints": {},
+      "polyelectrolyte_summary": {},
+      "is_polyelectrolyte": false,
+      "is_polymer": false,
+      "charge_group_count": 0,
+      "source_kind": "psmiles"
+    }
+  }
+}

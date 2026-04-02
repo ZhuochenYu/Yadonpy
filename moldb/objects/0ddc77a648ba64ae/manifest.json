@@ -1,0 +1,38 @@
+{
+  "key": "0ddc77a648ba64ae",
+  "kind": "psmiles",
+  "canonical": "*CC(OC(=O)C)*",
+  "name": "PVAc",
+  "charge_method": "RESP",
+  "charge_unit": "e",
+  "ready": true,
+  "connectors": [
+    {
+      "idx": 0,
+      "isotope": 3
+    },
+    {
+      "idx": 7,
+      "isotope": 3
+    }
+  ],
+  "variants": {
+    "56a209e16a4a": {
+      "variant_id": "56a209e16a4a",
+      "charge": "RESP",
+      "basis_set": "Default",
+      "method": "Default",
+      "ready": true,
+      "polyelectrolyte_mode": false,
+      "polyelectrolyte_detection": "auto",
+      "constraint_signature": null,
+      "charge_groups": [],
+      "resp_constraints": {},
+      "polyelectrolyte_summary": {},
+      "is_polyelectrolyte": false,
+      "is_polymer": false,
+      "charge_group_count": 0,
+      "source_kind": "psmiles"
+    }
+  }
+}

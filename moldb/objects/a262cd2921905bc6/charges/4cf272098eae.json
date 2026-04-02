@@ -1,0 +1,23 @@
+{
+  "key": "a262cd2921905bc6",
+  "variant_id": "4cf272098eae",
+  "charge": "gasteiger",
+  "basis_set": "Default",
+  "method": "Default",
+  "charges": [
+    NaN,
+    NaN,
+    NaN,
+    NaN,
+    NaN,
+    NaN,
+    NaN
+  ],
+  "polyelectrolyte_mode": false,
+  "polyelectrolyte_detection": "auto",
+  "constraint_signature": null,
+  "charge_groups": [],
+  "resp_constraints": {},
+  "polyelectrolyte_summary": {},
+  "source_kind": null
+}

@@ -1,3 +1,8 @@
+## 0.8.81 (2026-04-02)
+
+- core/data_dir + package init + tests/test_data_dir: replace the repository-level `moldb.tar` bundle with a plain `moldb/` directory, restore non-destructive default-MolDB seeding into `~/.yadonpy/moldb`, and auto-run that initialization on first package import for editable/source installs;
+- README + docs/USER_GUIDE + tests/test_release_sanity: document the new default-MolDB seeding behavior and lock the release tree to `moldb/` with no remaining `moldb.tar`.
+
 ## 0.8.80 (2026-03-31)
 
 - core/graphite.py + tests/test_graphite.py: add a formal `edge_cap=\"periodic\"` graphite mode for basal-plane substrate work, keeping the graphitic carbon sheet uncapped while assigning carbon nonbonded/bonded parameters from a capped reference layer so the substrate exports cleanly without hydrogen edge saturation;

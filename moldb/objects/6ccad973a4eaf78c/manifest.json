@@ -1,0 +1,29 @@
+{
+  "key": "6ccad973a4eaf78c",
+  "kind": "smiles",
+  "canonical": "COC(=O)OC",
+  "name": "DMC",
+  "charge_method": "RESP",
+  "charge_unit": "e",
+  "ready": true,
+  "connectors": null,
+  "variants": {
+    "56a209e16a4a": {
+      "variant_id": "56a209e16a4a",
+      "charge": "RESP",
+      "basis_set": "Default",
+      "method": "Default",
+      "ready": true,
+      "polyelectrolyte_mode": false,
+      "polyelectrolyte_detection": "auto",
+      "constraint_signature": null,
+      "charge_groups": [],
+      "resp_constraints": {},
+      "polyelectrolyte_summary": {},
+      "is_polyelectrolyte": false,
+      "is_polymer": false,
+      "charge_group_count": 0,
+      "source_kind": "smiles"
+    }
+  }
+}

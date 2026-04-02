@@ -1,0 +1,38 @@
+{
+  "key": "57fa7686df4bec7d",
+  "kind": "psmiles",
+  "canonical": "*OC1OC(COCC(=O)[O-])C(*)C(OCC(=O)[O-])C1O",
+  "name": "glucose_36",
+  "charge_method": "RESP",
+  "charge_unit": "e",
+  "ready": true,
+  "connectors": [
+    {
+      "idx": 0,
+      "isotope": 3
+    },
+    {
+      "idx": 12,
+      "isotope": 3
+    }
+  ],
+  "variants": {
+    "8a687c87f3af": {
+      "variant_id": "8a687c87f3af",
+      "charge": "RESP",
+      "basis_set": "Default",
+      "method": "Default",
+      "ready": true,
+      "polyelectrolyte_mode": true,
+      "polyelectrolyte_detection": "auto",
+      "constraint_signature": null,
+      "charge_groups": [],
+      "resp_constraints": {},
+      "polyelectrolyte_summary": {},
+      "is_polyelectrolyte": false,
+      "is_polymer": false,
+      "charge_group_count": 0,
+      "source_kind": "psmiles"
+    }
+  }
+}

@@ -35,6 +35,10 @@ current minimal working setup for Example 01 and RESP fitting. `openbabel`
 already provides the Open Babel Python bindings used by YadonPy, so no separate
 `pybel` package is required.
 
+The source tree now ships a default `moldb/` folder beside `examples/`. On the
+first YadonPy import or `ensure_initialized()` call, that catalog is seeded into
+`~/.yadonpy/moldb` so a fresh editable install starts with the reference MolDB.
+
 Check the environment after installation:
 
 ```bash

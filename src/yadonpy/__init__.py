@@ -2,7 +2,25 @@
 
 from __future__ import annotations
 
+import os
+
 from ._version import __version__
+from .core.data_dir import ensure_initialized as _ensure_initialized
+
+
+def _auto_initialize_user_data() -> None:
+    flag = (os.environ.get("YADONPY_AUTO_INIT") or "1").strip().lower()
+    if flag in {"0", "false", "no", "off"}:
+        return
+    try:
+        _ensure_initialized()
+    except Exception:
+        # Importing yadonpy should stay lightweight and not fail solely because
+        # the user's data directory cannot be initialized at import time.
+        pass
+
+
+_auto_initialize_user_data()
 
 from .sim import qm  # noqa: F401
 from .interface import InterfaceBuilder, InterfaceDynamics, InterfaceProtocol, InterfaceRouteSpec, build_graphite_cmcna_electrolyte_sandwich, build_graphite_peo_electrolyte_sandwich, build_graphite_polymer_electrolyte_sandwich, build_interface, build_interface_from_workdirs  # noqa: F401

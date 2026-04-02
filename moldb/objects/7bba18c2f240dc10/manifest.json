@@ -1,0 +1,38 @@
+{
+  "key": "7bba18c2f240dc10",
+  "kind": "psmiles",
+  "canonical": "*CC(C)(C(=O)OC)*",
+  "name": "PMMA",
+  "charge_method": "RESP",
+  "charge_unit": "e",
+  "ready": true,
+  "connectors": [
+    {
+      "idx": 0,
+      "isotope": 3
+    },
+    {
+      "idx": 8,
+      "isotope": 3
+    }
+  ],
+  "variants": {
+    "56a209e16a4a": {
+      "variant_id": "56a209e16a4a",
+      "charge": "RESP",
+      "basis_set": "Default",
+      "method": "Default",
+      "ready": true,
+      "polyelectrolyte_mode": false,
+      "polyelectrolyte_detection": "auto",
+      "constraint_signature": null,
+      "charge_groups": [],
+      "resp_constraints": {},
+      "polyelectrolyte_summary": {},
+      "is_polyelectrolyte": false,
+      "is_polymer": false,
+      "charge_group_count": 0,
+      "source_kind": "psmiles"
+    }
+  }
+}

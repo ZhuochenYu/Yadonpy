@@ -40,6 +40,8 @@ def test_release_declares_python_311_minimum_and_docs_match():
     assert 'psi4=1.10' in guide
     assert 'python -m pip install "pydantic==1.10.26"' in readme
     assert 'python -m pip install "pydantic==1.10.26"' in guide
+    assert '~/.yadonpy/moldb' in readme
+    assert '~/.yadonpy/moldb' in guide
     assert 'pydantic<2' not in readme
     assert 'pip install pybel' not in readme
     assert 'pip install pybel' not in guide
@@ -75,6 +77,9 @@ def test_repo_excludes_local_only_release_files_from_git():
     assert not (root / 'YADONPY_MAINTENANCE_PRINCIPLES.md').exists()
     assert 'MANIFEST.in' in gitignore
     assert 'YADONPY_MAINTENANCE_PRINCIPLES.md' in gitignore
+    assert not (root / 'moldb.tar').exists()
+    assert (root / 'moldb' / 'objects').is_dir()
+    assert list(root.rglob('*.tar')) == []
 
 
 def test_docs_have_single_current_structure_and_old_release_docs_are_removed():

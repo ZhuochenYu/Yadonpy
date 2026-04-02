@@ -1,0 +1,68 @@
+{
+  "key": "a262cd2921905bc6",
+  "kind": "smiles",
+  "canonical": "F[P-](F)(F)(F)(F)F",
+  "name": "PF6",
+  "charge_method": "RESP",
+  "charge_unit": "e",
+  "ready": true,
+  "connectors": null,
+  "variants": {
+    "4cf272098eae": {
+      "variant_id": "4cf272098eae",
+      "charge": "gasteiger",
+      "basis_set": "Default",
+      "method": "Default",
+      "ready": true,
+      "polyelectrolyte_mode": false,
+      "polyelectrolyte_detection": "auto",
+      "constraint_signature": null,
+      "charge_groups": [],
+      "resp_constraints": {},
+      "polyelectrolyte_summary": {},
+      "is_polyelectrolyte": false,
+      "is_polymer": false,
+      "charge_group_count": 0,
+      "source_kind": "smiles",
+      "bonded": {
+        "_yadonpy_bonded_signature": "drih",
+        "_yadonpy_bonded_requested": "drih",
+        "_yadonpy_bonded_method": "DRIH",
+        "_yadonpy_bonded_override": "1",
+        "_yadonpy_bonded_explicit": "1",
+        "files": {
+          "_yadonpy_bonded_itp": "bonded_drih_patch.itp",
+          "_yadonpy_bonded_json": "bonded_drih_params.json"
+        }
+      }
+    },
+    "56a209e16a4a": {
+      "variant_id": "56a209e16a4a",
+      "charge": "RESP",
+      "basis_set": "Default",
+      "method": "Default",
+      "ready": true,
+      "polyelectrolyte_mode": false,
+      "polyelectrolyte_detection": "auto",
+      "constraint_signature": null,
+      "charge_groups": [],
+      "resp_constraints": {},
+      "polyelectrolyte_summary": {},
+      "is_polyelectrolyte": false,
+      "is_polymer": false,
+      "charge_group_count": 0,
+      "source_kind": "smiles",
+      "bonded": {
+        "_yadonpy_bonded_signature": "drih",
+        "_yadonpy_bonded_requested": "drih",
+        "_yadonpy_bonded_method": "DRIH",
+        "_yadonpy_bonded_override": "1",
+        "_yadonpy_bonded_explicit": "1",
+        "files": {
+          "_yadonpy_bonded_itp": "bonded_drih_patch.itp",
+          "_yadonpy_bonded_json": "bonded_drih_params.json"
+        }
+      }
+    }
+  }
+}

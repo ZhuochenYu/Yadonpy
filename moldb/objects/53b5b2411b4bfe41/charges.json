@@ -1,0 +1,30 @@
+{
+  "key": "53b5b2411b4bfe41",
+  "variant_id": "56a209e16a4a",
+  "charge": "RESP",
+  "basis_set": "Default",
+  "method": "Default",
+  "charges": [
+    0.053668855906915405,
+    0.05414168251286239,
+    -0.35042574678869726,
+    0.05262846748768674,
+    0.05512996816247373,
+    -0.35084972123157726,
+    0.06076948182195984,
+    0.06076948182195988,
+    0.060649445749658124,
+    0.06064944574965815,
+    0.060987940566087195,
+    0.060987940566087216,
+    0.06044637883746287,
+    0.06044637883746296
+  ],
+  "polyelectrolyte_mode": false,
+  "polyelectrolyte_detection": "auto",
+  "constraint_signature": null,
+  "charge_groups": [],
+  "resp_constraints": {},
+  "polyelectrolyte_summary": {},
+  "source_kind": null
+}

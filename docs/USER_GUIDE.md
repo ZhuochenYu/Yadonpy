@@ -17,6 +17,10 @@ python -m pip install "pydantic==1.10.26"
 python -m pip install -e .
 ```
 
+The repository also ships a default `moldb/` folder beside `examples/`. On the
+first YadonPy import or `ensure_initialized()` call, that reference catalog is
+seeded into `~/.yadonpy/moldb`.
+
 Then check the environment:
 
 ```bash
