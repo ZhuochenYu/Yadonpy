@@ -915,12 +915,34 @@ def _rebox_block_for_phase_confinement(
     target_xy_nm: tuple[float, float],
     target_thickness_nm: float,
     vacuum_padding_ang: float,
+    species: Sequence | None = None,
+    counts: Sequence[int] | None = None,
 ):
     confined = utils.deepcopy_mol(block)
     conf = confined.GetConformer(0)
     coords = np.asarray(conf.GetPositions(), dtype=float).copy()
     if coords.size == 0:
         raise RuntimeError("Cannot confine an empty slab block.")
+
+    if species is not None and counts is not None:
+        try:
+            blocks = _molecule_atom_blocks(species=species, counts=counts)
+        except Exception:
+            blocks = []
+        if blocks and int(blocks[-1][1]) == int(confined.GetNumAtoms()):
+            box_x_ang = float(target_xy_nm[0]) * 10.0
+            box_y_ang = float(target_xy_nm[1]) * 10.0
+            for start, stop in blocks:
+                frag = coords[start:stop]
+                if frag.size == 0:
+                    continue
+                center_x = float(np.mean(frag[:, 0]))
+                center_y = float(np.mean(frag[:, 1]))
+                if box_x_ang > 0.0:
+                    frag[:, 0] += box_x_ang * math.floor((0.5 * box_x_ang - center_x) / box_x_ang)
+                if box_y_ang > 0.0:
+                    frag[:, 1] += box_y_ang * math.floor((0.5 * box_y_ang - center_y) / box_y_ang)
+                coords[start:stop] = frag
 
     mins = np.min(coords, axis=0)
     maxs = np.max(coords, axis=0)
@@ -1083,6 +1105,8 @@ def _run_confined_phase_relaxation(
         target_xy_nm=target_xy_nm,
         target_thickness_nm=float(target_thickness_nm),
         vacuum_padding_ang=max(12.0, float(relax.top_padding_ang)),
+        species=species,
+        counts=counts,
     )
     register_cell_species_metadata(
         confined_block,

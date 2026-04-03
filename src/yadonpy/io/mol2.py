@@ -109,6 +109,15 @@ _COMMON_FF_TYPE_ELEMENT_MAP = {
     "b": "B",
 }
 
+_PERMISSIVE_MOL2_TYPE_TOKENS = {
+    "h1", "h2", "h3", "h4", "h5", "ha", "hc", "hn", "ho", "hp", "hs", "hw",
+    "c1", "c2", "c3", "ca", "cc", "cd", "ce", "cf", "cg", "ch", "cp", "cq", "cu", "cv", "cx", "cy", "cz",
+    "o2", "o3", "oh", "os", "ow", "op", "oq",
+    "n1", "n2", "n3", "n4", "na", "nb", "nc", "nd", "ne", "nf", "nh", "no",
+    "s2", "s4", "s6", "sh", "ss", "sx", "sy",
+    "p2", "p3", "p4", "p5", "px", "py",
+}
+
 def _elem_from_atom_name(aname: str) -> str:
     """Infer element symbol from an atom name like 'C12', 'Cl3', 'Na1'."""
     s = str(aname).strip()
@@ -196,6 +205,31 @@ def _parse_mol2_atom_charges(mol2_path: Path) -> list[float]:
                 # If charge column missing, append 0.0 to keep indices aligned.
                 charges.append(0.0)
     return charges
+
+
+def _mol2_likely_needs_permissive_parser(mol2_path: Path) -> bool:
+    in_atom = False
+    for raw in Path(mol2_path).read_text(encoding="utf-8", errors="replace").splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        upper = line.upper()
+        if upper.startswith("@<TRIPOS>ATOM"):
+            in_atom = True
+            continue
+        if upper.startswith("@<TRIPOS>") and not upper.startswith("@<TRIPOS>ATOM"):
+            if in_atom:
+                break
+            continue
+        if not in_atom:
+            continue
+        parts = line.split()
+        if len(parts) < 6:
+            continue
+        atom_type = str(parts[5]).strip().split(".", 1)[0].lower()
+        if atom_type in _PERMISSIVE_MOL2_TYPE_TOKENS:
+            return True
+    return False
 
 
 def _read_mol2_with_custom_parser(
@@ -342,10 +376,12 @@ def read_mol2_with_charges(
     except Exception as e:
         raise RuntimeError("RDKit is required to read MOL2") from e
 
-    try:
-        mol = rdmolfiles.MolFromMol2File(str(mol2_path), sanitize=bool(sanitize), removeHs=bool(removeHs))
-    except Exception:
-        mol = None
+    mol = None
+    if not _mol2_likely_needs_permissive_parser(Path(mol2_path)):
+        try:
+            mol = rdmolfiles.MolFromMol2File(str(mol2_path), sanitize=bool(sanitize), removeHs=bool(removeHs))
+        except Exception:
+            mol = None
     if mol is None:
         mol = _read_mol2_with_custom_parser(
             Path(mol2_path),

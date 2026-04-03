@@ -220,6 +220,38 @@ def test_rebox_block_for_phase_confinement_centers_slab_and_adds_vacuum():
     assert "vacuum" in note
 
 
+def test_rebox_block_for_phase_confinement_wraps_molecule_centers_into_target_xy():
+    mol = Chem.RWMol()
+    for _ in range(2):
+        atom = Chem.Atom("C")
+        atom.SetNoImplicit(True)
+        mol.AddAtom(atom)
+    block = mol.GetMol()
+    conf = Chem.Conformer(block.GetNumAtoms())
+    conf.Set3D(True)
+    conf.SetAtomPosition(0, Geom.Point3D(24.0, 21.0, 6.0))
+    conf.SetAtomPosition(1, Geom.Point3D(25.2, 21.8, 8.0))
+    block.AddConformer(conf, assignId=True)
+    setattr(block, "cell", SimpleNamespace(xhi=40.0, xlo=0.0, yhi=40.0, ylo=0.0, zhi=18.0, zlo=0.0))
+
+    species = [_dummy_mol("A"), _dummy_mol("B")]
+    confined, summary, _note = _rebox_block_for_phase_confinement(
+        block=block,
+        target_xy_nm=(2.0, 2.0),
+        target_thickness_nm=1.5,
+        vacuum_padding_ang=12.0,
+        species=species,
+        counts=[1, 1],
+    )
+
+    coords = confined.GetConformer(0).GetPositions()
+    assert confined.cell.xhi == pytest.approx(20.0)
+    assert confined.cell.yhi == pytest.approx(20.0)
+    assert max(float(x[0]) for x in coords) <= 20.0
+    assert max(float(x[1]) for x in coords) <= 20.0
+    assert summary["target_xy_nm"] == [2.0, 2.0]
+
+
 def test_covered_lateral_replicas_ceil_to_cover_target_lengths():
     reps = _covered_lateral_replicas(source_box_nm=(1.8, 2.3, 3.5), target_lengths_nm=(4.0, 4.5))
     assert reps == (3, 2)

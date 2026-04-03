@@ -1,3 +1,8 @@
+## 0.8.84 (2026-04-03)
+
+- interface/sandwich + tests/test_sandwich_workflow: make confined-slab reboxing wrap whole molecule centers back into the graphite-matched XY footprint before span checks, so laterally periodic slabs exported from bulk equilibration no longer fail the Example 08 polymer/electrolyte pre-relaxation path just because complete molecules sit outside the primary image;
+- io/mol2.py: bias MOL2 loading toward the permissive parser earlier for GAFF/ParmEd-style atom types and atom labels, reducing noisy native-RDKit parser failures on prepared slab geometries while keeping the same charge-preserving fallback behavior.
+
 ## 0.8.83 (2026-04-03)
 
 - io/mol2 + tests/test_mol2.py: add a permissive MOL2 fallback reader for exported system geometries so GAFF/ParmEd atom types such as `ho` and `ca` no longer break the graphite/polymer/electrolyte confined-slab reload path when RDKit's native MOL2 parser rejects them.
