@@ -27,6 +27,88 @@ from typing import List, Optional, Tuple
 
 import re
 
+
+_COMMON_FF_TYPE_ELEMENT_MAP = {
+    "h": "H",
+    "h1": "H",
+    "h2": "H",
+    "h3": "H",
+    "h4": "H",
+    "h5": "H",
+    "ha": "H",
+    "hc": "H",
+    "hn": "H",
+    "ho": "H",
+    "hp": "H",
+    "hs": "H",
+    "hw": "H",
+    "c": "C",
+    "c1": "C",
+    "c2": "C",
+    "c3": "C",
+    "ca": "C",
+    "cc": "C",
+    "cd": "C",
+    "ce": "C",
+    "cf": "C",
+    "cg": "C",
+    "ch": "C",
+    "cp": "C",
+    "cq": "C",
+    "cu": "C",
+    "cv": "C",
+    "cx": "C",
+    "cy": "C",
+    "cz": "C",
+    "o": "O",
+    "o2": "O",
+    "o3": "O",
+    "oh": "O",
+    "os": "O",
+    "ow": "O",
+    "op": "O",
+    "oq": "O",
+    "n": "N",
+    "n1": "N",
+    "n2": "N",
+    "n3": "N",
+    "n4": "N",
+    "na": "N",
+    "nb": "N",
+    "nc": "N",
+    "nd": "N",
+    "ne": "N",
+    "nf": "N",
+    "nh": "N",
+    "no": "N",
+    "s": "S",
+    "s2": "S",
+    "s4": "S",
+    "s6": "S",
+    "sh": "S",
+    "ss": "S",
+    "sx": "S",
+    "sy": "S",
+    "p": "P",
+    "p2": "P",
+    "p3": "P",
+    "p4": "P",
+    "p5": "P",
+    "px": "P",
+    "py": "P",
+    "f": "F",
+    "cl": "Cl",
+    "br": "Br",
+    "i": "I",
+    "li": "Li",
+    "na+": "Na",
+    "na_ion": "Na",
+    "k": "K",
+    "mg": "Mg",
+    "si": "Si",
+    "b": "B",
+}
+
 def _elem_from_atom_name(aname: str) -> str:
     """Infer element symbol from an atom name like 'C12', 'Cl3', 'Na1'."""
     s = str(aname).strip()
@@ -38,6 +120,41 @@ def _elem_from_atom_name(aname: str) -> str:
     if len(e) == 1:
         return e.upper()
     return e[0].upper() + e[1:].lower()
+
+
+def _guess_element_from_mol2_fields(atom_name: str, atom_type: str) -> str:
+    """Best-effort element inference for permissive MOL2 loading.
+
+    RDKit's native MOL2 parser can reject GAFF/ParmEd-style atom types such as
+    ``ho`` or ``ca`` when they appear in exported system MOL2 files. For the
+    geometry-reload path we only need chemically plausible elements, connectivity,
+    coordinates, and charges, so we infer the element conservatively here.
+    """
+    atom_name_s = str(atom_name).strip()
+    atom_name_head = re.match(r"^([A-Za-z]{1,2})", atom_name_s)
+    if atom_name_head:
+        token = atom_name_head.group(1)
+        mapped = _COMMON_FF_TYPE_ELEMENT_MAP.get(token.lower())
+        if mapped is not None:
+            return mapped
+        name_guess = _elem_from_atom_name(atom_name_s)
+        if not atom_name_s.lower().startswith(("xx", "du")):
+            # Prefer atom names first when they look element-like; ParmEd/GROMACS
+            # names usually preserve the true element even if the MOL2 atom type
+            # is a force-field label.
+            return name_guess
+
+    raw_type = str(atom_type or "").strip()
+    type_head = raw_type.split(".", 1)[0].strip()
+    mapped = _COMMON_FF_TYPE_ELEMENT_MAP.get(type_head.lower())
+    if mapped:
+        return mapped
+
+    if type_head:
+        head_guess = _elem_from_atom_name(type_head)
+        if head_guess and head_guess != "X":
+            return head_guess
+    return "C"
 
 
 
@@ -81,6 +198,128 @@ def _parse_mol2_atom_charges(mol2_path: Path) -> list[float]:
     return charges
 
 
+def _read_mol2_with_custom_parser(
+    mol2_path: Path,
+    *,
+    charge_prop: str = "AtomicCharge",
+    also_resp: bool = True,
+):
+    """Fallback MOL2 reader that ignores Tripos atom-type chemistry.
+
+    This path exists specifically for exported system MOL2 files where RDKit's
+    native MOL2 reader rejects force-field atom types like ``ho`` / ``ca``.
+    """
+    try:
+        from rdkit import Chem
+        from rdkit import Geometry as Geom
+    except Exception as e:  # pragma: no cover
+        raise RuntimeError("RDKit is required to read MOL2") from e
+
+    atoms: list[dict[str, object]] = []
+    bonds: list[tuple[int, int, str]] = []
+    section = None
+    for raw in Path(mol2_path).read_text(encoding="utf-8", errors="replace").splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        upper = line.upper()
+        if upper.startswith("@<TRIPOS>ATOM"):
+            section = "atom"
+            continue
+        if upper.startswith("@<TRIPOS>BOND"):
+            section = "bond"
+            continue
+        if upper.startswith("@<TRIPOS>"):
+            section = None
+            continue
+
+        if section == "atom":
+            parts = line.split()
+            if len(parts) < 6:
+                continue
+            try:
+                atom_id = int(parts[0])
+                atom_name = str(parts[1])
+                x = float(parts[2])
+                y = float(parts[3])
+                z = float(parts[4])
+                atom_type = str(parts[5])
+                charge = float(parts[-1]) if len(parts) >= 9 else 0.0
+            except Exception:
+                continue
+            atoms.append(
+                {
+                    "id": atom_id,
+                    "name": atom_name,
+                    "type": atom_type,
+                    "x": x,
+                    "y": y,
+                    "z": z,
+                    "charge": charge,
+                    "element": _guess_element_from_mol2_fields(atom_name, atom_type),
+                }
+            )
+            continue
+
+        if section == "bond":
+            parts = line.split()
+            if len(parts) < 4:
+                continue
+            try:
+                bonds.append((int(parts[1]), int(parts[2]), str(parts[3]).lower()))
+            except Exception:
+                continue
+
+    if not atoms:
+        raise RuntimeError(f"Failed to read mol2: {mol2_path}")
+
+    rw = Chem.RWMol()
+    atom_id_to_idx: dict[int, int] = {}
+    for item in atoms:
+        rd_atom = Chem.Atom(str(item["element"]))
+        rd_atom.SetNoImplicit(True)
+        idx = int(rw.AddAtom(rd_atom))
+        atom_id_to_idx[int(item["id"])] = idx
+        atom_ref = rw.GetAtomWithIdx(idx)
+        atom_ref.SetProp("_TriposAtomName", str(item["name"]))
+        atom_ref.SetProp("_TriposAtomType", str(item["type"]))
+        atom_ref.SetDoubleProp(str(charge_prop), float(item["charge"]))
+        if also_resp:
+            atom_ref.SetDoubleProp("RESP", float(item["charge"]))
+
+    for a1, a2, btype in bonds:
+        if a1 not in atom_id_to_idx or a2 not in atom_id_to_idx:
+            continue
+        bond_type = Chem.BondType.SINGLE
+        if btype == "2":
+            bond_type = Chem.BondType.DOUBLE
+        elif btype == "3":
+            bond_type = Chem.BondType.TRIPLE
+        elif btype == "ar":
+            bond_type = Chem.BondType.AROMATIC
+        try:
+            rw.AddBond(atom_id_to_idx[a1], atom_id_to_idx[a2], bond_type)
+            if btype == "ar":
+                bond = rw.GetBondBetweenAtoms(atom_id_to_idx[a1], atom_id_to_idx[a2])
+                if bond is not None:
+                    bond.SetIsAromatic(True)
+                rw.GetAtomWithIdx(atom_id_to_idx[a1]).SetIsAromatic(True)
+                rw.GetAtomWithIdx(atom_id_to_idx[a2]).SetIsAromatic(True)
+        except Exception:
+            continue
+
+    mol = rw.GetMol()
+    conf = Chem.Conformer(int(len(atoms)))
+    conf.Set3D(True)
+    for idx, item in enumerate(atoms):
+        conf.SetAtomPosition(
+            idx,
+            Geom.Point3D(float(item["x"]), float(item["y"]), float(item["z"])),
+        )
+    mol.AddConformer(conf, assignId=True)
+    return mol
+
+
 def read_mol2_with_charges(
     mol2_path: Path,
     *,
@@ -103,9 +342,16 @@ def read_mol2_with_charges(
     except Exception as e:
         raise RuntimeError("RDKit is required to read MOL2") from e
 
-    mol = rdmolfiles.MolFromMol2File(str(mol2_path), sanitize=bool(sanitize), removeHs=bool(removeHs))
+    try:
+        mol = rdmolfiles.MolFromMol2File(str(mol2_path), sanitize=bool(sanitize), removeHs=bool(removeHs))
+    except Exception:
+        mol = None
     if mol is None:
-        raise RuntimeError(f"Failed to read mol2: {mol2_path}")
+        mol = _read_mol2_with_custom_parser(
+            Path(mol2_path),
+            charge_prop=str(charge_prop),
+            also_resp=bool(also_resp),
+        )
 
     charges = _parse_mol2_atom_charges(Path(mol2_path))
     if len(charges) == int(mol.GetNumAtoms()):

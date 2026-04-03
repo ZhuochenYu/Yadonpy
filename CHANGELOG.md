@@ -1,3 +1,7 @@
+## 0.8.83 (2026-04-03)
+
+- io/mol2 + tests/test_mol2.py: add a permissive MOL2 fallback reader for exported system geometries so GAFF/ParmEd atom types such as `ho` and `ca` no longer break the graphite/polymer/electrolyte confined-slab reload path when RDKit's native MOL2 parser rejects them.
+
 ## 0.8.82 (2026-04-03)
 
 - interface/sandwich + tests/test_sandwich_workflow: make the graphite-polymer-electrolyte sandwich builder default to the more physical `real bulk -> dense slab cut -> graphite-XY confined slab pre-relaxation -> stack -> final relax` path, including explicit per-phase confined-slab summaries and a low-noise `sandwich_progress.json` progress file;
