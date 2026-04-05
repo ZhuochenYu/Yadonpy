@@ -1,3 +1,7 @@
+## 0.8.89 (2026-04-06)
+
+- gmx/analysis/plateau + gmx/analysis/rg_convergence + sim/analyzer + tests/test_eq_plateau_threshold.py + tests/test_rg_convergence.py: make the equilibration gate treat short smoke-length thermo/Rg series as valid inputs instead of hard-failing below 20 frames, using full-series fluctuation checks for short density traces and accepting short-but-valid Rg series; this prevents Example 08 confined polymer slabs from getting stuck in repeated additional equilibration rounds solely because the sampled analysis window is short.
+
 ## 0.8.88 (2026-04-06)
 
 - core/data_dir + tests/test_data_dir: when the bundled default MolDB contains a more complete ready record than an existing stale user-side record with the same object key, refresh that bundled record in place during initialization without touching unrelated user files; this lets Example 08 reuse shipped ready electrolyte/polymer variants instead of getting stuck on older not-ready records in `~/.yadonpy/moldb`.

@@ -36,7 +36,7 @@ def check_plateau(
         raise ValueError("check_plateau expects 1D y")
 
     n = len(t_ps)
-    if n < 10:
+    if n < 5:
         return PlateauResult(
             ok=False,
             slope=float("nan"),
@@ -97,7 +97,7 @@ def find_plateau_start(
         raise ValueError("find_plateau_start expects 1D y")
 
     n = len(t_ps)
-    if n < 20:
+    if n < 5:
         return PlateauResult(
             ok=False,
             slope=float("nan"),
@@ -106,8 +106,21 @@ def find_plateau_start(
             rel_std=float("nan"),
             window_start_time_ps=float("nan"),
         )
+    if n < 20:
+        res = check_plateau(
+            t_ps,
+            y,
+            tail_frac=1.0,
+            slope_threshold_per_ps=slope_threshold_per_ps,
+            rel_std_threshold=rel_std_threshold,
+        )
+        # For short smoke / probe trajectories, the linear slope estimate is noisy.
+        # Treat the full-series relative fluctuation as the primary stability signal.
+        res.ok = bool(np.isfinite(res.mean) and np.isfinite(res.rel_std) and res.rel_std <= float(rel_std_threshold))
+        res.window_start_time_ps = float(t_ps[0]) if len(t_ps) else float("nan")
+        return res
 
-    min_window = int(max(10, math.floor(float(min_window_frac) * n)))
+    min_window = int(max(5, math.floor(float(min_window_frac) * n)))
     step = int(max(1, math.floor(float(step_frac) * n)))
 
     best = check_plateau(

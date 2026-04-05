@@ -148,7 +148,7 @@ def find_rg_convergence(
             comps = comps[mask]
 
     n = len(t)
-    if n < 20:
+    if n < 5:
         return RgConvergenceResult(
             ok=False,
             converged_by="insufficient_data",
@@ -170,7 +170,7 @@ def find_rg_convergence(
             sd_max_rel=float("nan"),
         )
 
-    min_window = int(max(10, math.floor(float(min_window_frac) * n)))
+    min_window = int(max(5, math.floor(float(min_window_frac) * n)))
     step = int(max(1, math.floor(float(step_frac) * n)))
     w = int(max(5, math.floor(float(window_frac) * n)))
     w = min(w, n)

@@ -1013,7 +1013,7 @@ class AnalyzeResult:
             except Exception:
                 rg_components_nm = None
 
-        if rg_nm.size < 10:
+        if rg_nm.size < 5:
             return None
         return {"t_ps": t_ps, "rg_nm": rg_nm, "rg_components_nm": rg_components_nm, "group": grp}
 
