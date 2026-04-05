@@ -16,6 +16,7 @@ from yadonpy.interface.sandwich import (
     SandwichRelaxationSpec,
     _covered_lateral_replicas,
     _compact_packed_cell_z_by_molecule_centers,
+    _ensure_system_group_in_ndx,
     _initial_bulk_pack_density,
     _augment_sandwich_ndx,
     _build_stack_checks,
@@ -85,6 +86,27 @@ def test_augment_sandwich_ndx_adds_phase_groups(tmp_path: Path):
     assert groups["POLYMER"] == [3, 4, 5]
     assert groups["ELECTROLYTE"] == [6, 7, 8, 9, 10, 11]
     assert groups["MOBILE"] == [3, 4, 5, 6, 7, 8, 9, 10, 11]
+
+
+def test_ensure_system_group_in_ndx_promotes_uppercase_system(tmp_path: Path):
+    ndx = tmp_path / "system.ndx"
+    ndx.write_text(
+        "\n".join(
+            [
+                "[ SYSTEM ]",
+                "1 2 3",
+                "",
+                "[ POLYMER ]",
+                "1 2",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    groups = _ensure_system_group_in_ndx(ndx)
+    assert groups["System"] == [1, 2, 3]
+    text = ndx.read_text(encoding="utf-8")
+    assert "[ System ]" in text
 
 
 def test_sandwich_relaxation_stages_freeze_graphite_and_keep_xy_fixed():

@@ -1,3 +1,7 @@
+## 0.8.87 (2026-04-05)
+
+- interface/sandwich + tests/test_sandwich_workflow: ensure confined-slab exported `system.ndx` files always contain the exact `System` group name expected by the wall-backed GROMACS stages, even if the upstream exporter writes `SYSTEM` or only phase-specific groups; this unblocks the confined polymer pre-relaxation workflow after energy minimization.
+
 ## 0.8.86 (2026-04-05)
 
 - interface/sandwich + tests/test_sandwich_workflow: when a prepared confined-slab block reloads with polymer chains laterally unwrapped across multiple periodic images, restore its lateral periodic representation by wrapping x/y coordinates back into the graphite-matched primary box before confined pre-relaxation; this keeps Example 08 polymer slabs compatible with periodic GROMACS input even when canonicalized whole-molecule coordinates span beyond the target footprint.

@@ -484,6 +484,25 @@ def _append_group(groups: list[tuple[str, list[int]]], existing: dict[str, list[
         groups.append((name, merged_sorted))
 
 
+def _ensure_system_group_in_ndx(ndx_path: Path) -> dict[str, list[int]]:
+    existing = read_ndx_groups(ndx_path)
+    if "System" in existing:
+        return {str(name): list(idxs) for name, idxs in existing.items()}
+
+    candidates = (
+        existing.get("SYSTEM")
+        or existing.get("system")
+        or sorted({int(idx) for idxs in existing.values() for idx in idxs})
+    )
+    merged_groups: list[tuple[str, list[int]]] = [("System", list(candidates))]
+    for name, idxs in existing.items():
+        if str(name) == "System":
+            continue
+        merged_groups.append((str(name), list(idxs)))
+    _write_ndx(ndx_path, merged_groups)
+    return {str(name): list(idxs) for name, idxs in merged_groups}
+
+
 def _augment_sandwich_ndx(
     *,
     ndx_path: Path,
@@ -1158,6 +1177,7 @@ def _run_confined_phase_relaxation(
         charge_method="RESP",
         write_system_mol2=False,
     )
+    _ensure_system_group_in_ndx(export.system_ndx)
     wall_atomtype, _available = _resolve_route_b_wall_atomtype(export.system_top, None)
     if wall_atomtype is None:
         raise RuntimeError(f"Could not resolve a valid wall atomtype for confined {label} slab relaxation.")
