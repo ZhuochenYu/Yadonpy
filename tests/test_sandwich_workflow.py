@@ -252,6 +252,36 @@ def test_rebox_block_for_phase_confinement_wraps_molecule_centers_into_target_xy
     assert summary["target_xy_nm"] == [2.0, 2.0]
 
 
+def test_rebox_block_for_phase_confinement_restores_periodic_lateral_coordinates():
+    mol = Chem.RWMol()
+    for _ in range(2):
+        atom = Chem.Atom("C")
+        atom.SetNoImplicit(True)
+        mol.AddAtom(atom)
+    block = mol.GetMol()
+    conf = Chem.Conformer(block.GetNumAtoms())
+    conf.Set3D(True)
+    conf.SetAtomPosition(0, Geom.Point3D(0.2, 2.0, 4.0))
+    conf.SetAtomPosition(1, Geom.Point3D(21.8, 18.5, 6.0))
+    block.AddConformer(conf, assignId=True)
+    setattr(block, "cell", SimpleNamespace(xhi=20.0, xlo=0.0, yhi=20.0, ylo=0.0, zhi=18.0, zlo=0.0))
+
+    confined, summary, note = _rebox_block_for_phase_confinement(
+        block=block,
+        target_xy_nm=(2.0, 2.0),
+        target_thickness_nm=1.5,
+        vacuum_padding_ang=12.0,
+    )
+
+    coords = confined.GetConformer(0).GetPositions()
+    xs = [float(x[0]) for x in coords]
+    ys = [float(x[1]) for x in coords]
+    assert max(xs) <= 20.0
+    assert max(ys) <= 20.0
+    assert summary["periodic_lateral_wrap_applied"] is True
+    assert "restored lateral periodic coordinates" in note
+
+
 def test_covered_lateral_replicas_prefers_minimal_replicas_that_fit_within_strain():
     reps = _covered_lateral_replicas(
         source_box_nm=(1.8, 2.3, 3.5),

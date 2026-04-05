@@ -944,6 +944,7 @@ def _rebox_block_for_phase_confinement(
     coords = np.asarray(conf.GetPositions(), dtype=float).copy()
     if coords.size == 0:
         raise RuntimeError("Cannot confine an empty slab block.")
+    periodic_lateral_wrap_applied = False
 
     if species is not None and counts is not None:
         try:
@@ -974,6 +975,18 @@ def _rebox_block_for_phase_confinement(
     box_z_ang = slot_z_ang + 2.0 * float(vacuum_padding_ang)
 
     if float(spans[0]) > target_x_ang + 1.0e-6 or float(spans[1]) > target_y_ang + 1.0e-6:
+        if target_x_ang > 0.0:
+            coords[:, 0] = np.mod(coords[:, 0], target_x_ang)
+        if target_y_ang > 0.0:
+            coords[:, 1] = np.mod(coords[:, 1], target_y_ang)
+        periodic_lateral_wrap_applied = True
+        mins = np.min(coords, axis=0)
+        maxs = np.max(coords, axis=0)
+        spans = maxs - mins
+        slot_z_ang = max(float(target_thickness_nm) * 10.0, float(spans[2]))
+        box_z_ang = slot_z_ang + 2.0 * float(vacuum_padding_ang)
+
+    if float(spans[0]) > target_x_ang + 1.0e-6 or float(spans[1]) > target_y_ang + 1.0e-6:
         raise RuntimeError(
             "Prepared slab is laterally larger than the graphite-matched target footprint "
             f"({float(spans[0]) / 10.0:.4f}, {float(spans[1]) / 10.0:.4f}) nm vs "
@@ -1000,11 +1013,12 @@ def _rebox_block_for_phase_confinement(
         "occupied_thickness_nm": float(spans[2]) / 10.0,
         "confined_box_nm": [target_x_ang / 10.0, target_y_ang / 10.0, box_z_ang / 10.0],
         "vacuum_padding_ang": float(vacuum_padding_ang),
+        "periodic_lateral_wrap_applied": bool(periodic_lateral_wrap_applied),
     }
-    note = (
-        "reboxed the prepared slab onto the graphite master footprint and inserted "
-        f"{float(vacuum_padding_ang) / 10.0:.3f} nm top/bottom vacuum before confined slab relaxation"
-    )
+    note = "reboxed the prepared slab onto the graphite master footprint"
+    if periodic_lateral_wrap_applied:
+        note += " and restored lateral periodic coordinates"
+    note += f" and inserted {float(vacuum_padding_ang) / 10.0:.3f} nm top/bottom vacuum before confined slab relaxation"
     return confined, summary, note
 
 

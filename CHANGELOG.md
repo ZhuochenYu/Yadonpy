@@ -1,3 +1,7 @@
+## 0.8.86 (2026-04-05)
+
+- interface/sandwich + tests/test_sandwich_workflow: when a prepared confined-slab block reloads with polymer chains laterally unwrapped across multiple periodic images, restore its lateral periodic representation by wrapping x/y coordinates back into the graphite-matched primary box before confined pre-relaxation; this keeps Example 08 polymer slabs compatible with periodic GROMACS input even when canonicalized whole-molecule coordinates span beyond the target footprint.
+
 ## 0.8.85 (2026-04-05)
 
 - interface/sandwich + tests/test_sandwich_workflow: make confined-slab slab preparation choose the smallest lateral replica counts that can still be strained onto the graphite target footprint within a controlled tolerance, and only fall back to full coverage replicas when no near-match exists; this prevents Example 08 polymer slabs from being over-replicated to boxes much larger than the graphite master XY before confined pre-relaxation.
