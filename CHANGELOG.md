@@ -1,3 +1,7 @@
+## 0.8.88 (2026-04-06)
+
+- core/data_dir + tests/test_data_dir: when the bundled default MolDB contains a more complete ready record than an existing stale user-side record with the same object key, refresh that bundled record in place during initialization without touching unrelated user files; this lets Example 08 reuse shipped ready electrolyte/polymer variants instead of getting stuck on older not-ready records in `~/.yadonpy/moldb`.
+
 ## 0.8.87 (2026-04-05)
 
 - interface/sandwich + tests/test_sandwich_workflow: ensure confined-slab exported `system.ndx` files always contain the exact `System` group name expected by the wall-backed GROMACS stages, even if the upstream exporter writes `SYSTEM` or only phase-specific groups; this unblocks the confined polymer pre-relaxation workflow after energy minimization.

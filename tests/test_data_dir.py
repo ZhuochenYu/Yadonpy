@@ -88,3 +88,74 @@ def test_import_bundle_archive_requires_directory(tmp_path: Path):
         assert "directory-based" in str(exc)
     else:
         raise AssertionError("expected RuntimeError for archive input")
+
+
+def test_ensure_initialized_refreshes_stale_unmanaged_ready_record(tmp_path: Path, monkeypatch):
+    data_root = tmp_path / "data_root"
+    bundle = tmp_path / "seed_repo" / "moldb"
+    bundle_obj = bundle / "objects" / "abc123"
+    bundle_obj.mkdir(parents=True, exist_ok=True)
+    (bundle_obj / "manifest.json").write_text(
+        json.dumps(
+            {
+                "key": "abc123",
+                "name": "ready-record",
+                "ready": True,
+                "variants": {
+                    "resp_default": {
+                        "variant_id": "resp_default",
+                        "ready": True,
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (bundle_obj / "charges.json").write_text(
+        json.dumps({"variant_id": "resp_default", "total_charge": -1.0}),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("YADONPY_HOME", str(data_root))
+    monkeypatch.setenv("YADONPY_DEFAULT_MOLDB", str(bundle))
+
+    layout = data_dir.ensure_initialized()
+    assert (layout.moldb_dir / "objects" / "abc123" / "manifest.json").exists()
+
+    stale_obj = layout.moldb_dir / "objects" / "abc123"
+    (stale_obj / "manifest.json").write_text(
+        json.dumps(
+            {
+                "key": "abc123",
+                "name": "stale-record",
+                "ready": False,
+                "variants": {
+                    "resp_default": {
+                        "variant_id": "resp_default",
+                        "ready": False,
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (stale_obj / "charges.json").write_text(
+        json.dumps({"variant_id": "resp_default", "total_charge": 0.0}),
+        encoding="utf-8",
+    )
+    user_note = stale_obj / "user_note.txt"
+    user_note.write_text("keep me", encoding="utf-8")
+    layout.bundle_state.unlink()
+
+    layout = data_dir.ensure_initialized()
+    state = json.loads(layout.bundle_state.read_text(encoding="utf-8"))
+    manifest = json.loads((stale_obj / "manifest.json").read_text(encoding="utf-8"))
+    charges = json.loads((stale_obj / "charges.json").read_text(encoding="utf-8"))
+
+    assert manifest["name"] == "ready-record"
+    assert manifest["ready"] is True
+    assert manifest["variants"]["resp_default"]["ready"] is True
+    assert charges["total_charge"] == -1.0
+    assert user_note.read_text(encoding="utf-8") == "keep me"
+    assert state["refreshed_stale_records"] == ["objects/abc123"]
+    assert state["updated"] == 2

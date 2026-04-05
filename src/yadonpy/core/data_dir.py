@@ -144,6 +144,50 @@ def _write_bundle_state(layout: DataLayout, payload: dict[str, Any]) -> None:
     )
 
 
+def _safe_load_json(path: Path) -> dict[str, Any]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(payload, dict):
+            return payload
+    except Exception:
+        pass
+    return {}
+
+
+def _manifest_ready_score(payload: dict[str, Any]) -> tuple[int, int, int]:
+    variants = payload.get("variants") or {}
+    ready_variants = 0
+    total_variants = 0
+    if isinstance(variants, dict):
+        total_variants = len(variants)
+        for meta in variants.values():
+            if isinstance(meta, dict) and bool(meta.get("ready", False)):
+                ready_variants += 1
+    legacy_ready = 1 if bool(payload.get("ready", False)) else 0
+    return (legacy_ready, int(ready_variants), int(total_variants))
+
+
+def _bundle_record_prefixes_to_refresh(
+    *,
+    layout: DataLayout,
+    bundle_dir: Path,
+    managed_files: set[str],
+) -> set[str]:
+    refresh_prefixes: set[str] = set()
+    for src_manifest in sorted(bundle_dir.glob("objects/*/manifest.json")):
+        rel = src_manifest.relative_to(bundle_dir).as_posix()
+        if rel in managed_files:
+            continue
+        dst_manifest = layout.moldb_dir / rel
+        if not dst_manifest.exists():
+            continue
+        src_payload = _safe_load_json(src_manifest)
+        dst_payload = _safe_load_json(dst_manifest)
+        if _manifest_ready_score(src_payload) > _manifest_ready_score(dst_payload):
+            refresh_prefixes.add(src_manifest.relative_to(bundle_dir).parent.as_posix())
+    return refresh_prefixes
+
+
 def sync_bundle_dir(layout: DataLayout, bundle_dir: Path) -> dict[str, Any]:
     """Seed or refresh the default MolDB directory into the active data root."""
     bundle_dir = bundle_dir.expanduser().resolve()
@@ -152,6 +196,11 @@ def sync_bundle_dir(layout: DataLayout, bundle_dir: Path) -> dict[str, Any]:
 
     previous_state = _load_bundle_state(layout)
     managed_files = set(previous_state.get("files", []))
+    refresh_prefixes = _bundle_record_prefixes_to_refresh(
+        layout=layout,
+        bundle_dir=bundle_dir,
+        managed_files=managed_files,
+    )
     copied = 0
     updated = 0
     skipped = 0
@@ -162,13 +211,15 @@ def sync_bundle_dir(layout: DataLayout, bundle_dir: Path) -> dict[str, Any]:
         dst = layout.moldb_dir / rel
         dst.parent.mkdir(parents=True, exist_ok=True)
         tracked_files.append(rel)
+        rel_parts = Path(rel).parts
+        record_prefix = "/".join(rel_parts[:2]) if len(rel_parts) >= 2 else rel
 
         if not dst.exists():
             shutil.copy2(src, dst)
             copied += 1
             continue
 
-        if rel in managed_files:
+        if rel in managed_files or record_prefix in refresh_prefixes:
             same = False
             try:
                 same = filecmp.cmp(src, dst, shallow=False)
@@ -188,6 +239,7 @@ def sync_bundle_dir(layout: DataLayout, bundle_dir: Path) -> dict[str, Any]:
         "copied": copied,
         "updated": updated,
         "skipped_existing_user_files": skipped,
+        "refreshed_stale_records": sorted(refresh_prefixes),
     }
     _write_bundle_state(layout, summary)
     return summary
