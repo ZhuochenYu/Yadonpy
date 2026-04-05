@@ -22,8 +22,11 @@ from yadonpy.interface.sandwich import (
     _augment_sandwich_ndx,
     _adaptive_stack_gaps_ang,
     _build_stack_checks,
+    _compress_phase_block_z_to_target_thickness,
     _confined_summary_score,
+    _confined_phase_report,
     _needs_confined_rescue,
+    _phase_local_density_summary,
     _phase_confined_relaxation_stages,
     _rebox_block_for_phase_confinement,
     _sandwich_relaxation_stages,
@@ -166,6 +169,8 @@ def test_build_stack_checks_reports_phase_order(tmp_path: Path):
     assert checks["observed_order"] == ["GRAPHITE", "POLYMER", "ELECTROLYTE"]
     assert checks["graphite_polymer_gap_nm"] > 0.0
     assert checks["polymer_electrolyte_gap_nm"] > 0.0
+    assert checks["graphite_polymer_core_gap_nm"] > 0.0
+    assert checks["polymer_electrolyte_core_gap_nm"] > 0.0
 
 
 def test_build_stack_checks_unwraps_phase_crossing_periodic_boundary(tmp_path: Path):
@@ -195,7 +200,77 @@ def test_build_stack_checks_unwraps_phase_crossing_periodic_boundary(tmp_path: P
         ndx_groups={"GRAPHITE": [1, 2], "POLYMER": [3, 4], "ELECTROLYTE": [5, 6]},
     )
     assert checks["polymer_electrolyte_gap_nm"] > 0.0
+    assert checks["polymer_electrolyte_core_gap_nm"] > 0.0
     assert checks["phases"]["ELECTROLYTE"]["mean_z_nm"] > checks["phases"]["POLYMER"]["mean_z_nm"]
+
+
+def test_confined_phase_report_prefers_center_bulk_like_density():
+    report = _confined_phase_report(
+        label="polymer",
+        species_names=("CMC6", "Na"),
+        counts=(8, 40),
+        target_density_g_cm3=1.50,
+        summary={
+            "box_nm": [2.3, 4.1, 6.6],
+            "occupied_thickness_nm": 4.0,
+            "occupied_density_g_cm3": 0.84,
+            "center_bulk_like_density_g_cm3": 1.57,
+        },
+    )
+    assert report.density_g_cm3 == pytest.approx(1.57)
+    assert report.occupied_density_g_cm3 == pytest.approx(0.84)
+    assert report.bulk_like_density_g_cm3 == pytest.approx(1.57)
+
+
+def test_compress_phase_block_z_to_target_thickness_shrinks_overdilated_slab():
+    cell = Chem.RWMol()
+    for _ in range(2):
+        atom = Chem.Atom("C")
+        atom.SetNoImplicit(True)
+        cell.AddAtom(atom)
+    out = cell.GetMol()
+    conf = Chem.Conformer(out.GetNumAtoms())
+    conf.Set3D(True)
+    conf.SetAtomPosition(0, Geom.Point3D(0.0, 0.0, 0.0))
+    conf.SetAtomPosition(1, Geom.Point3D(0.0, 0.0, 60.0))
+    out.AddConformer(conf, assignId=True)
+
+    compressed, summary = _compress_phase_block_z_to_target_thickness(
+        block=out,
+        target_thickness_nm=4.0,
+    )
+
+    coords = compressed.GetConformer(0).GetPositions()
+    z_span = max(float(pos[2]) for pos in coords) - min(float(pos[2]) for pos in coords)
+    assert summary["z_compression_applied"] is True
+    assert summary["z_compression_scale"] < 1.0
+    assert z_span == pytest.approx(40.0, rel=1e-3)
+
+
+def test_phase_local_density_summary_uses_atomwise_mass_not_whole_molecule_com(tmp_path: Path):
+    mol = Chem.RWMol()
+    for _ in range(2):
+        atom = Chem.Atom("C")
+        atom.SetNoImplicit(True)
+        mol.AddAtom(atom)
+    species = [mol.GetMol()]
+    gro = tmp_path / "slab.gro"
+    gro.write_text(
+        "\n".join(
+            [
+                "dummy",
+                "2",
+                "    1POL     C    1   0.000   0.000   0.000",
+                "    1POL     C    2   0.000   0.000   1.000",
+                "2.00000 2.00000 2.00000",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    summary = _phase_local_density_summary(gro_path=gro, species=species, counts=[1])
+    assert summary["occupied_density_g_cm3"] > 0.0
+    assert summary["center_bulk_like_density_g_cm3"] == pytest.approx(0.0)
 
 
 def test_compact_packed_cell_z_by_molecule_centers_preserves_order_and_target_box():

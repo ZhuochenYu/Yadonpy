@@ -138,6 +138,8 @@ class SandwichPhaseReport:
     species_names: tuple[str, ...]
     counts: tuple[int, ...]
     target_density_g_cm3: float | None = None
+    occupied_density_g_cm3: float | None = None
+    bulk_like_density_g_cm3: float | None = None
 
 
 @dataclass(frozen=True)
@@ -183,7 +185,7 @@ def default_cmcna_polymer_spec(**kwargs) -> PolymerSlabSpec:
         monomer_ratio=(12.0, 26.0, 27.0, 35.0),
         terminal=MoleculeSpec(name="CMC_terminal", smiles="[H][*]", require_ready=False, prefer_db=False),
         dp=60,
-        target_density_g_cm3=1.45,
+        target_density_g_cm3=1.50,
         slab_z_nm=4.2,
         min_chain_count=2,
         charge_scale=1.0,
@@ -396,6 +398,18 @@ def _prepare_polymer_phase_species(*, ff, ion_ff, polymer: PolymerSlabSpec, rela
                 f"polymer formal charge per chain={chain_formal_charge}; added {counterion_count} {polymer.counterion.name} counterions to neutralize the slab"
             )
 
+    if polymer.chain_count is not None:
+        phase_mass_amu = sum(float(molecular_weight(mol, strict=True)) * int(count) for mol, count in zip(species, counts))
+        phase_volume_cm3 = float(box_nm[0] * box_nm[1] * box_nm[2]) * 1.0e-21
+        projected_density = 0.0 if phase_volume_cm3 <= 0.0 else float(phase_mass_amu / _AVOGADRO / phase_volume_cm3)
+        notes.append(
+            f"explicit polymer chain_count={int(chain_count)} projects bulk-like phase density≈{projected_density:.3f} g/cm^3 at the requested graphite footprint"
+        )
+        if projected_density < 0.90 * float(polymer.target_density_g_cm3):
+            notes.append(
+                f"warning: explicit chain_count={int(chain_count)} underfills the target density {float(polymer.target_density_g_cm3):.3f} g/cm^3; increase chain_count or allow automatic estimation for a denser slab"
+            )
+
     return {
         "chain": polymer_chain,
         "dp": int(polymer_dp),
@@ -459,10 +473,15 @@ def _build_stack_checks(*, gro_path: Path, ndx_groups: dict[str, list[int]]) -> 
         if not members:
             continue
         values = _unwrap_phase_z([float(z_coords[idx - 1]) for idx in members], box_z_nm=float(box_z_nm))
+        ordered = sorted(values)
+        p05 = float(np.percentile(ordered, 5.0))
+        p95 = float(np.percentile(ordered, 95.0))
         phase_stats[name] = {
             "min_z_nm": min(values),
             "mean_z_nm": sum(values) / float(len(values)),
             "max_z_nm": max(values),
+            "p05_z_nm": p05,
+            "p95_z_nm": p95,
         }
     payload["phases"] = phase_stats
     if len(phase_stats) == 3:
@@ -472,6 +491,8 @@ def _build_stack_checks(*, gro_path: Path, ndx_groups: dict[str, list[int]]) -> 
         payload["is_expected_order"] = observed == ["GRAPHITE", "POLYMER", "ELECTROLYTE"]
         payload["graphite_polymer_gap_nm"] = float(phase_stats["POLYMER"]["min_z_nm"] - phase_stats["GRAPHITE"]["max_z_nm"])
         payload["polymer_electrolyte_gap_nm"] = float(phase_stats["ELECTROLYTE"]["min_z_nm"] - phase_stats["POLYMER"]["max_z_nm"])
+        payload["graphite_polymer_core_gap_nm"] = float(phase_stats["POLYMER"]["p05_z_nm"] - phase_stats["GRAPHITE"]["p95_z_nm"])
+        payload["polymer_electrolyte_core_gap_nm"] = float(phase_stats["ELECTROLYTE"]["p05_z_nm"] - phase_stats["POLYMER"]["p95_z_nm"])
     return payload
 
 
@@ -667,6 +688,8 @@ def _phase_report(*, label: str, counts: Sequence[int], mols: Sequence, work_dir
         species_names=tuple(profile.species_names),
         counts=tuple(profile.counts),
         target_density_g_cm3=(None if target_density_g_cm3 is None else float(target_density_g_cm3)),
+        occupied_density_g_cm3=float(profile.density_g_cm3),
+        bulk_like_density_g_cm3=float(profile.density_g_cm3),
     )
 
 
@@ -1081,19 +1104,26 @@ def _phase_local_density_summary(
     center_mid = 0.5 * (occupied_min + occupied_max)
     center_lo = center_mid - 0.5 * center_window
     center_hi = center_mid + 0.5 * center_window
-    center_mass_amu = 0.0
     positions_arr = np.asarray(positions, dtype=float)
-    for mol, (start, stop) in zip(
-        [mol for mol, count in zip(species, counts) for _ in range(int(count))],
-        blocks,
-    ):
-        masses = np.asarray([float(atom.GetMass()) for atom in mol.GetAtoms()], dtype=float)
-        z = positions_arr[start:stop, 2]
-        if z.size != masses.size or z.size == 0:
-            continue
-        com_z = float(np.average(z, weights=masses))
-        if center_lo <= com_z <= center_hi:
-            center_mass_amu += float(np.sum(masses))
+    all_masses: list[float] = []
+    for mol, count in zip(species, counts):
+        atom_masses = [float(atom.GetMass()) for atom in mol.GetAtoms()]
+        for _ in range(int(count)):
+            all_masses.extend(atom_masses)
+    if len(all_masses) != len(positions):
+        return {
+            "box_nm": [float(x) for x in box_nm],
+            "occupied_z_range_nm": [occupied_min, occupied_max],
+            "occupied_thickness_nm": occupied_thickness,
+            "occupied_density_g_cm3": occupied_density,
+            "center_bulk_like_window_nm": [center_lo, center_hi],
+            "center_bulk_like_density_g_cm3": 0.0,
+            "wrapped_across_z_boundary": bool((occupied_max - occupied_min) > 0.90 * float(box_nm[2])),
+            "block_alignment_ok": False,
+        }
+    mass_arr = np.asarray(all_masses, dtype=float)
+    center_mask = (positions_arr[:, 2] >= center_lo) & (positions_arr[:, 2] <= center_hi)
+    center_mass_amu = float(np.sum(mass_arr[center_mask]))
     center_volume_cm3 = float(box_nm[0] * box_nm[1] * center_window) * 1.0e-21
     center_density = 0.0 if center_volume_cm3 <= 0.0 else float(center_mass_amu / _AVOGADRO / center_volume_cm3)
     return {
@@ -1132,14 +1162,24 @@ def _phase_surface_shell_nm(summary: dict[str, object]) -> float:
     return 0.5 * max(0.0, occupied - core)
 
 
+def _representative_phase_density(summary: dict[str, object]) -> float:
+    try:
+        center_density = float(summary.get("center_bulk_like_density_g_cm3", 0.0))
+    except Exception:
+        center_density = 0.0
+    if center_density > 0.0:
+        return center_density
+    try:
+        return float(summary.get("occupied_density_g_cm3", 0.0))
+    except Exception:
+        return 0.0
+
+
 def _phase_gap_penalty_nm(summary: dict[str, object], *, target_density_g_cm3: float | None) -> float:
     penalty = 0.0
     if bool(summary.get("wrapped_across_z_boundary", False)):
         penalty += 0.20
-    try:
-        occupied_density = float(summary.get("occupied_density_g_cm3", 0.0))
-    except Exception:
-        occupied_density = 0.0
+    occupied_density = _representative_phase_density(summary)
     if target_density_g_cm3 is not None and float(target_density_g_cm3) > 0.0:
         if occupied_density < 0.85 * float(target_density_g_cm3):
             penalty += 0.15
@@ -1245,14 +1285,67 @@ def _confined_phase_report(
     confined_box = tuple(float(x) for x in summary.get("box_nm", (0.0, 0.0, 0.0)))
     occupied_thickness = float(summary.get("occupied_thickness_nm", confined_box[2]))
     occupied_box = (float(confined_box[0]), float(confined_box[1]), float(occupied_thickness))
+    occupied_density = float(summary.get("occupied_density_g_cm3", 0.0))
+    bulk_like_density = float(summary.get("center_bulk_like_density_g_cm3", occupied_density))
     return SandwichPhaseReport(
         label=str(label),
         box_nm=occupied_box,
-        density_g_cm3=float(summary.get("occupied_density_g_cm3", 0.0)),
+        density_g_cm3=float(bulk_like_density if bulk_like_density > 0.0 else occupied_density),
         species_names=tuple(str(x) for x in species_names),
         counts=tuple(int(x) for x in counts),
         target_density_g_cm3=(None if target_density_g_cm3 is None else float(target_density_g_cm3)),
+        occupied_density_g_cm3=float(occupied_density),
+        bulk_like_density_g_cm3=float(bulk_like_density if bulk_like_density > 0.0 else occupied_density),
     )
+
+
+def _compress_phase_block_z_to_target_thickness(
+    *,
+    block,
+    target_thickness_nm: float,
+    species: Sequence | None = None,
+    counts: Sequence[int] | None = None,
+):
+    compressed = utils.deepcopy_mol(block)
+    conf = compressed.GetConformer(0)
+    coords = np.asarray(conf.GetPositions(), dtype=float).copy()
+    if coords.size == 0:
+        return compressed, {"z_compression_applied": False, "z_compression_scale": 1.0}
+
+    target_thickness_ang = max(float(target_thickness_nm) * 10.0, 1.0e-6)
+    z_min = float(np.min(coords[:, 2]))
+    z_max = float(np.max(coords[:, 2]))
+    current_thickness_ang = max(z_max - z_min, 1.0e-6)
+    if current_thickness_ang <= target_thickness_ang * 1.02:
+        return compressed, {"z_compression_applied": False, "z_compression_scale": 1.0}
+
+    center_z = 0.5 * (z_min + z_max)
+    scale = max(0.55, min(1.0, target_thickness_ang / current_thickness_ang))
+    applied = False
+
+    blocks: list[tuple[int, int]] = []
+    if species is not None and counts is not None:
+        try:
+            blocks = _molecule_atom_blocks(species=species, counts=counts)
+        except Exception:
+            blocks = []
+    if blocks and int(blocks[-1][1]) == int(compressed.GetNumAtoms()):
+        for start, stop in blocks:
+            frag = coords[start:stop]
+            if frag.size == 0:
+                continue
+            frag_center = float(np.mean(frag[:, 2]))
+            new_center = center_z + (frag_center - center_z) * scale
+            frag[:, 2] += new_center - frag_center
+            coords[start:stop] = frag
+        applied = True
+    else:
+        coords[:, 2] = center_z + (coords[:, 2] - center_z) * scale
+        applied = True
+
+    for idx, xyz in enumerate(coords):
+        conf.SetAtomPosition(idx, Geom.Point3D(float(xyz[0]), float(xyz[1]), float(xyz[2])))
+    return compressed, {"z_compression_applied": bool(applied), "z_compression_scale": float(scale)}
 
 
 def _normalize_confined_block_for_stack(
@@ -1312,6 +1405,7 @@ def _run_confined_phase_relaxation(
         source_block,
         round_relax: SandwichRelaxationSpec,
         vacuum_padding_ang: float,
+        compress_to_target: bool,
         export_dir: Path,
         relax_dir: Path,
     ) -> tuple[object, dict[str, object], Path, Path]:
@@ -1323,6 +1417,14 @@ def _run_confined_phase_relaxation(
             species=species,
             counts=counts,
         )
+        compression_summary = {"z_compression_applied": False, "z_compression_scale": 1.0}
+        if bool(compress_to_target):
+            confined_block, compression_summary = _compress_phase_block_z_to_target_thickness(
+                block=confined_block,
+                target_thickness_nm=float(target_thickness_nm),
+                species=species,
+                counts=counts,
+            )
         register_cell_species_metadata(
             confined_block,
             list(species),
@@ -1370,6 +1472,7 @@ def _run_confined_phase_relaxation(
             "target_thickness_nm": float(target_thickness_nm),
             "wall_atomtype": str(wall_atomtype),
             **rebox_summary,
+            **compression_summary,
             **density_summary,
             "relaxed_gro": str(relaxed_gro),
             "top_path": str(export.system_top),
@@ -1381,6 +1484,7 @@ def _run_confined_phase_relaxation(
         source_block=base_block,
         round_relax=relax,
         vacuum_padding_ang=max(12.0, float(relax.top_padding_ang)),
+        compress_to_target=False,
         export_dir=work_dir / "00_export",
         relax_dir=work_dir / "01_relax",
     )
@@ -1407,6 +1511,7 @@ def _run_confined_phase_relaxation(
             source_block=selected_block,
             round_relax=rescue_relax,
             vacuum_padding_ang=max(10.0, 0.85 * float(relax.top_padding_ang)),
+            compress_to_target=True,
             export_dir=work_dir / "02_rescue_export",
             relax_dir=work_dir / "02_rescue_relax",
         )
@@ -1539,6 +1644,8 @@ def _prepared_slab_phase_report(
         species_names=tuple(ordered_names),
         counts=tuple(ordered_counts),
         target_density_g_cm3=(None if target_density_g_cm3 is None else float(target_density_g_cm3)),
+        occupied_density_g_cm3=(0.0 if density is None else float(density)),
+        bulk_like_density_g_cm3=(0.0 if density is None else float(density)),
     )
 
 

@@ -33,7 +33,7 @@ if __name__ == "__main__":
         graphite=GraphiteSubstrateSpec(nx=6, ny=5, n_layers=3, edge_cap="H", name="GRAPH"),
         polymer=default_cmcna_polymer_spec(
             dp=60,
-            target_density_g_cm3=1.42,
+            target_density_g_cm3=1.50,
             slab_z_nm=4.6,
             min_chain_count=2,
             initial_pack_z_scale=1.34,

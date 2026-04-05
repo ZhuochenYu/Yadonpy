@@ -35,7 +35,7 @@ if __name__ == "__main__":
             dp=24,
             min_chain_count=2,
             slab_z_nm=3.8,
-            target_density_g_cm3=1.38,
+            target_density_g_cm3=1.50,
             initial_pack_z_scale=1.30,
             pack_retry=36,
             pack_retry_step=2200,
