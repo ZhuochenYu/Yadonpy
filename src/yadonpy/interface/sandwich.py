@@ -651,11 +651,24 @@ def _phase_report(*, label: str, counts: Sequence[int], mols: Sequence, work_dir
     )
 
 
-def _covered_lateral_replicas(*, source_box_nm: tuple[float, float, float], target_lengths_nm: tuple[float, float]) -> tuple[int, int]:
+def _covered_lateral_replicas(
+    *,
+    source_box_nm: tuple[float, float, float],
+    target_lengths_nm: tuple[float, float],
+    max_lateral_strain: float = 0.12,
+) -> tuple[int, int]:
     reps: list[int] = []
     for src, target in zip(source_box_nm[:2], target_lengths_nm):
         src_len = max(float(src), 1.0e-9)
-        reps.append(max(1, int(math.ceil(max(float(target), 0.0) / src_len))))
+        target_len = max(float(target), 0.0)
+        ceil_rep = max(1, int(math.ceil(target_len / src_len)))
+        best_rep = ceil_rep
+        for rep in range(1, ceil_rep + 1):
+            strain = abs(target_len / (src_len * float(rep)) - 1.0)
+            if strain <= float(max_lateral_strain):
+                best_rep = rep
+                break
+        reps.append(int(best_rep))
     return int(reps[0]), int(reps[1])
 
 
@@ -684,12 +697,17 @@ def _prepare_slab_from_equilibrated_bulk(
     restart: bool | None = None,
     surface_shell_nm: float = 0.80,
     core_guard_nm: float = 0.50,
+    max_lateral_strain: float = 0.12,
 ):
     out_dir = Path(out_dir)
     snapshot_builder = interface_builder.InterfaceBuilder(work_dir=out_dir / "00_snapshot", restart=restart)
     source = snapshot_builder.bulk_source(name=label, work_dir=bulk_work_dir)
     source_box_nm = read_equilibrated_box_nm(gro_path=source.representative_gro)
-    replicas_xy = _covered_lateral_replicas(source_box_nm=source_box_nm, target_lengths_nm=target_lengths_nm)
+    replicas_xy = _covered_lateral_replicas(
+        source_box_nm=source_box_nm,
+        target_lengths_nm=target_lengths_nm,
+        max_lateral_strain=float(max_lateral_strain),
+    )
     spec = interface_builder.SlabBuildSpec(
         axis="Z",
         target_thickness_nm=float(target_thickness_nm),
@@ -707,7 +725,10 @@ def _prepare_slab_from_equilibrated_bulk(
         target_lengths_nm=(float(target_lengths_nm[0]), float(target_lengths_nm[1])),
         replicas_xy=replicas_xy,
         target_thickness_nm=float(target_thickness_nm),
-        area_policy=interface_builder.AreaMismatchPolicy(reference_side="bottom", max_lateral_strain=0.08),
+        area_policy=interface_builder.AreaMismatchPolicy(
+            reference_side="bottom",
+            max_lateral_strain=float(max_lateral_strain),
+        ),
     )
     note = (
         f"{label} slab was cut from equilibrated bulk snapshot {source.representative_gro.name} "

@@ -252,8 +252,21 @@ def test_rebox_block_for_phase_confinement_wraps_molecule_centers_into_target_xy
     assert summary["target_xy_nm"] == [2.0, 2.0]
 
 
-def test_covered_lateral_replicas_ceil_to_cover_target_lengths():
-    reps = _covered_lateral_replicas(source_box_nm=(1.8, 2.3, 3.5), target_lengths_nm=(4.0, 4.5))
+def test_covered_lateral_replicas_prefers_minimal_replicas_that_fit_within_strain():
+    reps = _covered_lateral_replicas(
+        source_box_nm=(1.8, 2.3, 3.5),
+        target_lengths_nm=(4.0, 4.5),
+        max_lateral_strain=0.12,
+    )
+    assert reps == (2, 2)
+
+
+def test_covered_lateral_replicas_falls_back_to_covering_target_when_no_near_match_exists():
+    reps = _covered_lateral_replicas(
+        source_box_nm=(1.0, 1.0, 3.5),
+        target_lengths_nm=(2.7, 1.4),
+        max_lateral_strain=0.05,
+    )
     assert reps == (3, 2)
 
 

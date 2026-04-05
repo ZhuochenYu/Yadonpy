@@ -1,3 +1,7 @@
+## 0.8.85 (2026-04-05)
+
+- interface/sandwich + tests/test_sandwich_workflow: make confined-slab slab preparation choose the smallest lateral replica counts that can still be strained onto the graphite target footprint within a controlled tolerance, and only fall back to full coverage replicas when no near-match exists; this prevents Example 08 polymer slabs from being over-replicated to boxes much larger than the graphite master XY before confined pre-relaxation.
+
 ## 0.8.84 (2026-04-03)
 
 - interface/sandwich + tests/test_sandwich_workflow: make confined-slab reboxing wrap whole molecule centers back into the graphite-matched XY footprint before span checks, so laterally periodic slabs exported from bulk equilibration no longer fail the Example 08 polymer/electrolyte pre-relaxation path just because complete molecules sit outside the primary image;
