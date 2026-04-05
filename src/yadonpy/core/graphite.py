@@ -468,6 +468,7 @@ def stack_cell_blocks(
     lateral_margin_ang: float = 4.0,
     bottom_margin_ang: float = 2.0,
     top_padding_ang: float = 8.0,
+    fixed_xy_ang: tuple[float, float] | None = None,
 ) -> StackedCellResult:
     if not blocks:
         raise ValueError("blocks must not be empty")
@@ -489,8 +490,21 @@ def stack_cell_blocks(
 
     x_span = max(float(maxs[0] - mins[0]) for mins, maxs in extents)
     y_span = max(float(maxs[1] - mins[1]) for mins, maxs in extents)
-    x_center = float(lateral_margin_ang) + 0.5 * x_span
-    y_center = float(lateral_margin_ang) + 0.5 * y_span
+    if fixed_xy_ang is not None:
+        fixed_x_ang = float(fixed_xy_ang[0])
+        fixed_y_ang = float(fixed_xy_ang[1])
+        if fixed_x_ang <= 0.0 or fixed_y_ang <= 0.0:
+            raise ValueError("fixed_xy_ang must contain positive box lengths")
+        if x_span > fixed_x_ang + 1.0e-6 or y_span > fixed_y_ang + 1.0e-6:
+            raise ValueError(
+                "stack_cell_blocks received a block larger than the requested fixed_xy_ang "
+                f"({x_span:.6f}, {y_span:.6f}) A vs ({fixed_x_ang:.6f}, {fixed_y_ang:.6f}) A"
+            )
+        x_center = 0.5 * fixed_x_ang
+        y_center = 0.5 * fixed_y_ang
+    else:
+        x_center = float(lateral_margin_ang) + 0.5 * x_span
+        y_center = float(lateral_margin_ang) + 0.5 * y_span
     z_cursor = float(bottom_margin_ang)
 
     combined = None
@@ -509,8 +523,12 @@ def stack_cell_blocks(
         if idx < len(gaps):
             z_cursor += float(gaps[idx])
 
-    xhi = 2.0 * float(lateral_margin_ang) + x_span
-    yhi = 2.0 * float(lateral_margin_ang) + y_span
+    if fixed_xy_ang is not None:
+        xhi = float(fixed_xy_ang[0])
+        yhi = float(fixed_xy_ang[1])
+    else:
+        xhi = 2.0 * float(lateral_margin_ang) + x_span
+        yhi = 2.0 * float(lateral_margin_ang) + y_span
     zhi = z_cursor + float(top_padding_ang)
     setattr(combined, "cell", Cell(xhi, 0.0, yhi, 0.0, zhi, 0.0))
     poly.set_cell_param_conf(combined, 0, xhi, 0.0, yhi, 0.0, zhi, 0.0)

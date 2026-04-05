@@ -7,6 +7,7 @@ import pytest
 from rdkit import Chem
 from rdkit import Geometry as Geom
 
+from yadonpy.core.graphite import stack_cell_blocks
 from yadonpy.interface.sandwich import (
     ElectrolyteSlabSpec,
     GraphiteSubstrateSpec,
@@ -19,10 +20,14 @@ from yadonpy.interface.sandwich import (
     _ensure_system_group_in_ndx,
     _initial_bulk_pack_density,
     _augment_sandwich_ndx,
+    _adaptive_stack_gaps_ang,
     _build_stack_checks,
+    _confined_summary_score,
+    _needs_confined_rescue,
     _phase_confined_relaxation_stages,
     _rebox_block_for_phase_confinement,
     _sandwich_relaxation_stages,
+    _stack_master_xy_nm,
     build_graphite_polymer_electrolyte_sandwich,
 )
 from yadonpy.io.gromacs_system import SystemExportResult
@@ -302,6 +307,112 @@ def test_rebox_block_for_phase_confinement_restores_periodic_lateral_coordinates
     assert max(ys) <= 20.0
     assert summary["periodic_lateral_wrap_applied"] is True
     assert "restored lateral periodic coordinates" in note
+
+
+def test_stack_cell_blocks_respects_fixed_xy_master_footprint():
+    lower = _dummy_mol("LOWER", z_ang=0.0, cell_box_ang=(40.0, 40.0, 20.0))
+    upper = _dummy_mol("UPPER", z_ang=0.0, cell_box_ang=(40.0, 40.0, 20.0))
+    lower_conf = lower.GetConformer(0)
+    upper_conf = upper.GetConformer(0)
+    lower_conf.SetAtomPosition(0, Geom.Point3D(18.5, 5.0, 1.0))
+    upper_conf.SetAtomPosition(0, Geom.Point3D(19.0, 6.0, 1.5))
+
+    stacked = stack_cell_blocks(
+        [lower, upper],
+        z_gaps_ang=[6.0],
+        top_padding_ang=8.0,
+        fixed_xy_ang=(20.0, 20.0),
+    )
+
+    assert stacked.box_nm[0] == pytest.approx(2.0)
+    assert stacked.box_nm[1] == pytest.approx(2.0)
+    coords = stacked.cell.GetConformer(0).GetPositions()
+    assert max(float(x[0]) for x in coords) <= 20.0 + 1.0e-6
+    assert max(float(x[1]) for x in coords) <= 20.0 + 1.0e-6
+
+
+def test_adaptive_stack_gaps_expand_when_confined_slabs_have_large_surface_shells():
+    relax = SandwichRelaxationSpec(
+        graphite_to_polymer_gap_ang=3.8,
+        polymer_to_electrolyte_gap_ang=4.2,
+    )
+    polymer_summary = {
+        "occupied_thickness_nm": 4.0,
+        "center_bulk_like_window_nm": [1.0, 3.0],
+        "occupied_density_g_cm3": 0.90,
+        "wrapped_across_z_boundary": False,
+    }
+    electrolyte_summary = {
+        "occupied_thickness_nm": 6.5,
+        "center_bulk_like_window_nm": [1.5, 4.5],
+        "occupied_density_g_cm3": 0.95,
+        "wrapped_across_z_boundary": True,
+    }
+
+    graphite_polymer_gap_ang, polymer_electrolyte_gap_ang = _adaptive_stack_gaps_ang(
+        relax=relax,
+        polymer_summary=polymer_summary,
+        polymer_target_density_g_cm3=1.45,
+        electrolyte_summary=electrolyte_summary,
+        electrolyte_target_density_g_cm3=1.32,
+    )
+
+    assert graphite_polymer_gap_ang > 3.8
+    assert polymer_electrolyte_gap_ang > 4.2
+    assert polymer_electrolyte_gap_ang > graphite_polymer_gap_ang
+
+
+def test_stack_master_xy_nm_adds_periodic_graphite_seam_clearance():
+    periodic = _stack_master_xy_nm(
+        graphite=GraphiteSubstrateSpec(edge_cap="periodic"),
+        graphite_box_nm=(2.3332, 4.183094328, 2.5044),
+    )
+    capped = _stack_master_xy_nm(
+        graphite=GraphiteSubstrateSpec(edge_cap="H"),
+        graphite_box_nm=(2.3332, 4.183094328, 2.5044),
+    )
+    assert periodic[0] == pytest.approx(2.5132)
+    assert periodic[1] == pytest.approx(4.363094328)
+    assert capped == pytest.approx((2.3332, 4.183094328))
+
+
+def test_needs_confined_rescue_flags_wrapped_and_overdilated_phase():
+    summary = {
+        "occupied_thickness_nm": 6.4,
+        "center_bulk_like_density_g_cm3": 1.08,
+        "wrapped_across_z_boundary": True,
+    }
+    assert _needs_confined_rescue(
+        summary=summary,
+        target_density_g_cm3=1.32,
+        target_thickness_nm=4.6,
+    ) is True
+
+
+def test_confined_summary_score_prefers_center_density_and_target_thickness_match():
+    better = {
+        "occupied_density_g_cm3": 1.02,
+        "center_bulk_like_density_g_cm3": 1.28,
+        "occupied_thickness_nm": 4.8,
+        "wrapped_across_z_boundary": False,
+    }
+    worse = {
+        "occupied_density_g_cm3": 0.93,
+        "center_bulk_like_density_g_cm3": 1.08,
+        "occupied_thickness_nm": 6.4,
+        "wrapped_across_z_boundary": True,
+    }
+    better_score = _confined_summary_score(
+        summary=better,
+        target_density_g_cm3=1.32,
+        target_thickness_nm=4.6,
+    )
+    worse_score = _confined_summary_score(
+        summary=worse,
+        target_density_g_cm3=1.32,
+        target_thickness_nm=4.6,
+    )
+    assert better_score < worse_score
 
 
 def test_covered_lateral_replicas_prefers_minimal_replicas_that_fit_within_strain():

@@ -1,3 +1,7 @@
+## 0.8.90 (2026-04-06)
+
+- core/graphite + interface/sandwich + tests/test_sandwich_workflow.py: harden the Example 08 sandwich stack by adding a fixed-XY stacking mode, adaptive graphite/polymer/electrolyte gap sizing from confined-slab summaries, a periodic-graphite seam clearance for the final stack footprint, and an automatic confined-slab rescue round when a phase still looks wrapped or under-densified; this removes the immediate stacked-relaxation crash on the periodic graphite CMC/LiPF6 smoke path and keeps the interface builder iterating toward cleaner phase geometry without redoing the whole workflow from scratch.
+
 ## 0.8.89 (2026-04-06)
 
 - gmx/analysis/plateau + gmx/analysis/rg_convergence + sim/analyzer + tests/test_eq_plateau_threshold.py + tests/test_rg_convergence.py: make the equilibration gate treat short smoke-length thermo/Rg series as valid inputs instead of hard-failing below 20 frames, using full-series fluctuation checks for short density traces and accepting short-but-valid Rg series; this prevents Example 08 confined polymer slabs from getting stuck in repeated additional equilibration rounds solely because the sampled analysis window is short.
