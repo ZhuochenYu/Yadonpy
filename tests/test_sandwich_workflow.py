@@ -503,6 +503,76 @@ def test_graphite_repeat_factors_for_required_xy_expand_only_when_needed():
     ) == (2, 3)
 
 
+def test_maybe_expand_graphite_for_phase_footprint_skips_expansion_when_slab_is_compressible(monkeypatch):
+    import yadonpy.interface.sandwich as sandwich
+
+    spans = iter(((7.2452, 8.437094328), (6.93136, 13.86272)))
+    monkeypatch.setattr(sandwich, "_prepared_slab_lateral_span_nm", lambda **kwargs: next(spans))
+    build_calls = []
+    monkeypatch.setattr(
+        sandwich,
+        "build_graphite",
+        lambda **kwargs: build_calls.append(dict(kwargs)) or SimpleNamespace(box_nm=(99.0, 99.0, 9.9)),
+    )
+
+    graphite = GraphiteSubstrateSpec(nx=10, ny=10, n_layers=4)
+    graphite_result = SimpleNamespace(box_nm=(7.2452, 8.437094328, 2.5044))
+
+    _, _, negotiation = _maybe_expand_graphite_for_phase_footprint(
+        graphite=graphite,
+        graphite_result=graphite_result,
+        ff=SimpleNamespace(),
+        polymer_slab=object(),
+        polymer_species=(),
+        polymer_counts=(),
+        electrolyte_slab=object(),
+        electrolyte_species=(),
+        electrolyte_counts=(),
+    )
+
+    assert negotiation is None
+    assert build_calls == []
+
+
+def test_maybe_expand_graphite_for_phase_footprint_expands_when_required_compression_is_too_large(monkeypatch):
+    import yadonpy.interface.sandwich as sandwich
+
+    spans = iter(((10.0, 10.0), (6.0, 6.0)))
+    monkeypatch.setattr(sandwich, "_prepared_slab_lateral_span_nm", lambda **kwargs: next(spans))
+    build_calls = []
+
+    def _fake_build_graphite(**kwargs):
+        build_calls.append(dict(kwargs))
+        return SimpleNamespace(box_nm=(14.0, 16.0, 2.5))
+
+    monkeypatch.setattr(sandwich, "build_graphite", _fake_build_graphite)
+
+    graphite = GraphiteSubstrateSpec(nx=4, ny=4, n_layers=4, orientation="basal", edge_cap="periodic")
+    graphite_result = SimpleNamespace(box_nm=(7.0, 8.0, 2.5))
+
+    expanded_graphite, expanded_result, negotiation = _maybe_expand_graphite_for_phase_footprint(
+        graphite=graphite,
+        graphite_result=graphite_result,
+        ff=SimpleNamespace(),
+        polymer_slab=object(),
+        polymer_species=(),
+        polymer_counts=(),
+        electrolyte_slab=object(),
+        electrolyte_species=(),
+        electrolyte_counts=(),
+    )
+
+    assert build_calls
+    assert expanded_graphite.nx == 8
+    assert expanded_graphite.ny == 8
+    assert expanded_result.box_nm == pytest.approx((14.0, 16.0, 2.5))
+    assert negotiation is not None
+    assert negotiation["repeat_factors_xy"] == [2, 2]
+    assert negotiation["polymer_required_xy_nm"] == pytest.approx([10.0, 10.0])
+    assert negotiation["polymer_compression_aware_required_xy_nm"] == pytest.approx([8.2, 8.2])
+    assert negotiation["electrolyte_compression_aware_required_xy_nm"] == pytest.approx([7.0, 8.0])
+
+
 def test_build_polymer_chain_forwards_polyelectrolyte_mode_to_db_lookup(monkeypatch):
     import yadonpy.interface.sandwich as sandwich
 

@@ -884,6 +884,24 @@ def _prepared_slab_lateral_span_nm(
     return float(spans[0]) / 10.0, float(spans[1]) / 10.0
 
 
+def _required_xy_with_lateral_compression_floor(
+    *,
+    raw_xy_nm: tuple[float, float],
+    target_xy_nm: tuple[float, float],
+    min_scale_xy: tuple[float, float],
+) -> tuple[float, float]:
+    req_x = max(float(target_xy_nm[0]), float(raw_xy_nm[0]) * float(min_scale_xy[0]))
+    req_y = max(float(target_xy_nm[1]), float(raw_xy_nm[1]) * float(min_scale_xy[1]))
+    return float(req_x), float(req_y)
+
+
+def _phase_confined_min_scale_xy(*, label: str) -> tuple[float, float]:
+    phase = str(label).strip().lower()
+    if phase == "electrolyte":
+        return (0.60, 0.60)
+    return (0.82, 0.82)
+
+
 def _graphite_repeat_factors_for_required_xy(
     *,
     current_box_nm: tuple[float, float, float],
@@ -1532,9 +1550,20 @@ def _maybe_expand_graphite_for_phase_footprint(
         species=electrolyte_species,
         counts=electrolyte_counts,
     )
+    current_xy_nm = (float(graphite_result.box_nm[0]), float(graphite_result.box_nm[1]))
+    polymer_required_xy_nm = _required_xy_with_lateral_compression_floor(
+        raw_xy_nm=polymer_xy_nm,
+        target_xy_nm=current_xy_nm,
+        min_scale_xy=_phase_confined_min_scale_xy(label="polymer"),
+    )
+    electrolyte_required_xy_nm = _required_xy_with_lateral_compression_floor(
+        raw_xy_nm=electrolyte_xy_nm,
+        target_xy_nm=current_xy_nm,
+        min_scale_xy=_phase_confined_min_scale_xy(label="electrolyte"),
+    )
     required_xy_nm = (
-        max(float(graphite_result.box_nm[0]), float(polymer_xy_nm[0]), float(electrolyte_xy_nm[0])),
-        max(float(graphite_result.box_nm[1]), float(polymer_xy_nm[1]), float(electrolyte_xy_nm[1])),
+        max(float(graphite_result.box_nm[0]), float(polymer_required_xy_nm[0]), float(electrolyte_required_xy_nm[0])),
+        max(float(graphite_result.box_nm[1]), float(polymer_required_xy_nm[1]), float(electrolyte_required_xy_nm[1])),
     )
     rx, ry = _graphite_repeat_factors_for_required_xy(
         current_box_nm=graphite_result.box_nm,
@@ -1561,10 +1590,14 @@ def _maybe_expand_graphite_for_phase_footprint(
     return expanded_graphite, expanded_result, {
         "polymer_required_xy_nm": [float(polymer_xy_nm[0]), float(polymer_xy_nm[1])],
         "electrolyte_required_xy_nm": [float(electrolyte_xy_nm[0]), float(electrolyte_xy_nm[1])],
+        "polymer_compression_aware_required_xy_nm": [float(polymer_required_xy_nm[0]), float(polymer_required_xy_nm[1])],
+        "electrolyte_compression_aware_required_xy_nm": [float(electrolyte_required_xy_nm[0]), float(electrolyte_required_xy_nm[1])],
         "required_xy_nm": [float(required_xy_nm[0]), float(required_xy_nm[1])],
         "repeat_factors_xy": [int(rx), int(ry)],
         "graphite_box_before_nm": [float(x) for x in graphite_result.box_nm],
         "graphite_box_after_nm": [float(x) for x in expanded_result.box_nm],
+        "polymer_min_scale_xy": [float(x) for x in _phase_confined_min_scale_xy(label="polymer")],
+        "electrolyte_min_scale_xy": [float(x) for x in _phase_confined_min_scale_xy(label="electrolyte")],
     }
 
 

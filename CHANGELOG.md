@@ -1,3 +1,7 @@
+## 0.8.104 (2026-04-06)
+
+- interface/sandwich.py + tests/test_sandwich_workflow.py: make graphite footprint negotiation for Example 08 compression-aware instead of blindly trusting the raw lateral span of prepared soft slabs. YadonPy now treats polymer and electrolyte slabs as laterally compressible up to phase-specific floors before confined relaxation, so replicated electrolyte slabs no longer force a second graphite expansion unless the required compression would be physically excessive. This closes the next major failure mode after `0.8.102/0.8.103`: late graphite growth driven by an already-confined soft slab that was meant to be reboxed onto the graphite footprint in the next stage anyway.
+
 ## 0.8.103 (2026-04-06)
 
 - interface/sandwich_examples.py + examples/08_graphite_polymer_electrolyte_sandwich/*.py + tests/test_sandwich_workflow.py: move the shipped Example 08 study presets out of the main sandwich builder and into a dedicated preset/helper module. The example scripts now stay much closer to Example 02's linear style: `doctor() -> ff/ion_ff -> one high-level case builder -> shared summary printer`, without repeating large spec blocks or relaxation boilerplate in every script.
