@@ -1,3 +1,7 @@
+## 0.8.100 (2026-04-06)
+
+- interface/sandwich + tests/test_sandwich_workflow.py: retune the bundled Example 08 `glucose_6` periodic graphite case so its CMC-Na polymer phase starts from a looser, explicitly profile-dependent initial pack scale (`1.55` for smoke, `1.40` for full). Now that `initial_pack_z_scale` actually affects the polymer bulk builder, the example defaults themselves are aligned with the intended workflow: easy-to-pack initial amorphous cells first, then EQ21/confined relaxation drives the slab back toward the physical density.
+
 ## 0.8.99 (2026-04-06)
 
 - interface/sandwich + tests/test_sandwich_workflow.py: make `initial_pack_z_scale` a real part of the polymer bulk-building logic instead of a dead configuration field. The sandwich builder now uses that factor to dilute the initial polymer packing density before EQ21, which makes long charged CMC chains much easier to place during the first amorphous-cell build while still letting the later bulk/confinement stages compress back toward the physical target density.

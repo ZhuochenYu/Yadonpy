@@ -266,7 +266,7 @@ def build_graphite_cmcna_glucose6_periodic_case(
         target_density_g_cm3=1.50,
         slab_z_nm=(4.2 if smoke else 5.0),
         min_chain_count=2,
-        initial_pack_z_scale=1.28,
+        initial_pack_z_scale=(1.55 if smoke else 1.40),
         pack_retry=80,
         pack_retry_step=3600,
         pack_threshold_ang=1.60,

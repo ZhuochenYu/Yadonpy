@@ -737,6 +737,7 @@ def test_build_graphite_cmcna_glucose6_periodic_case_uses_moldb_ready_defaults(t
     assert polymer.monomers[0].prefer_db is True
     assert polymer.monomers[0].require_ready is True
     assert polymer.chain_count is None
+    assert polymer.initial_pack_z_scale == pytest.approx(1.55)
     assert electrolyte.solvents[0].name == "EC"
     assert all(spec.prefer_db and spec.require_ready for spec in electrolyte.solvents)
     assert electrolyte.salt_anion.name == "PF6"
