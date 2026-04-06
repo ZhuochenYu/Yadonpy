@@ -452,6 +452,37 @@ def test_rebox_block_for_phase_confinement_compresses_lateral_span_to_target_xy(
     assert "compressed the soft slab onto the graphite XY footprint" in note
 
 
+def test_rebox_block_for_phase_confinement_softens_catastrophic_xy_overlaps():
+    mol = Chem.RWMol()
+    for _ in range(2):
+        atom = Chem.Atom("C")
+        atom.SetNoImplicit(True)
+        mol.AddAtom(atom)
+    block = mol.GetMol()
+    conf = Chem.Conformer(block.GetNumAtoms())
+    conf.Set3D(True)
+    conf.SetAtomPosition(0, Geom.Point3D(10.000, 10.000, 4.0))
+    conf.SetAtomPosition(1, Geom.Point3D(10.005, 10.002, 4.0))
+    block.AddConformer(conf, assignId=True)
+    setattr(block, "cell", SimpleNamespace(xhi=20.0, xlo=0.0, yhi=20.0, ylo=0.0, zhi=18.0, zlo=0.0))
+
+    confined, summary, note = _rebox_block_for_phase_confinement(
+        block=block,
+        target_xy_nm=(2.0, 2.0),
+        target_thickness_nm=1.5,
+        vacuum_padding_ang=12.0,
+    )
+
+    coords = confined.GetConformer(0).GetPositions()
+    dx = float(coords[1][0] - coords[0][0])
+    dy = float(coords[1][1] - coords[0][1])
+    dist = (dx * dx + dy * dy) ** 0.5
+    assert summary["overlap_softening_applied"] is True
+    assert summary["overlap_pairs_softened"] >= 1
+    assert dist > 0.02
+    assert "softened" in note
+
+
 def test_stack_cell_blocks_respects_fixed_xy_master_footprint():
     lower = _dummy_mol("LOWER", z_ang=0.0, cell_box_ang=(40.0, 40.0, 20.0))
     upper = _dummy_mol("UPPER", z_ang=0.0, cell_box_ang=(40.0, 40.0, 20.0))

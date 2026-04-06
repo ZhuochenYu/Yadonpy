@@ -1031,6 +1031,81 @@ def _scale_block_lateral_to_target(
     return scaled, (float(scale_x), float(scale_y)), True
 
 
+def _soften_catastrophic_xy_overlaps(
+    coords: np.ndarray,
+    *,
+    box_x_ang: float,
+    box_y_ang: float,
+    min_sep_ang: float = 0.075,
+    max_rounds: int = 4,
+) -> tuple[np.ndarray, dict[str, object]]:
+    softened = np.asarray(coords, dtype=float).copy()
+    if softened.size == 0 or float(min_sep_ang) <= 0.0:
+        return softened, {"overlap_softening_applied": False, "overlap_pairs_softened": 0}
+
+    try:
+        from scipy.spatial import cKDTree  # type: ignore
+    except Exception:
+        return softened, {"overlap_softening_applied": False, "overlap_pairs_softened": 0}
+
+    offsets = (
+        (0.0, 0.0),
+        (-float(box_x_ang), 0.0),
+        (float(box_x_ang), 0.0),
+        (0.0, -float(box_y_ang)),
+        (0.0, float(box_y_ang)),
+        (-float(box_x_ang), -float(box_y_ang)),
+        (-float(box_x_ang), float(box_y_ang)),
+        (float(box_x_ang), -float(box_y_ang)),
+        (float(box_x_ang), float(box_y_ang)),
+    )
+    total_pairs = 0
+    for _ in range(max(int(max_rounds), 1)):
+        tiled: list[np.ndarray] = []
+        tiled_index: list[int] = []
+        for ox, oy in offsets:
+            pts = softened.copy()
+            pts[:, 0] += float(ox)
+            pts[:, 1] += float(oy)
+            tiled.append(pts)
+            tiled_index.extend(range(int(len(softened))))
+        cloud = np.vstack(tiled)
+        tree = cKDTree(cloud)
+        raw_pairs = tree.query_pairs(r=float(min_sep_ang), output_type="set")
+        if not raw_pairs:
+            break
+        corrections = np.zeros_like(softened, dtype=float)
+        unique_pairs: set[tuple[int, int]] = set()
+        for i, j in raw_pairs:
+            ai = int(tiled_index[i])
+            aj = int(tiled_index[j])
+            if ai == aj:
+                continue
+            key = (min(ai, aj), max(ai, aj))
+            if key in unique_pairs:
+                continue
+            unique_pairs.add(key)
+            vec = np.asarray(cloud[j] - cloud[i], dtype=float)
+            dist = float(np.linalg.norm(vec))
+            if dist >= float(min_sep_ang):
+                continue
+            if dist <= 1.0e-9:
+                vec = np.asarray([1.0, 0.0, 0.0], dtype=float)
+                dist = 1.0e-9
+            push = 0.55 * (float(min_sep_ang) - dist)
+            unit = vec / dist
+            corrections[ai] -= 0.5 * push * unit
+            corrections[aj] += 0.5 * push * unit
+        if not unique_pairs:
+            break
+        softened += corrections
+        total_pairs += len(unique_pairs)
+    return softened, {
+        "overlap_softening_applied": bool(total_pairs > 0),
+        "overlap_pairs_softened": int(total_pairs),
+    }
+
+
 def _compact_packed_cell_z_by_molecule_centers(
     *,
     cell,
@@ -1308,6 +1383,11 @@ def _rebox_block_for_phase_confinement(
         dtype=float,
     )
     coords += lateral_shift
+    coords, overlap_summary = _soften_catastrophic_xy_overlaps(
+        coords,
+        box_x_ang=target_x_ang,
+        box_y_ang=target_y_ang,
+    )
     for idx, xyz in enumerate(coords):
         conf.SetAtomPosition(idx, Geom.Point3D(float(xyz[0]), float(xyz[1]), float(xyz[2])))
 
@@ -1322,6 +1402,7 @@ def _rebox_block_for_phase_confinement(
         "periodic_lateral_wrap_applied": bool(periodic_lateral_wrap_applied),
         "bonded_lateral_unwrap_applied": bool(bonded_lateral_unwrap_applied),
         "lateral_scale_xy": [float(lateral_scale_xy[0]), float(lateral_scale_xy[1])],
+        **overlap_summary,
     }
     note = "reboxed the prepared slab onto the graphite master footprint"
     if bonded_lateral_unwrap_applied:
@@ -1333,6 +1414,8 @@ def _rebox_block_for_phase_confinement(
             " and anisotropically compressed the soft slab onto the graphite XY footprint"
             f" (scale_x={float(lateral_scale_xy[0]):.3f}, scale_y={float(lateral_scale_xy[1]):.3f})"
         )
+    if bool(overlap_summary.get("overlap_softening_applied", False)):
+        note += f" and softened {int(overlap_summary.get('overlap_pairs_softened', 0))} catastrophic xy-overlap pairs before confined relaxation"
     note += f" and inserted {float(vacuum_padding_ang) / 10.0:.3f} nm top/bottom vacuum before confined slab relaxation"
     return confined, summary, note
 

@@ -1,3 +1,7 @@
+## 0.8.94 (2026-04-06)
+
+- interface/sandwich + tests/test_sandwich_workflow.py: add a lightweight catastrophic-overlap softening pass after confined-slab reboxing so only atom pairs far below any reasonable bonded distance are gently separated before GROMACS energy minimization; this targets the remaining `inf force` starts in the CMC confined polymer slab path without changing the overall sandwich workflow or requiring a full rebuild of the bulk phases.
+
 ## 0.8.93 (2026-04-06)
 
 - interface/sandwich + tests/test_sandwich_workflow.py: when a prepared soft slab is genuinely wider than the graphite master footprint, confined reboxing now compresses the slab anisotropically onto the target XY instead of failing or aliasing atoms through modulo wrapping; this keeps the full slab mass, makes the phase density target reachable, and lets Example 08 continue from the confined polymer stage without turning a width mismatch into infinite-force overlaps.
