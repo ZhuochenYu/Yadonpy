@@ -136,6 +136,16 @@ class GAFF():
                 charge=spec.charge,
                 basis_set=spec.basis_set,
                 method=spec.method,
+                polyelectrolyte_mode=(
+                    charge_kwargs.get("polyelectrolyte_mode")
+                    if "polyelectrolyte_mode" in charge_kwargs
+                    else spec.polyelectrolyte_mode
+                ),
+                polyelectrolyte_detection=(
+                    charge_kwargs.get("polyelectrolyte_detection")
+                    if "polyelectrolyte_detection" in charge_kwargs
+                    else spec.polyelectrolyte_detection
+                ),
             )
             # For downstream exports
             try:
@@ -1514,6 +1524,8 @@ class GAFF():
         charge: str = "RESP",
         require_ready: bool = True,
         prefer_db: bool = True,
+        polyelectrolyte_mode: bool | None = None,
+        polyelectrolyte_detection: str | None = None,
     ):
         """Create a lightweight MolSpec handle.
 
@@ -1529,6 +1541,8 @@ class GAFF():
             method=(str(method).strip() if method else None),
             require_ready=bool(require_ready),
             prefer_db=bool(prefer_db),
+            polyelectrolyte_mode=polyelectrolyte_mode,
+            polyelectrolyte_detection=(str(polyelectrolyte_detection).strip() if polyelectrolyte_detection else None),
         )
 
     # ---------------------------------------------------------------------

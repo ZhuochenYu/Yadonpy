@@ -343,6 +343,9 @@ def _is_polyelectrolyte_spec(spec: MoleculeSpec) -> bool:
         mol = utils.mol_from_smiles(spec.smiles, coord=False)
     except Exception:
         return False
+    formal_charge = int(sum(int(atom.GetFormalCharge()) for atom in mol.GetAtoms()))
+    if formal_charge != 0:
+        return True
     summary = detect_charged_groups(mol, detection="auto")
     return bool(summary.get("groups"))
 
@@ -389,17 +392,19 @@ def _build_polymer_chain(*, ff, polymer: PolymerSlabSpec, relax: SandwichRelaxat
 
     monomers = []
     for spec in monomer_specs:
+        pe_mode = _is_polyelectrolyte_spec(spec)
+        monomer_handle = ff.mol(
+            spec.smiles,
+            name=spec.name,
+            charge=spec.charge_method,
+            require_ready=spec.require_ready,
+            prefer_db=spec.prefer_db,
+            polyelectrolyte_mode=pe_mode,
+        )
         monomer = ff.ff_assign(
-            ff.mol(
-                spec.smiles,
-                name=spec.name,
-                charge=spec.charge_method,
-                require_ready=spec.require_ready,
-                prefer_db=spec.prefer_db,
-            ),
+            monomer_handle,
             report=False,
             bonded=spec.bonded,
-            polyelectrolyte_mode=_is_polyelectrolyte_spec(spec),
         )
         if not monomer:
             raise RuntimeError(f"Cannot assign force field parameters for polymer monomer {spec.smiles}.")
@@ -894,6 +899,57 @@ def _prepared_slab_required_xy_nm(prepared_slab) -> tuple[float, float]:
     if not isinstance(box_nm, (list, tuple)) or len(box_nm) < 2:
         return float(prepared_slab.box_nm[0]), float(prepared_slab.box_nm[1])
     return float(box_nm[0]), float(box_nm[1])
+
+
+def _prepared_slab_lateral_span_nm(
+    *,
+    prepared_slab,
+    species: Sequence,
+    counts: Sequence[int],
+) -> tuple[float, float]:
+    fallback = _prepared_slab_required_xy_nm(prepared_slab)
+    block = _load_block_from_top_gro(
+        top_path=Path(prepared_slab.top_path),
+        gro_path=Path(prepared_slab.gro_path),
+        fallback_cell=None,
+    )
+    if block is None:
+        return fallback
+    conf = block.GetConformer(0)
+    coords = np.asarray(conf.GetPositions(), dtype=float).copy()
+    if coords.size == 0:
+        return fallback
+
+    current_box = getattr(block, "cell", None)
+    if current_box is not None:
+        box_x_ang = max(float(current_box.xhi - current_box.xlo), 1.0e-9)
+        box_y_ang = max(float(current_box.yhi - current_box.ylo), 1.0e-9)
+    else:
+        box_x_ang = max(float(fallback[0]) * 10.0, 1.0e-9)
+        box_y_ang = max(float(fallback[1]) * 10.0, 1.0e-9)
+
+    try:
+        blocks = _molecule_atom_blocks(species=species, counts=counts)
+        block_specs = _molecule_block_specs(species=species, counts=counts)
+    except Exception:
+        return fallback
+    if not blocks or not block_specs or int(blocks[-1][1]) != int(block.GetNumAtoms()):
+        return fallback
+
+    coords, _changed = _restore_bonded_periodic_fragment_coordinates(
+        coords,
+        block_specs=block_specs,
+        box_x_ang=box_x_ang,
+        box_y_ang=box_y_ang,
+    )
+    coords, _ = _wrap_fragment_centers_into_box(coords, blocks=blocks, axis=0, box_len_ang=box_x_ang)
+    coords, _ = _minimize_fragment_periodic_axis_span(coords, blocks=blocks, axis=0, box_len_ang=box_x_ang)
+    coords, _ = _wrap_fragment_centers_into_box(coords, blocks=blocks, axis=1, box_len_ang=box_y_ang)
+    coords, _ = _minimize_fragment_periodic_axis_span(coords, blocks=blocks, axis=1, box_len_ang=box_y_ang)
+    mins = np.min(coords, axis=0)
+    maxs = np.max(coords, axis=0)
+    spans = maxs - mins
+    return float(spans[0]) / 10.0, float(spans[1]) / 10.0
 
 
 def _graphite_repeat_factors_for_required_xy(
@@ -1676,10 +1732,22 @@ def _maybe_expand_graphite_for_phase_footprint(
     graphite_result: GraphiteBuildResult,
     ff,
     polymer_slab,
+    polymer_species: Sequence,
+    polymer_counts: Sequence[int],
     electrolyte_slab,
+    electrolyte_species: Sequence,
+    electrolyte_counts: Sequence[int],
 ) -> tuple[GraphiteSubstrateSpec, GraphiteBuildResult, dict[str, object] | None]:
-    polymer_xy_nm = _prepared_slab_required_xy_nm(polymer_slab)
-    electrolyte_xy_nm = _prepared_slab_required_xy_nm(electrolyte_slab)
+    polymer_xy_nm = _prepared_slab_lateral_span_nm(
+        prepared_slab=polymer_slab,
+        species=polymer_species,
+        counts=polymer_counts,
+    )
+    electrolyte_xy_nm = _prepared_slab_lateral_span_nm(
+        prepared_slab=electrolyte_slab,
+        species=electrolyte_species,
+        counts=electrolyte_counts,
+    )
     required_xy_nm = (
         max(float(graphite_result.box_nm[0]), float(polymer_xy_nm[0]), float(electrolyte_xy_nm[0])),
         max(float(graphite_result.box_nm[1]), float(polymer_xy_nm[1]), float(electrolyte_xy_nm[1])),
@@ -2295,7 +2363,11 @@ def build_graphite_polymer_electrolyte_sandwich(
         graphite_result=graphite_result,
         ff=ff,
         polymer_slab=polymer_slab,
+        polymer_species=list(polymer_phase_build["species"]),
+        polymer_counts=list(polymer_selected_counts),
         electrolyte_slab=electrolyte_slab,
+        electrolyte_species=list(electrolyte_mols),
+        electrolyte_counts=list(electrolyte_selected_counts),
     )
     polymer_confined = _run_confined_phase_relaxation(
         label="polymer",

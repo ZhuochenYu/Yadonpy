@@ -26,6 +26,8 @@ class MolSpec:
     # Optional strictness controls
     require_ready: bool = True        # require charges present for the selected variant
     prefer_db: bool = True            # prefer DB geometry if present
+    polyelectrolyte_mode: Optional[bool] = None
+    polyelectrolyte_detection: Optional[str] = None
 
     # Populated lazily after ff_assign(spec) resolves the handle. This keeps old
     # scripts working when they keep using the original variable name.
@@ -59,7 +61,12 @@ class MolSpec:
         """Human-readable label for logging."""
         b = self.basis_set or "Default"
         m = self.method or "Default"
-        return f"charge={self.charge} basis={b} method={m}"
+        pe = ""
+        if self.polyelectrolyte_mode is not None:
+            pe = f" polyelectrolyte_mode={bool(self.polyelectrolyte_mode)}"
+        if self.polyelectrolyte_detection:
+            pe += f" polyelectrolyte_detection={self.polyelectrolyte_detection}"
+        return f"charge={self.charge} basis={b} method={m}{pe}"
 
 
 def as_rdkit_mol(mol: Any, strict: bool = False) -> Any:

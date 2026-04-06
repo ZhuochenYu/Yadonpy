@@ -1,3 +1,15 @@
+## 0.8.98 (2026-04-06)
+
+- core/molspec + ff/gaff + ff/oplsaa + interface/sandwich + tests/test_sandwich_workflow.py: make `polyelectrolyte_mode` part of the normal MolSpec-backed force-field workflow instead of an Example 08-only side channel. `ff.mol(...)` handles can now carry polyelectrolyte variant hints through MolDB resolution, `_build_polymer_chain()` keeps the same clean "create handle, then ff_assign(handle)" script style as the main examples, and charged CMC monomers no longer lose their precomputed ready variants when the sandwich builder reconstructs them on the fly.
+
+## 0.8.97 (2026-04-06)
+
+- interface/sandwich + ff/gaff + tests/test_sandwich_workflow.py: preserve `polyelectrolyte_mode` all the way through the Example 08 polymer-builder path. Charged CMC PSMILES monomers now mark themselves as polyelectrolyte-ready as soon as they carry a nonzero formal charge, `_build_polymer_chain()` forwards that mode into `ff.mol(...)`, and `GAFF.ff_assign()` also forwards any explicit polyelectrolyte variant hints when resolving a `MolSpec`. This prevents ready MolDB entries such as `glucose_6` from accidentally falling back to the default non-polyelectrolyte variant during sandwich construction.
+
+## 0.8.96 (2026-04-06)
+
+- interface/sandwich + tests/test_sandwich_workflow.py: refine graphite footprint negotiation again so it no longer trusts the prepared slab metadata box alone; YadonPy now measures each prepared slab's actual whole-molecule lateral envelope after bonded periodic restoration and whole-fragment image minimization, then upsizes the graphite footprint from that real soft-phase span before confined relaxation. This fixes the remaining case where the polymer metadata box looked small enough but the true CMC chain envelope still required a much wider master footprint.
+
 ## 0.8.95 (2026-04-06)
 
 - interface/sandwich + tests/test_sandwich_workflow.py: stop treating strong lateral compression as the default rescue for confined CMC/electrolyte slabs; the sandwich builder now negotiates the graphite master footprint from the prepared soft-phase slab envelopes, automatically upsizes the graphite substrate by integer repeat factors when the provisional footprint is too small, and only allows mild residual XY compression as a last-mile cleanup. This makes the Example 08 periodic graphite/CMC/LiPF6 path much closer to the intended architecture: bulk phases define the soft slab envelope, graphite becomes the negotiated master footprint, and confined relaxation no longer begins from obviously over-compressed polymer geometry.

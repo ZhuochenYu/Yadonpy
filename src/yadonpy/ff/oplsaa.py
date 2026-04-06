@@ -223,6 +223,8 @@ class OPLSAA(GAFF):
         charge: str = "opls",
         require_ready: bool = False,
         prefer_db: bool = True,
+        polyelectrolyte_mode: bool | None = None,
+        polyelectrolyte_detection: str | None = None,
     ):
         """Create a lightweight MolSpec handle for OPLS-AA workflows.
 
@@ -264,6 +266,8 @@ class OPLSAA(GAFF):
             charge=charge,
             basis_set=basis_set,
             method=method,
+            polyelectrolyte_mode=polyelectrolyte_mode,
+            polyelectrolyte_detection=polyelectrolyte_detection,
         )
 
     @staticmethod
