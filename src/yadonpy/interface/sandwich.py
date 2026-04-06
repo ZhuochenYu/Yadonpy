@@ -879,6 +879,38 @@ def _prepare_slab_from_equilibrated_bulk(
     return prepared, note
 
 
+def _prepared_slab_payload(prepared_slab) -> dict[str, object]:
+    meta_path = Path(prepared_slab.meta_path)
+    if not meta_path.exists():
+        return {
+            "box_nm": [float(prepared_slab.box_nm[0]), float(prepared_slab.box_nm[1]), float(prepared_slab.box_nm[2])],
+        }
+    return json.loads(meta_path.read_text(encoding="utf-8"))
+
+
+def _prepared_slab_required_xy_nm(prepared_slab) -> tuple[float, float]:
+    payload = _prepared_slab_payload(prepared_slab)
+    box_nm = payload.get("box_nm", prepared_slab.box_nm)
+    if not isinstance(box_nm, (list, tuple)) or len(box_nm) < 2:
+        return float(prepared_slab.box_nm[0]), float(prepared_slab.box_nm[1])
+    return float(box_nm[0]), float(box_nm[1])
+
+
+def _graphite_repeat_factors_for_required_xy(
+    *,
+    current_box_nm: tuple[float, float, float],
+    required_xy_nm: tuple[float, float],
+) -> tuple[int, int]:
+    box_x = max(float(current_box_nm[0]), 1.0e-9)
+    box_y = max(float(current_box_nm[1]), 1.0e-9)
+    req_x = max(float(required_xy_nm[0]), 0.0)
+    req_y = max(float(required_xy_nm[1]), 0.0)
+    return (
+        max(1, int(math.ceil(req_x / box_x))),
+        max(1, int(math.ceil(req_y / box_y))),
+    )
+
+
 def _molecule_atom_blocks(*, species: Sequence, counts: Sequence[int]) -> list[tuple[int, int]]:
     blocks: list[tuple[int, int]] = []
     cursor = 0
@@ -1011,6 +1043,7 @@ def _scale_block_lateral_to_target(
     *,
     target_x_ang: float,
     target_y_ang: float,
+    min_scale_xy: tuple[float, float] = (0.95, 0.95),
 ) -> tuple[np.ndarray, tuple[float, float], bool]:
     scaled = np.asarray(coords, dtype=float).copy()
     if scaled.size == 0:
@@ -1021,6 +1054,12 @@ def _scale_block_lateral_to_target(
     spans = maxs - mins
     scale_x = 1.0 if float(spans[0]) <= float(target_x_ang) + 1.0e-9 else float(target_x_ang) / max(float(spans[0]), 1.0e-9)
     scale_y = 1.0 if float(spans[1]) <= float(target_y_ang) + 1.0e-9 else float(target_y_ang) / max(float(spans[1]), 1.0e-9)
+    if scale_x + 1.0e-9 < float(min_scale_xy[0]) or scale_y + 1.0e-9 < float(min_scale_xy[1]):
+        raise RuntimeError(
+            "Prepared slab requires excessive lateral compression to match the graphite footprint "
+            f"(scale_x={float(scale_x):.3f}, scale_y={float(scale_y):.3f}). "
+            "Expand the graphite master footprint instead of forcing the soft slab into a much smaller XY box."
+        )
     if scale_x >= 1.0 - 1.0e-9 and scale_y >= 1.0 - 1.0e-9:
         return scaled, (1.0, 1.0), False
 
@@ -1345,6 +1384,7 @@ def _rebox_block_for_phase_confinement(
             coords,
             target_x_ang=target_x_ang,
             target_y_ang=target_y_ang,
+            min_scale_xy=(0.95, 0.95),
         )
         if scaled_to_target:
             mins = np.min(coords, axis=0)
@@ -1628,6 +1668,52 @@ def _stack_master_xy_nm(*, graphite: GraphiteSubstrateSpec, graphite_box_nm: tup
         float(graphite_box_nm[0]) + float(seam_clearance_nm),
         float(graphite_box_nm[1]) + float(seam_clearance_nm),
     )
+
+
+def _maybe_expand_graphite_for_phase_footprint(
+    *,
+    graphite: GraphiteSubstrateSpec,
+    graphite_result: GraphiteBuildResult,
+    ff,
+    polymer_slab,
+    electrolyte_slab,
+) -> tuple[GraphiteSubstrateSpec, GraphiteBuildResult, dict[str, object] | None]:
+    polymer_xy_nm = _prepared_slab_required_xy_nm(polymer_slab)
+    electrolyte_xy_nm = _prepared_slab_required_xy_nm(electrolyte_slab)
+    required_xy_nm = (
+        max(float(graphite_result.box_nm[0]), float(polymer_xy_nm[0]), float(electrolyte_xy_nm[0])),
+        max(float(graphite_result.box_nm[1]), float(polymer_xy_nm[1]), float(electrolyte_xy_nm[1])),
+    )
+    rx, ry = _graphite_repeat_factors_for_required_xy(
+        current_box_nm=graphite_result.box_nm,
+        required_xy_nm=required_xy_nm,
+    )
+    if rx == 1 and ry == 1:
+        return graphite, graphite_result, None
+
+    expanded_graphite = replace(
+        graphite,
+        nx=max(1, int(graphite.nx) * int(rx)),
+        ny=max(1, int(graphite.ny) * int(ry)),
+    )
+    expanded_result = build_graphite(
+        nx=int(expanded_graphite.nx),
+        ny=int(expanded_graphite.ny),
+        n_layers=int(expanded_graphite.n_layers),
+        orientation=expanded_graphite.orientation,
+        edge_cap=expanded_graphite.edge_cap,
+        ff=ff,
+        name=expanded_graphite.name,
+        top_padding_ang=float(expanded_graphite.top_padding_ang),
+    )
+    return expanded_graphite, expanded_result, {
+        "polymer_required_xy_nm": [float(polymer_xy_nm[0]), float(polymer_xy_nm[1])],
+        "electrolyte_required_xy_nm": [float(electrolyte_xy_nm[0]), float(electrolyte_xy_nm[1])],
+        "required_xy_nm": [float(required_xy_nm[0]), float(required_xy_nm[1])],
+        "repeat_factors_xy": [int(rx), int(ry)],
+        "graphite_box_before_nm": [float(x) for x in graphite_result.box_nm],
+        "graphite_box_after_nm": [float(x) for x in expanded_result.box_nm],
+    }
 
 
 def _confined_phase_report(
@@ -2122,22 +2208,6 @@ def build_graphite_polymer_electrolyte_sandwich(
     )
     polymer_count_map = {str(name): int(count) for name, count in zip(polymer_prepared_report.species_names, polymer_prepared_report.counts)}
     polymer_selected_counts = [int(polymer_count_map.get(name, 0)) for name in polymer_species_names]
-    polymer_confined = _run_confined_phase_relaxation(
-        label="polymer",
-        prepared_slab=polymer_slab,
-        species=list(polymer_phase_build["species"]),
-        counts=list(polymer_selected_counts),
-        charge_scale=list(polymer_phase_build["charge_scale"]),
-        target_xy_nm=(float(graphite_result.box_nm[0]), float(graphite_result.box_nm[1])),
-        target_density_g_cm3=float(polymer.target_density_g_cm3),
-        target_thickness_nm=float(polymer.slab_z_nm),
-        ff_name=str(ff.name),
-        relax=relax,
-        work_dir=polymer_eq_dir / "06_confined_slab",
-        restart=restart,
-    )
-    polymer_report = polymer_confined.report
-    polymer_relaxed_block = polymer_confined.relaxed_block
 
     solvent_mols = tuple(_prepare_small_molecule(spec, ff=ff, ion_ff=ion_ff) for spec in electrolyte.solvents)
     salt_cation = _prepare_small_molecule(electrolyte.salt_cation, ff=ff, ion_ff=ion_ff)
@@ -2219,6 +2289,30 @@ def build_graphite_polymer_electrolyte_sandwich(
     )
     electrolyte_count_map = {str(name): int(count) for name, count in zip(electrolyte_prepared_report.species_names, electrolyte_prepared_report.counts)}
     electrolyte_selected_counts = [int(electrolyte_count_map.get(name, 0)) for name in electrolyte_species_names]
+    graphite_negotiation = None
+    graphite, graphite_result, graphite_negotiation = _maybe_expand_graphite_for_phase_footprint(
+        graphite=graphite,
+        graphite_result=graphite_result,
+        ff=ff,
+        polymer_slab=polymer_slab,
+        electrolyte_slab=electrolyte_slab,
+    )
+    polymer_confined = _run_confined_phase_relaxation(
+        label="polymer",
+        prepared_slab=polymer_slab,
+        species=list(polymer_phase_build["species"]),
+        counts=list(polymer_selected_counts),
+        charge_scale=list(polymer_phase_build["charge_scale"]),
+        target_xy_nm=(float(graphite_result.box_nm[0]), float(graphite_result.box_nm[1])),
+        target_density_g_cm3=float(polymer.target_density_g_cm3),
+        target_thickness_nm=float(polymer.slab_z_nm),
+        ff_name=str(ff.name),
+        relax=relax,
+        work_dir=polymer_eq_dir / "06_confined_slab",
+        restart=restart,
+    )
+    polymer_report = polymer_confined.report
+    polymer_relaxed_block = polymer_confined.relaxed_block
     electrolyte_confined = _run_confined_phase_relaxation(
         label="electrolyte",
         prepared_slab=electrolyte_slab,
@@ -2321,6 +2415,16 @@ def build_graphite_polymer_electrolyte_sandwich(
         "polymer and electrolyte were first equilibrated as standalone bulk phases, then graphite-matched slabs were cut from dense equilibrium windows before three-phase stacking",
         "each dense slab then underwent a separate fixed-XY confined pre-relaxation with z walls and explicit vacuum so the final stack no longer relies on z-periodic healing",
         "graphite stays frozen during the stacked relaxation so the liquid and polymer phases can relax density mainly along the surface normal",
+        *(
+            ()
+            if graphite_negotiation is None
+            else (
+                "graphite master footprint was automatically expanded to cover the prepared soft-phase slabs before confined relaxation",
+                f"graphite footprint expansion repeats={tuple(int(x) for x in graphite_negotiation['repeat_factors_xy'])} "
+                f"from {tuple(float(x) for x in graphite_negotiation['graphite_box_before_nm'])} nm "
+                f"to {tuple(float(x) for x in graphite_negotiation['graphite_box_after_nm'])} nm",
+            )
+        ),
         f"polymer chain target atoms={int(polymer.chain_target_atoms)} -> built DP={int(polymer_dp)} and chain_count={int(chain_count)}",
         f"polymer bulk initial pack density={float(polymer_build_density):.4f} g/cm^3 -> target equilibrium density={float(polymer.target_density_g_cm3):.4f} g/cm^3",
         f"electrolyte bulk initial pack density={float(electrolyte_build_density):.4f} g/cm^3 -> target equilibrium density={float(electrolyte.target_density_g_cm3):.4f} g/cm^3",
@@ -2340,6 +2444,7 @@ def build_graphite_polymer_electrolyte_sandwich(
                 "electrolyte": asdict(electrolyte),
                 "relax": asdict(relax),
                 "graphite_box_nm": [float(x) for x in graphite_result.box_nm],
+                "graphite_footprint_negotiation": graphite_negotiation,
                 "polymer_phase": asdict(polymer_report),
                 "electrolyte_phase": asdict(electrolyte_report),
                 "polymer_phase_confined": polymer_confined.summary,

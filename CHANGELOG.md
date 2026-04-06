@@ -1,3 +1,7 @@
+## 0.8.95 (2026-04-06)
+
+- interface/sandwich + tests/test_sandwich_workflow.py: stop treating strong lateral compression as the default rescue for confined CMC/electrolyte slabs; the sandwich builder now negotiates the graphite master footprint from the prepared soft-phase slab envelopes, automatically upsizes the graphite substrate by integer repeat factors when the provisional footprint is too small, and only allows mild residual XY compression as a last-mile cleanup. This makes the Example 08 periodic graphite/CMC/LiPF6 path much closer to the intended architecture: bulk phases define the soft slab envelope, graphite becomes the negotiated master footprint, and confined relaxation no longer begins from obviously over-compressed polymer geometry.
+
 ## 0.8.94 (2026-04-06)
 
 - interface/sandwich + tests/test_sandwich_workflow.py: add a lightweight catastrophic-overlap softening pass after confined-slab reboxing so only atom pairs far below any reasonable bonded distance are gently separated before GROMACS energy minimization; this targets the remaining `inf force` starts in the CMC confined polymer slab path without changing the overall sandwich workflow or requiring a full rebuild of the bulk phases.

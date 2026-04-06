@@ -25,8 +25,11 @@ from yadonpy.interface.sandwich import (
     _compress_phase_block_z_to_target_thickness,
     _confined_summary_score,
     _confined_phase_report,
+    _graphite_repeat_factors_for_required_xy,
     _needs_confined_rescue,
+    _maybe_expand_graphite_for_phase_footprint,
     _phase_local_density_summary,
+    _prepared_slab_required_xy_nm,
     _phase_confined_relaxation_stages,
     _rebox_block_for_phase_confinement,
     _sandwich_relaxation_stages,
@@ -365,7 +368,7 @@ def test_rebox_block_for_phase_confinement_restores_periodic_lateral_coordinates
     conf = Chem.Conformer(block.GetNumAtoms())
     conf.Set3D(True)
     conf.SetAtomPosition(0, Geom.Point3D(0.2, 2.0, 4.0))
-    conf.SetAtomPosition(1, Geom.Point3D(21.8, 18.5, 6.0))
+    conf.SetAtomPosition(1, Geom.Point3D(21.0, 18.5, 6.0))
     block.AddConformer(conf, assignId=True)
     setattr(block, "cell", SimpleNamespace(xhi=20.0, xlo=0.0, yhi=20.0, ylo=0.0, zhi=18.0, zlo=0.0))
 
@@ -437,7 +440,7 @@ def test_rebox_block_for_phase_confinement_compresses_lateral_span_to_target_xy(
 
     confined, summary, note = _rebox_block_for_phase_confinement(
         block=block,
-        target_xy_nm=(2.0, 2.0),
+        target_xy_nm=(3.05, 2.75),
         target_thickness_nm=1.5,
         vacuum_padding_ang=12.0,
     )
@@ -445,11 +448,52 @@ def test_rebox_block_for_phase_confinement_compresses_lateral_span_to_target_xy(
     coords = confined.GetConformer(0).GetPositions()
     xs = [float(x[0]) for x in coords]
     ys = [float(x[1]) for x in coords]
-    assert max(xs) - min(xs) <= 20.0 + 1.0e-6
-    assert max(ys) - min(ys) <= 20.0 + 1.0e-6
+    assert max(xs) - min(xs) <= 30.5 + 1.0e-6
+    assert max(ys) - min(ys) <= 27.5 + 1.0e-6
     assert summary["lateral_scale_xy"][0] < 1.0
     assert summary["lateral_scale_xy"][1] < 1.0
     assert "compressed the soft slab onto the graphite XY footprint" in note
+
+
+def test_rebox_block_for_phase_confinement_refuses_extreme_lateral_compression():
+    block = _dummy_mol("SLAB", z_ang=4.0, cell_box_ang=(40.0, 40.0, 18.0))
+    conf = block.GetConformer(0)
+    conf.SetAtomPosition(0, Geom.Point3D(2.0, 2.0, 4.0))
+    atom = Chem.Atom("C")
+    atom.SetNoImplicit(True)
+    rw = Chem.RWMol(block)
+    rw.AddAtom(atom)
+    block = rw.GetMol()
+    conf = Chem.Conformer(block.GetNumAtoms())
+    conf.Set3D(True)
+    conf.SetAtomPosition(0, Geom.Point3D(2.0, 2.0, 4.0))
+    conf.SetAtomPosition(1, Geom.Point3D(34.0, 30.0, 6.0))
+    block.RemoveAllConformers()
+    block.AddConformer(conf, assignId=True)
+    setattr(block, "cell", SimpleNamespace(xhi=40.0, xlo=0.0, yhi=40.0, ylo=0.0, zhi=18.0, zlo=0.0))
+
+    with pytest.raises(RuntimeError, match="excessive lateral compression"):
+        _rebox_block_for_phase_confinement(
+            block=block,
+            target_xy_nm=(2.0, 2.0),
+            target_thickness_nm=1.5,
+            vacuum_padding_ang=12.0,
+        )
+
+
+def test_graphite_repeat_factors_for_required_xy_expand_only_when_needed():
+    assert _graphite_repeat_factors_for_required_xy(
+        current_box_nm=(2.3, 4.1, 2.0),
+        required_xy_nm=(2.1, 3.9),
+    ) == (1, 1)
+    assert _graphite_repeat_factors_for_required_xy(
+        current_box_nm=(2.3, 4.1, 2.0),
+        required_xy_nm=(4.0, 3.9),
+    ) == (2, 1)
+    assert _graphite_repeat_factors_for_required_xy(
+        current_box_nm=(2.3, 4.1, 2.0),
+        required_xy_nm=(4.0, 8.3),
+    ) == (2, 3)
 
 
 def test_rebox_block_for_phase_confinement_softens_catastrophic_xy_overlaps():
