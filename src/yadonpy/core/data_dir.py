@@ -373,3 +373,28 @@ def ensure_initialized() -> DataLayout:
     except Exception:
         pass
     return layout
+
+
+def audit_active_bundle_sync(
+    *,
+    layout: Optional[DataLayout] = None,
+    bundle_dir: Optional[Path | str] = None,
+) -> dict[str, Any]:
+    """Audit the active user MolDB against the bundled default catalog."""
+    resolved_layout = layout if layout is not None else ensure_initialized()
+    resolved_bundle = (
+        Path(bundle_dir).expanduser().resolve()
+        if bundle_dir is not None
+        else find_bundle_dir(module_file=__file__)
+    )
+    if resolved_bundle is None:
+        raise RuntimeError("No bundled moldb/ directory was found for audit.")
+    if not _is_bundle_dir(resolved_bundle):
+        raise RuntimeError(f"Bundled MolDB directory is invalid: {resolved_bundle}")
+    audit = audit_bundle_sync(resolved_layout, resolved_bundle)
+    return {
+        "layout_root": str(resolved_layout.root),
+        "moldb_dir": str(resolved_layout.moldb_dir),
+        "bundle_dir": str(resolved_bundle),
+        **audit,
+    }

@@ -84,90 +84,18 @@ def build_graphite_cmcna_glucose6_periodic_case(
     relax: SandwichRelaxationSpec | None = None,
     restart: bool | None = None,
 ):
-    """Build the MolDB-only periodic graphite/CMC(glucose_6)/LiPF6 carbonate case.
+    """Thin wrapper around the Example 08 preset entrypoint."""
+    from .sandwich_examples import build_graphite_cmcna_glucose6_periodic_case as _build_case
 
-    This is the high-level, script-first shortcut for Example 08's production
-    case. It keeps the example entrypoint close to Example 02: set a few user
-    inputs, call one builder, inspect the manifest.
-    """
-
-    smoke = str(profile).strip().lower() == "smoke"
-    default_graphite = GraphiteSubstrateSpec(
-        nx=(10 if smoke else 16),
-        ny=(10 if smoke else 14),
-        n_layers=4,
-        edge_cap="periodic",
-        name="GRAPH",
-        top_padding_ang=15.0,
-    )
-    default_polymer = default_cmcna_polymer_spec(
-        name="CMC6",
-        monomers=(
-            MoleculeSpec(
-                name="glucose_6",
-                smiles="*OC1OC(COCC(=O)[O-])C(*)C(O)C1O",
-                prefer_db=True,
-                require_ready=True,
-                polyelectrolyte_mode=True,
-            ),
-        ),
-        monomer_ratio=(1.0,),
-        dp=(20 if smoke else 50),
-        chain_count=(None if smoke else 8),
-        target_density_g_cm3=1.50,
-        slab_z_nm=(4.2 if smoke else 5.0),
-        min_chain_count=2,
-        initial_pack_z_scale=(1.55 if smoke else 1.40),
-        pack_retry=80,
-        pack_retry_step=3600,
-        pack_threshold_ang=1.60,
-        pack_dec_rate=0.68,
-        counterion=MoleculeSpec(name="Na", smiles="[Na+]", use_ion_ff=True, charge_scale=1.0),
-    )
-    default_electrolyte = default_carbonate_lipf6_electrolyte_spec(
-        solvents=(
-            MoleculeSpec(name="EC", smiles="O=C1OCCO1", prefer_db=True, require_ready=True),
-            MoleculeSpec(name="EMC", smiles="CCOC(=O)OC", prefer_db=True, require_ready=True),
-            MoleculeSpec(name="DEC", smiles="CCOC(=O)OCC", prefer_db=True, require_ready=True),
-        ),
-        solvent_mass_ratio=(3.0, 2.0, 5.0),
-        salt_anion=MoleculeSpec(
-            name="PF6",
-            smiles="F[P-](F)(F)(F)(F)F",
-            bonded="DRIH",
-            charge_scale=0.8,
-            prefer_db=True,
-            require_ready=True,
-        ),
-        slab_z_nm=(4.6 if smoke else 5.4),
-        min_salt_pairs=(4 if smoke else 8),
-        target_density_g_cm3=1.32,
-        initial_pack_density_g_cm3=0.86,
-        pack_retry=44,
-        pack_retry_step=2800,
-        pack_threshold_ang=1.55,
-        pack_dec_rate=0.70,
-    )
-    default_relax = SandwichRelaxationSpec(
-        omp=(16 if smoke else 24),
-        gpu=1,
-        gpu_id=0,
-        psi4_omp=(24 if smoke else 36),
-        psi4_memory_mb=(24000 if smoke else 32000),
-        bulk_eq21_final_ns=(0.06 if smoke else 0.12),
-        bulk_additional_loops=1,
-        stacked_pre_nvt_ps=(10.0 if smoke else 20.0),
-        stacked_z_relax_ps=(40.0 if smoke else 100.0),
-        stacked_exchange_ps=(60.0 if smoke else 160.0),
-    )
-    return build_graphite_cmcna_electrolyte_sandwich(
+    return _build_case(
         work_dir=work_dir,
         ff=ff,
         ion_ff=ion_ff,
-        graphite=(graphite if graphite is not None else default_graphite),
-        polymer=(polymer if polymer is not None else default_polymer),
-        electrolyte=(electrolyte if electrolyte is not None else default_electrolyte),
-        relax=(relax if relax is not None else default_relax),
+        profile=profile,
+        graphite=graphite,
+        polymer=polymer,
+        electrolyte=electrolyte,
+        relax=relax,
         restart=restart,
     )
 

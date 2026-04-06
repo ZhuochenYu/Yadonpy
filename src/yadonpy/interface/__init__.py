@@ -67,6 +67,12 @@ from .sandwich import (
     default_peo_electrolyte_spec,
     default_peo_polymer_spec,
 )
+from .sandwich_examples import (
+    build_graphite_cmcna_example_case,
+    build_graphite_peo_example_case,
+    format_sandwich_result_summary,
+    print_sandwich_result_summary,
+)
 
 __all__ = [
     "AreaMismatchPolicy",
@@ -120,13 +126,16 @@ __all__ = [
     "SandwichRelaxationSpec",
     "GraphitePolymerElectrolyteSandwichResult",
     "build_graphite_cmcna_glucose6_periodic_case",
+    "build_graphite_cmcna_example_case",
     "build_graphite_cmcna_electrolyte_sandwich",
     "build_graphite_polymer_electrolyte_sandwich",
+    "build_graphite_peo_example_case",
     "build_graphite_peo_electrolyte_sandwich",
     "default_carbonate_lipf6_electrolyte_spec",
     "default_cmcna_polymer_spec",
     "default_peo_polymer_spec",
     "default_peo_electrolyte_spec",
+    "format_sandwich_result_summary",
     "make_orthorhombic_pack_cell",
     "plan_rescaled_bulk_counts",
     "plan_resized_electrolyte_counts",
@@ -135,4 +144,5 @@ __all__ = [
     "recommend_electrolyte_alignment",
     "summarize_cell_charge",
     "summarize_charge_meta",
+    "print_sandwich_result_summary",
 ]

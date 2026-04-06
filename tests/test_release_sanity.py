@@ -197,7 +197,7 @@ def test_example05_cmcna_periodic_case_is_moldb_only_for_core_species():
     example_text = (
         root / 'examples' / '08_graphite_polymer_electrolyte_sandwich' / '05_cmcna_glucose6_periodic_case.py'
     ).read_text(encoding='utf-8')
-    helper_text = (root / 'src' / 'yadonpy' / 'interface' / 'sandwich.py').read_text(encoding='utf-8')
+    helper_text = (root / 'src' / 'yadonpy' / 'interface' / 'sandwich_examples.py').read_text(encoding='utf-8')
 
     assert 'build_graphite_cmcna_glucose6_periodic_case' in example_text
     assert 'name="glucose_6"' in helper_text
@@ -207,6 +207,35 @@ def test_example05_cmcna_periodic_case_is_moldb_only_for_core_species():
     assert 'name="PF6"' in helper_text
     assert helper_text.count('prefer_db=True') >= 5
     assert helper_text.count('require_ready=True') >= 5
+
+
+def test_example08_scripts_use_example_case_helpers_and_shared_summary_printer():
+    root = Path(__file__).resolve().parents[1]
+    expected = {
+        'examples/08_graphite_polymer_electrolyte_sandwich/01_peo_smoke.py': 'build_graphite_peo_example_case',
+        'examples/08_graphite_polymer_electrolyte_sandwich/02_peo_carbonate_full.py': 'build_graphite_peo_example_case',
+        'examples/08_graphite_polymer_electrolyte_sandwich/03_cmcna_smoke.py': 'build_graphite_cmcna_example_case',
+        'examples/08_graphite_polymer_electrolyte_sandwich/04_cmcna_full.py': 'build_graphite_cmcna_example_case',
+        'examples/08_graphite_polymer_electrolyte_sandwich/05_cmcna_glucose6_periodic_case.py': 'build_graphite_cmcna_glucose6_periodic_case',
+    }
+
+    for rel, helper_name in expected.items():
+        text = (root / rel).read_text(encoding='utf-8')
+        assert helper_name in text
+        assert 'print_sandwich_result_summary' in text
+        assert 'default_peo_polymer_spec(' not in text
+        assert 'default_cmcna_polymer_spec(' not in text
+        assert 'SandwichRelaxationSpec(' not in text
+
+
+def test_example07_includes_bundled_moldb_audit_script():
+    root = Path(__file__).resolve().parents[1]
+    script = root / 'examples' / '07_moldb_precompute_and_reuse' / '06_audit_bundled_moldb.py'
+    text = script.read_text(encoding='utf-8')
+
+    assert script.is_file()
+    assert 'audit_active_bundle_sync' in text
+    assert 'bundle_sync_audit.json' in text
 
 
 def test_oplsaa_examples_use_script_first_yadonpy_style():

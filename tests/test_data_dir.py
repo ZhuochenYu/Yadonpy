@@ -269,3 +269,18 @@ def test_audit_bundle_sync_reports_missing_stale_and_user_only_records(tmp_path:
     assert audit["bundled_more_complete_records"] == ["objects/abc123"]
     assert audit["stale_variants"]["objects/abc123"]["bundle_only_variant_ids"] == ["resp_patch"]
     assert audit["stale_variants"]["objects/abc123"]["bundle_only_bonded_variant_ids"] == ["resp_patch"]
+
+
+def test_audit_active_bundle_sync_wraps_layout_and_bundle_metadata(tmp_path: Path, monkeypatch):
+    data_root = tmp_path / "data_root"
+    bundle = _make_bundle(tmp_path / "seed_repo", value="default")
+    monkeypatch.setenv("YADONPY_HOME", str(data_root))
+    monkeypatch.setenv("YADONPY_DEFAULT_MOLDB", str(bundle))
+
+    audit = data_dir.audit_active_bundle_sync()
+
+    assert audit["layout_root"] == str(data_root.resolve())
+    assert audit["moldb_dir"] == str((data_root / "moldb").resolve())
+    assert audit["bundle_dir"] == str(bundle.resolve())
+    assert audit["missing_objects"] == []
+    assert audit["user_only_records"] == []

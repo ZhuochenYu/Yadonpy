@@ -13,10 +13,11 @@ coherent workflow family built around the same high-level sandwich builder:
 6. record phase summaries, confined-slab diagnostics, and final phase ordering.
 
 The scripts are intentionally short. Most of the workflow logic now lives in
-`yadonpy.interface.sandwich`, so the examples focus on study setup rather than
-repeating the same packing and relaxation boilerplate. The old route-A,
-route-B, charged CMC interface, and graphite stack cases are now treated as
-parameter choices on one substrate-assisted sandwich path.
+`yadonpy.interface.sandwich` plus the small preset helpers in
+`yadonpy.interface.sandwich_examples`, so the examples focus on study setup
+rather than repeating the same packing and relaxation boilerplate. The old
+route-A, route-B, charged CMC interface, and graphite stack cases are now
+treated as parameter choices on one substrate-assisted sandwich path.
 
 ## Scripts
 

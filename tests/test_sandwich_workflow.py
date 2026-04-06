@@ -8,6 +8,11 @@ from rdkit import Chem
 from rdkit import Geometry as Geom
 
 from yadonpy.core.graphite import stack_cell_blocks
+from yadonpy.interface import (
+    build_graphite_cmcna_example_case,
+    build_graphite_peo_example_case,
+    format_sandwich_result_summary,
+)
 from yadonpy.interface.sandwich import (
     ElectrolyteSlabSpec,
     GraphiteSubstrateSpec,
@@ -760,7 +765,7 @@ def test_run_amorphous_cell_with_density_backoff_retries_and_writes_summary(tmp_
 
 
 def test_build_graphite_cmcna_glucose6_periodic_case_uses_moldb_ready_defaults(tmp_path: Path, monkeypatch):
-    import yadonpy.interface.sandwich as sandwich
+    import yadonpy.interface.sandwich_examples as sandwich_examples
 
     captured: dict[str, object] = {}
 
@@ -774,7 +779,7 @@ def test_build_graphite_cmcna_glucose6_periodic_case_uses_moldb_ready_defaults(t
             stack_checks={},
         )
 
-    monkeypatch.setattr(sandwich, "build_graphite_cmcna_electrolyte_sandwich", _fake_builder)
+    monkeypatch.setattr(sandwich_examples, "build_graphite_cmcna_electrolyte_sandwich", _fake_builder)
 
     result = build_graphite_cmcna_glucose6_periodic_case(
         work_dir=tmp_path,
@@ -800,6 +805,89 @@ def test_build_graphite_cmcna_glucose6_periodic_case_uses_moldb_ready_defaults(t
     assert electrolyte.salt_anion.name == "PF6"
     assert electrolyte.salt_anion.prefer_db is True
     assert electrolyte.salt_anion.require_ready is True
+
+
+def test_build_graphite_peo_example_case_chooses_smoke_defaults(tmp_path: Path, monkeypatch):
+    import yadonpy.interface.sandwich_examples as sandwich_examples
+
+    captured: dict[str, object] = {}
+
+    def _fake_builder(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            manifest_path=tmp_path / "manifest.json",
+            relaxed_gro=tmp_path / "final.gro",
+            polymer_phase=SimpleNamespace(density_g_cm3=1.05),
+            electrolyte_phase=SimpleNamespace(density_g_cm3=1.28),
+            stack_checks={"is_expected_order": True},
+        )
+
+    monkeypatch.setattr(sandwich_examples, "build_graphite_peo_electrolyte_sandwich", _fake_builder)
+
+    result = build_graphite_peo_example_case(
+        work_dir=tmp_path,
+        ff=object(),
+        ion_ff=object(),
+        profile="smoke",
+        restart=True,
+    )
+
+    assert result.manifest_path == tmp_path / "manifest.json"
+    assert captured["graphite"].n_layers == 2
+    assert captured["polymer"].chain_target_atoms == 220
+    assert captured["electrolyte"].slab_z_nm == pytest.approx(3.8)
+    assert captured["relax"].stacked_exchange_ps == pytest.approx(60.0)
+
+
+def test_build_graphite_cmcna_example_case_chooses_full_defaults(tmp_path: Path, monkeypatch):
+    import yadonpy.interface.sandwich_examples as sandwich_examples
+
+    captured: dict[str, object] = {}
+
+    def _fake_builder(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            manifest_path=tmp_path / "manifest.json",
+            relaxed_gro=tmp_path / "final.gro",
+            polymer_phase=SimpleNamespace(density_g_cm3=1.42),
+            electrolyte_phase=SimpleNamespace(density_g_cm3=1.24),
+            stack_checks={"is_expected_order": True},
+        )
+
+    monkeypatch.setattr(sandwich_examples, "build_graphite_cmcna_electrolyte_sandwich", _fake_builder)
+
+    result = build_graphite_cmcna_example_case(
+        work_dir=tmp_path,
+        ff=object(),
+        ion_ff=object(),
+        profile="full",
+        restart=True,
+    )
+
+    assert result.relaxed_gro == tmp_path / "final.gro"
+    assert captured["graphite"].n_layers == 3
+    assert captured["polymer"].dp == 60
+    assert captured["electrolyte"].slab_z_nm == pytest.approx(5.2)
+    assert captured["relax"].stacked_exchange_ps == pytest.approx(120.0)
+
+
+def test_format_sandwich_result_summary_emits_linear_example02_style_lines(tmp_path: Path):
+    result = SimpleNamespace(
+        manifest_path=tmp_path / "manifest.json",
+        relaxed_gro=tmp_path / "final.gro",
+        polymer_phase=SimpleNamespace(density_g_cm3=1.45678),
+        electrolyte_phase=SimpleNamespace(density_g_cm3=1.23456),
+        stack_checks={"is_expected_order": True},
+    )
+
+    lines = format_sandwich_result_summary(result, profile="smoke")
+
+    assert lines[0] == "profile = smoke"
+    assert "manifest_path =" in lines[1]
+    assert "relaxed_gro =" in lines[2]
+    assert lines[3] == "polymer_density_g_cm3 = 1.4568"
+    assert lines[4] == "electrolyte_density_g_cm3 = 1.2346"
+    assert lines[5] == "stack_checks = {'is_expected_order': True}"
 
 
 def test_build_graphite_polymer_electrolyte_sandwich_orchestrates_bulk_then_slab_prep(tmp_path: Path, monkeypatch):

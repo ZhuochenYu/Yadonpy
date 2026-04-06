@@ -33,6 +33,13 @@ cleanly, use:
 python 05_check_forcefield_assignment.py
 ```
 
+To audit how your active `~/.yadonpy/moldb` differs from the bundled default
+catalog that ships with the source tree, use:
+
+```bash
+python 06_audit_bundled_moldb.py
+```
+
 This check writes a total summary and four category reports:
 
 - `neutral_molecules`
@@ -174,3 +181,5 @@ and now redirects to `01_build_moldb.py`.
   - `.../05_check_forcefield_assignment/drih_anions.json`
   - `.../05_check_forcefield_assignment/polyelectrolyte_monomers.json`
   - `.../05_check_forcefield_assignment/monatomic_ions.json`
+- Bundled MolDB audit summary:
+  - `.../06_audit_bundled_moldb/bundle_sync_audit.json`

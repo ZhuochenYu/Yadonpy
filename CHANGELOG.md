@@ -1,3 +1,8 @@
+## 0.8.103 (2026-04-06)
+
+- interface/sandwich_examples.py + examples/08_graphite_polymer_electrolyte_sandwich/*.py + tests/test_sandwich_workflow.py: move the shipped Example 08 study presets out of the main sandwich builder and into a dedicated preset/helper module. The example scripts now stay much closer to Example 02's linear style: `doctor() -> ff/ion_ff -> one high-level case builder -> shared summary printer`, without repeating large spec blocks or relaxation boilerplate in every script.
+- core/data_dir.py + examples/07_moldb_precompute_and_reuse/06_audit_bundled_moldb.py + tests/test_data_dir.py: add a first-class bundled MolDB audit entrypoint so bundled-vs-user catalog drift can be inspected explicitly instead of only through implicit initialization refreshes.
+
 ## 0.8.102 (2026-04-06)
 
 - interface/sandwich.py + tests/test_sandwich_workflow.py: fix the main density-killing failure mode in Example 08's current architecture. If graphite footprint negotiation expands the master `XY` after the first prepared soft slabs are measured, YadonPy now reruns the polymer and electrolyte bulk/slab preparation rounds against the larger graphite footprint instead of keeping the old small-area species counts and simply stretching the confined slabs onto a bigger box. The workflow records the number of preparation rounds and the full negotiation history in the manifest/progress outputs, so underfilled stacks caused by late graphite expansion are now explicit and recoverable instead of silently producing `0.2–0.3 g/cm^3` soft phases.

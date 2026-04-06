@@ -68,6 +68,27 @@ def build_graphite_cmcna_glucose6_periodic_case(**kwargs):
     return _build_sandwich(**kwargs)
 
 
+def build_graphite_peo_example_case(**kwargs):
+    """Thin wrapper around :func:`yadonpy.interface.build_graphite_peo_example_case`."""
+    from .interface import build_graphite_peo_example_case as _build_sandwich
+
+    return _build_sandwich(**kwargs)
+
+
+def build_graphite_cmcna_example_case(**kwargs):
+    """Thin wrapper around :func:`yadonpy.interface.build_graphite_cmcna_example_case`."""
+    from .interface import build_graphite_cmcna_example_case as _build_sandwich
+
+    return _build_sandwich(**kwargs)
+
+
+def audit_default_moldb_sync(**kwargs):
+    """Audit the active user MolDB against the bundled default catalog."""
+    from .core.data_dir import audit_active_bundle_sync as _audit_bundle
+
+    return _audit_bundle(**kwargs)
+
+
 def build_graphite_peo_electrolyte_sandwich(**kwargs):
     """Thin wrapper around :func:`yadonpy.interface.sandwich.build_graphite_peo_electrolyte_sandwich`."""
     from .interface.sandwich import build_graphite_peo_electrolyte_sandwich as _build_sandwich
@@ -198,11 +219,14 @@ def parameterize_smiles(
 
 
 __all__ = [
+    'audit_default_moldb_sync',
     'assign_charges',
     'assign_forcefield',
     'build_graphite',
+    'build_graphite_cmcna_example_case',
     'build_graphite_cmcna_glucose6_periodic_case',
     'build_graphite_cmcna_electrolyte_sandwich',
+    'build_graphite_peo_example_case',
     'build_graphite_peo_electrolyte_sandwich',
     'build_graphite_polymer_electrolyte_sandwich',
     'conformation_search',

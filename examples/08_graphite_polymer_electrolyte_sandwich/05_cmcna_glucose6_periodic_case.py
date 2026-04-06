@@ -5,7 +5,7 @@ from pathlib import Path
 
 from yadonpy.diagnostics import doctor
 from yadonpy.ff import GAFF2_mod, MERZ
-from yadonpy.interface import build_graphite_cmcna_glucose6_periodic_case
+from yadonpy.interface import build_graphite_cmcna_glucose6_periodic_case, print_sandwich_result_summary
 from yadonpy.runtime import set_run_options
 
 
@@ -31,10 +31,4 @@ if __name__ == "__main__":
         profile=PROFILE,
         restart=restart,
     )
-
-    print("profile =", PROFILE)
-    print("manifest_path =", result.manifest_path)
-    print("relaxed_gro =", result.relaxed_gro)
-    print("polymer_density_g_cm3 =", round(result.polymer_phase.density_g_cm3, 4))
-    print("electrolyte_density_g_cm3 =", round(result.electrolyte_phase.density_g_cm3, 4))
-    print("stack_checks =", result.stack_checks)
+    print_sandwich_result_summary(result, profile=PROFILE)
