@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import math
-from dataclasses import asdict, dataclass, field, replace
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Sequence
 
@@ -28,130 +28,37 @@ from .bulk_resize import build_bulk_equilibrium_profile, fixed_xy_semiisotropic_
 from . import builder as interface_builder
 from .postprocess import read_ndx_groups
 from .prep import equilibrate_bulk_with_eq21, plan_fixed_xy_direct_electrolyte_preparation
+from .sandwich_metrics import (
+    build_stack_checks as _build_stack_checks,
+    confined_phase_report as _confined_phase_report,
+    confined_summary_score as _confined_summary_score,
+    needs_confined_rescue as _needs_confined_rescue,
+    phase_gap_penalty_nm as _phase_gap_penalty_nm,
+    phase_local_density_summary as _phase_local_density_summary,
+    representative_phase_density as _representative_phase_density,
+)
+from .sandwich_packing import (
+    PackBackoffResult as _PackBackoffResult,
+    build_pack_density_ladder as _build_pack_density_ladder,
+    initial_bulk_pack_density as _initial_bulk_pack_density,
+    run_amorphous_cell_with_density_backoff as _run_amorphous_cell_with_density_backoff,
+)
+from .sandwich_specs import (
+    ElectrolyteSlabSpec,
+    GraphitePolymerElectrolyteSandwichResult,
+    GraphiteSubstrateSpec,
+    MoleculeSpec,
+    PolymerSlabSpec,
+    SandwichPhaseReport,
+    SandwichRelaxationSpec,
+    default_carbonate_lipf6_electrolyte_spec,
+    default_cmcna_polymer_spec,
+    default_peo_electrolyte_spec,
+    default_peo_polymer_spec,
+)
 
 
 _AVOGADRO = 6.02214076e23
-
-
-@dataclass(frozen=True)
-class MoleculeSpec:
-    name: str
-    smiles: str
-    charge_method: str = "RESP"
-    bonded: str | None = None
-    prefer_db: bool = False
-    require_ready: bool = False
-    use_ion_ff: bool = False
-    charge_scale: float = 1.0
-
-
-@dataclass(frozen=True)
-class GraphiteSubstrateSpec:
-    nx: int = 4
-    ny: int = 4
-    n_layers: int = 3
-    edge_cap: str = "H"
-    orientation: str = "basal"
-    name: str = "GRAPH"
-    top_padding_ang: float = 15.0
-
-
-@dataclass(frozen=True)
-class PolymerSlabSpec:
-    name: str = "PEO"
-    monomer_smiles: str = "*CCO*"
-    monomers: tuple[MoleculeSpec, ...] = ()
-    monomer_ratio: tuple[float, ...] = (1.0,)
-    terminal_smiles: str = "[H][*]"
-    terminal: MoleculeSpec | None = None
-    chain_target_atoms: int = 280
-    dp: int | None = None
-    chain_count: int | None = None
-    counterion: MoleculeSpec | None = None
-    target_density_g_cm3: float = 1.10
-    slab_z_nm: float = 3.6
-    min_chain_count: int = 2
-    tacticity: str = "atactic"
-    charge_scale: float = 1.0
-    initial_pack_z_scale: float = 1.18
-    pack_retry: int = 30
-    pack_retry_step: int = 2400
-    pack_threshold_ang: float = 1.55
-    pack_dec_rate: float = 0.72
-
-
-@dataclass(frozen=True)
-class ElectrolyteSlabSpec:
-    solvents: tuple[MoleculeSpec, ...] = field(
-        default_factory=lambda: (
-            MoleculeSpec(name="DME", smiles="COCCOC"),
-        )
-    )
-    salt_cation: MoleculeSpec = field(
-        default_factory=lambda: MoleculeSpec(name="Li", smiles="[Li+]", use_ion_ff=True, charge_scale=0.8)
-    )
-    salt_anion: MoleculeSpec = field(
-        default_factory=lambda: MoleculeSpec(
-            name="FSI",
-            smiles="FS(=O)(=O)[N-]S(=O)(=O)F",
-            charge_scale=0.8,
-        )
-    )
-    solvent_mass_ratio: tuple[float, ...] = (1.0,)
-    target_density_g_cm3: float = 1.18
-    slab_z_nm: float = 4.0
-    salt_molarity_M: float = 1.0
-    min_salt_pairs: int = 3
-    initial_pack_density_g_cm3: float | None = None
-    pack_retry: int = 30
-    pack_retry_step: int = 2400
-    pack_threshold_ang: float = 1.55
-    pack_dec_rate: float = 0.72
-
-
-@dataclass(frozen=True)
-class SandwichRelaxationSpec:
-    temperature_k: float = 300.0
-    pressure_bar: float = 1.0
-    mpi: int = 1
-    omp: int = 8
-    gpu: int = 1
-    gpu_id: int | None = 0
-    psi4_omp: int = 8
-    psi4_memory_mb: int = 16000
-    bulk_eq21_final_ns: float = 0.10
-    bulk_additional_loops: int = 1
-    bulk_eq21_exec_kwargs: dict[str, float] = field(default_factory=dict)
-    graphite_to_polymer_gap_ang: float = 3.8
-    polymer_to_electrolyte_gap_ang: float = 4.2
-    top_padding_ang: float = 12.0
-    stacked_pre_nvt_ps: float = 20.0
-    stacked_z_relax_ps: float = 80.0
-    stacked_exchange_ps: float = 120.0
-
-
-@dataclass(frozen=True)
-class SandwichPhaseReport:
-    label: str
-    box_nm: tuple[float, float, float]
-    density_g_cm3: float
-    species_names: tuple[str, ...]
-    counts: tuple[int, ...]
-    target_density_g_cm3: float | None = None
-    occupied_density_g_cm3: float | None = None
-    bulk_like_density_g_cm3: float | None = None
-
-
-@dataclass(frozen=True)
-class GraphitePolymerElectrolyteSandwichResult:
-    graphite: GraphiteBuildResult
-    polymer_phase: SandwichPhaseReport
-    electrolyte_phase: SandwichPhaseReport
-    stack_export: SystemExportResult
-    relaxed_gro: Path
-    manifest_path: Path
-    stack_checks: dict[str, object] = field(default_factory=dict)
-    notes: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -163,63 +70,6 @@ class _ConfinedPhaseResult:
     summary_path: Path
     top_path: Path
     gro_path: Path
-
-
-def default_peo_polymer_spec(**kwargs) -> PolymerSlabSpec:
-    return PolymerSlabSpec(**kwargs)
-
-
-def default_peo_electrolyte_spec(**kwargs) -> ElectrolyteSlabSpec:
-    return ElectrolyteSlabSpec(**kwargs)
-
-
-def default_cmcna_polymer_spec(**kwargs) -> PolymerSlabSpec:
-    base = PolymerSlabSpec(
-        name="CMC",
-        monomers=(
-            MoleculeSpec(name="glucose_0", smiles="*OC1OC(CO)C(*)C(O)C1O"),
-            MoleculeSpec(name="glucose_2", smiles="*OC1OC(CO)C(*)C(O)C1OCC(=O)[O-]"),
-            MoleculeSpec(name="glucose_3", smiles="*OC1OC(CO)C(*)C(OCC(=O)[O-])C1O"),
-            MoleculeSpec(name="glucose_6", smiles="*OC1OC(COCC(=O)[O-])C(*)C(O)C1O"),
-        ),
-        monomer_ratio=(12.0, 26.0, 27.0, 35.0),
-        terminal=MoleculeSpec(name="CMC_terminal", smiles="[H][*]", require_ready=False, prefer_db=False),
-        dp=60,
-        target_density_g_cm3=1.50,
-        slab_z_nm=4.2,
-        min_chain_count=2,
-        charge_scale=1.0,
-        initial_pack_z_scale=1.24,
-        pack_retry=60,
-        pack_retry_step=3200,
-        pack_threshold_ang=1.58,
-        pack_dec_rate=0.70,
-        counterion=MoleculeSpec(name="Na", smiles="[Na+]", use_ion_ff=True, charge_scale=1.0),
-    )
-    return replace(base, **kwargs)
-
-
-def default_carbonate_lipf6_electrolyte_spec(**kwargs) -> ElectrolyteSlabSpec:
-    base = ElectrolyteSlabSpec(
-        solvents=(
-            MoleculeSpec(name="EC", smiles="O=C1OCCO1"),
-            MoleculeSpec(name="DEC", smiles="CCOC(=O)OCC"),
-            MoleculeSpec(name="EMC", smiles="CCOC(=O)OC"),
-        ),
-        salt_cation=MoleculeSpec(name="Li", smiles="[Li+]", use_ion_ff=True, charge_scale=0.8),
-        salt_anion=MoleculeSpec(name="PF6", smiles="F[P-](F)(F)(F)(F)F", bonded="DRIH", charge_scale=0.8, prefer_db=True, require_ready=True),
-        solvent_mass_ratio=(3.0, 2.0, 5.0),
-        target_density_g_cm3=1.32,
-        slab_z_nm=4.8,
-        salt_molarity_M=1.0,
-        min_salt_pairs=6,
-        initial_pack_density_g_cm3=0.88,
-        pack_retry=40,
-        pack_retry_step=2600,
-        pack_threshold_ang=1.55,
-        pack_dec_rate=0.70,
-    )
-    return replace(base, **kwargs)
 
 
 def build_graphite_cmcna_glucose6_periodic_case(
@@ -258,6 +108,7 @@ def build_graphite_cmcna_glucose6_periodic_case(
                 smiles="*OC1OC(COCC(=O)[O-])C(*)C(O)C1O",
                 prefer_db=True,
                 require_ready=True,
+                polyelectrolyte_mode=True,
             ),
         ),
         monomer_ratio=(1.0,),
@@ -359,8 +210,12 @@ def _prepare_small_molecule(spec: MoleculeSpec, *, ff, ion_ff):
             spec.smiles,
             name=spec.name,
             charge=spec.charge_method,
+            basis_set=spec.basis_set,
+            method=spec.method,
             require_ready=spec.require_ready,
             prefer_db=spec.prefer_db,
+            polyelectrolyte_mode=spec.polyelectrolyte_mode,
+            polyelectrolyte_detection=spec.polyelectrolyte_detection,
         )
         assigned = ff.ff_assign(mol, report=False, bonded=spec.bonded)
     if not assigned:
@@ -392,14 +247,17 @@ def _build_polymer_chain(*, ff, polymer: PolymerSlabSpec, relax: SandwichRelaxat
 
     monomers = []
     for spec in monomer_specs:
-        pe_mode = _is_polyelectrolyte_spec(spec)
+        pe_mode = spec.polyelectrolyte_mode if spec.polyelectrolyte_mode is not None else _is_polyelectrolyte_spec(spec)
         monomer_handle = ff.mol(
             spec.smiles,
             name=spec.name,
             charge=spec.charge_method,
+            basis_set=spec.basis_set,
+            method=spec.method,
             require_ready=spec.require_ready,
             prefer_db=spec.prefer_db,
             polyelectrolyte_mode=pe_mode,
+            polyelectrolyte_detection=spec.polyelectrolyte_detection,
         )
         monomer = ff.ff_assign(
             monomer_handle,
@@ -523,81 +381,6 @@ def _prepare_polymer_phase_species(*, ff, ion_ff, polymer: PolymerSlabSpec, rela
         "charge_scale": charge_scale,
         "notes": tuple(notes),
     }
-
-
-def _read_gro_z_coords(gro_path: Path) -> list[float]:
-    lines = Path(gro_path).read_text(encoding="utf-8", errors="replace").splitlines()
-    if len(lines) < 3:
-        raise ValueError(f"Invalid .gro file: {gro_path}")
-    nat = int(lines[1].strip())
-    z: list[float] = []
-    for i in range(nat):
-        raw = lines[2 + i]
-        try:
-            z.append(float(raw[36:44]))
-        except Exception:
-            z.append(float(raw[-8:]))
-    return z
-
-
-def _read_gro_box_nm(gro_path: Path) -> tuple[float, float, float]:
-    lines = Path(gro_path).read_text(encoding="utf-8", errors="replace").splitlines()
-    if len(lines) < 3:
-        raise ValueError(f"Invalid .gro file: {gro_path}")
-    parts = lines[-1].split()
-    if len(parts) < 3:
-        raise ValueError(f"Invalid .gro box line: {gro_path}")
-    return float(parts[0]), float(parts[1]), float(parts[2])
-
-
-def _unwrap_phase_z(values: Sequence[float], *, box_z_nm: float) -> list[float]:
-    arr = np.asarray(list(values), dtype=float)
-    if arr.size == 0 or box_z_nm <= 0.0:
-        return [float(x) for x in arr]
-    if float(np.max(arr) - np.min(arr)) <= 0.5 * float(box_z_nm):
-        return [float(x) for x in arr]
-    ordered = np.sort(arr)
-    cyclic = np.concatenate([ordered, ordered[:1] + float(box_z_nm)])
-    gaps = np.diff(cyclic)
-    split = int(np.argmax(gaps))
-    if float(gaps[split]) <= 0.5 * float(box_z_nm):
-        return [float(x) for x in arr]
-    threshold = float(ordered[split])
-    arr = np.where(arr <= threshold, arr + float(box_z_nm), arr)
-    return [float(x) for x in arr]
-
-
-def _build_stack_checks(*, gro_path: Path, ndx_groups: dict[str, list[int]]) -> dict[str, object]:
-    z_coords = _read_gro_z_coords(gro_path)
-    _box_x_nm, _box_y_nm, box_z_nm = _read_gro_box_nm(gro_path)
-    payload: dict[str, object] = {"gro_path": str(gro_path)}
-    phase_stats: dict[str, dict[str, float]] = {}
-    for name in ("GRAPHITE", "POLYMER", "ELECTROLYTE"):
-        members = [int(idx) for idx in ndx_groups.get(name, []) if 1 <= int(idx) <= len(z_coords)]
-        if not members:
-            continue
-        values = _unwrap_phase_z([float(z_coords[idx - 1]) for idx in members], box_z_nm=float(box_z_nm))
-        ordered = sorted(values)
-        p05 = float(np.percentile(ordered, 5.0))
-        p95 = float(np.percentile(ordered, 95.0))
-        phase_stats[name] = {
-            "min_z_nm": min(values),
-            "mean_z_nm": sum(values) / float(len(values)),
-            "max_z_nm": max(values),
-            "p05_z_nm": p05,
-            "p95_z_nm": p95,
-        }
-    payload["phases"] = phase_stats
-    if len(phase_stats) == 3:
-        observed = [name for name, _mean in sorted(((name, data["mean_z_nm"]) for name, data in phase_stats.items()), key=lambda item: item[1])]
-        payload["observed_order"] = observed
-        payload["expected_order"] = ["GRAPHITE", "POLYMER", "ELECTROLYTE"]
-        payload["is_expected_order"] = observed == ["GRAPHITE", "POLYMER", "ELECTROLYTE"]
-        payload["graphite_polymer_gap_nm"] = float(phase_stats["POLYMER"]["min_z_nm"] - phase_stats["GRAPHITE"]["max_z_nm"])
-        payload["polymer_electrolyte_gap_nm"] = float(phase_stats["ELECTROLYTE"]["min_z_nm"] - phase_stats["POLYMER"]["max_z_nm"])
-        payload["graphite_polymer_core_gap_nm"] = float(phase_stats["POLYMER"]["p05_z_nm"] - phase_stats["GRAPHITE"]["p95_z_nm"])
-        payload["polymer_electrolyte_core_gap_nm"] = float(phase_stats["ELECTROLYTE"]["p05_z_nm"] - phase_stats["POLYMER"]["p95_z_nm"])
-    return payload
 
 
 def _append_group(groups: list[tuple[str, list[int]]], existing: dict[str, list[int]], name: str, members: Sequence[str]) -> None:
@@ -816,25 +599,6 @@ def _covered_lateral_replicas(
                 break
         reps.append(int(best_rep))
     return int(reps[0]), int(reps[1])
-
-
-def _initial_bulk_pack_density(
-    *,
-    target_density_g_cm3: float,
-    phase: str,
-    requested_density_g_cm3: float | None = None,
-    z_scale: float | None = None,
-) -> float:
-    if requested_density_g_cm3 is not None and float(requested_density_g_cm3) > 0.0:
-        return float(requested_density_g_cm3)
-    phase_key = str(phase).strip().lower()
-    target = float(target_density_g_cm3)
-    if phase_key == "polymer":
-        density = max(0.50, min(0.75, target * 0.60))
-        if z_scale is not None and float(z_scale) > 1.0:
-            density = max(0.42, float(density) / float(z_scale))
-        return float(density)
-    return max(0.65, min(0.90, target * 0.80))
 
 
 def _prepare_slab_from_equilibrated_bulk(
@@ -1520,80 +1284,6 @@ def _rebox_block_for_phase_confinement(
     return confined, summary, note
 
 
-def _phase_local_density_summary(
-    *,
-    gro_path: Path,
-    species: Sequence,
-    counts: Sequence[int],
-    center_window_fraction: float = 0.5,
-) -> dict[str, object]:
-    positions = _gro_positions_nm(gro_path)
-    box_nm = _read_gro_box_nm(gro_path)
-    if not positions:
-        return {
-            "box_nm": [float(x) for x in box_nm],
-            "occupied_density_g_cm3": 0.0,
-            "center_bulk_like_density_g_cm3": 0.0,
-            "wrapped_across_z_boundary": False,
-        }
-
-    blocks = _molecule_atom_blocks(species=species, counts=counts)
-    total_atoms = sum(stop - start for start, stop in blocks)
-    if total_atoms != len(positions):
-        return {
-            "box_nm": [float(x) for x in box_nm],
-            "occupied_density_g_cm3": 0.0,
-            "center_bulk_like_density_g_cm3": 0.0,
-            "wrapped_across_z_boundary": False,
-            "block_alignment_ok": False,
-        }
-
-    z_all = [float(pos[2]) for pos in positions]
-    occupied_min = float(min(z_all))
-    occupied_max = float(max(z_all))
-    occupied_thickness = max(occupied_max - occupied_min, 1.0e-6)
-    total_mass_amu = sum(float(molecular_weight(mol, strict=True)) * int(count) for mol, count in zip(species, counts))
-    occupied_volume_cm3 = float(box_nm[0] * box_nm[1] * occupied_thickness) * 1.0e-21
-    occupied_density = 0.0 if occupied_volume_cm3 <= 0.0 else float(total_mass_amu / _AVOGADRO / occupied_volume_cm3)
-
-    center_window = max(occupied_thickness * float(center_window_fraction), 1.0e-6)
-    center_mid = 0.5 * (occupied_min + occupied_max)
-    center_lo = center_mid - 0.5 * center_window
-    center_hi = center_mid + 0.5 * center_window
-    positions_arr = np.asarray(positions, dtype=float)
-    all_masses: list[float] = []
-    for mol, count in zip(species, counts):
-        atom_masses = [float(atom.GetMass()) for atom in mol.GetAtoms()]
-        for _ in range(int(count)):
-            all_masses.extend(atom_masses)
-    if len(all_masses) != len(positions):
-        return {
-            "box_nm": [float(x) for x in box_nm],
-            "occupied_z_range_nm": [occupied_min, occupied_max],
-            "occupied_thickness_nm": occupied_thickness,
-            "occupied_density_g_cm3": occupied_density,
-            "center_bulk_like_window_nm": [center_lo, center_hi],
-            "center_bulk_like_density_g_cm3": 0.0,
-            "wrapped_across_z_boundary": bool((occupied_max - occupied_min) > 0.90 * float(box_nm[2])),
-            "block_alignment_ok": False,
-        }
-    mass_arr = np.asarray(all_masses, dtype=float)
-    center_mask = (positions_arr[:, 2] >= center_lo) & (positions_arr[:, 2] <= center_hi)
-    center_mass_amu = float(np.sum(mass_arr[center_mask]))
-    center_volume_cm3 = float(box_nm[0] * box_nm[1] * center_window) * 1.0e-21
-    center_density = 0.0 if center_volume_cm3 <= 0.0 else float(center_mass_amu / _AVOGADRO / center_volume_cm3)
-    return {
-        "box_nm": [float(x) for x in box_nm],
-        "occupied_z_range_nm": [occupied_min, occupied_max],
-        "occupied_thickness_nm": occupied_thickness,
-        "occupied_density_g_cm3": occupied_density,
-        "center_bulk_like_window_nm": [center_lo, center_hi],
-        "center_bulk_like_density_g_cm3": center_density,
-        "wrapped_across_z_boundary": bool((occupied_max - occupied_min) > 0.90 * float(box_nm[2])),
-        "block_alignment_ok": True,
-    }
-
-
 def _window_size_nm(window: object) -> float:
     if not isinstance(window, (list, tuple)) or len(window) != 2:
         return 0.0
@@ -1616,80 +1306,6 @@ def _phase_surface_shell_nm(summary: dict[str, object]) -> float:
     if core <= 0.0 or core > occupied:
         return 0.5 * occupied
     return 0.5 * max(0.0, occupied - core)
-
-
-def _representative_phase_density(summary: dict[str, object]) -> float:
-    try:
-        center_density = float(summary.get("center_bulk_like_density_g_cm3", 0.0))
-    except Exception:
-        center_density = 0.0
-    if center_density > 0.0:
-        return center_density
-    try:
-        return float(summary.get("occupied_density_g_cm3", 0.0))
-    except Exception:
-        return 0.0
-
-
-def _phase_gap_penalty_nm(summary: dict[str, object], *, target_density_g_cm3: float | None) -> float:
-    penalty = 0.0
-    if bool(summary.get("wrapped_across_z_boundary", False)):
-        penalty += 0.20
-    occupied_density = _representative_phase_density(summary)
-    if target_density_g_cm3 is not None and float(target_density_g_cm3) > 0.0:
-        if occupied_density < 0.85 * float(target_density_g_cm3):
-            penalty += 0.15
-    return penalty
-
-
-def _confined_summary_score(
-    *,
-    summary: dict[str, object],
-    target_density_g_cm3: float,
-    target_thickness_nm: float,
-) -> float:
-    try:
-        center_density = float(summary.get("center_bulk_like_density_g_cm3", 0.0))
-    except Exception:
-        center_density = 0.0
-    try:
-        occupied_density = float(summary.get("occupied_density_g_cm3", 0.0))
-    except Exception:
-        occupied_density = 0.0
-    try:
-        occupied_thickness = float(summary.get("occupied_thickness_nm", target_thickness_nm))
-    except Exception:
-        occupied_thickness = float(target_thickness_nm)
-    density_ref = max(float(target_density_g_cm3), 1.0e-6)
-    thickness_ref = max(float(target_thickness_nm), 1.0e-6)
-    score = abs(center_density - float(target_density_g_cm3)) / density_ref
-    score += 0.50 * abs(occupied_thickness - float(target_thickness_nm)) / thickness_ref
-    if occupied_density < 0.80 * float(target_density_g_cm3):
-        score += 0.35
-    if bool(summary.get("wrapped_across_z_boundary", False)):
-        score += 0.75
-    return float(score)
-
-
-def _needs_confined_rescue(
-    *,
-    summary: dict[str, object],
-    target_density_g_cm3: float,
-    target_thickness_nm: float,
-) -> bool:
-    try:
-        center_density = float(summary.get("center_bulk_like_density_g_cm3", 0.0))
-    except Exception:
-        center_density = 0.0
-    try:
-        occupied_thickness = float(summary.get("occupied_thickness_nm", target_thickness_nm))
-    except Exception:
-        occupied_thickness = float(target_thickness_nm)
-    if bool(summary.get("wrapped_across_z_boundary", False)):
-        return True
-    if occupied_thickness > 1.15 * float(target_thickness_nm):
-        return True
-    return center_density < 0.90 * float(target_density_g_cm3)
 
 
 def _adaptive_stack_gaps_ang(
@@ -1786,31 +1402,6 @@ def _maybe_expand_graphite_for_phase_footprint(
         "graphite_box_before_nm": [float(x) for x in graphite_result.box_nm],
         "graphite_box_after_nm": [float(x) for x in expanded_result.box_nm],
     }
-
-
-def _confined_phase_report(
-    *,
-    label: str,
-    species_names: Sequence[str],
-    counts: Sequence[int],
-    target_density_g_cm3: float | None,
-    summary: dict[str, object],
-) -> SandwichPhaseReport:
-    confined_box = tuple(float(x) for x in summary.get("box_nm", (0.0, 0.0, 0.0)))
-    occupied_thickness = float(summary.get("occupied_thickness_nm", confined_box[2]))
-    occupied_box = (float(confined_box[0]), float(confined_box[1]), float(occupied_thickness))
-    occupied_density = float(summary.get("occupied_density_g_cm3", 0.0))
-    bulk_like_density = float(summary.get("center_bulk_like_density_g_cm3", occupied_density))
-    return SandwichPhaseReport(
-        label=str(label),
-        box_nm=occupied_box,
-        density_g_cm3=float(bulk_like_density if bulk_like_density > 0.0 else occupied_density),
-        species_names=tuple(str(x) for x in species_names),
-        counts=tuple(int(x) for x in counts),
-        target_density_g_cm3=(None if target_density_g_cm3 is None else float(target_density_g_cm3)),
-        occupied_density_g_cm3=float(occupied_density),
-        bulk_like_density_g_cm3=float(bulk_like_density if bulk_like_density > 0.0 else occupied_density),
-    )
 
 
 def _compress_phase_block_z_to_target_thickness(
@@ -2218,23 +1809,23 @@ def build_graphite_polymer_electrolyte_sandwich(
     polymer_chain = polymer_phase_build["chain"]
     polymer_dp = int(polymer_phase_build["dp"])
     chain_count = int(polymer_phase_build["chain_count"])
-    polymer_build_density = _initial_bulk_pack_density(
-        target_density_g_cm3=float(polymer.target_density_g_cm3),
-        phase="polymer",
-        z_scale=float(polymer.initial_pack_z_scale),
-    )
-    polymer_bulk = poly.amorphous_cell(
-        list(polymer_phase_build["species"]),
-        list(polymer_phase_build["counts"]),
-        density=float(polymer_build_density),
-        neutralize=False,
+    polymer_pack = _run_amorphous_cell_with_density_backoff(
+        label="polymer",
+        pack_fn=poly.amorphous_cell,
+        mols=list(polymer_phase_build["species"]),
+        counts=list(polymer_phase_build["counts"]),
         charge_scale=list(polymer_phase_build["charge_scale"]),
+        phase="polymer",
+        target_density_g_cm3=float(polymer.target_density_g_cm3),
+        z_scale=float(polymer.initial_pack_z_scale),
         work_dir=polymer_build_dir,
         retry=int(polymer.pack_retry),
         retry_step=int(polymer.pack_retry_step),
         threshold=float(polymer.pack_threshold_ang),
         dec_rate=float(polymer.pack_dec_rate),
     )
+    polymer_bulk = polymer_pack.cell
+    polymer_build_density = float(polymer_pack.selected_density_g_cm3)
     register_cell_species_metadata(
         polymer_bulk,
         list(polymer_phase_build["species"]),
@@ -2307,23 +1898,23 @@ def build_graphite_polymer_electrolyte_sandwich(
         float(electrolyte.salt_cation.charge_scale),
         float(electrolyte.salt_anion.charge_scale),
     ]
-    electrolyte_build_density = _initial_bulk_pack_density(
-        target_density_g_cm3=float(electrolyte.target_density_g_cm3),
-        phase="electrolyte",
-        requested_density_g_cm3=electrolyte.initial_pack_density_g_cm3,
-    )
-    electrolyte_bulk = poly.amorphous_cell(
-        electrolyte_mols,
-        list(electrolyte_prep.direct_plan.target_counts),
-        density=float(electrolyte_build_density),
-        neutralize=False,
+    electrolyte_pack = _run_amorphous_cell_with_density_backoff(
+        label="electrolyte",
+        pack_fn=poly.amorphous_cell,
+        mols=electrolyte_mols,
+        counts=list(electrolyte_prep.direct_plan.target_counts),
         charge_scale=electrolyte_charge_scale,
+        phase="electrolyte",
+        target_density_g_cm3=float(electrolyte.target_density_g_cm3),
+        requested_density_g_cm3=electrolyte.initial_pack_density_g_cm3,
         work_dir=electrolyte_build_dir,
         retry=int(electrolyte.pack_retry),
         retry_step=int(electrolyte.pack_retry_step),
         threshold=float(electrolyte.pack_threshold_ang),
         dec_rate=float(electrolyte.pack_dec_rate),
     )
+    electrolyte_bulk = electrolyte_pack.cell
+    electrolyte_build_density = float(electrolyte_pack.selected_density_g_cm3)
     register_cell_species_metadata(
         electrolyte_bulk,
         electrolyte_mols,
@@ -2505,6 +2096,8 @@ def build_graphite_polymer_electrolyte_sandwich(
         f"polymer chain target atoms={int(polymer.chain_target_atoms)} -> built DP={int(polymer_dp)} and chain_count={int(chain_count)}",
         f"polymer bulk initial pack density={float(polymer_build_density):.4f} g/cm^3 -> target equilibrium density={float(polymer.target_density_g_cm3):.4f} g/cm^3",
         f"electrolyte bulk initial pack density={float(electrolyte_build_density):.4f} g/cm^3 -> target equilibrium density={float(electrolyte.target_density_g_cm3):.4f} g/cm^3",
+        f"polymer bulk pack backoff summary={polymer_pack.summary_path}",
+        f"electrolyte bulk pack backoff summary={electrolyte_pack.summary_path}",
         f"stack master footprint={float(stack_master_xy_nm[0]):.4f} x {float(stack_master_xy_nm[1]):.4f} nm",
         f"adaptive stack gaps: graphite/polymer={float(graphite_polymer_gap_ang) / 10.0:.3f} nm, polymer/electrolyte={float(polymer_electrolyte_gap_ang) / 10.0:.3f} nm",
         *tuple(str(x) for x in polymer_phase_build["notes"]),
@@ -2524,6 +2117,10 @@ def build_graphite_polymer_electrolyte_sandwich(
                 "graphite_footprint_negotiation": graphite_negotiation,
                 "polymer_phase": asdict(polymer_report),
                 "electrolyte_phase": asdict(electrolyte_report),
+                "polymer_bulk_pack": polymer_pack.summary,
+                "electrolyte_bulk_pack": electrolyte_pack.summary,
+                "polymer_bulk_pack_summary": str(polymer_pack.summary_path),
+                "electrolyte_bulk_pack_summary": str(electrolyte_pack.summary_path),
                 "polymer_phase_confined": polymer_confined.summary,
                 "electrolyte_phase_confined": electrolyte_confined.summary,
                 "polymer_phase_confined_summary": str(polymer_confined.summary_path),
@@ -2550,6 +2147,8 @@ def build_graphite_polymer_electrolyte_sandwich(
         json.dumps(
             {
                 "stage": "completed",
+                "polymer_bulk_pack_summary": str(polymer_pack.summary_path),
+                "electrolyte_bulk_pack_summary": str(electrolyte_pack.summary_path),
                 "polymer_phase_confined_summary": str(polymer_confined.summary_path),
                 "electrolyte_phase_confined_summary": str(electrolyte_confined.summary_path),
                 "manifest_path": str(manifest_path),

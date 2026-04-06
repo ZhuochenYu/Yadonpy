@@ -1,3 +1,8 @@
+## 0.8.101 (2026-04-06)
+
+- interface/sandwich_specs.py + interface/sandwich_metrics.py + interface/sandwich_packing.py + interface/sandwich.py + tests/test_sandwich_workflow.py: start the planned Example 08 architectural split without changing the public builder names. The sandwich workflow now keeps specs, density/gap metrics, and bulk packing policy in separate internal modules, `MoleculeSpec` can carry MolDB-relevant variant hints such as `basis_set`/`method`/`polyelectrolyte_mode`, and polymer/electrolyte bulk construction now uses an explicit density-backoff ladder that records every packing attempt into JSON summaries before EQ21.
+- core/data_dir.py + tests/test_data_dir.py: tighten bundled MolDB refresh semantics so initialization no longer judges completeness only by legacy ready counts. YadonPy now compares variant id sets, ready-variant sets, and bonded-patch presence, refreshes bundle records when the shipped MolDB is genuinely more complete, and writes an audit summary covering missing objects, stale variants, bundle-more-complete records, and user-only records.
+
 ## 0.8.100 (2026-04-06)
 
 - interface/sandwich + tests/test_sandwich_workflow.py: retune the bundled Example 08 `glucose_6` periodic graphite case so its CMC-Na polymer phase starts from a looser, explicitly profile-dependent initial pack scale (`1.55` for smoke, `1.40` for full). Now that `initial_pack_z_scale` actually affects the polymer bulk builder, the example defaults themselves are aligned with the intended workflow: easy-to-pack initial amorphous cells first, then EQ21/confined relaxation drives the slab back toward the physical density.

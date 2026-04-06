@@ -167,6 +167,102 @@ def _manifest_ready_score(payload: dict[str, Any]) -> tuple[int, int, int]:
     return (legacy_ready, int(ready_variants), int(total_variants))
 
 
+def _manifest_variants(payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    variants = payload.get("variants") or {}
+    if not isinstance(variants, dict):
+        return {}
+    return {str(k): v for k, v in variants.items() if isinstance(v, dict)}
+
+
+def _manifest_variant_ids(payload: dict[str, Any]) -> set[str]:
+    return set(_manifest_variants(payload).keys())
+
+
+def _manifest_ready_variant_ids(payload: dict[str, Any]) -> set[str]:
+    return {
+        str(vid)
+        for vid, meta in _manifest_variants(payload).items()
+        if bool(meta.get("ready", False))
+    }
+
+
+def _manifest_bonded_variant_ids(payload: dict[str, Any]) -> set[str]:
+    return {
+        str(vid)
+        for vid, meta in _manifest_variants(payload).items()
+        if isinstance(meta.get("bonded"), dict) and bool(meta.get("bonded"))
+    }
+
+
+def _record_variant_delta(
+    bundle_payload: dict[str, Any],
+    user_payload: dict[str, Any],
+) -> dict[str, list[str]]:
+    bundle_variant_ids = _manifest_variant_ids(bundle_payload)
+    user_variant_ids = _manifest_variant_ids(user_payload)
+    bundle_ready_ids = _manifest_ready_variant_ids(bundle_payload)
+    user_ready_ids = _manifest_ready_variant_ids(user_payload)
+    bundle_bonded_ids = _manifest_bonded_variant_ids(bundle_payload)
+    user_bonded_ids = _manifest_bonded_variant_ids(user_payload)
+    return {
+        "bundle_only_variant_ids": sorted(bundle_variant_ids - user_variant_ids),
+        "user_only_variant_ids": sorted(user_variant_ids - bundle_variant_ids),
+        "bundle_only_ready_variant_ids": sorted(bundle_ready_ids - user_ready_ids),
+        "user_only_ready_variant_ids": sorted(user_ready_ids - bundle_ready_ids),
+        "bundle_only_bonded_variant_ids": sorted(bundle_bonded_ids - user_bonded_ids),
+        "user_only_bonded_variant_ids": sorted(user_bonded_ids - bundle_bonded_ids),
+    }
+
+
+def _bundle_record_is_more_complete(
+    *,
+    bundle_payload: dict[str, Any],
+    user_payload: dict[str, Any],
+) -> bool:
+    if _manifest_ready_score(bundle_payload) > _manifest_ready_score(user_payload):
+        return True
+    delta = _record_variant_delta(bundle_payload, user_payload)
+    return any(
+        bool(delta[key])
+        for key in (
+            "bundle_only_variant_ids",
+            "bundle_only_ready_variant_ids",
+            "bundle_only_bonded_variant_ids",
+        )
+    )
+
+
+def audit_bundle_sync(layout: DataLayout, bundle_dir: Path) -> dict[str, Any]:
+    bundle_records: dict[str, dict[str, Any]] = {}
+    user_records: dict[str, dict[str, Any]] = {}
+    for src_manifest in sorted(bundle_dir.glob("objects/*/manifest.json")):
+        prefix = src_manifest.relative_to(bundle_dir).parent.as_posix()
+        bundle_records[prefix] = _safe_load_json(src_manifest)
+    for dst_manifest in sorted(layout.moldb_dir.glob("objects/*/manifest.json")):
+        prefix = dst_manifest.relative_to(layout.moldb_dir).parent.as_posix()
+        user_records[prefix] = _safe_load_json(dst_manifest)
+
+    bundle_keys = set(bundle_records.keys())
+    user_keys = set(user_records.keys())
+    stale_variants: dict[str, dict[str, list[str]]] = {}
+    bundle_more_complete_records: list[str] = []
+    for prefix in sorted(bundle_keys & user_keys):
+        delta = _record_variant_delta(bundle_records[prefix], user_records[prefix])
+        if any(bool(values) for values in delta.values()):
+            stale_variants[prefix] = delta
+        if _bundle_record_is_more_complete(
+            bundle_payload=bundle_records[prefix],
+            user_payload=user_records[prefix],
+        ):
+            bundle_more_complete_records.append(prefix)
+    return {
+        "missing_objects": sorted(bundle_keys - user_keys),
+        "stale_variants": stale_variants,
+        "bundled_more_complete_records": sorted(bundle_more_complete_records),
+        "user_only_records": sorted(user_keys - bundle_keys),
+    }
+
+
 def _bundle_record_prefixes_to_refresh(
     *,
     layout: DataLayout,
@@ -183,7 +279,10 @@ def _bundle_record_prefixes_to_refresh(
             continue
         src_payload = _safe_load_json(src_manifest)
         dst_payload = _safe_load_json(dst_manifest)
-        if _manifest_ready_score(src_payload) > _manifest_ready_score(dst_payload):
+        if _bundle_record_is_more_complete(
+            bundle_payload=src_payload,
+            user_payload=dst_payload,
+        ):
             refresh_prefixes.add(src_manifest.relative_to(bundle_dir).parent.as_posix())
     return refresh_prefixes
 
@@ -240,6 +339,7 @@ def sync_bundle_dir(layout: DataLayout, bundle_dir: Path) -> dict[str, Any]:
         "updated": updated,
         "skipped_existing_user_files": skipped,
         "refreshed_stale_records": sorted(refresh_prefixes),
+        "audit": audit_bundle_sync(layout, bundle_dir),
     }
     _write_bundle_state(layout, summary)
     return summary

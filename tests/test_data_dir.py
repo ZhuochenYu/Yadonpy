@@ -159,3 +159,113 @@ def test_ensure_initialized_refreshes_stale_unmanaged_ready_record(tmp_path: Pat
     assert user_note.read_text(encoding="utf-8") == "keep me"
     assert state["refreshed_stale_records"] == ["objects/abc123"]
     assert state["updated"] == 2
+
+
+def test_ensure_initialized_refreshes_when_bundle_has_more_complete_variants(tmp_path: Path, monkeypatch):
+    data_root = tmp_path / "data_root"
+    bundle = tmp_path / "seed_repo" / "moldb"
+    bundle_obj = bundle / "objects" / "abc123"
+    bundle_obj.mkdir(parents=True, exist_ok=True)
+    (bundle_obj / "manifest.json").write_text(
+        json.dumps(
+            {
+                "key": "abc123",
+                "name": "variant-rich",
+                "ready": True,
+                "variants": {
+                    "resp_default": {
+                        "variant_id": "resp_default",
+                        "ready": True,
+                    },
+                    "resp_polyelec": {
+                        "variant_id": "resp_polyelec",
+                        "ready": True,
+                        "bonded": {"mode": "DRIH"},
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (bundle_obj / "charges.json").write_text(json.dumps({"variant_id": "resp_default"}), encoding="utf-8")
+    monkeypatch.setenv("YADONPY_HOME", str(data_root))
+    monkeypatch.setenv("YADONPY_DEFAULT_MOLDB", str(bundle))
+
+    layout = data_dir.ensure_initialized()
+    stale_obj = layout.moldb_dir / "objects" / "abc123"
+    (stale_obj / "manifest.json").write_text(
+        json.dumps(
+            {
+                "key": "abc123",
+                "name": "stale",
+                "ready": True,
+                "variants": {
+                    "resp_default": {
+                        "variant_id": "resp_default",
+                        "ready": True,
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    layout.bundle_state.unlink()
+
+    layout = data_dir.ensure_initialized()
+    state = json.loads(layout.bundle_state.read_text(encoding="utf-8"))
+    manifest = json.loads((stale_obj / "manifest.json").read_text(encoding="utf-8"))
+
+    assert "resp_polyelec" in manifest["variants"]
+    assert manifest["variants"]["resp_polyelec"]["bonded"]["mode"] == "DRIH"
+    assert state["refreshed_stale_records"] == ["objects/abc123"]
+    assert state["audit"]["bundled_more_complete_records"] == []
+
+
+def test_audit_bundle_sync_reports_missing_stale_and_user_only_records(tmp_path: Path):
+    layout = data_dir.DataLayout(tmp_path / "data_root")
+    layout.root.mkdir(parents=True, exist_ok=True)
+    (layout.moldb_dir / "objects").mkdir(parents=True, exist_ok=True)
+
+    bundle = tmp_path / "seed_repo" / "moldb"
+    bundle_a = bundle / "objects" / "abc123"
+    bundle_a.mkdir(parents=True, exist_ok=True)
+    (bundle_a / "manifest.json").write_text(
+        json.dumps(
+            {
+                "key": "abc123",
+                "variants": {
+                    "resp_default": {"variant_id": "resp_default", "ready": True},
+                    "resp_patch": {"variant_id": "resp_patch", "ready": True, "bonded": {"mode": "DRIH"}},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    bundle_missing = bundle / "objects" / "missing1"
+    bundle_missing.mkdir(parents=True, exist_ok=True)
+    (bundle_missing / "manifest.json").write_text(json.dumps({"key": "missing1"}), encoding="utf-8")
+
+    user_a = layout.moldb_dir / "objects" / "abc123"
+    user_a.mkdir(parents=True, exist_ok=True)
+    (user_a / "manifest.json").write_text(
+        json.dumps(
+            {
+                "key": "abc123",
+                "variants": {
+                    "resp_default": {"variant_id": "resp_default", "ready": True},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    user_only = layout.moldb_dir / "objects" / "useronly"
+    user_only.mkdir(parents=True, exist_ok=True)
+    (user_only / "manifest.json").write_text(json.dumps({"key": "useronly"}), encoding="utf-8")
+
+    audit = data_dir.audit_bundle_sync(layout, bundle)
+
+    assert audit["missing_objects"] == ["objects/missing1"]
+    assert audit["user_only_records"] == ["objects/useronly"]
+    assert audit["bundled_more_complete_records"] == ["objects/abc123"]
+    assert audit["stale_variants"]["objects/abc123"]["bundle_only_variant_ids"] == ["resp_patch"]
+    assert audit["stale_variants"]["objects/abc123"]["bundle_only_bonded_variant_ids"] == ["resp_patch"]

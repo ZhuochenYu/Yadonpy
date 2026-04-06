@@ -20,6 +20,7 @@ from yadonpy.interface.sandwich import (
     _ensure_system_group_in_ndx,
     _initial_bulk_pack_density,
     _augment_sandwich_ndx,
+    _build_pack_density_ladder,
     _adaptive_stack_gaps_ang,
     _build_stack_checks,
     _compress_phase_block_z_to_target_thickness,
@@ -32,6 +33,7 @@ from yadonpy.interface.sandwich import (
     _prepared_slab_required_xy_nm,
     _phase_confined_relaxation_stages,
     _rebox_block_for_phase_confinement,
+    _run_amorphous_cell_with_density_backoff,
     _sandwich_relaxation_stages,
     _stack_master_xy_nm,
     build_graphite_cmcna_glucose6_periodic_case,
@@ -703,6 +705,60 @@ def test_initial_bulk_pack_density_defaults_are_more_permissive_than_targets():
     assert _initial_bulk_pack_density(target_density_g_cm3=1.12, phase="electrolyte", requested_density_g_cm3=0.82) == pytest.approx(0.82)
 
 
+def test_build_pack_density_ladder_uses_phase_specific_backoff_policy():
+    polymer_policy, polymer_ladder = _build_pack_density_ladder(
+        phase="polymer",
+        target_density_g_cm3=1.50,
+        z_scale=1.25,
+    )
+    electrolyte_policy, electrolyte_ladder = _build_pack_density_ladder(
+        phase="electrolyte",
+        target_density_g_cm3=1.20,
+        requested_density_g_cm3=0.86,
+    )
+    assert polymer_policy.max_attempts == 4
+    assert polymer_policy.backoff_factor == pytest.approx(0.88)
+    assert polymer_policy.floor_density_g_cm3 == pytest.approx(0.40)
+    assert polymer_ladder[0] == pytest.approx(0.75 / 1.25)
+    assert polymer_ladder[-1] >= 0.40
+    assert electrolyte_policy.max_attempts == 3
+    assert electrolyte_ladder[0] == pytest.approx(0.86)
+    assert electrolyte_ladder[1] == pytest.approx(0.86 * 0.90)
+
+
+def test_run_amorphous_cell_with_density_backoff_retries_and_writes_summary(tmp_path: Path):
+    calls: list[float] = []
+
+    def _fake_pack(*_args, **kwargs):
+        calls.append(float(kwargs["density"]))
+        if len(calls) == 1:
+            raise RuntimeError("too dense")
+        return {"packed": True}
+
+    result = _run_amorphous_cell_with_density_backoff(
+        label="polymer",
+        pack_fn=_fake_pack,
+        mols=[_dummy_mol("PEO")],
+        counts=[2],
+        charge_scale=[1.0],
+        phase="polymer",
+        target_density_g_cm3=1.40,
+        z_scale=1.20,
+        work_dir=tmp_path / "poly_pack",
+        retry=10,
+        retry_step=100,
+        threshold=1.5,
+        dec_rate=0.7,
+    )
+
+    assert result.selected_attempt_index == 1
+    assert result.selected_density_g_cm3 == pytest.approx(calls[1])
+    assert calls[1] == pytest.approx(calls[0] * 0.88)
+    assert result.summary_path.exists()
+    assert result.summary["attempts"][0]["success"] is False
+    assert result.summary["attempts"][1]["success"] is True
+
+
 def test_build_graphite_cmcna_glucose6_periodic_case_uses_moldb_ready_defaults(tmp_path: Path, monkeypatch):
     import yadonpy.interface.sandwich as sandwich
 
@@ -736,6 +792,7 @@ def test_build_graphite_cmcna_glucose6_periodic_case_uses_moldb_ready_defaults(t
     assert polymer.monomers[0].name == "glucose_6"
     assert polymer.monomers[0].prefer_db is True
     assert polymer.monomers[0].require_ready is True
+    assert polymer.monomers[0].polyelectrolyte_mode is True
     assert polymer.chain_count is None
     assert polymer.initial_pack_z_scale == pytest.approx(1.55)
     assert electrolyte.solvents[0].name == "EC"
@@ -928,6 +985,8 @@ def test_build_graphite_polymer_electrolyte_sandwich_orchestrates_bulk_then_slab
     assert '"electrolyte_phase"' in manifest
     assert '"polymer_phase_confined"' in manifest
     assert '"electrolyte_phase_confined"' in manifest
+    assert '"polymer_bulk_pack"' in manifest
+    assert '"electrolyte_bulk_pack"' in manifest
     assert '"ndx_groups"' in manifest
     assert (tmp_path / "sandwich" / "05_sandwich" / "sandwich_progress.json").exists()
     assert result.stack_checks["is_expected_order"] is True
