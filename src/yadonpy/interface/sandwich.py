@@ -1006,6 +1006,31 @@ def _minimize_fragment_periodic_axis_span(
     return best, bool(best_span + 1.0e-9 < original_span)
 
 
+def _scale_block_lateral_to_target(
+    coords: np.ndarray,
+    *,
+    target_x_ang: float,
+    target_y_ang: float,
+) -> tuple[np.ndarray, tuple[float, float], bool]:
+    scaled = np.asarray(coords, dtype=float).copy()
+    if scaled.size == 0:
+        return scaled, (1.0, 1.0), False
+
+    mins = np.min(scaled, axis=0)
+    maxs = np.max(scaled, axis=0)
+    spans = maxs - mins
+    scale_x = 1.0 if float(spans[0]) <= float(target_x_ang) + 1.0e-9 else float(target_x_ang) / max(float(spans[0]), 1.0e-9)
+    scale_y = 1.0 if float(spans[1]) <= float(target_y_ang) + 1.0e-9 else float(target_y_ang) / max(float(spans[1]), 1.0e-9)
+    if scale_x >= 1.0 - 1.0e-9 and scale_y >= 1.0 - 1.0e-9:
+        return scaled, (1.0, 1.0), False
+
+    center_x = 0.5 * float(mins[0] + maxs[0])
+    center_y = 0.5 * float(mins[1] + maxs[1])
+    scaled[:, 0] = center_x + (scaled[:, 0] - center_x) * float(scale_x)
+    scaled[:, 1] = center_y + (scaled[:, 1] - center_y) * float(scale_y)
+    return scaled, (float(scale_x), float(scale_y)), True
+
+
 def _compact_packed_cell_z_by_molecule_centers(
     *,
     cell,
@@ -1203,6 +1228,7 @@ def _rebox_block_for_phase_confinement(
         raise RuntimeError("Cannot confine an empty slab block.")
     periodic_lateral_wrap_applied = False
     bonded_lateral_unwrap_applied = False
+    lateral_scale_xy = (1.0, 1.0)
 
     if species is not None and counts is not None:
         try:
@@ -1238,6 +1264,19 @@ def _rebox_block_for_phase_confinement(
     target_y_ang = float(target_xy_nm[1]) * 10.0
     slot_z_ang = max(float(target_thickness_nm) * 10.0, float(spans[2]))
     box_z_ang = slot_z_ang + 2.0 * float(vacuum_padding_ang)
+
+    if float(spans[0]) > target_x_ang + 1.0e-6 or float(spans[1]) > target_y_ang + 1.0e-6:
+        coords, lateral_scale_xy, scaled_to_target = _scale_block_lateral_to_target(
+            coords,
+            target_x_ang=target_x_ang,
+            target_y_ang=target_y_ang,
+        )
+        if scaled_to_target:
+            mins = np.min(coords, axis=0)
+            maxs = np.max(coords, axis=0)
+            spans = maxs - mins
+            slot_z_ang = max(float(target_thickness_nm) * 10.0, float(spans[2]))
+            box_z_ang = slot_z_ang + 2.0 * float(vacuum_padding_ang)
 
     if (not periodic_lateral_wrap_applied) and (
         float(spans[0]) > target_x_ang + 1.0e-6 or float(spans[1]) > target_y_ang + 1.0e-6
@@ -1282,12 +1321,18 @@ def _rebox_block_for_phase_confinement(
         "vacuum_padding_ang": float(vacuum_padding_ang),
         "periodic_lateral_wrap_applied": bool(periodic_lateral_wrap_applied),
         "bonded_lateral_unwrap_applied": bool(bonded_lateral_unwrap_applied),
+        "lateral_scale_xy": [float(lateral_scale_xy[0]), float(lateral_scale_xy[1])],
     }
     note = "reboxed the prepared slab onto the graphite master footprint"
     if bonded_lateral_unwrap_applied:
         note += " and restored bonded lateral periodic coordinates"
     if periodic_lateral_wrap_applied and not bonded_lateral_unwrap_applied:
         note += " and restored lateral periodic coordinates"
+    if lateral_scale_xy[0] < 1.0 - 1.0e-9 or lateral_scale_xy[1] < 1.0 - 1.0e-9:
+        note += (
+            " and anisotropically compressed the soft slab onto the graphite XY footprint"
+            f" (scale_x={float(lateral_scale_xy[0]):.3f}, scale_y={float(lateral_scale_xy[1]):.3f})"
+        )
     note += f" and inserted {float(vacuum_padding_ang) / 10.0:.3f} nm top/bottom vacuum before confined slab relaxation"
     return confined, summary, note
 

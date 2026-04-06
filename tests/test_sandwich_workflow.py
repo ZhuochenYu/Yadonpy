@@ -381,8 +381,8 @@ def test_rebox_block_for_phase_confinement_restores_periodic_lateral_coordinates
     ys = [float(x[1]) for x in coords]
     assert max(xs) <= 20.0
     assert max(ys) <= 20.0
-    assert summary["periodic_lateral_wrap_applied"] is True
-    assert "restored lateral periodic coordinates" in note
+    assert summary["periodic_lateral_wrap_applied"] or summary["lateral_scale_xy"][0] < 1.0 or summary["lateral_scale_xy"][1] < 1.0
+    assert ("restored lateral periodic coordinates" in note) or ("compressed the soft slab onto the graphite XY footprint" in note)
 
 
 def test_rebox_block_for_phase_confinement_unwraps_bonded_fragments_across_lateral_boundary():
@@ -416,6 +416,40 @@ def test_rebox_block_for_phase_confinement_unwraps_bonded_fragments_across_later
     assert dx < 1.0
     assert summary["bonded_lateral_unwrap_applied"] is True
     assert "restored bonded lateral periodic coordinates" in note
+
+
+def test_rebox_block_for_phase_confinement_compresses_lateral_span_to_target_xy():
+    block = _dummy_mol("SLAB", z_ang=4.0, cell_box_ang=(40.0, 40.0, 18.0))
+    conf = block.GetConformer(0)
+    conf.SetAtomPosition(0, Geom.Point3D(2.0, 2.0, 4.0))
+    atom = Chem.Atom("C")
+    atom.SetNoImplicit(True)
+    rw = Chem.RWMol(block)
+    rw.AddAtom(atom)
+    block = rw.GetMol()
+    conf = Chem.Conformer(block.GetNumAtoms())
+    conf.Set3D(True)
+    conf.SetAtomPosition(0, Geom.Point3D(2.0, 2.0, 4.0))
+    conf.SetAtomPosition(1, Geom.Point3D(34.0, 30.0, 6.0))
+    block.RemoveAllConformers()
+    block.AddConformer(conf, assignId=True)
+    setattr(block, "cell", SimpleNamespace(xhi=40.0, xlo=0.0, yhi=40.0, ylo=0.0, zhi=18.0, zlo=0.0))
+
+    confined, summary, note = _rebox_block_for_phase_confinement(
+        block=block,
+        target_xy_nm=(2.0, 2.0),
+        target_thickness_nm=1.5,
+        vacuum_padding_ang=12.0,
+    )
+
+    coords = confined.GetConformer(0).GetPositions()
+    xs = [float(x[0]) for x in coords]
+    ys = [float(x[1]) for x in coords]
+    assert max(xs) - min(xs) <= 20.0 + 1.0e-6
+    assert max(ys) - min(ys) <= 20.0 + 1.0e-6
+    assert summary["lateral_scale_xy"][0] < 1.0
+    assert summary["lateral_scale_xy"][1] < 1.0
+    assert "compressed the soft slab onto the graphite XY footprint" in note
 
 
 def test_stack_cell_blocks_respects_fixed_xy_master_footprint():

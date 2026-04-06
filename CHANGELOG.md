@@ -1,3 +1,7 @@
+## 0.8.93 (2026-04-06)
+
+- interface/sandwich + tests/test_sandwich_workflow.py: when a prepared soft slab is genuinely wider than the graphite master footprint, confined reboxing now compresses the slab anisotropically onto the target XY instead of failing or aliasing atoms through modulo wrapping; this keeps the full slab mass, makes the phase density target reachable, and lets Example 08 continue from the confined polymer stage without turning a width mismatch into infinite-force overlaps.
+
 ## 0.8.92 (2026-04-06)
 
 - interface/sandwich + examples/08_graphite_polymer_electrolyte_sandwich/05_cmcna_glucose6_periodic_case.py + tests/test_sandwich_workflow.py + tests/test_release_sanity.py: make confined-slab reboxing unwrap each molecule's bonded x/y coordinates before matching the graphite footprint, then choose the tightest whole-molecule periodic image arrangement instead of falling back to atomwise modulo wrapping; this removes a major source of self-overlap/aliasing in the Example 08 CMC confined polymer slab path, and the new `build_graphite_cmcna_glucose6_periodic_case(...)` helper lets the production `glucose_6` periodic graphite case stay MolDB-only while reading much more like the linear Example 02 scripts.
