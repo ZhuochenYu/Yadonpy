@@ -72,6 +72,14 @@ class _ConfinedPhaseResult:
     gro_path: Path
 
 
+def _write_sandwich_progress(progress_path: Path, payload: dict[str, object]) -> None:
+    progress_path.parent.mkdir(parents=True, exist_ok=True)
+    progress_path.write_text(
+        json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+
+
 def build_graphite_cmcna_glucose6_periodic_case(
     *,
     work_dir: str | Path,
@@ -742,6 +750,28 @@ def _phase_report(*, label: str, counts: Sequence[int], mols: Sequence, work_dir
         occupied_density_g_cm3=float(profile.density_g_cm3),
         bulk_like_density_g_cm3=float(profile.density_g_cm3),
     )
+
+
+def _phase_round_progress_snapshot(
+    *,
+    round_result: dict[str, object],
+    prepared_label: str,
+) -> dict[str, object]:
+    prepared_report = round_result.get("prepared_report")
+    pack = round_result.get("pack")
+    snapshot: dict[str, object] = {
+        "round_dir": str(round_result["round_dir"]),
+        "selected_counts": [int(x) for x in round_result.get("selected_counts", ())],
+        "prepared_slab_meta": _prepared_slab_payload(round_result["prepared_slab"]),
+        "slab_note": str(round_result.get("slab_note", "")),
+    }
+    if pack is not None:
+        snapshot["bulk_pack_summary"] = str(pack.summary_path)
+        snapshot["bulk_pack"] = dict(pack.summary)
+    if prepared_report is not None:
+        snapshot["prepared_report"] = asdict(prepared_report)
+    snapshot["label"] = str(prepared_label)
+    return snapshot
 
 
 def _covered_lateral_replicas(
@@ -1978,6 +2008,7 @@ def build_graphite_polymer_electrolyte_sandwich(
     relax_dir.mkdir(parents=True, exist_ok=True)
     graphite_dir.mkdir(parents=True, exist_ok=True)
     polymer_chain_dir.mkdir(parents=True, exist_ok=True)
+    progress_path = stack_dir / "sandwich_progress.json"
 
     graphite_result = build_graphite(
         nx=int(graphite.nx),
@@ -1988,6 +2019,16 @@ def build_graphite_polymer_electrolyte_sandwich(
         ff=ff,
         name=graphite.name,
         top_padding_ang=float(graphite.top_padding_ang),
+    )
+    _write_sandwich_progress(
+        progress_path,
+        {
+            "stage": "graphite_built",
+            "graphite_box_nm": [float(x) for x in graphite_result.box_nm],
+            "graphite_spec": asdict(graphite),
+            "phase_preparation_rounds": 0,
+            "graphite_footprint_negotiations": [],
+        },
     )
 
     graphite_negotiations: list[dict[str, object]] = []
@@ -2017,6 +2058,25 @@ def build_graphite_polymer_electrolyte_sandwich(
             base_phase_dir=electrolyte_round_dir,
             restart=restart,
         )
+        _write_sandwich_progress(
+            progress_path,
+            {
+                "stage": "phase_preparation_round",
+                "current_round_index": int(round_index + 1),
+                "phase_preparation_rounds": int(preparation_round_count),
+                "graphite_box_nm": [float(x) for x in graphite_result.box_nm],
+                "graphite_spec": asdict(graphite),
+                "graphite_footprint_negotiations": graphite_negotiations,
+                "polymer_round": _phase_round_progress_snapshot(
+                    round_result=polymer_round,
+                    prepared_label="polymer",
+                ),
+                "electrolyte_round": _phase_round_progress_snapshot(
+                    round_result=electrolyte_round,
+                    prepared_label="electrolyte",
+                ),
+            },
+        )
 
         expanded_graphite, expanded_graphite_result, graphite_negotiation = _maybe_expand_graphite_for_phase_footprint(
             graphite=graphite,
@@ -2031,7 +2091,43 @@ def build_graphite_polymer_electrolyte_sandwich(
         )
         if graphite_negotiation is None:
             break
+        polymer_required_xy_log = graphite_negotiation.get("polymer_required_xy_nm")
+        electrolyte_required_xy_log = graphite_negotiation.get("electrolyte_required_xy_nm")
+        polymer_required_comp_log = graphite_negotiation.get("polymer_compression_aware_required_xy_nm")
+        electrolyte_required_comp_log = graphite_negotiation.get("electrolyte_compression_aware_required_xy_nm")
+        utils.radon_print(
+            "[INFO] graphite footprint expansion requested | "
+            f"repeat_factors_xy={tuple(int(x) for x in graphite_negotiation['repeat_factors_xy'])} | "
+            f"before_nm={tuple(float(x) for x in graphite_negotiation['graphite_box_before_nm'])} | "
+            f"after_nm={tuple(float(x) for x in graphite_negotiation['graphite_box_after_nm'])} | "
+            f"polymer_required_xy_nm={None if polymer_required_xy_log is None else tuple(float(x) for x in polymer_required_xy_log)} | "
+            f"electrolyte_required_xy_nm={None if electrolyte_required_xy_log is None else tuple(float(x) for x in electrolyte_required_xy_log)} | "
+            f"polymer_compression_aware_required_xy_nm={None if polymer_required_comp_log is None else tuple(float(x) for x in polymer_required_comp_log)} | "
+            f"electrolyte_compression_aware_required_xy_nm={None if electrolyte_required_comp_log is None else tuple(float(x) for x in electrolyte_required_comp_log)}",
+            level=1,
+        )
         graphite_negotiations.append(graphite_negotiation)
+        _write_sandwich_progress(
+            progress_path,
+            {
+                "stage": "graphite_footprint_expansion",
+                "current_round_index": int(round_index + 1),
+                "next_round_index": int(round_index + 2),
+                "phase_preparation_rounds": int(preparation_round_count),
+                "graphite_box_nm": [float(x) for x in graphite_result.box_nm],
+                "graphite_spec": asdict(graphite),
+                "latest_graphite_footprint_negotiation": graphite_negotiation,
+                "graphite_footprint_negotiations": graphite_negotiations,
+                "polymer_round": _phase_round_progress_snapshot(
+                    round_result=polymer_round,
+                    prepared_label="polymer",
+                ),
+                "electrolyte_round": _phase_round_progress_snapshot(
+                    round_result=electrolyte_round,
+                    prepared_label="electrolyte",
+                ),
+            },
+        )
         if preparation_round_count >= max_preparation_rounds:
             raise RuntimeError(
                 f"Could not converge graphite master footprint negotiation within {max_preparation_rounds} preparation rounds."
@@ -2173,7 +2269,6 @@ def build_graphite_polymer_electrolyte_sandwich(
     stack_checks = _build_stack_checks(gro_path=relaxed_gro, ndx_groups=ndx_groups)
 
     manifest_path = stack_dir / "sandwich_manifest.json"
-    progress_path = stack_dir / "sandwich_progress.json"
     notes = (
         "polymer and electrolyte were first equilibrated as standalone bulk phases, then graphite-matched slabs were cut from dense equilibrium windows before three-phase stacking",
         "each dense slab then underwent a separate fixed-XY confined pre-relaxation with z walls and explicit vacuum so the final stack no longer relies on z-periodic healing",
@@ -2246,6 +2341,8 @@ def build_graphite_polymer_electrolyte_sandwich(
             {
                 "stage": "completed",
                 "phase_preparation_rounds": int(preparation_round_count),
+                "graphite_footprint_negotiations": graphite_negotiations,
+                "latest_graphite_footprint_negotiation": graphite_negotiation,
                 "polymer_bulk_pack_summary": str(polymer_pack.summary_path),
                 "electrolyte_bulk_pack_summary": str(electrolyte_pack.summary_path),
                 "polymer_phase_confined_summary": str(polymer_confined.summary_path),

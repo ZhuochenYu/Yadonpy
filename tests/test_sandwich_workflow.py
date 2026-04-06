@@ -1341,4 +1341,7 @@ def test_build_graphite_polymer_electrolyte_sandwich_rebuilds_soft_phases_after_
     assert len(electrolyte_ref_boxes) == 2
     assert electrolyte_ref_boxes[1][:2] == pytest.approx((4.0, 4.0))
     manifest = result.manifest_path.read_text(encoding="utf-8")
+    progress = (tmp_path / "sandwich_expand" / "05_sandwich" / "sandwich_progress.json").read_text(encoding="utf-8")
     assert '"phase_preparation_rounds": 2' in manifest
+    assert '"graphite_footprint_negotiations"' in progress
+    assert '"latest_graphite_footprint_negotiation"' in progress
