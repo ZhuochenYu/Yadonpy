@@ -35,6 +35,7 @@ from yadonpy.interface.sandwich import (
     _graphite_repeat_factors_for_required_xy,
     _needs_confined_rescue,
     _maybe_expand_graphite_for_phase_footprint,
+    _preflight_graphite_footprint_from_phase_targets,
     _phase_local_density_summary,
     _prepared_slab_required_xy_nm,
     _phase_confined_relaxation_stages,
@@ -516,6 +517,68 @@ def test_graphite_counts_for_required_xy_expand_by_minimum_lattice_increment():
         current_box_nm=(4.7892, 4.183094328, 2.5),
         required_xy_nm=(9.58, 8.37),
     ) == (21, 21)
+
+
+def test_preflight_graphite_footprint_from_phase_targets_expands_before_bulk_rounds(monkeypatch, tmp_path: Path):
+    import yadonpy.interface.sandwich as sandwich
+
+    polymer_chain = _dummy_mol("CMC6")
+    solvent = _dummy_mol("EC")
+    cation = _dummy_mol("Li")
+    anion = _dummy_mol("PF6")
+
+    monkeypatch.setattr(
+        sandwich,
+        "_prepare_polymer_phase_species",
+        lambda **kwargs: {
+            "chain": polymer_chain,
+            "dp": 20,
+            "chain_count": 1800,
+            "species": [polymer_chain],
+            "counts": [1800],
+            "charge_scale": [1.0],
+            "notes": (),
+        },
+    )
+    monkeypatch.setattr(
+        sandwich,
+        "_prepare_electrolyte_phase_inputs",
+        lambda **kwargs: {
+            "mols": [solvent, cation, anion],
+            "charge_scale": [1.0, 1.0, 1.0],
+            "prep": SimpleNamespace(direct_plan=SimpleNamespace(target_counts=(6000, 600, 600))),
+        },
+    )
+
+    build_calls = []
+
+    def _fake_build_graphite(**kwargs):
+        build_calls.append((int(kwargs["nx"]), int(kwargs["ny"])))
+        return SimpleNamespace(box_nm=(0.25 * int(kwargs["nx"]), 0.42 * int(kwargs["ny"]), 2.5))
+
+    monkeypatch.setattr(sandwich, "build_graphite", _fake_build_graphite)
+
+    graphite = GraphiteSubstrateSpec(nx=10, ny=10, n_layers=4)
+    graphite_result = SimpleNamespace(box_nm=(2.5, 4.2, 2.5))
+    expanded_graphite, expanded_result, negotiations = _preflight_graphite_footprint_from_phase_targets(
+        graphite=graphite,
+        graphite_result=graphite_result,
+        ff=SimpleNamespace(),
+        ion_ff=SimpleNamespace(),
+        polymer=PolymerSlabSpec(target_density_g_cm3=1.50, slab_z_nm=4.2),
+        electrolyte=ElectrolyteSlabSpec(target_density_g_cm3=1.32, slab_z_nm=4.6),
+        relax=SandwichRelaxationSpec(),
+        chain_dir=tmp_path / "chain",
+    )
+
+    assert negotiations
+    assert expanded_graphite.nx > graphite.nx
+    assert expanded_graphite.ny >= graphite.ny
+    assert build_calls
+    assert negotiations[0]["stage"] == "preflight"
+    assert negotiations[0]["graphite_counts_before_xy"] == [10, 10]
+    assert negotiations[-1]["graphite_counts_after_xy"] == [expanded_graphite.nx, expanded_graphite.ny]
+    assert expanded_result.box_nm[0] >= graphite_result.box_nm[0]
 
 
 def test_maybe_expand_graphite_for_phase_footprint_skips_expansion_when_slab_is_compressible(monkeypatch):
@@ -1125,6 +1188,11 @@ def test_build_graphite_polymer_electrolyte_sandwich_orchestrates_bulk_then_slab
     monkeypatch.setattr(sandwich, "export_system_from_cell_meta", _fake_export)
     monkeypatch.setattr(sandwich, "_run_stacked_relaxation", lambda **kwargs: Path(kwargs["work_dir"]) / "04_exchange" / "md.gro")
     monkeypatch.setattr(sandwich, "_build_stack_checks", lambda **kwargs: {"is_expected_order": True})
+    monkeypatch.setattr(
+        sandwich,
+        "_preflight_graphite_footprint_from_phase_targets",
+        lambda **kwargs: (kwargs["graphite"], kwargs["graphite_result"], []),
+    )
 
     result = build_graphite_polymer_electrolyte_sandwich(
         work_dir=tmp_path / "sandwich",
@@ -1333,6 +1401,11 @@ def test_build_graphite_polymer_electrolyte_sandwich_rebuilds_soft_phases_after_
     monkeypatch.setattr(sandwich, "export_system_from_cell_meta", _fake_export)
     monkeypatch.setattr(sandwich, "_run_stacked_relaxation", lambda **kwargs: Path(kwargs["work_dir"]) / "04_exchange" / "md.gro")
     monkeypatch.setattr(sandwich, "_build_stack_checks", lambda **kwargs: {"is_expected_order": True})
+    monkeypatch.setattr(
+        sandwich,
+        "_preflight_graphite_footprint_from_phase_targets",
+        lambda **kwargs: (kwargs["graphite"], kwargs["graphite_result"], []),
+    )
 
     result = build_graphite_polymer_electrolyte_sandwich(
         work_dir=tmp_path / "sandwich_expand",

@@ -118,6 +118,20 @@ def _estimate_chain_count(*, chain_mw: float, target_density_g_cm3: float, box_n
     return int(max(int(minimum), estimate))
 
 
+def _phase_total_mass_amu(*, species: Sequence, counts: Sequence[int]) -> float:
+    return float(sum(float(molecular_weight(mol, strict=True)) * int(count) for mol, count in zip(species, counts)))
+
+
+def _phase_required_area_nm2(*, total_mass_amu: float, target_density_g_cm3: float, target_thickness_nm: float) -> float:
+    density = float(target_density_g_cm3)
+    thickness_nm = float(target_thickness_nm)
+    if density <= 0.0 or thickness_nm <= 0.0:
+        return 0.0
+    mass_g = float(total_mass_amu) / float(_AVOGADRO)
+    volume_cm3 = mass_g / density
+    return float(volume_cm3 / (thickness_nm * 1.0e-21))
+
+
 def _smiles_formal_charge(smiles: str) -> int:
     mol = utils.mol_from_smiles(smiles, coord=False)
     return int(sum(int(atom.GetFormalCharge()) for atom in mol.GetAtoms()))
@@ -317,6 +331,114 @@ def _prepare_polymer_phase_species(*, ff, ion_ff, polymer: PolymerSlabSpec, rela
         "charge_scale": charge_scale,
         "notes": tuple(notes),
     }
+
+
+def _preflight_graphite_footprint_from_phase_targets(
+    *,
+    graphite: GraphiteSubstrateSpec,
+    graphite_result: GraphiteBuildResult,
+    ff,
+    ion_ff,
+    polymer: PolymerSlabSpec,
+    electrolyte: ElectrolyteSlabSpec,
+    relax: SandwichRelaxationSpec,
+    chain_dir: Path,
+    area_margin: float = 1.05,
+    max_rounds: int = 3,
+) -> tuple[GraphiteSubstrateSpec, GraphiteBuildResult, list[dict[str, object]]]:
+    current_graphite = graphite
+    current_result = graphite_result
+    negotiations: list[dict[str, object]] = []
+
+    for preflight_round in range(max(1, int(max_rounds))):
+        polymer_phase_build = _prepare_polymer_phase_species(
+            ff=ff,
+            ion_ff=ion_ff,
+            polymer=polymer,
+            relax=relax,
+            chain_dir=chain_dir,
+            box_nm=(
+                float(current_result.box_nm[0]),
+                float(current_result.box_nm[1]),
+                float(polymer.slab_z_nm),
+            ),
+        )
+        electrolyte_inputs = _prepare_electrolyte_phase_inputs(
+            ff=ff,
+            ion_ff=ion_ff,
+            electrolyte=electrolyte,
+            graphite_box_nm=tuple(float(x) for x in current_result.box_nm),
+            relax=relax,
+        )
+        polymer_area_nm2 = _phase_required_area_nm2(
+            total_mass_amu=_phase_total_mass_amu(
+                species=list(polymer_phase_build["species"]),
+                counts=list(polymer_phase_build["counts"]),
+            ),
+            target_density_g_cm3=float(polymer.target_density_g_cm3),
+            target_thickness_nm=float(polymer.slab_z_nm),
+        )
+        electrolyte_area_nm2 = _phase_required_area_nm2(
+            total_mass_amu=_phase_total_mass_amu(
+                species=list(electrolyte_inputs["mols"]),
+                counts=list(electrolyte_inputs["prep"].direct_plan.target_counts),
+            ),
+            target_density_g_cm3=float(electrolyte.target_density_g_cm3),
+            target_thickness_nm=float(electrolyte.slab_z_nm),
+        )
+        current_area_nm2 = float(current_result.box_nm[0]) * float(current_result.box_nm[1])
+        target_area_nm2 = max(
+            float(current_area_nm2),
+            float(polymer_area_nm2) * float(area_margin),
+            float(electrolyte_area_nm2) * float(area_margin),
+        )
+        scale = math.sqrt(max(float(target_area_nm2), 1.0e-12) / max(float(current_area_nm2), 1.0e-12))
+        required_xy_nm = (
+            float(current_result.box_nm[0]) * float(scale),
+            float(current_result.box_nm[1]) * float(scale),
+        )
+        target_nx, target_ny = _graphite_counts_for_required_xy(
+            graphite=current_graphite,
+            current_box_nm=tuple(float(x) for x in current_result.box_nm),
+            required_xy_nm=required_xy_nm,
+        )
+        if target_nx == int(current_graphite.nx) and target_ny == int(current_graphite.ny):
+            break
+        next_graphite = replace(current_graphite, nx=int(target_nx), ny=int(target_ny))
+        next_result = build_graphite(
+            nx=int(next_graphite.nx),
+            ny=int(next_graphite.ny),
+            n_layers=int(next_graphite.n_layers),
+            orientation=next_graphite.orientation,
+            edge_cap=next_graphite.edge_cap,
+            ff=ff,
+            name=next_graphite.name,
+            top_padding_ang=float(next_graphite.top_padding_ang),
+        )
+        negotiations.append(
+            {
+                "stage": "preflight",
+                "preflight_round": int(preflight_round + 1),
+                "graphite_counts_before_xy": [int(current_graphite.nx), int(current_graphite.ny)],
+                "graphite_counts_after_xy": [int(next_graphite.nx), int(next_graphite.ny)],
+                "graphite_count_scale_xy": [
+                    float(next_graphite.nx) / max(float(current_graphite.nx), 1.0),
+                    float(next_graphite.ny) / max(float(current_graphite.ny), 1.0),
+                ],
+                "graphite_box_before_nm": [float(x) for x in current_result.box_nm],
+                "graphite_box_after_nm": [float(x) for x in next_result.box_nm],
+                "polymer_target_area_nm2": float(polymer_area_nm2),
+                "electrolyte_target_area_nm2": float(electrolyte_area_nm2),
+                "current_area_nm2": float(current_area_nm2),
+                "target_area_nm2": float(target_area_nm2),
+                "area_margin": float(area_margin),
+                "required_xy_nm": [float(required_xy_nm[0]), float(required_xy_nm[1])],
+            }
+        )
+        current_graphite = next_graphite
+        current_result = next_result
+
+    return current_graphite, current_result, negotiations
 
 
 def _phase_round_dir(base_dir: Path, round_index: int) -> Path:
@@ -2043,6 +2165,16 @@ def build_graphite_polymer_electrolyte_sandwich(
         name=graphite.name,
         top_padding_ang=float(graphite.top_padding_ang),
     )
+    graphite, graphite_result, preflight_graphite_negotiations = _preflight_graphite_footprint_from_phase_targets(
+        graphite=graphite,
+        graphite_result=graphite_result,
+        ff=ff,
+        ion_ff=ion_ff,
+        polymer=polymer,
+        electrolyte=electrolyte,
+        relax=relax,
+        chain_dir=polymer_chain_dir,
+    )
     _write_sandwich_progress(
         progress_path,
         {
@@ -2050,11 +2182,11 @@ def build_graphite_polymer_electrolyte_sandwich(
             "graphite_box_nm": [float(x) for x in graphite_result.box_nm],
             "graphite_spec": asdict(graphite),
             "phase_preparation_rounds": 0,
-            "graphite_footprint_negotiations": [],
+            "graphite_footprint_negotiations": preflight_graphite_negotiations,
         },
     )
 
-    graphite_negotiations: list[dict[str, object]] = []
+    graphite_negotiations: list[dict[str, object]] = list(preflight_graphite_negotiations)
     preparation_round_count = 1
     max_preparation_rounds = 3
     while True:

@@ -1,3 +1,7 @@
+## 0.8.107 (2026-04-06)
+
+- interface/sandwich.py + tests/test_sandwich_workflow.py: add a preflight graphite-footprint negotiation step before Example 08 starts any expensive soft-phase bulk rounds. YadonPy now estimates the target lateral area directly from the planned polymer/electrolyte masses, target densities, and slab thicknesses, expands periodic graphite up front when that estimate already exceeds the current master footprint, and records those preflight negotiations in `sandwich_progress.json`. This removes another major source of wasted `round_02` rebuilds: discovering only after full soft-phase preparation that the initial graphite `XY` box was obviously too small for the intended sandwich.
+
 ## 0.8.106 (2026-04-06)
 
 - interface/sandwich.py + tests/test_sandwich_workflow.py: stop expanding periodic graphite by whole-block repetition factors during footprint negotiation. YadonPy now increases `nx`/`ny` by the minimum lattice-count increments needed to cover the negotiated `XY` target, which avoids turning a slightly undersized graphite slab into a doubled-area master footprint and should sharply reduce the number of expensive `round_02`/`round_03` soft-phase rebuilds in Example 08.
