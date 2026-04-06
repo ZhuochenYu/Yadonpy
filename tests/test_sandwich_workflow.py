@@ -698,6 +698,7 @@ def test_covered_lateral_replicas_falls_back_to_covering_target_when_no_near_mat
 
 def test_initial_bulk_pack_density_defaults_are_more_permissive_than_targets():
     assert _initial_bulk_pack_density(target_density_g_cm3=1.08, phase="polymer") == pytest.approx(0.648)
+    assert _initial_bulk_pack_density(target_density_g_cm3=1.50, phase="polymer", z_scale=1.28) == pytest.approx(0.75 / 1.28)
     assert _initial_bulk_pack_density(target_density_g_cm3=1.12, phase="electrolyte") == pytest.approx(0.896)
     assert _initial_bulk_pack_density(target_density_g_cm3=1.12, phase="electrolyte", requested_density_g_cm3=0.82) == pytest.approx(0.82)
 

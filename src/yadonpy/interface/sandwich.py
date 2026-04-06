@@ -823,13 +823,17 @@ def _initial_bulk_pack_density(
     target_density_g_cm3: float,
     phase: str,
     requested_density_g_cm3: float | None = None,
+    z_scale: float | None = None,
 ) -> float:
     if requested_density_g_cm3 is not None and float(requested_density_g_cm3) > 0.0:
         return float(requested_density_g_cm3)
     phase_key = str(phase).strip().lower()
     target = float(target_density_g_cm3)
     if phase_key == "polymer":
-        return max(0.50, min(0.75, target * 0.60))
+        density = max(0.50, min(0.75, target * 0.60))
+        if z_scale is not None and float(z_scale) > 1.0:
+            density = max(0.42, float(density) / float(z_scale))
+        return float(density)
     return max(0.65, min(0.90, target * 0.80))
 
 
@@ -2217,6 +2221,7 @@ def build_graphite_polymer_electrolyte_sandwich(
     polymer_build_density = _initial_bulk_pack_density(
         target_density_g_cm3=float(polymer.target_density_g_cm3),
         phase="polymer",
+        z_scale=float(polymer.initial_pack_z_scale),
     )
     polymer_bulk = poly.amorphous_cell(
         list(polymer_phase_build["species"]),

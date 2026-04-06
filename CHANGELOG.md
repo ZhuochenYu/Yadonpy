@@ -1,3 +1,7 @@
+## 0.8.99 (2026-04-06)
+
+- interface/sandwich + tests/test_sandwich_workflow.py: make `initial_pack_z_scale` a real part of the polymer bulk-building logic instead of a dead configuration field. The sandwich builder now uses that factor to dilute the initial polymer packing density before EQ21, which makes long charged CMC chains much easier to place during the first amorphous-cell build while still letting the later bulk/confinement stages compress back toward the physical target density.
+
 ## 0.8.98 (2026-04-06)
 
 - core/molspec + ff/gaff + ff/oplsaa + interface/sandwich + tests/test_sandwich_workflow.py: make `polyelectrolyte_mode` part of the normal MolSpec-backed force-field workflow instead of an Example 08-only side channel. `ff.mol(...)` handles can now carry polyelectrolyte variant hints through MolDB resolution, `_build_polymer_chain()` keeps the same clean "create handle, then ff_assign(handle)" script style as the main examples, and charged CMC monomers no longer lose their precomputed ready variants when the sandwich builder reconstructs them on the fly.
