@@ -30,6 +30,8 @@ parameter choices on one substrate-assisted sandwich path.
   - fuller CMC-Na study on the same three-phase builder
 - `05_cmcna_glucose6_periodic_case.py`
   - target case: `1 M LiPF6 in EC:EMC:DEC = 3:2:5` above 8 chains of `DP=50` CMC-Na built only from the `glucose_6` repeat unit, on top of a 4-layer graphite substrate using the new uncapped `edge_cap="periodic"` mode
+  - now uses the high-level `build_graphite_cmcna_glucose6_periodic_case(...)`
+    shortcut so the script stays close to Example 02's linear setup style
 
 ## Notes
 

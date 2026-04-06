@@ -31,6 +31,7 @@ from yadonpy.interface.sandwich import (
     _rebox_block_for_phase_confinement,
     _sandwich_relaxation_stages,
     _stack_master_xy_nm,
+    build_graphite_cmcna_glucose6_periodic_case,
     build_graphite_polymer_electrolyte_sandwich,
 )
 from yadonpy.io.gromacs_system import SystemExportResult
@@ -384,6 +385,39 @@ def test_rebox_block_for_phase_confinement_restores_periodic_lateral_coordinates
     assert "restored lateral periodic coordinates" in note
 
 
+def test_rebox_block_for_phase_confinement_unwraps_bonded_fragments_across_lateral_boundary():
+    mol = Chem.RWMol()
+    for _ in range(2):
+        atom = Chem.Atom("C")
+        atom.SetNoImplicit(True)
+        mol.AddAtom(atom)
+    mol.AddBond(0, 1, Chem.BondType.SINGLE)
+    species = [mol.GetMol()]
+
+    block = mol.GetMol()
+    conf = Chem.Conformer(block.GetNumAtoms())
+    conf.Set3D(True)
+    conf.SetAtomPosition(0, Geom.Point3D(0.2, 2.0, 4.0))
+    conf.SetAtomPosition(1, Geom.Point3D(19.8, 2.1, 4.1))
+    block.AddConformer(conf, assignId=True)
+    setattr(block, "cell", SimpleNamespace(xhi=20.0, xlo=0.0, yhi=20.0, ylo=0.0, zhi=18.0, zlo=0.0))
+
+    confined, summary, note = _rebox_block_for_phase_confinement(
+        block=block,
+        target_xy_nm=(2.0, 2.0),
+        target_thickness_nm=1.5,
+        vacuum_padding_ang=12.0,
+        species=species,
+        counts=[1],
+    )
+
+    coords = confined.GetConformer(0).GetPositions()
+    dx = abs(float(coords[1][0]) - float(coords[0][0]))
+    assert dx < 1.0
+    assert summary["bonded_lateral_unwrap_applied"] is True
+    assert "restored bonded lateral periodic coordinates" in note
+
+
 def test_stack_cell_blocks_respects_fixed_xy_master_footprint():
     lower = _dummy_mol("LOWER", z_ang=0.0, cell_box_ang=(40.0, 40.0, 20.0))
     upper = _dummy_mol("UPPER", z_ang=0.0, cell_box_ang=(40.0, 40.0, 20.0))
@@ -512,6 +546,47 @@ def test_initial_bulk_pack_density_defaults_are_more_permissive_than_targets():
     assert _initial_bulk_pack_density(target_density_g_cm3=1.08, phase="polymer") == pytest.approx(0.648)
     assert _initial_bulk_pack_density(target_density_g_cm3=1.12, phase="electrolyte") == pytest.approx(0.896)
     assert _initial_bulk_pack_density(target_density_g_cm3=1.12, phase="electrolyte", requested_density_g_cm3=0.82) == pytest.approx(0.82)
+
+
+def test_build_graphite_cmcna_glucose6_periodic_case_uses_moldb_ready_defaults(tmp_path: Path, monkeypatch):
+    import yadonpy.interface.sandwich as sandwich
+
+    captured: dict[str, object] = {}
+
+    def _fake_builder(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            manifest_path=tmp_path / "manifest.json",
+            relaxed_gro=tmp_path / "final.gro",
+            polymer_phase=SimpleNamespace(density_g_cm3=1.5),
+            electrolyte_phase=SimpleNamespace(density_g_cm3=1.3),
+            stack_checks={},
+        )
+
+    monkeypatch.setattr(sandwich, "build_graphite_cmcna_electrolyte_sandwich", _fake_builder)
+
+    result = build_graphite_cmcna_glucose6_periodic_case(
+        work_dir=tmp_path,
+        ff=object(),
+        ion_ff=object(),
+        profile="smoke",
+        restart=True,
+    )
+
+    assert result.manifest_path == tmp_path / "manifest.json"
+    graphite = captured["graphite"]
+    polymer = captured["polymer"]
+    electrolyte = captured["electrolyte"]
+    assert graphite.edge_cap == "periodic"
+    assert polymer.monomers[0].name == "glucose_6"
+    assert polymer.monomers[0].prefer_db is True
+    assert polymer.monomers[0].require_ready is True
+    assert polymer.chain_count is None
+    assert electrolyte.solvents[0].name == "EC"
+    assert all(spec.prefer_db and spec.require_ready for spec in electrolyte.solvents)
+    assert electrolyte.salt_anion.name == "PF6"
+    assert electrolyte.salt_anion.prefer_db is True
+    assert electrolyte.salt_anion.require_ready is True
 
 
 def test_build_graphite_polymer_electrolyte_sandwich_orchestrates_bulk_then_slab_prep(tmp_path: Path, monkeypatch):

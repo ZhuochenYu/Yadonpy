@@ -222,6 +222,105 @@ def default_carbonate_lipf6_electrolyte_spec(**kwargs) -> ElectrolyteSlabSpec:
     return replace(base, **kwargs)
 
 
+def build_graphite_cmcna_glucose6_periodic_case(
+    *,
+    work_dir: str | Path,
+    ff,
+    ion_ff=None,
+    profile: str = "full",
+    graphite: GraphiteSubstrateSpec | None = None,
+    polymer: PolymerSlabSpec | None = None,
+    electrolyte: ElectrolyteSlabSpec | None = None,
+    relax: SandwichRelaxationSpec | None = None,
+    restart: bool | None = None,
+):
+    """Build the MolDB-only periodic graphite/CMC(glucose_6)/LiPF6 carbonate case.
+
+    This is the high-level, script-first shortcut for Example 08's production
+    case. It keeps the example entrypoint close to Example 02: set a few user
+    inputs, call one builder, inspect the manifest.
+    """
+
+    smoke = str(profile).strip().lower() == "smoke"
+    default_graphite = GraphiteSubstrateSpec(
+        nx=(10 if smoke else 16),
+        ny=(10 if smoke else 14),
+        n_layers=4,
+        edge_cap="periodic",
+        name="GRAPH",
+        top_padding_ang=15.0,
+    )
+    default_polymer = default_cmcna_polymer_spec(
+        name="CMC6",
+        monomers=(
+            MoleculeSpec(
+                name="glucose_6",
+                smiles="*OC1OC(COCC(=O)[O-])C(*)C(O)C1O",
+                prefer_db=True,
+                require_ready=True,
+            ),
+        ),
+        monomer_ratio=(1.0,),
+        dp=(20 if smoke else 50),
+        chain_count=(None if smoke else 8),
+        target_density_g_cm3=1.50,
+        slab_z_nm=(4.2 if smoke else 5.0),
+        min_chain_count=2,
+        initial_pack_z_scale=1.28,
+        pack_retry=80,
+        pack_retry_step=3600,
+        pack_threshold_ang=1.60,
+        pack_dec_rate=0.68,
+        counterion=MoleculeSpec(name="Na", smiles="[Na+]", use_ion_ff=True, charge_scale=1.0),
+    )
+    default_electrolyte = default_carbonate_lipf6_electrolyte_spec(
+        solvents=(
+            MoleculeSpec(name="EC", smiles="O=C1OCCO1", prefer_db=True, require_ready=True),
+            MoleculeSpec(name="EMC", smiles="CCOC(=O)OC", prefer_db=True, require_ready=True),
+            MoleculeSpec(name="DEC", smiles="CCOC(=O)OCC", prefer_db=True, require_ready=True),
+        ),
+        solvent_mass_ratio=(3.0, 2.0, 5.0),
+        salt_anion=MoleculeSpec(
+            name="PF6",
+            smiles="F[P-](F)(F)(F)(F)F",
+            bonded="DRIH",
+            charge_scale=0.8,
+            prefer_db=True,
+            require_ready=True,
+        ),
+        slab_z_nm=(4.6 if smoke else 5.4),
+        min_salt_pairs=(4 if smoke else 8),
+        target_density_g_cm3=1.32,
+        initial_pack_density_g_cm3=0.86,
+        pack_retry=44,
+        pack_retry_step=2800,
+        pack_threshold_ang=1.55,
+        pack_dec_rate=0.70,
+    )
+    default_relax = SandwichRelaxationSpec(
+        omp=(16 if smoke else 24),
+        gpu=1,
+        gpu_id=0,
+        psi4_omp=(24 if smoke else 36),
+        psi4_memory_mb=(24000 if smoke else 32000),
+        bulk_eq21_final_ns=(0.06 if smoke else 0.12),
+        bulk_additional_loops=1,
+        stacked_pre_nvt_ps=(10.0 if smoke else 20.0),
+        stacked_z_relax_ps=(40.0 if smoke else 100.0),
+        stacked_exchange_ps=(60.0 if smoke else 160.0),
+    )
+    return build_graphite_cmcna_electrolyte_sandwich(
+        work_dir=work_dir,
+        ff=ff,
+        ion_ff=ion_ff,
+        graphite=(graphite if graphite is not None else default_graphite),
+        polymer=(polymer if polymer is not None else default_polymer),
+        electrolyte=(electrolyte if electrolyte is not None else default_electrolyte),
+        relax=(relax if relax is not None else default_relax),
+        restart=restart,
+    )
+
+
 def _estimate_chain_count(*, chain_mw: float, target_density_g_cm3: float, box_nm: tuple[float, float, float], minimum: int) -> int:
     volume_cm3 = float(box_nm[0] * box_nm[1] * box_nm[2]) * 1.0e-21
     target_mass_g = float(target_density_g_cm3) * volume_cm3
@@ -791,6 +890,122 @@ def _molecule_atom_blocks(*, species: Sequence, counts: Sequence[int]) -> list[t
     return blocks
 
 
+def _molecule_block_specs(*, species: Sequence, counts: Sequence[int]) -> list[tuple[int, int, object]]:
+    specs: list[tuple[int, int, object]] = []
+    cursor = 0
+    for mol, count in zip(species, counts):
+        nat = int(mol.GetNumAtoms())
+        for _ in range(int(count)):
+            specs.append((cursor, cursor + nat, mol))
+            cursor += nat
+    return specs
+
+
+def _unwrap_fragment_bonded_periodic_axis(fragment: np.ndarray, mol, *, axis: int, box_len_ang: float) -> tuple[np.ndarray, bool]:
+    out = np.asarray(fragment, dtype=float).copy()
+    if out.size == 0 or box_len_ang <= 0.0 or int(mol.GetNumAtoms()) != int(out.shape[0]) or int(mol.GetNumBonds()) <= 0:
+        return out, False
+
+    adjacency: list[list[int]] = [[] for _ in range(int(mol.GetNumAtoms()))]
+    for bond in mol.GetBonds():
+        a = int(bond.GetBeginAtomIdx())
+        b = int(bond.GetEndAtomIdx())
+        adjacency[a].append(b)
+        adjacency[b].append(a)
+
+    applied = False
+    visited = [False] * int(mol.GetNumAtoms())
+    for root in range(int(mol.GetNumAtoms())):
+        if visited[root]:
+            continue
+        visited[root] = True
+        stack = [root]
+        while stack:
+            atom_idx = stack.pop()
+            anchor = float(out[atom_idx, axis])
+            for neigh in adjacency[atom_idx]:
+                if visited[neigh]:
+                    continue
+                delta = float(out[neigh, axis] - anchor)
+                shift = float(box_len_ang) * round(delta / float(box_len_ang))
+                if abs(shift) > 1.0e-9:
+                    out[neigh, axis] -= shift
+                    applied = True
+                visited[neigh] = True
+                stack.append(neigh)
+    return out, applied
+
+
+def _restore_bonded_periodic_fragment_coordinates(
+    coords: np.ndarray,
+    *,
+    block_specs: Sequence[tuple[int, int, object]],
+    box_x_ang: float,
+    box_y_ang: float,
+) -> tuple[np.ndarray, bool]:
+    restored = np.asarray(coords, dtype=float).copy()
+    applied = False
+    for start, stop, mol in block_specs:
+        frag = restored[start:stop]
+        frag, changed_x = _unwrap_fragment_bonded_periodic_axis(frag, mol, axis=0, box_len_ang=float(box_x_ang))
+        frag, changed_y = _unwrap_fragment_bonded_periodic_axis(frag, mol, axis=1, box_len_ang=float(box_y_ang))
+        restored[start:stop] = frag
+        applied = applied or bool(changed_x) or bool(changed_y)
+    return restored, applied
+
+
+def _wrap_fragment_centers_into_box(
+    coords: np.ndarray,
+    *,
+    blocks: Sequence[tuple[int, int]],
+    axis: int,
+    box_len_ang: float,
+) -> tuple[np.ndarray, bool]:
+    wrapped = np.asarray(coords, dtype=float).copy()
+    if wrapped.size == 0 or box_len_ang <= 0.0:
+        return wrapped, False
+    applied = False
+    for start, stop in blocks:
+        frag = wrapped[start:stop]
+        if frag.size == 0:
+            continue
+        center = float(np.mean(frag[:, axis]))
+        shift = float(box_len_ang) * math.floor(center / float(box_len_ang))
+        if abs(shift) > 1.0e-9:
+            frag[:, axis] -= shift
+            wrapped[start:stop] = frag
+            applied = True
+    return wrapped, applied
+
+
+def _minimize_fragment_periodic_axis_span(
+    coords: np.ndarray,
+    *,
+    blocks: Sequence[tuple[int, int]],
+    axis: int,
+    box_len_ang: float,
+) -> tuple[np.ndarray, bool]:
+    minimized = np.asarray(coords, dtype=float).copy()
+    if minimized.size == 0 or box_len_ang <= 0.0 or not blocks:
+        return minimized, False
+
+    original_span = float(np.max(minimized[:, axis]) - np.min(minimized[:, axis]))
+    best = minimized
+    best_span = original_span
+    centers = np.asarray([float(np.mean(minimized[start:stop, axis])) % float(box_len_ang) for start, stop in blocks], dtype=float)
+    order = np.argsort(centers)
+    for split in range(len(order)):
+        trial = minimized.copy()
+        for frag_idx in order[: split + 1]:
+            start, stop = blocks[int(frag_idx)]
+            trial[start:stop, axis] += float(box_len_ang)
+        trial_span = float(np.max(trial[:, axis]) - np.min(trial[:, axis]))
+        if trial_span + 1.0e-9 < best_span:
+            best = trial
+            best_span = trial_span
+    return best, bool(best_span + 1.0e-9 < original_span)
+
+
 def _compact_packed_cell_z_by_molecule_centers(
     *,
     cell,
@@ -987,26 +1202,34 @@ def _rebox_block_for_phase_confinement(
     if coords.size == 0:
         raise RuntimeError("Cannot confine an empty slab block.")
     periodic_lateral_wrap_applied = False
+    bonded_lateral_unwrap_applied = False
 
     if species is not None and counts is not None:
         try:
             blocks = _molecule_atom_blocks(species=species, counts=counts)
+            block_specs = _molecule_block_specs(species=species, counts=counts)
         except Exception:
             blocks = []
-        if blocks and int(blocks[-1][1]) == int(confined.GetNumAtoms()):
+            if block_specs and int(block_specs[-1][1]) != int(confined.GetNumAtoms()):
+                block_specs = []
+        except Exception:
+            block_specs = []
+        if block_specs:
             box_x_ang = float(target_xy_nm[0]) * 10.0
             box_y_ang = float(target_xy_nm[1]) * 10.0
-            for start, stop in blocks:
-                frag = coords[start:stop]
-                if frag.size == 0:
-                    continue
-                center_x = float(np.mean(frag[:, 0]))
-                center_y = float(np.mean(frag[:, 1]))
-                if box_x_ang > 0.0:
-                    frag[:, 0] += box_x_ang * math.floor((0.5 * box_x_ang - center_x) / box_x_ang)
-                if box_y_ang > 0.0:
-                    frag[:, 1] += box_y_ang * math.floor((0.5 * box_y_ang - center_y) / box_y_ang)
-                coords[start:stop] = frag
+            coords, bonded_lateral_unwrap_applied = _restore_bonded_periodic_fragment_coordinates(
+                coords,
+                block_specs=block_specs,
+                box_x_ang=box_x_ang,
+                box_y_ang=box_y_ang,
+            )
+            coords, wrapped_x = _wrap_fragment_centers_into_box(coords, blocks=blocks, axis=0, box_len_ang=box_x_ang)
+            coords, minimized_x = _minimize_fragment_periodic_axis_span(coords, blocks=blocks, axis=0, box_len_ang=box_x_ang)
+            coords, wrapped_y = _wrap_fragment_centers_into_box(coords, blocks=blocks, axis=1, box_len_ang=box_y_ang)
+            coords, minimized_y = _minimize_fragment_periodic_axis_span(coords, blocks=blocks, axis=1, box_len_ang=box_y_ang)
+            periodic_lateral_wrap_applied = bool(
+                bonded_lateral_unwrap_applied or wrapped_x or minimized_x or wrapped_y or minimized_y
+            )
 
     mins = np.min(coords, axis=0)
     maxs = np.max(coords, axis=0)
@@ -1016,7 +1239,9 @@ def _rebox_block_for_phase_confinement(
     slot_z_ang = max(float(target_thickness_nm) * 10.0, float(spans[2]))
     box_z_ang = slot_z_ang + 2.0 * float(vacuum_padding_ang)
 
-    if float(spans[0]) > target_x_ang + 1.0e-6 or float(spans[1]) > target_y_ang + 1.0e-6:
+    if (not periodic_lateral_wrap_applied) and (
+        float(spans[0]) > target_x_ang + 1.0e-6 or float(spans[1]) > target_y_ang + 1.0e-6
+    ):
         if target_x_ang > 0.0:
             coords[:, 0] = np.mod(coords[:, 0], target_x_ang)
         if target_y_ang > 0.0:
@@ -1056,9 +1281,12 @@ def _rebox_block_for_phase_confinement(
         "confined_box_nm": [target_x_ang / 10.0, target_y_ang / 10.0, box_z_ang / 10.0],
         "vacuum_padding_ang": float(vacuum_padding_ang),
         "periodic_lateral_wrap_applied": bool(periodic_lateral_wrap_applied),
+        "bonded_lateral_unwrap_applied": bool(bonded_lateral_unwrap_applied),
     }
     note = "reboxed the prepared slab onto the graphite master footprint"
-    if periodic_lateral_wrap_applied:
+    if bonded_lateral_unwrap_applied:
+        note += " and restored bonded lateral periodic coordinates"
+    if periodic_lateral_wrap_applied and not bonded_lateral_unwrap_applied:
         note += " and restored lateral periodic coordinates"
     note += f" and inserted {float(vacuum_padding_ang) / 10.0:.3f} nm top/bottom vacuum before confined slab relaxation"
     return confined, summary, note
@@ -2091,6 +2319,7 @@ __all__ = [
     "PolymerSlabSpec",
     "SandwichPhaseReport",
     "SandwichRelaxationSpec",
+    "build_graphite_cmcna_glucose6_periodic_case",
     "build_graphite_cmcna_electrolyte_sandwich",
     "build_graphite_peo_electrolyte_sandwich",
     "build_graphite_polymer_electrolyte_sandwich",
