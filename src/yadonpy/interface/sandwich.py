@@ -947,6 +947,23 @@ def _graphite_repeat_factors_for_required_xy(
     )
 
 
+def _graphite_counts_for_required_xy(
+    *,
+    graphite: GraphiteSubstrateSpec,
+    current_box_nm: tuple[float, float, float],
+    required_xy_nm: tuple[float, float],
+) -> tuple[int, int]:
+    current_nx = max(1, int(graphite.nx))
+    current_ny = max(1, int(graphite.ny))
+    pitch_x_nm = max(float(current_box_nm[0]) / float(current_nx), 1.0e-9)
+    pitch_y_nm = max(float(current_box_nm[1]) / float(current_ny), 1.0e-9)
+    req_x = max(float(required_xy_nm[0]), 0.0)
+    req_y = max(float(required_xy_nm[1]), 0.0)
+    target_nx = max(current_nx, int(math.ceil(req_x / pitch_x_nm)))
+    target_ny = max(current_ny, int(math.ceil(req_y / pitch_y_nm)))
+    return int(target_nx), int(target_ny)
+
+
 def _molecule_atom_blocks(*, species: Sequence, counts: Sequence[int]) -> list[tuple[int, int]]:
     blocks: list[tuple[int, int]] = []
     cursor = 0
@@ -1595,17 +1612,18 @@ def _maybe_expand_graphite_for_phase_footprint(
         max(float(graphite_result.box_nm[0]), float(polymer_required_xy_nm[0]), float(electrolyte_required_xy_nm[0])),
         max(float(graphite_result.box_nm[1]), float(polymer_required_xy_nm[1]), float(electrolyte_required_xy_nm[1])),
     )
-    rx, ry = _graphite_repeat_factors_for_required_xy(
+    target_nx, target_ny = _graphite_counts_for_required_xy(
+        graphite=graphite,
         current_box_nm=graphite_result.box_nm,
         required_xy_nm=required_xy_nm,
     )
-    if rx == 1 and ry == 1:
+    if target_nx == int(graphite.nx) and target_ny == int(graphite.ny):
         return graphite, graphite_result, None
 
     expanded_graphite = replace(
         graphite,
-        nx=max(1, int(graphite.nx) * int(rx)),
-        ny=max(1, int(graphite.ny) * int(ry)),
+        nx=int(target_nx),
+        ny=int(target_ny),
     )
     expanded_result = build_graphite(
         nx=int(expanded_graphite.nx),
@@ -1623,7 +1641,12 @@ def _maybe_expand_graphite_for_phase_footprint(
         "polymer_compression_aware_required_xy_nm": [float(polymer_required_xy_nm[0]), float(polymer_required_xy_nm[1])],
         "electrolyte_compression_aware_required_xy_nm": [float(electrolyte_required_xy_nm[0]), float(electrolyte_required_xy_nm[1])],
         "required_xy_nm": [float(required_xy_nm[0]), float(required_xy_nm[1])],
-        "repeat_factors_xy": [int(rx), int(ry)],
+        "graphite_counts_before_xy": [int(graphite.nx), int(graphite.ny)],
+        "graphite_counts_after_xy": [int(expanded_graphite.nx), int(expanded_graphite.ny)],
+        "graphite_count_scale_xy": [
+            float(expanded_graphite.nx) / max(float(graphite.nx), 1.0),
+            float(expanded_graphite.ny) / max(float(graphite.ny), 1.0),
+        ],
         "graphite_box_before_nm": [float(x) for x in graphite_result.box_nm],
         "graphite_box_after_nm": [float(x) for x in expanded_result.box_nm],
         "polymer_min_scale_xy": [float(x) for x in _phase_confined_min_scale_xy(label="polymer")],
@@ -2091,13 +2114,18 @@ def build_graphite_polymer_electrolyte_sandwich(
         )
         if graphite_negotiation is None:
             break
+        graphite_counts_before_log = graphite_negotiation.get("graphite_counts_before_xy")
+        graphite_counts_after_log = graphite_negotiation.get("graphite_counts_after_xy")
+        graphite_scale_xy_log = graphite_negotiation.get("graphite_count_scale_xy")
         polymer_required_xy_log = graphite_negotiation.get("polymer_required_xy_nm")
         electrolyte_required_xy_log = graphite_negotiation.get("electrolyte_required_xy_nm")
         polymer_required_comp_log = graphite_negotiation.get("polymer_compression_aware_required_xy_nm")
         electrolyte_required_comp_log = graphite_negotiation.get("electrolyte_compression_aware_required_xy_nm")
         utils.radon_print(
             "[INFO] graphite footprint expansion requested | "
-            f"repeat_factors_xy={tuple(int(x) for x in graphite_negotiation['repeat_factors_xy'])} | "
+            f"graphite_counts_before_xy={None if graphite_counts_before_log is None else tuple(int(x) for x in graphite_counts_before_log)} | "
+            f"graphite_counts_after_xy={None if graphite_counts_after_log is None else tuple(int(x) for x in graphite_counts_after_log)} | "
+            f"graphite_count_scale_xy={None if graphite_scale_xy_log is None else tuple(float(x) for x in graphite_scale_xy_log)} | "
             f"before_nm={tuple(float(x) for x in graphite_negotiation['graphite_box_before_nm'])} | "
             f"after_nm={tuple(float(x) for x in graphite_negotiation['graphite_box_after_nm'])} | "
             f"polymer_required_xy_nm={None if polymer_required_xy_log is None else tuple(float(x) for x in polymer_required_xy_log)} | "
@@ -2279,7 +2307,8 @@ def build_graphite_polymer_electrolyte_sandwich(
             if graphite_negotiation is None
             else (
                 "graphite master footprint was automatically expanded to cover the prepared soft-phase slabs before confined relaxation",
-                f"graphite footprint expansion repeats={tuple(int(x) for x in graphite_negotiation['repeat_factors_xy'])} "
+                f"graphite footprint expansion counts={None if graphite_negotiation.get('graphite_counts_after_xy') is None else tuple(int(x) for x in graphite_negotiation['graphite_counts_after_xy'])} "
+                f"from_counts={None if graphite_negotiation.get('graphite_counts_before_xy') is None else tuple(int(x) for x in graphite_negotiation['graphite_counts_before_xy'])} "
                 f"from {tuple(float(x) for x in graphite_negotiation['graphite_box_before_nm'])} nm "
                 f"to {tuple(float(x) for x in graphite_negotiation['graphite_box_after_nm'])} nm",
             )

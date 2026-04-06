@@ -31,6 +31,7 @@ from yadonpy.interface.sandwich import (
     _compress_phase_block_z_to_target_thickness,
     _confined_summary_score,
     _confined_phase_report,
+    _graphite_counts_for_required_xy,
     _graphite_repeat_factors_for_required_xy,
     _needs_confined_rescue,
     _maybe_expand_graphite_for_phase_footprint,
@@ -503,6 +504,20 @@ def test_graphite_repeat_factors_for_required_xy_expand_only_when_needed():
     ) == (2, 3)
 
 
+def test_graphite_counts_for_required_xy_expand_by_minimum_lattice_increment():
+    graphite = GraphiteSubstrateSpec(nx=10, ny=10, n_layers=4)
+    assert _graphite_counts_for_required_xy(
+        graphite=graphite,
+        current_box_nm=(4.7892, 4.183094328, 2.5),
+        required_xy_nm=(4.80, 4.19),
+    ) == (11, 11)
+    assert _graphite_counts_for_required_xy(
+        graphite=graphite,
+        current_box_nm=(4.7892, 4.183094328, 2.5),
+        required_xy_nm=(9.58, 8.37),
+    ) == (21, 21)
+
+
 def test_maybe_expand_graphite_for_phase_footprint_skips_expansion_when_slab_is_compressible(monkeypatch):
     import yadonpy.interface.sandwich as sandwich
 
@@ -543,7 +558,9 @@ def test_maybe_expand_graphite_for_phase_footprint_expands_when_required_compres
 
     def _fake_build_graphite(**kwargs):
         build_calls.append(dict(kwargs))
-        return SimpleNamespace(box_nm=(14.0, 16.0, 2.5))
+        scale_x = float(kwargs["nx"]) / 4.0
+        scale_y = float(kwargs["ny"]) / 4.0
+        return SimpleNamespace(box_nm=(7.0 * scale_x, 8.0 * scale_y, 2.5))
 
     monkeypatch.setattr(sandwich, "build_graphite", _fake_build_graphite)
 
@@ -563,11 +580,13 @@ def test_maybe_expand_graphite_for_phase_footprint_expands_when_required_compres
     )
 
     assert build_calls
-    assert expanded_graphite.nx == 8
-    assert expanded_graphite.ny == 8
-    assert expanded_result.box_nm == pytest.approx((14.0, 16.0, 2.5))
+    assert expanded_graphite.nx == 5
+    assert expanded_graphite.ny == 5
+    assert expanded_result.box_nm == pytest.approx((8.75, 10.0, 2.5))
     assert negotiation is not None
-    assert negotiation["repeat_factors_xy"] == [2, 2]
+    assert negotiation["graphite_counts_before_xy"] == [4, 4]
+    assert negotiation["graphite_counts_after_xy"] == [5, 5]
+    assert negotiation["graphite_count_scale_xy"] == pytest.approx([1.25, 1.25])
     assert negotiation["polymer_required_xy_nm"] == pytest.approx([10.0, 10.0])
     assert negotiation["polymer_compression_aware_required_xy_nm"] == pytest.approx([8.2, 8.2])
     assert negotiation["electrolyte_compression_aware_required_xy_nm"] == pytest.approx([7.0, 8.0])

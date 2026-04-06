@@ -1,3 +1,7 @@
+## 0.8.106 (2026-04-06)
+
+- interface/sandwich.py + tests/test_sandwich_workflow.py: stop expanding periodic graphite by whole-block repetition factors during footprint negotiation. YadonPy now increases `nx`/`ny` by the minimum lattice-count increments needed to cover the negotiated `XY` target, which avoids turning a slightly undersized graphite slab into a doubled-area master footprint and should sharply reduce the number of expensive `round_02`/`round_03` soft-phase rebuilds in Example 08.
+
 ## 0.8.105 (2026-04-06)
 
 - interface/sandwich.py + tests/test_sandwich_workflow.py: make the Example 08 builder self-supervising while it runs. `sandwich_progress.json` is now written from the start of the workflow instead of only at the end, each phase-preparation round records the current graphite box plus the polymer/electrolyte slab snapshots and bulk-pack summaries, and graphite footprint expansions are logged with both raw and compression-aware `XY` requirements. This makes long remote interface jobs debuggable without scrolling through the full log and makes the reason for `round_02` / `round_03` rebuilds explicit before the final manifest exists.
