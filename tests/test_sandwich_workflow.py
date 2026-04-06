@@ -990,3 +990,197 @@ def test_build_graphite_polymer_electrolyte_sandwich_orchestrates_bulk_then_slab
     assert '"ndx_groups"' in manifest
     assert (tmp_path / "sandwich" / "05_sandwich" / "sandwich_progress.json").exists()
     assert result.stack_checks["is_expected_order"] is True
+
+
+def test_build_graphite_polymer_electrolyte_sandwich_rebuilds_soft_phases_after_graphite_expansion(tmp_path: Path, monkeypatch):
+    import yadonpy.interface.sandwich as sandwich
+
+    graphite_cell = _dummy_mol("GRAPH", z_ang=1.0, cell_box_ang=(20.0, 20.0, 12.0))
+    graphite_layer = _dummy_mol("GRAPH", z_ang=0.0, cell_box_ang=(20.0, 20.0, 4.0))
+    polymer_chain = _dummy_mol("PEO", z_ang=0.0, cell_box_ang=(20.0, 20.0, 8.0))
+    dme = _dummy_mol("DME", z_ang=0.0, cell_box_ang=(20.0, 20.0, 8.0))
+    li = _dummy_mol("Li", z_ang=0.0, cell_box_ang=(20.0, 20.0, 8.0))
+    fsi = _dummy_mol("FSI", z_ang=0.0, cell_box_ang=(20.0, 20.0, 8.0))
+    polymer_cell = _dummy_mol("PEO", z_ang=5.0, cell_box_ang=(20.0, 20.0, 18.0))
+    electrolyte_cell = _dummy_mol("EL", z_ang=8.0, cell_box_ang=(20.0, 20.0, 20.0))
+
+    monkeypatch.setattr(
+        sandwich,
+        "build_graphite",
+        lambda **kwargs: SimpleNamespace(
+            cell=graphite_cell,
+            layer_mol=graphite_layer,
+            layer_count=2,
+            orientation="basal",
+            edge_cap_summary={"H": 8},
+            box_nm=(2.0, 2.0, 1.2),
+        ),
+    )
+    polymer_box_calls: list[tuple[float, float, float]] = []
+
+    def _fake_prepare_polymer_phase_species(**kwargs):
+        polymer_box_calls.append(tuple(float(x) for x in kwargs["box_nm"]))
+        return {
+            "chain": polymer_chain,
+            "dp": 8,
+            "chain_count": 2,
+            "species": [polymer_chain],
+            "counts": [2],
+            "charge_scale": [1.0],
+            "notes": (),
+        }
+
+    monkeypatch.setattr(sandwich, "_prepare_polymer_phase_species", _fake_prepare_polymer_phase_species)
+
+    pack_calls: list[dict] = []
+
+    def _fake_amorphous_cell(mols, counts, **kwargs):
+        pack_calls.append({"mols": mols, "counts": counts, **kwargs})
+        return polymer_cell if len(mols) == 1 else electrolyte_cell
+
+    monkeypatch.setattr(sandwich.poly, "amorphous_cell", _fake_amorphous_cell)
+    monkeypatch.setattr(
+        sandwich,
+        "equilibrate_bulk_with_eq21",
+        lambda **kwargs: SimpleNamespace(final_cell=kwargs["ac"], system_export=None, raw_system_meta=Path("dummy.json")),
+    )
+    monkeypatch.setattr(sandwich, "_prepare_small_molecule", lambda spec, **kwargs: {"DME": dme, "Li": li, "FSI": fsi}[spec.name])
+    electrolyte_ref_boxes: list[tuple[float, float, float]] = []
+
+    def _fake_electrolyte_plan(**kwargs):
+        electrolyte_ref_boxes.append(tuple(float(x) for x in kwargs["reference_box_nm"]))
+        return SimpleNamespace(
+            direct_plan=SimpleNamespace(target_counts=(4, 2, 2)),
+            pack_plan=SimpleNamespace(initial_pack_box_nm=(2.0, 2.0, 4.5)),
+            relax_mdp_overrides={"pcoupltype": "semiisotropic", "compressibility": "0 4.5e-05", "ref_p": "1 1"},
+        )
+
+    monkeypatch.setattr(sandwich, "plan_fixed_xy_direct_electrolyte_preparation", _fake_electrolyte_plan)
+    polymer_prepared = SimpleNamespace(
+        top_path=tmp_path / "polymer.top",
+        gro_path=tmp_path / "polymer.gro",
+        meta_path=tmp_path / "polymer_meta.json",
+        box_nm=(2.0, 2.0, 3.0),
+    )
+    electrolyte_prepared = SimpleNamespace(
+        top_path=tmp_path / "electrolyte.top",
+        gro_path=tmp_path / "electrolyte.gro",
+        meta_path=tmp_path / "electrolyte_meta.json",
+        box_nm=(2.0, 2.0, 4.0),
+    )
+    monkeypatch.setattr(
+        sandwich,
+        "_prepare_slab_from_equilibrated_bulk",
+        lambda **kwargs: (
+            polymer_prepared if kwargs["label"] == "polymer" else electrolyte_prepared,
+            f"{kwargs['label']} slab prepared",
+        ),
+    )
+    monkeypatch.setattr(
+        sandwich,
+        "_prepared_slab_phase_report",
+        lambda **kwargs: SandwichPhaseReport(
+            label=kwargs["label"],
+            box_nm=(2.0, 2.0, 3.0 if kwargs["label"] == "polymer" else 4.0),
+            density_g_cm3=(1.02 if kwargs["label"] == "polymer" else 1.11),
+            species_names=("PEO",) if kwargs["label"] == "polymer" else ("DME", "Li", "FSI"),
+            counts=(2,) if kwargs["label"] == "polymer" else (4, 2, 2),
+            target_density_g_cm3=kwargs["target_density_g_cm3"],
+        ),
+    )
+    monkeypatch.setattr(
+        sandwich,
+        "_run_confined_phase_relaxation",
+        lambda **kwargs: SimpleNamespace(
+            relaxed_block=polymer_cell if kwargs["label"] == "polymer" else electrolyte_cell,
+            report=SandwichPhaseReport(
+                label=kwargs["label"],
+                box_nm=(4.0, 4.0, 3.0 if kwargs["label"] == "polymer" else 4.0),
+                density_g_cm3=(1.02 if kwargs["label"] == "polymer" else 1.11),
+                species_names=("PEO",) if kwargs["label"] == "polymer" else ("DME", "Li", "FSI"),
+                counts=(2,) if kwargs["label"] == "polymer" else (4, 2, 2),
+                target_density_g_cm3=kwargs["target_density_g_cm3"],
+            ),
+            summary={"occupied_density_g_cm3": 1.02 if kwargs["label"] == "polymer" else 1.11},
+            summary_path=tmp_path / f"{kwargs['label']}_summary.json",
+        ),
+    )
+
+    expansion_state = {"calls": 0}
+
+    def _fake_expand_graphite(**kwargs):
+        expansion_state["calls"] += 1
+        if expansion_state["calls"] == 1:
+            return (
+                GraphiteSubstrateSpec(nx=8, ny=8, n_layers=2),
+                SimpleNamespace(
+                    cell=graphite_cell,
+                    layer_mol=graphite_layer,
+                    layer_count=2,
+                    orientation="basal",
+                    edge_cap_summary={"H": 8},
+                    box_nm=(4.0, 4.0, 1.2),
+                ),
+                {
+                    "repeat_factors_xy": [2, 2],
+                    "graphite_box_before_nm": [2.0, 2.0, 1.2],
+                    "graphite_box_after_nm": [4.0, 4.0, 1.2],
+                },
+            )
+        return kwargs["graphite"], kwargs["graphite_result"], None
+
+    monkeypatch.setattr(sandwich, "_maybe_expand_graphite_for_phase_footprint", _fake_expand_graphite)
+
+    def _fake_export(**kwargs):
+        out_dir = Path(kwargs["out_dir"])
+        out_dir.mkdir(parents=True, exist_ok=True)
+        system_top = out_dir / "system.top"
+        system_gro = out_dir / "system.gro"
+        system_ndx = out_dir / "system.ndx"
+        system_meta = out_dir / "system_meta.json"
+        system_top.write_text("; top\n", encoding="utf-8")
+        system_gro.write_text("dummy\n1\n    1RES  C    1   0.000   0.000   0.000\n4.0 4.0 5.0\n", encoding="utf-8")
+        system_ndx.write_text("[ GRAPH ]\n1\n\n[ PEO ]\n2\n\n[ DME ]\n3\n\n[ Li ]\n4\n\n[ FSI ]\n5\n", encoding="utf-8")
+        system_meta.write_text("{}\n", encoding="utf-8")
+        return SystemExportResult(
+            system_gro=system_gro,
+            system_top=system_top,
+            system_ndx=system_ndx,
+            molecules_dir=out_dir / "molecules",
+            system_meta=system_meta,
+            box_nm=5.0,
+            species=[],
+            box_lengths_nm=(4.0, 4.0, 5.0),
+        )
+
+    monkeypatch.setattr(sandwich, "export_system_from_cell_meta", _fake_export)
+    monkeypatch.setattr(sandwich, "_run_stacked_relaxation", lambda **kwargs: Path(kwargs["work_dir"]) / "04_exchange" / "md.gro")
+    monkeypatch.setattr(sandwich, "_build_stack_checks", lambda **kwargs: {"is_expected_order": True})
+
+    result = build_graphite_polymer_electrolyte_sandwich(
+        work_dir=tmp_path / "sandwich_expand",
+        ff=SimpleNamespace(name="gaff2_mod"),
+        ion_ff=SimpleNamespace(),
+        graphite=GraphiteSubstrateSpec(nx=4, ny=4, n_layers=2),
+        polymer=PolymerSlabSpec(chain_target_atoms=240, slab_z_nm=3.0, target_density_g_cm3=1.05),
+        electrolyte=ElectrolyteSlabSpec(
+            solvents=(MoleculeSpec(name="DME", smiles="COCCOC"),),
+            salt_cation=MoleculeSpec(name="Li", smiles="[Li+]", use_ion_ff=True, charge_scale=0.8),
+            salt_anion=MoleculeSpec(name="FSI", smiles="FS(=O)(=O)[N-]S(=O)(=O)F", charge_scale=0.8),
+            solvent_mass_ratio=(1.0,),
+            target_density_g_cm3=1.15,
+            slab_z_nm=4.0,
+            initial_pack_density_g_cm3=0.82,
+        ),
+        relax=SandwichRelaxationSpec(gpu=0, omp=2, psi4_omp=2),
+        restart=False,
+    )
+
+    assert expansion_state["calls"] == 2
+    assert len(polymer_box_calls) == 2
+    assert polymer_box_calls[0][:2] == pytest.approx((2.0, 2.0))
+    assert polymer_box_calls[1][:2] == pytest.approx((4.0, 4.0))
+    assert len(electrolyte_ref_boxes) == 2
+    assert electrolyte_ref_boxes[1][:2] == pytest.approx((4.0, 4.0))
+    manifest = result.manifest_path.read_text(encoding="utf-8")
+    assert '"phase_preparation_rounds": 2' in manifest

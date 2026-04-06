@@ -1,3 +1,7 @@
+## 0.8.102 (2026-04-06)
+
+- interface/sandwich.py + tests/test_sandwich_workflow.py: fix the main density-killing failure mode in Example 08's current architecture. If graphite footprint negotiation expands the master `XY` after the first prepared soft slabs are measured, YadonPy now reruns the polymer and electrolyte bulk/slab preparation rounds against the larger graphite footprint instead of keeping the old small-area species counts and simply stretching the confined slabs onto a bigger box. The workflow records the number of preparation rounds and the full negotiation history in the manifest/progress outputs, so underfilled stacks caused by late graphite expansion are now explicit and recoverable instead of silently producing `0.2–0.3 g/cm^3` soft phases.
+
 ## 0.8.101 (2026-04-06)
 
 - interface/sandwich_specs.py + interface/sandwich_metrics.py + interface/sandwich_packing.py + interface/sandwich.py + tests/test_sandwich_workflow.py: start the planned Example 08 architectural split without changing the public builder names. The sandwich workflow now keeps specs, density/gap metrics, and bulk packing policy in separate internal modules, `MoleculeSpec` can carry MolDB-relevant variant hints such as `basis_set`/`method`/`polyelectrolyte_mode`, and polymer/electrolyte bulk construction now uses an explicit density-backoff ladder that records every packing attempt into JSON summaries before EQ21.
