@@ -128,6 +128,7 @@ class GraphitePolymerElectrolyteSandwichResult:
     relaxed_gro: Path
     manifest_path: Path
     stack_checks: dict[str, object] = field(default_factory=dict)
+    acceptance: dict[str, object] = field(default_factory=dict)
     notes: tuple[str, ...] = ()
 
 

@@ -236,7 +236,47 @@ Prefer the remote machine for:
 - heavier Psi4 jobs,
 - anything that needs both sustained CPU and GPU time.
 
-## 9. Common Problems
+## 9. Thermomechanical Studies
+
+For `Tg` and elongation, the recommended pattern is now:
+
+1. equilibrate the system first,
+2. resolve the prepared `gro/top`,
+3. run a high-level study wrapper,
+4. inspect the summary before opening the raw CSV or XVG files.
+
+Example:
+
+```python
+import yadonpy as yp
+
+prepared = yp.resolve_prepared_system(
+    work_dir="./examples/02_polymer_electrolyte/work_dir",
+)
+
+tg_result = yp.run_tg_scan_gmx(
+    prepared=prepared,
+    out_dir="./work_tg",
+    profile="default",
+)
+yp.print_mechanics_result_summary(tg_result)
+```
+
+`run_tg_scan_gmx(...)` writes:
+
+- `summary.json`
+- `density_vs_T.csv`
+- a global `tg_density_vs_T.svg`
+- one stage folder per temperature
+
+`run_elongation_gmx(...)` writes:
+
+- `summary.json`
+- `stress_strain.csv`
+- `stress_strain.svg`
+- material summary fields such as Young's modulus and peak stress
+
+## 10. Common Problems
 
 ### `doctor()` says `psiresp` is missing or broken
 

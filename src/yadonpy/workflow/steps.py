@@ -705,6 +705,7 @@ def tg_scan_gmx(
     gpu_id: Optional[int] = None,
     restart: Optional[bool] = None,
     auto_plot: bool = True,
+    fit_metric: str = "density",
 ) -> Path:
     """Run a Tg scan workflow using GROMACS."""
 
@@ -731,6 +732,7 @@ def tg_scan_gmx(
             pressure_bar=float(pressure_bar),
             npt_ns=float(npt_ns),
             frac_last=float(frac_last),
+            fit_metric=str(fit_metric),
             resources=res,
             auto_plot=bool(auto_plot),
         )
@@ -751,6 +753,7 @@ def tg_scan_gmx(
             "gpu": int(gpu),
             "gpu_id": int(gpu_id) if gpu_id is not None else None,
             "auto_plot": bool(auto_plot),
+            "fit_metric": str(fit_metric),
         },
         description="GROMACS Tg scan",
         verbose=True,
@@ -774,6 +777,8 @@ def elongation_gmx(
     restart: Optional[bool] = None,
     auto_plot: bool = True,
     direction: Literal["x", "y", "z"] = "x",
+    modulus_fit_max_strain: float = 0.02,
+    modulus_fit_min_points: int = 5,
 ) -> Path:
     """Run a uniaxial elongation workflow using GROMACS."""
 
@@ -800,6 +805,8 @@ def elongation_gmx(
             strain_rate_per_ps=float(strain_rate_1_ps),
             final_strain=float(total_strain),
             dt_ps=float(dt_ps),
+            modulus_fit_max_strain=float(modulus_fit_max_strain),
+            modulus_fit_min_points=int(modulus_fit_min_points),
             resources=res,
             auto_plot=bool(auto_plot),
         )
@@ -822,8 +829,9 @@ def elongation_gmx(
             "gpu_id": int(gpu_id) if gpu_id is not None else None,
             "auto_plot": bool(auto_plot),
             "direction": str(direction),
+            "modulus_fit_max_strain": float(modulus_fit_max_strain),
+            "modulus_fit_min_points": int(modulus_fit_min_points),
         },
         description="GROMACS elongation",
         verbose=True,
     )
-

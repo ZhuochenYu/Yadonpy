@@ -27,10 +27,16 @@ from ._util import RunResources, atomic_write_json, load_json, pbc_mol_fix_inpla
 class TgResult:
     temperatures_k: list[float]
     density_mean: list[float]
+    specific_volume_cm3_g: list[float]
+    fit_metric: str
+    fit_values: list[float]
     split_index: int
     tg_k: float
     low_fit: tuple[float, float]  # m,b
     high_fit: tuple[float, float]
+    low_sse: float
+    high_sse: float
+    total_sse: float
 
 
 def _linear_fit(x: np.ndarray, y: np.ndarray) -> tuple[float, float, float]:
@@ -42,18 +48,35 @@ def _linear_fit(x: np.ndarray, y: np.ndarray) -> tuple[float, float, float]:
     return float(m), float(b), sse
 
 
-def fit_tg_piecewise_linear(temperatures_k: Sequence[float], density: Sequence[float]) -> TgResult:
+def _tg_fit_series(*, density_kg_m3: np.ndarray, fit_metric: str) -> tuple[np.ndarray, np.ndarray]:
+    with np.errstate(divide="raise", invalid="raise"):
+        specific_volume_cm3_g = 1000.0 / density_kg_m3
+    metric = str(fit_metric).strip().lower()
+    if metric == "density":
+        return density_kg_m3, specific_volume_cm3_g
+    if metric == "specific_volume":
+        return specific_volume_cm3_g, specific_volume_cm3_g
+    raise ValueError(f"Unsupported Tg fit metric: {fit_metric}")
+
+
+def fit_tg_piecewise_linear(
+    temperatures_k: Sequence[float],
+    density: Sequence[float],
+    *,
+    fit_metric: str = "density",
+) -> TgResult:
     """Auto-split piecewise linear fit and compute Tg (intersection)."""
     T = np.asarray(temperatures_k, dtype=float)
     rho = np.asarray(density, dtype=float)
     if T.size < 5:
         raise ValueError("Need at least 5 temperature points for robust Tg fit")
+    fit_values, specific_volume = _tg_fit_series(density_kg_m3=rho, fit_metric=fit_metric)
 
     best = None
     # enforce at least 2 points per side
     for k in range(2, T.size - 2):
-        m1, b1, sse1 = _linear_fit(T[:k], rho[:k])
-        m2, b2, sse2 = _linear_fit(T[k:], rho[k:])
+        m1, b1, sse1 = _linear_fit(T[:k], fit_values[:k])
+        m2, b2, sse2 = _linear_fit(T[k:], fit_values[k:])
         if abs(m1 - m2) < 1e-12:
             continue
         tg = (b2 - b1) / (m1 - m2)
@@ -64,17 +87,23 @@ def fit_tg_piecewise_linear(temperatures_k: Sequence[float], density: Sequence[f
             penalty = 1e6
         score = sse + penalty
         if best is None or score < best[0]:
-            best = (score, k, tg, (m1, b1), (m2, b2))
+            best = (score, k, tg, (m1, b1), (m2, b2), sse1, sse2)
     if best is None:
         raise ValueError("Failed to fit Tg (degenerate slopes)")
-    _, k, tg, low_fit, high_fit = best
+    _, k, tg, low_fit, high_fit, low_sse, high_sse = best
     return TgResult(
         temperatures_k=list(map(float, T.tolist())),
         density_mean=list(map(float, rho.tolist())),
+        specific_volume_cm3_g=list(map(float, specific_volume.tolist())),
+        fit_metric=str(fit_metric).strip().lower(),
+        fit_values=list(map(float, fit_values.tolist())),
         split_index=int(k),
         tg_k=float(tg),
         low_fit=(float(low_fit[0]), float(low_fit[1])),
         high_fit=(float(high_fit[0]), float(high_fit[1])),
+        low_sse=float(low_sse),
+        high_sse=float(high_sse),
+        total_sse=float(low_sse + high_sse),
     )
 
 
@@ -96,6 +125,7 @@ class TgJob:
         dt_ps: float = 0.002,
         npt_ns: float = 2.0,
         frac_last: float = 0.5,
+        fit_metric: str = "density",
         runner: Optional[GromacsRunner] = None,
         resources: RunResources = RunResources(),
         auto_plot: bool = True,
@@ -108,6 +138,7 @@ class TgJob:
         self.dt_ps = float(dt_ps)
         self.npt_ns = float(npt_ns)
         self.frac_last = float(frac_last)
+        self.fit_metric = str(fit_metric).strip().lower()
         self.runner = runner or GromacsRunner()
         self.resources = resources
         self.auto_plot = bool(auto_plot)
@@ -119,7 +150,24 @@ class TgJob:
         summary: dict = load_json(summary_path) or {
             "job": "TgJob",
             "out_dir": str(out),
-            "temperatures_k": self.temperatures_k,
+            "prepared_system": {
+                "gro": str(self.gro),
+                "top": str(self.top),
+            },
+            "resources": {
+                "ntmpi": int(self.resources.ntmpi) if self.resources.ntmpi is not None else None,
+                "ntomp": int(self.resources.ntomp) if self.resources.ntomp is not None else None,
+                "use_gpu": bool(self.resources.use_gpu),
+                "gpu_id": self.resources.gpu_id,
+            },
+            "scan": {
+                "temperatures_k": self.temperatures_k,
+                "pressure_bar": float(self.pressure_bar),
+                "dt_ps": float(self.dt_ps),
+                "npt_ns": float(self.npt_ns),
+                "frac_last": float(self.frac_last),
+                "fit_metric": self.fit_metric,
+            },
             "points": [],
         }
 
@@ -206,6 +254,7 @@ class TgJob:
                 "temperature_k": float(T),
                 "dir": str(d),
                 "density": rho_stat.__dict__,
+                "specific_volume_cm3_g": (1000.0 / float(rho_stat.mean)) if float(rho_stat.mean) != 0.0 else None,
                 "thermo": {k: v.__dict__ for k, v in stats.items()},
                 "mol2": str(mol2_path) if mol2_path else None,
             }
@@ -228,14 +277,23 @@ class TgJob:
             summary["points"].append(rec)
 
         # Tg fit
-        tg = fit_tg_piecewise_linear(temps, densities)
+        tg = fit_tg_piecewise_linear(temps, densities, fit_metric=self.fit_metric)
         summary["fit"] = {
+            "fit_metric": tg.fit_metric,
             "split_index": tg.split_index,
             "tg_k": tg.tg_k,
             "low_fit": {"m": tg.low_fit[0], "b": tg.low_fit[1]},
             "high_fit": {"m": tg.high_fit[0], "b": tg.high_fit[1]},
+            "low_sse": tg.low_sse,
+            "high_sse": tg.high_sse,
+            "total_sse": tg.total_sse,
         }
-        summary["curve"] = {"temperatures_k": tg.temperatures_k, "density_mean": tg.density_mean}
+        summary["curve"] = {
+            "temperatures_k": tg.temperatures_k,
+            "density_mean": tg.density_mean,
+            "specific_volume_cm3_g": tg.specific_volume_cm3_g,
+            "fit_values": tg.fit_values,
+        }
 
         # Final Tg curve plot
         if self.auto_plot:
@@ -255,9 +313,9 @@ class TgJob:
 
         # Write a CSV for convenience
         csv = out / "density_vs_T.csv"
-        lines = ["T_K,density_kg_m3"]
-        for T, rho in zip(tg.temperatures_k, tg.density_mean):
-            lines.append(f"{T},{rho}")
+        lines = ["T_K,density_kg_m3,specific_volume_cm3_g"]
+        for T, rho, sv in zip(tg.temperatures_k, tg.density_mean, tg.specific_volume_cm3_g):
+            lines.append(f"{T},{rho},{sv}")
         csv.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
         atomic_write_json(summary_path, summary)

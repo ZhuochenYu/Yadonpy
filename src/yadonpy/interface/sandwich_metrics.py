@@ -93,6 +93,53 @@ def build_stack_checks(*, gro_path: Path, ndx_groups: dict[str, list[int]]) -> d
     return payload
 
 
+def build_sandwich_acceptance(
+    *,
+    polymer_summary: dict[str, object],
+    electrolyte_summary: dict[str, object],
+    stack_checks: dict[str, object],
+    polymer_density_range_g_cm3: tuple[float, float] = (1.35, 1.65),
+    electrolyte_density_range_g_cm3: tuple[float, float] = (1.15, 1.40),
+) -> dict[str, object]:
+    polymer_density = representative_phase_density(polymer_summary)
+    electrolyte_density = representative_phase_density(electrolyte_summary)
+    graphite_polymer_core_gap = float(stack_checks.get("graphite_polymer_core_gap_nm", stack_checks.get("graphite_polymer_gap_nm", 0.0)) or 0.0)
+    polymer_electrolyte_core_gap = float(stack_checks.get("polymer_electrolyte_core_gap_nm", stack_checks.get("polymer_electrolyte_gap_nm", 0.0)) or 0.0)
+    observed_order = list(stack_checks.get("observed_order") or [])
+    expected_order = ["GRAPHITE", "POLYMER", "ELECTROLYTE"]
+    polymer_wrapped = bool(polymer_summary.get("wrapped_across_z_boundary", False))
+    electrolyte_wrapped = bool(electrolyte_summary.get("wrapped_across_z_boundary", False))
+    polymer_density_ok = float(polymer_density_range_g_cm3[0]) <= float(polymer_density) <= float(polymer_density_range_g_cm3[1])
+    electrolyte_density_ok = float(electrolyte_density_range_g_cm3[0]) <= float(electrolyte_density) <= float(electrolyte_density_range_g_cm3[1])
+    acceptance = {
+        "polymer_density_g_cm3": float(polymer_density),
+        "electrolyte_density_g_cm3": float(electrolyte_density),
+        "polymer_density_range_g_cm3": [float(polymer_density_range_g_cm3[0]), float(polymer_density_range_g_cm3[1])],
+        "electrolyte_density_range_g_cm3": [float(electrolyte_density_range_g_cm3[0]), float(electrolyte_density_range_g_cm3[1])],
+        "polymer_density_ok": bool(polymer_density_ok),
+        "electrolyte_density_ok": bool(electrolyte_density_ok),
+        "graphite_polymer_core_gap_nm": float(graphite_polymer_core_gap),
+        "polymer_electrolyte_core_gap_nm": float(polymer_electrolyte_core_gap),
+        "core_gaps_ok": bool(graphite_polymer_core_gap > 0.0 and polymer_electrolyte_core_gap > 0.0),
+        "wrapped_across_z_boundary": {
+            "polymer": bool(polymer_wrapped),
+            "electrolyte": bool(electrolyte_wrapped),
+        },
+        "wrapped_ok": bool((not polymer_wrapped) and (not electrolyte_wrapped)),
+        "observed_order": observed_order,
+        "expected_order": expected_order,
+        "order_ok": observed_order == expected_order,
+    }
+    acceptance["accepted"] = bool(
+        acceptance["polymer_density_ok"]
+        and acceptance["electrolyte_density_ok"]
+        and acceptance["core_gaps_ok"]
+        and acceptance["wrapped_ok"]
+        and acceptance["order_ok"]
+    )
+    return acceptance
+
+
 def phase_local_density_summary(*, gro_path: Path, species: Sequence, counts: Sequence[int]) -> dict[str, object]:
     coords = np.asarray(_read_gro_z_coords(gro_path), dtype=float)
     if coords.size == 0:

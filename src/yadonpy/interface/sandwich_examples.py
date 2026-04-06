@@ -272,6 +272,7 @@ def format_sandwich_result_summary(
             f"polymer_density_g_cm3 = {round(float(result.polymer_phase.density_g_cm3), 4)}",
             f"electrolyte_density_g_cm3 = {round(float(result.electrolyte_phase.density_g_cm3), 4)}",
             f"stack_checks = {result.stack_checks}",
+            f"acceptance = {getattr(result, 'acceptance', {})}",
         )
     )
     return tuple(lines)

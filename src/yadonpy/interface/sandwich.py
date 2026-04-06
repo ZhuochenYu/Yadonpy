@@ -29,6 +29,7 @@ from . import builder as interface_builder
 from .postprocess import read_ndx_groups
 from .prep import equilibrate_bulk_with_eq21, plan_fixed_xy_direct_electrolyte_preparation
 from .sandwich_metrics import (
+    build_sandwich_acceptance as _build_sandwich_acceptance,
     build_stack_checks as _build_stack_checks,
     confined_phase_report as _confined_phase_report,
     confined_summary_score as _confined_summary_score,
@@ -2427,6 +2428,11 @@ def build_graphite_polymer_electrolyte_sandwich(
         restart=restart,
     )
     stack_checks = _build_stack_checks(gro_path=relaxed_gro, ndx_groups=ndx_groups)
+    acceptance = _build_sandwich_acceptance(
+        polymer_summary=polymer_confined.summary,
+        electrolyte_summary=electrolyte_confined.summary,
+        stack_checks=stack_checks,
+    )
 
     manifest_path = stack_dir / "sandwich_manifest.json"
     notes = (
@@ -2489,6 +2495,7 @@ def build_graphite_polymer_electrolyte_sandwich(
                 "relaxed_gro": str(relaxed_gro),
                 "ndx_groups": {name: len(idxs) for name, idxs in ndx_groups.items()},
                 "stack_checks": stack_checks,
+                "acceptance": acceptance,
                 "notes": list(notes),
             },
             indent=2,
@@ -2511,6 +2518,7 @@ def build_graphite_polymer_electrolyte_sandwich(
                 "manifest_path": str(manifest_path),
                 "relaxed_gro": str(relaxed_gro),
                 "stack_checks": stack_checks,
+                "acceptance": acceptance,
             },
             indent=2,
             ensure_ascii=False,
@@ -2527,6 +2535,7 @@ def build_graphite_polymer_electrolyte_sandwich(
         relaxed_gro=relaxed_gro,
         manifest_path=manifest_path,
         stack_checks=stack_checks,
+        acceptance=acceptance,
         notes=notes,
     )
 

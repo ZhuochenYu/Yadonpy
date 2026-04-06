@@ -37,12 +37,17 @@ from .api import (  # noqa: F401
     build_graphite_peo_electrolyte_sandwich,
     build_graphite_polymer_electrolyte_sandwich,
     conformation_search,
+    format_mechanics_result_summary,
     get_ff,
     list_charge_methods,
     list_forcefields,
     load_from_moldb,
     mol_from_smiles,
     parameterize_smiles,
+    print_mechanics_result_summary,
+    resolve_prepared_system,
+    run_elongation_gmx,
+    run_tg_scan_gmx,
 )
 
 __all__ = [
@@ -72,7 +77,12 @@ __all__ = [
     'mol_from_smiles',
     'parameterize_smiles',
     'print_sandwich_result_summary',
+    'print_mechanics_result_summary',
     'qm',
+    'resolve_prepared_system',
+    'run_elongation_gmx',
     'run_options',
+    'run_tg_scan_gmx',
     'set_run_options',
+    'format_mechanics_result_summary',
 ]

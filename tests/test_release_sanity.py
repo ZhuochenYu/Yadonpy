@@ -255,6 +255,33 @@ def test_oplsaa_examples_use_script_first_yadonpy_style():
     assert offenders == []
 
 
+def test_mechanics_examples_use_high_level_api_and_not_workflow_steps():
+    root = Path(__file__).resolve().parents[1]
+    for rel in (
+        'examples/03_tg_gmx/run_tg.py',
+        'examples/04_elongation_gmx/run_elong.py',
+    ):
+        text = (root / rel).read_text(encoding='utf-8')
+        assert 'import yadonpy as yp' in text
+        assert 'yp.resolve_prepared_system(' in text
+        assert 'yp.print_mechanics_result_summary(' in text
+        assert 'from yadonpy.workflow import steps' not in text
+        assert 'from yadonpy.workflow import ' not in text
+        assert 'steps.' not in text
+
+
+def test_docs_reference_thermomechanical_high_level_helpers():
+    root = Path(__file__).resolve().parents[1]
+    readme = (root / 'README.md').read_text(encoding='utf-8')
+    api = (root / 'docs' / 'API_REFERENCE.md').read_text(encoding='utf-8')
+    guide = (root / 'docs' / 'USER_GUIDE.md').read_text(encoding='utf-8')
+
+    for text in (readme, api, guide):
+        assert 'run_tg_scan_gmx' in text
+        assert 'run_elongation_gmx' in text
+        assert 'print_mechanics_result_summary' in text
+
+
 def test_release_docs_do_not_reference_retired_example_paths():
     root = Path(__file__).resolve().parents[1]
     readme = (root / 'README.md').read_text(encoding='utf-8')

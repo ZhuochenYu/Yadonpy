@@ -96,6 +96,41 @@ def build_graphite_peo_electrolyte_sandwich(**kwargs):
     return _build_sandwich(**kwargs)
 
 
+def resolve_prepared_system(**kwargs):
+    """Resolve a prepared GROMACS system from explicit paths or a workflow work_dir."""
+    from .workflow import resolve_prepared_system as _resolve_prepared_system
+
+    return _resolve_prepared_system(**kwargs)
+
+
+def run_tg_scan_gmx(**kwargs):
+    """High-level Tg study wrapper around the GROMACS Tg workflow."""
+    from .workflow import run_tg_scan_gmx as _run_tg_scan_gmx
+
+    return _run_tg_scan_gmx(**kwargs)
+
+
+def run_elongation_gmx(**kwargs):
+    """High-level elongation study wrapper around the GROMACS deform workflow."""
+    from .workflow import run_elongation_gmx as _run_elongation_gmx
+
+    return _run_elongation_gmx(**kwargs)
+
+
+def format_mechanics_result_summary(result) -> tuple[str, ...]:
+    """Format a compact summary for a Tg or elongation study result."""
+    from .workflow import format_mechanics_result_summary as _format_mechanics_result_summary
+
+    return _format_mechanics_result_summary(result)
+
+
+def print_mechanics_result_summary(result) -> None:
+    """Print a compact summary for a Tg or elongation study result."""
+    from .workflow import print_mechanics_result_summary as _print_mechanics_result_summary
+
+    return _print_mechanics_result_summary(result)
+
+
 def conformation_search(mol, **kwargs):
     """Thin wrapper around :func:`yadonpy.sim.qm.conformation_search`."""
     from .sim import qm
@@ -230,10 +265,15 @@ __all__ = [
     'build_graphite_peo_electrolyte_sandwich',
     'build_graphite_polymer_electrolyte_sandwich',
     'conformation_search',
+    'format_mechanics_result_summary',
     'get_ff',
     'list_charge_methods',
     'list_forcefields',
     'load_from_moldb',
     'mol_from_smiles',
     'parameterize_smiles',
+    'print_mechanics_result_summary',
+    'resolve_prepared_system',
+    'run_elongation_gmx',
+    'run_tg_scan_gmx',
 ]

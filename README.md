@@ -147,8 +147,8 @@ resumed or audited without guessing which intermediate files are authoritative.
 
 - `examples/01_Li_salt`: prepare and store a reference salt species in MolDB.
 - `examples/02_polymer_electrolyte`: end-to-end polymer-electrolyte workflow from PSMILES.
-- `examples/03_tg_gmx`: staged temperature-dependent GROMACS workflow.
-- `examples/04_elongation_gmx`: elongation and deformation workflow.
+- `examples/03_tg_gmx`: high-level `Tg` scan workflow for an equilibrated system.
+- `examples/04_elongation_gmx`: high-level elongation and stress-strain workflow for an equilibrated system.
 - `examples/05_cmcna_electrolyte`: CMC-Na polymer-electrolyte construction.
 - `examples/06_polymer_electrolyte_nvt`: polymer-electrolyte workflow with NVT-focused staging.
 - `examples/07_moldb_precompute_and_reuse`: one-shot MolDB catalog build and MolDB-backed reuse scripts.
@@ -168,3 +168,16 @@ resumed or audited without guessing which intermediate files are authoritative.
 - Use the remote GPU node for long GROMACS jobs, larger sandwich systems, and heavy QM workflows.
 - For charged polymers, prefer `polyelectrolyte_mode=True` so RESP constraints and later charge scaling remain auditable.
 - MolDB is intended for reusable molecular assets such as geometry and charge variants, not as a topology cache.
+
+## Thermomechanical Studies
+
+For `Tg` and uniaxial elongation, YadonPy now provides high-level study wrappers
+that work on an already prepared `gro/top` pair or on a standard equilibration
+`work_dir`.
+
+- `run_tg_scan_gmx(...)`: staged temperature scan plus `Tg` fit summary.
+- `run_elongation_gmx(...)`: `deform`-based stress-strain workflow plus material summary.
+- `print_mechanics_result_summary(...)`: compact terminal summary for either study.
+
+The shipped examples for these studies now resolve the prepared system
+automatically instead of manually wiring `workflow.steps` calls.

@@ -30,6 +30,27 @@ class ElongationResult:
     sigma_dev_gpa: list[float]
 
 
+def _fit_youngs_modulus(
+    *,
+    strain,
+    stress_gpa,
+    max_strain: float,
+    min_points: int,
+) -> float | None:
+    import numpy as np
+
+    x = np.asarray(strain, dtype=float)
+    y = np.asarray(stress_gpa, dtype=float)
+    mask = (x >= 0.0) & (x <= float(max_strain))
+    if int(np.count_nonzero(mask)) < max(int(min_points), 2):
+        return None
+    xv = x[mask]
+    yv = y[mask]
+    A = np.vstack([xv, np.ones_like(xv)]).T
+    slope, _intercept = np.linalg.lstsq(A, yv, rcond=None)[0]
+    return float(slope)
+
+
 class ElongationJob:
     """Uniaxial elongation using GROMACS `deform`.
 
@@ -51,6 +72,8 @@ class ElongationJob:
         strain_rate_per_ps: float = 1e-5,
         final_strain: float = 0.2,
         frac_last: float = 1.0,
+        modulus_fit_max_strain: float = 0.02,
+        modulus_fit_min_points: int = 5,
         runner: Optional[GromacsRunner] = None,
         resources: RunResources = RunResources(),
         auto_plot: bool = True,
@@ -64,6 +87,8 @@ class ElongationJob:
         self.strain_rate_per_ps = float(strain_rate_per_ps)
         self.final_strain = float(final_strain)
         self.frac_last = float(frac_last)
+        self.modulus_fit_max_strain = float(modulus_fit_max_strain)
+        self.modulus_fit_min_points = int(modulus_fit_min_points)
         self.runner = runner or GromacsRunner()
         self.resources = resources
         self.auto_plot = bool(auto_plot)
@@ -139,6 +164,16 @@ class ElongationJob:
         pzz = df["Pres-ZZ"].to_numpy(dtype=float)
         sigma_xx = (-pxx) * bar_to_gpa
         sigma_dev = (-(pxx - 0.5 * (pyy + pzz))) * bar_to_gpa
+        strain_values = strain.to_numpy(dtype=float)
+        youngs_modulus = _fit_youngs_modulus(
+            strain=strain_values,
+            stress_gpa=sigma_xx,
+            max_strain=float(self.modulus_fit_max_strain),
+            min_points=int(self.modulus_fit_min_points),
+        )
+        max_idx = int(sigma_xx.argmax()) if len(sigma_xx) else 0
+        max_stress = float(sigma_xx[max_idx]) if len(sigma_xx) else None
+        strain_at_max_stress = float(strain_values[max_idx]) if len(strain_values) else None
 
         # Save CSV
         csv = out / "stress_strain.csv"
@@ -184,6 +219,16 @@ class ElongationJob:
             "dt_ps": self.dt_ps,
             "strain_rate_per_ps": self.strain_rate_per_ps,
             "final_strain": self.final_strain,
+            "prepared_system": {
+                "gro": str(self.gro),
+                "top": str(self.top),
+            },
+            "resources": {
+                "ntmpi": int(self.resources.ntmpi) if self.resources.ntmpi is not None else None,
+                "ntomp": int(self.resources.ntomp) if self.resources.ntomp is not None else None,
+                "use_gpu": bool(self.resources.use_gpu),
+                "gpu_id": self.resources.gpu_id,
+            },
             "files": {
                 "gro": str(out / "md.gro") if (out / "md.gro").exists() else None,
                 "mol2": str(mol2_path) if mol2_path else None,
@@ -192,9 +237,17 @@ class ElongationJob:
                 "stress_strain_svg": stress_svg,
             },
             "results": {
-                "strain": list(map(float, strain.to_numpy(dtype=float).tolist())),
+                "strain": list(map(float, strain_values.tolist())),
+                "engineering_strain": list(map(float, strain_values.tolist())),
                 "sigma_xx_gpa": list(map(float, sigma_xx.tolist())),
                 "sigma_dev_gpa": list(map(float, sigma_dev.tolist())),
+            },
+            "material_summary": {
+                "youngs_modulus_gpa": youngs_modulus,
+                "max_stress_gpa": max_stress,
+                "strain_at_max_stress": strain_at_max_stress,
+                "modulus_fit_max_strain": float(self.modulus_fit_max_strain),
+                "modulus_fit_min_points": int(self.modulus_fit_min_points),
             },
         }
         atomic_write_json(summary_path, summary)

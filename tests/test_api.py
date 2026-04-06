@@ -8,6 +8,7 @@ from rdkit import Chem
 import yadonpy.api as api
 import yadonpy.moldb as moldb
 from yadonpy.core.polyelectrolyte import annotate_polyelectrolyte_metadata
+import yadonpy
 
 
 class _DummyDB:
@@ -80,6 +81,22 @@ def test_list_charge_methods_exposes_scaled_charge_tokens():
     assert 'CM5' in methods
     assert '1.14*CM1A' in methods
     assert '1.2*CM5' in methods
+
+
+def test_top_level_api_exports_mechanics_helpers():
+    assert hasattr(api, 'resolve_prepared_system')
+    assert hasattr(api, 'run_tg_scan_gmx')
+    assert hasattr(api, 'run_elongation_gmx')
+    assert hasattr(api, 'format_mechanics_result_summary')
+    assert hasattr(api, 'print_mechanics_result_summary')
+    assert 'resolve_prepared_system' in api.__all__
+    assert 'run_tg_scan_gmx' in api.__all__
+    assert 'run_elongation_gmx' in api.__all__
+    assert 'format_mechanics_result_summary' in api.__all__
+    assert 'print_mechanics_result_summary' in api.__all__
+    assert hasattr(yadonpy, 'resolve_prepared_system')
+    assert hasattr(yadonpy, 'run_tg_scan_gmx')
+    assert hasattr(yadonpy, 'run_elongation_gmx')
 
 
 def test_parameterize_smiles_raises_when_charge_assignment_fails_by_default(monkeypatch, tmp_path):

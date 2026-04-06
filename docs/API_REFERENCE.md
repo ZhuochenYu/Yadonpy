@@ -27,6 +27,10 @@ Package root exports include:
 - `yp.build_graphite_polymer_electrolyte_sandwich`
 - `yp.build_graphite_peo_electrolyte_sandwich`
 - `yp.build_graphite_cmcna_electrolyte_sandwich`
+- `yp.resolve_prepared_system`
+- `yp.run_tg_scan_gmx`
+- `yp.run_elongation_gmx`
+- `yp.print_mechanics_result_summary`
 - `yp.InterfaceBuilder`
 - `yp.InterfaceProtocol`
 - `yp.InterfaceDynamics`
@@ -48,6 +52,16 @@ yp.build_graphite(**kwargs)
 yp.build_graphite_polymer_electrolyte_sandwich(**kwargs)
 yp.build_graphite_peo_electrolyte_sandwich(**kwargs)
 yp.build_graphite_cmcna_electrolyte_sandwich(**kwargs)
+yp.resolve_prepared_system(
+    *,
+    gro: str | Path | None = None,
+    top: str | Path | None = None,
+    work_dir: str | Path | None = None,
+    source_name: str | None = None,
+)
+yp.run_tg_scan_gmx(**kwargs)
+yp.run_elongation_gmx(**kwargs)
+yp.print_mechanics_result_summary(result)
 yp.conformation_search(mol, **kwargs)
 yp.assign_charges(mol, *, charge: str = "RESP", **kwargs)
 yp.assign_forcefield(mol, *, ff_name: str = "gaff2_mod", charge: str | None = None, **kwargs)
@@ -86,6 +100,10 @@ Key points:
   metadata plus bonded patches.
 - `parameterize_smiles(...)` is a concise one-shot helper for
   `SMILES -> charges -> ff_assign`.
+- `resolve_prepared_system(...)` resolves a reusable `gro/top` pair from explicit
+  paths or from a standard YadonPy equilibration `work_dir`.
+- `run_tg_scan_gmx(...)` and `run_elongation_gmx(...)` are the preferred high-level
+  study entry points for properties of already equilibrated systems.
 
 Supported canonical force-field names:
 
