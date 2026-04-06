@@ -1030,6 +1030,13 @@ def test_format_sandwich_result_summary_emits_linear_example02_style_lines(tmp_p
         polymer_phase=SimpleNamespace(density_g_cm3=1.45678),
         electrolyte_phase=SimpleNamespace(density_g_cm3=1.23456),
         stack_checks={"is_expected_order": True},
+        acceptance={
+            "accepted": True,
+            "order_ok": True,
+            "wrapped_ok": True,
+            "graphite_polymer_core_gap_nm": 0.54321,
+            "polymer_electrolyte_core_gap_nm": 0.98765,
+        },
     )
 
     lines = format_sandwich_result_summary(result, profile="smoke")
@@ -1039,6 +1046,24 @@ def test_format_sandwich_result_summary_emits_linear_example02_style_lines(tmp_p
     assert "relaxed_gro =" in lines[2]
     assert lines[3] == "polymer_density_g_cm3 = 1.4568"
     assert lines[4] == "electrolyte_density_g_cm3 = 1.2346"
+    assert lines[5] == "accepted = True"
+    assert lines[6] == "order_ok = True"
+    assert lines[7] == "wrapped_ok = True"
+    assert lines[8] == "graphite_polymer_core_gap_nm = 0.5432"
+    assert lines[9] == "polymer_electrolyte_core_gap_nm = 0.9877"
+
+
+def test_format_sandwich_result_summary_falls_back_to_stack_checks_when_acceptance_missing(tmp_path: Path):
+    result = SimpleNamespace(
+        manifest_path=tmp_path / "manifest.json",
+        relaxed_gro=tmp_path / "final.gro",
+        polymer_phase=SimpleNamespace(density_g_cm3=1.4),
+        electrolyte_phase=SimpleNamespace(density_g_cm3=1.2),
+        stack_checks={"is_expected_order": True},
+    )
+
+    lines = format_sandwich_result_summary(result, profile="smoke")
+
     assert lines[5] == "stack_checks = {'is_expected_order': True}"
 
 

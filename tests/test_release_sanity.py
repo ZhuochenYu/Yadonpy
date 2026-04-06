@@ -221,8 +221,16 @@ def test_example08_scripts_use_example_case_helpers_and_shared_summary_printer()
 
     for rel, helper_name in expected.items():
         text = (root / rel).read_text(encoding='utf-8')
+        assert 'import yadonpy as yp' in text
+        assert 'yp.set_run_options(' in text
+        assert 'yp.doctor(' in text
+        assert 'yp.get_ff("gaff2_mod")' in text
+        assert 'yp.get_ff("merz")' in text
+        assert 'yp.print_sandwich_result_summary(' in text
         assert helper_name in text
-        assert 'print_sandwich_result_summary' in text
+        assert 'from yadonpy.interface import ' not in text
+        assert 'from yadonpy.ff import ' not in text
+        assert 'from yadonpy.runtime import ' not in text
         assert 'default_peo_polymer_spec(' not in text
         assert 'default_cmcna_polymer_spec(' not in text
         assert 'SandwichRelaxationSpec(' not in text

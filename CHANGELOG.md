@@ -1,3 +1,8 @@
+## 0.8.109 (2026-04-06)
+
+- examples/08_graphite_polymer_electrolyte_sandwich/*.py + tests/test_release_sanity.py: make the shipped Example 08 scripts use the same public `import yadonpy as yp` style as the newer high-level examples instead of mixing direct imports from `diagnostics`, `ff`, `interface`, and `runtime`. The sandwich examples now read more like Example 02: set restart policy, call `yp.doctor()`, create force fields through `yp.get_ff(...)`, run one high-level builder, and print one shared summary.
+- interface/sandwich_examples.py + tests/test_sandwich_workflow.py + examples/08_graphite_polymer_electrolyte_sandwich/README.md: tighten the Example 08 terminal summary so it prints the key acceptance outcomes directly (`accepted`, `order_ok`, `wrapped_ok`, core gaps) instead of dumping the full raw acceptance dict. The summary remains backward compatible with older result objects and keeps a `stack_checks` fallback when acceptance data is missing.
+
 ## 0.8.108 (2026-04-06)
 
 - workflow/studies.py + api.py + __init__.py + examples/03_tg_gmx + examples/04_elongation_gmx + docs/API_REFERENCE.md + docs/USER_GUIDE.md + README.md: promote `Tg` and uniaxial elongation from demo-level `workflow.steps` usage to a proper high-level study layer. YadonPy now exposes `resolve_prepared_system(...)`, `run_tg_scan_gmx(...)`, `run_elongation_gmx(...)`, and `print_mechanics_result_summary(...)`, and the shipped Tg/elongation examples are rewritten into short linear scripts that no longer import workflow helpers directly.

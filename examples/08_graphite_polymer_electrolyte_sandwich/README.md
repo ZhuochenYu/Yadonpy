@@ -15,7 +15,8 @@ coherent workflow family built around the same high-level sandwich builder:
 The scripts are intentionally short. Most of the workflow logic now lives in
 `yadonpy.interface.sandwich` plus the small preset helpers in
 `yadonpy.interface.sandwich_examples`, so the examples focus on study setup
-rather than repeating the same packing and relaxation boilerplate. The old
+through the public `import yadonpy as yp` API rather than repeating lower-level
+imports or workflow plumbing. The old
 route-A, route-B, charged CMC interface, and graphite stack cases are now
 treated as parameter choices on one substrate-assisted sandwich path.
 
@@ -54,4 +55,6 @@ treated as parameter choices on one substrate-assisted sandwich path.
   - polymer/electrolyte bulk density reports
   - confined slab summaries for each soft phase
   - final `GRAPHITE -> POLYMER -> ELECTROLYTE` phase-order checks
+  - explicit acceptance fields for density windows, wrapped-Z detection, and
+    positive core gaps
   - the chosen stacked export paths and main relaxation outputs

@@ -263,18 +263,30 @@ def format_sandwich_result_summary(
     profile: str | None = None,
 ) -> tuple[str, ...]:
     lines = []
+    acceptance = dict(getattr(result, "acceptance", {}) or {})
+    stack_checks = dict(getattr(result, "stack_checks", {}) or {})
     if profile is not None:
         lines.append(f"profile = {str(profile).strip().lower()}")
-    lines.extend(
-        (
-            f"manifest_path = {result.manifest_path}",
-            f"relaxed_gro = {result.relaxed_gro}",
-            f"polymer_density_g_cm3 = {round(float(result.polymer_phase.density_g_cm3), 4)}",
-            f"electrolyte_density_g_cm3 = {round(float(result.electrolyte_phase.density_g_cm3), 4)}",
-            f"stack_checks = {result.stack_checks}",
-            f"acceptance = {getattr(result, 'acceptance', {})}",
-        )
-    )
+    lines.append(f"manifest_path = {result.manifest_path}")
+    lines.append(f"relaxed_gro = {result.relaxed_gro}")
+    lines.append(f"polymer_density_g_cm3 = {round(float(result.polymer_phase.density_g_cm3), 4)}")
+    lines.append(f"electrolyte_density_g_cm3 = {round(float(result.electrolyte_phase.density_g_cm3), 4)}")
+    if acceptance:
+        lines.append(f"accepted = {bool(acceptance.get('accepted', False))}")
+        lines.append(f"order_ok = {bool(acceptance.get('order_ok', False))}")
+        lines.append(f"wrapped_ok = {bool(acceptance.get('wrapped_ok', False))}")
+        if "graphite_polymer_core_gap_nm" in acceptance:
+            lines.append(
+                "graphite_polymer_core_gap_nm = "
+                f"{round(float(acceptance.get('graphite_polymer_core_gap_nm', 0.0)), 4)}"
+            )
+        if "polymer_electrolyte_core_gap_nm" in acceptance:
+            lines.append(
+                "polymer_electrolyte_core_gap_nm = "
+                f"{round(float(acceptance.get('polymer_electrolyte_core_gap_nm', 0.0)), 4)}"
+            )
+    else:
+        lines.append(f"stack_checks = {stack_checks}")
     return tuple(lines)
 
 
