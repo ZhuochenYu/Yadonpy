@@ -58,3 +58,6 @@ treated as parameter choices on one substrate-assisted sandwich path.
   - explicit acceptance fields for density windows, wrapped-Z detection, and
     positive core gaps
   - the chosen stacked export paths and main relaxation outputs
+- The printed terminal summary now exposes the main acceptance booleans and a
+  `failed_checks` list directly, so remote monitoring does not require opening
+  the full manifest just to see which acceptance gate is still failing.

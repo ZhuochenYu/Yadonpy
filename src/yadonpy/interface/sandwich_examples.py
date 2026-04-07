@@ -273,8 +273,12 @@ def format_sandwich_result_summary(
     lines.append(f"electrolyte_density_g_cm3 = {round(float(result.electrolyte_phase.density_g_cm3), 4)}")
     if acceptance:
         lines.append(f"accepted = {bool(acceptance.get('accepted', False))}")
+        lines.append(f"failed_checks = {list(acceptance.get('failed_checks', []))}")
         lines.append(f"order_ok = {bool(acceptance.get('order_ok', False))}")
         lines.append(f"wrapped_ok = {bool(acceptance.get('wrapped_ok', False))}")
+        lines.append(f"polymer_density_ok = {bool(acceptance.get('polymer_density_ok', False))}")
+        lines.append(f"electrolyte_density_ok = {bool(acceptance.get('electrolyte_density_ok', False))}")
+        lines.append(f"core_gaps_ok = {bool(acceptance.get('core_gaps_ok', False))}")
         if "graphite_polymer_core_gap_nm" in acceptance:
             lines.append(
                 "graphite_polymer_core_gap_nm = "

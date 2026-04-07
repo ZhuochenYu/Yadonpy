@@ -130,6 +130,15 @@ def build_sandwich_acceptance(
         "expected_order": expected_order,
         "order_ok": observed_order == expected_order,
     }
+    failed_checks: list[str] = []
+    for key in ("polymer_density_ok", "electrolyte_density_ok", "core_gaps_ok", "wrapped_ok", "order_ok"):
+        if not bool(acceptance[key]):
+            failed_checks.append(key)
+    acceptance["failed_checks"] = failed_checks
+    acceptance["passing_checks"] = [
+        key for key in ("polymer_density_ok", "electrolyte_density_ok", "core_gaps_ok", "wrapped_ok", "order_ok")
+        if bool(acceptance[key])
+    ]
     acceptance["accepted"] = bool(
         acceptance["polymer_density_ok"]
         and acceptance["electrolyte_density_ok"]

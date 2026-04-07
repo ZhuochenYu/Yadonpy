@@ -1032,8 +1032,12 @@ def test_format_sandwich_result_summary_emits_linear_example02_style_lines(tmp_p
         stack_checks={"is_expected_order": True},
         acceptance={
             "accepted": True,
+            "failed_checks": [],
             "order_ok": True,
             "wrapped_ok": True,
+            "polymer_density_ok": True,
+            "electrolyte_density_ok": True,
+            "core_gaps_ok": True,
             "graphite_polymer_core_gap_nm": 0.54321,
             "polymer_electrolyte_core_gap_nm": 0.98765,
         },
@@ -1047,10 +1051,14 @@ def test_format_sandwich_result_summary_emits_linear_example02_style_lines(tmp_p
     assert lines[3] == "polymer_density_g_cm3 = 1.4568"
     assert lines[4] == "electrolyte_density_g_cm3 = 1.2346"
     assert lines[5] == "accepted = True"
-    assert lines[6] == "order_ok = True"
-    assert lines[7] == "wrapped_ok = True"
-    assert lines[8] == "graphite_polymer_core_gap_nm = 0.5432"
-    assert lines[9] == "polymer_electrolyte_core_gap_nm = 0.9877"
+    assert lines[6] == "failed_checks = []"
+    assert lines[7] == "order_ok = True"
+    assert lines[8] == "wrapped_ok = True"
+    assert lines[9] == "polymer_density_ok = True"
+    assert lines[10] == "electrolyte_density_ok = True"
+    assert lines[11] == "core_gaps_ok = True"
+    assert lines[12] == "graphite_polymer_core_gap_nm = 0.5432"
+    assert lines[13] == "polymer_electrolyte_core_gap_nm = 0.9877"
 
 
 def test_format_sandwich_result_summary_falls_back_to_stack_checks_when_acceptance_missing(tmp_path: Path):
@@ -1065,6 +1073,35 @@ def test_format_sandwich_result_summary_falls_back_to_stack_checks_when_acceptan
     lines = format_sandwich_result_summary(result, profile="smoke")
 
     assert lines[5] == "stack_checks = {'is_expected_order': True}"
+
+
+def test_build_sandwich_acceptance_reports_failed_checks():
+    from yadonpy.interface.sandwich_metrics import build_sandwich_acceptance
+
+    acceptance = build_sandwich_acceptance(
+        polymer_summary={
+            "center_bulk_like_density_g_cm3": 1.10,
+            "wrapped_across_z_boundary": True,
+        },
+        electrolyte_summary={
+            "center_bulk_like_density_g_cm3": 0.95,
+            "wrapped_across_z_boundary": False,
+        },
+        stack_checks={
+            "observed_order": ["POLYMER", "GRAPHITE", "ELECTROLYTE"],
+            "graphite_polymer_core_gap_nm": -0.1,
+            "polymer_electrolyte_core_gap_nm": 0.2,
+        },
+    )
+
+    assert acceptance["accepted"] is False
+    assert acceptance["failed_checks"] == [
+        "polymer_density_ok",
+        "electrolyte_density_ok",
+        "core_gaps_ok",
+        "wrapped_ok",
+        "order_ok",
+    ]
 
 
 def test_build_graphite_polymer_electrolyte_sandwich_orchestrates_bulk_then_slab_prep(tmp_path: Path, monkeypatch):

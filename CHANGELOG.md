@@ -1,3 +1,7 @@
+## 0.8.110 (2026-04-07)
+
+- interface/sandwich_metrics.py + interface/sandwich_examples.py + tests/test_sandwich_workflow.py + examples/08_graphite_polymer_electrolyte_sandwich/README.md: make Example 08 acceptance output more actionable for long remote runs. Sandwich acceptance payloads now include explicit `failed_checks` and `passing_checks`, and the shared summary printer surfaces those booleans directly (`polymer_density_ok`, `electrolyte_density_ok`, `core_gaps_ok`, `wrapped_ok`, `order_ok`) instead of only telling the user whether the whole sandwich was accepted. This makes it much faster to see whether a run is blocked by density, gap, wrapping, or phase-order issues without opening the full manifest.
+
 ## 0.8.109 (2026-04-06)
 
 - examples/08_graphite_polymer_electrolyte_sandwich/*.py + tests/test_release_sanity.py: make the shipped Example 08 scripts use the same public `import yadonpy as yp` style as the newer high-level examples instead of mixing direct imports from `diagnostics`, `ff`, `interface`, and `runtime`. The sandwich examples now read more like Example 02: set restart policy, call `yp.doctor()`, create force fields through `yp.get_ff(...)`, run one high-level builder, and print one shared summary.
