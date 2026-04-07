@@ -36,6 +36,8 @@ from yadonpy.interface.sandwich import (
     _needs_confined_rescue,
     _maybe_expand_graphite_for_phase_footprint,
     _preflight_graphite_footprint_from_phase_targets,
+    _preflight_linear_headroom_xy,
+    _preflight_required_xy_nm_from_target_area,
     _phase_local_density_summary,
     _prepared_slab_required_xy_nm,
     _phase_confined_relaxation_stages,
@@ -577,8 +579,33 @@ def test_preflight_graphite_footprint_from_phase_targets_expands_before_bulk_rou
     assert build_calls
     assert negotiations[0]["stage"] == "preflight"
     assert negotiations[0]["graphite_counts_before_xy"] == [10, 10]
+    base_polymer_required_xy = _preflight_required_xy_nm_from_target_area(
+        current_box_nm=graphite_result.box_nm,
+        target_area_nm2=float(negotiations[0]["polymer_target_area_nm2"]) * float(negotiations[0]["area_margin"]),
+    )
+    assert negotiations[0]["polymer_preflight_required_xy_nm"][0] > base_polymer_required_xy[0]
+    assert negotiations[0]["polymer_preflight_required_xy_nm"][1] > base_polymer_required_xy[1]
     assert negotiations[-1]["graphite_counts_after_xy"] == [expanded_graphite.nx, expanded_graphite.ny]
     assert expanded_result.box_nm[0] >= graphite_result.box_nm[0]
+
+
+def test_preflight_linear_headroom_xy_is_polymer_specific():
+    assert _preflight_linear_headroom_xy(label="polymer")[0] > 1.0
+    assert _preflight_linear_headroom_xy(label="electrolyte") == (1.0, 1.0)
+
+
+def test_preflight_required_xy_nm_from_target_area_applies_linear_headroom():
+    base = _preflight_required_xy_nm_from_target_area(
+        current_box_nm=(2.0, 3.0, 2.0),
+        target_area_nm2=6.0,
+    )
+    inflated = _preflight_required_xy_nm_from_target_area(
+        current_box_nm=(2.0, 3.0, 2.0),
+        target_area_nm2=6.0,
+        linear_headroom_xy=(1.2, 1.1),
+    )
+    assert inflated[0] == pytest.approx(base[0] * 1.2)
+    assert inflated[1] == pytest.approx(base[1] * 1.1)
 
 
 def test_maybe_expand_graphite_for_phase_footprint_skips_expansion_when_slab_is_compressible(monkeypatch):

@@ -388,15 +388,23 @@ def _preflight_graphite_footprint_from_phase_targets(
             target_thickness_nm=float(electrolyte.slab_z_nm),
         )
         current_area_nm2 = float(current_result.box_nm[0]) * float(current_result.box_nm[1])
+        polymer_required_xy_nm = _preflight_required_xy_nm_from_target_area(
+            current_box_nm=tuple(float(x) for x in current_result.box_nm),
+            target_area_nm2=float(polymer_area_nm2) * float(area_margin),
+            linear_headroom_xy=_preflight_linear_headroom_xy(label="polymer"),
+        )
+        electrolyte_required_xy_nm = _preflight_required_xy_nm_from_target_area(
+            current_box_nm=tuple(float(x) for x in current_result.box_nm),
+            target_area_nm2=float(electrolyte_area_nm2) * float(area_margin),
+            linear_headroom_xy=_preflight_linear_headroom_xy(label="electrolyte"),
+        )
+        required_xy_nm = (
+            max(float(current_result.box_nm[0]), float(polymer_required_xy_nm[0]), float(electrolyte_required_xy_nm[0])),
+            max(float(current_result.box_nm[1]), float(polymer_required_xy_nm[1]), float(electrolyte_required_xy_nm[1])),
+        )
         target_area_nm2 = max(
             float(current_area_nm2),
-            float(polymer_area_nm2) * float(area_margin),
-            float(electrolyte_area_nm2) * float(area_margin),
-        )
-        scale = math.sqrt(max(float(target_area_nm2), 1.0e-12) / max(float(current_area_nm2), 1.0e-12))
-        required_xy_nm = (
-            float(current_result.box_nm[0]) * float(scale),
-            float(current_result.box_nm[1]) * float(scale),
+            float(required_xy_nm[0]) * float(required_xy_nm[1]),
         )
         target_nx, target_ny = _graphite_counts_for_required_xy(
             graphite=current_graphite,
@@ -430,6 +438,8 @@ def _preflight_graphite_footprint_from_phase_targets(
                 "graphite_box_after_nm": [float(x) for x in next_result.box_nm],
                 "polymer_target_area_nm2": float(polymer_area_nm2),
                 "electrolyte_target_area_nm2": float(electrolyte_area_nm2),
+                "polymer_preflight_required_xy_nm": [float(polymer_required_xy_nm[0]), float(polymer_required_xy_nm[1])],
+                "electrolyte_preflight_required_xy_nm": [float(electrolyte_required_xy_nm[0]), float(electrolyte_required_xy_nm[1])],
                 "current_area_nm2": float(current_area_nm2),
                 "target_area_nm2": float(target_area_nm2),
                 "area_margin": float(area_margin),
@@ -440,6 +450,31 @@ def _preflight_graphite_footprint_from_phase_targets(
         current_result = next_result
 
     return current_graphite, current_result, negotiations
+
+
+def _preflight_linear_headroom_xy(*, label: str) -> tuple[float, float]:
+    phase = str(label).strip().lower()
+    if phase != "polymer":
+        return (1.0, 1.0)
+    min_scale_xy = _phase_confined_min_scale_xy(label=phase)
+    return (
+        1.0 / max(float(min_scale_xy[0]), 1.0e-9),
+        1.0 / max(float(min_scale_xy[1]), 1.0e-9),
+    )
+
+
+def _preflight_required_xy_nm_from_target_area(
+    *,
+    current_box_nm: tuple[float, float, float],
+    target_area_nm2: float,
+    linear_headroom_xy: tuple[float, float] = (1.0, 1.0),
+) -> tuple[float, float]:
+    current_area_nm2 = max(float(current_box_nm[0]) * float(current_box_nm[1]), 1.0e-12)
+    scale = math.sqrt(max(float(target_area_nm2), 1.0e-12) / current_area_nm2)
+    return (
+        float(current_box_nm[0]) * float(scale) * float(linear_headroom_xy[0]),
+        float(current_box_nm[1]) * float(scale) * float(linear_headroom_xy[1]),
+    )
 
 
 def _phase_round_dir(base_dir: Path, round_index: int) -> Path:
