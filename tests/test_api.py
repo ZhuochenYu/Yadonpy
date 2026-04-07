@@ -84,6 +84,7 @@ def test_list_charge_methods_exposes_scaled_charge_tokens():
 
 
 def test_top_level_api_exports_mechanics_helpers():
+    assert hasattr(yadonpy, 'doctor')
     assert hasattr(api, 'resolve_prepared_system')
     assert hasattr(api, 'run_tg_scan_gmx')
     assert hasattr(api, 'run_elongation_gmx')
@@ -97,6 +98,7 @@ def test_top_level_api_exports_mechanics_helpers():
     assert hasattr(yadonpy, 'resolve_prepared_system')
     assert hasattr(yadonpy, 'run_tg_scan_gmx')
     assert hasattr(yadonpy, 'run_elongation_gmx')
+    assert 'doctor' in yadonpy.__all__
 
 
 def test_parameterize_smiles_raises_when_charge_assignment_fails_by_default(monkeypatch, tmp_path):
