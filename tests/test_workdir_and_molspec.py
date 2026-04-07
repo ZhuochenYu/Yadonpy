@@ -15,6 +15,7 @@ from yadonpy.io.molecule_cache import ensure_cached_artifacts
 from yadonpy.io.gromacs_molecule import _format_gro_atom_line as format_single_gro_atom_line
 from yadonpy.io.gromacs_system import _format_gro_atom_line as format_system_gro_atom_line
 from yadonpy.io.gromacs_system import _load_gro_species_templates
+from yadonpy.io.gromacs_system import _species_signature_from_smiles
 from yadonpy.io.gromacs_system import export_system_from_cell_meta
 from yadonpy.io.mol2 import write_mol2_from_rdkit
 from yadonpy.core.data_dir import ensure_initialized
@@ -429,6 +430,14 @@ def test_pf6_moldb_load_prefers_unsanitized_mol2_for_hypervalent_ions(tmp_path: 
     assert loaded is not False
     assert calls
     assert calls[0] is False
+
+
+def test_species_signature_from_smiles_handles_pf6_without_sanitized_parser_failure():
+    sig = _species_signature_from_smiles('F[P-](F)(F)(F)(F)F')
+    assert sig is not None
+    nat, bond_sig = sig
+    assert nat == 7
+    assert bond_sig
 
 
 def test_ensure_cached_artifacts_preserves_pf6_charge_sum_when_formal_charge_is_wrong(tmp_path: Path, monkeypatch):

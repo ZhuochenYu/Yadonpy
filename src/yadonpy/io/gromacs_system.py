@@ -239,6 +239,22 @@ def _parse_smiles_for_metadata(smiles: str):
     return mol
 
 
+def _species_signature_from_smiles(smiles: str) -> tuple[int, tuple[tuple[int, int], ...]] | None:
+    """Build a fragment-matching signature from SMILES without over-sanitizing ions."""
+    if Chem is None:
+        return None
+    try:
+        mol = _parse_smiles_for_metadata(str(smiles or ""))
+    except Exception:
+        mol = None
+    if mol is None:
+        return None
+    try:
+        return _mol_signature(mol)
+    except Exception:
+        return None
+
+
 def _fs_safe_mol_name(name: str) -> str:
     """Convert a molecule name into a filesystem- and GROMACS-friendly token.
 
@@ -1850,15 +1866,7 @@ def export_system_from_cell_meta(
                             sp = tpl.species
                             name = tpl.name
                             nat_expect = len(tpl.atom_names)
-                            sig = None
-                            try:
-                                smi = str(sp.get("smiles", "") or "")
-                                if smi:
-                                    tmpl = Chem.MolFromSmiles(smi)
-                                    if tmpl is not None:
-                                        sig = _mol_signature(tmpl)
-                            except Exception:
-                                sig = None
+                            sig = _species_signature_from_smiles(str(sp.get("smiles", "") or ""))
                             for _k in range(int(sp["n"])):
                                 frag_entry = None
                                 if sig is not None and sig in frag_buckets and frag_buckets[sig]:
