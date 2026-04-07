@@ -885,6 +885,7 @@ def test_covered_lateral_replicas_falls_back_to_covering_target_when_no_near_mat
 def test_initial_bulk_pack_density_defaults_are_more_permissive_than_targets():
     assert _initial_bulk_pack_density(target_density_g_cm3=1.08, phase="polymer") == pytest.approx(0.5616)
     assert _initial_bulk_pack_density(target_density_g_cm3=1.50, phase="polymer", z_scale=1.28) == pytest.approx(0.68 / 1.28)
+    assert _initial_bulk_pack_density(target_density_g_cm3=1.50, phase="polymer", z_scale=1.30, charged=True) == pytest.approx(0.56 / 1.30)
     assert _initial_bulk_pack_density(target_density_g_cm3=1.12, phase="electrolyte") == pytest.approx(0.896)
     assert _initial_bulk_pack_density(target_density_g_cm3=1.12, phase="electrolyte", requested_density_g_cm3=0.82) == pytest.approx(0.82)
 
@@ -908,6 +909,21 @@ def test_build_pack_density_ladder_uses_phase_specific_backoff_policy():
     assert electrolyte_policy.max_attempts == 3
     assert electrolyte_ladder[0] == pytest.approx(0.86)
     assert electrolyte_ladder[1] == pytest.approx(0.86 * 0.90)
+
+
+def test_build_pack_density_ladder_uses_more_permissive_policy_for_charged_polymer():
+    polymer_policy, polymer_ladder = _build_pack_density_ladder(
+        phase="polymer",
+        target_density_g_cm3=1.50,
+        z_scale=1.30,
+        charged=True,
+    )
+    assert polymer_policy.charged is True
+    assert polymer_policy.max_attempts == 5
+    assert polymer_policy.backoff_factor == pytest.approx(0.86)
+    assert polymer_policy.floor_density_g_cm3 == pytest.approx(0.30)
+    assert polymer_ladder[0] == pytest.approx(0.56 / 1.30)
+    assert polymer_ladder[-1] >= 0.30
 
 
 def test_run_amorphous_cell_with_density_backoff_retries_and_writes_summary(tmp_path: Path):

@@ -330,6 +330,7 @@ def _prepare_polymer_phase_species(*, ff, ion_ff, polymer: PolymerSlabSpec, rela
         "species": species,
         "counts": counts,
         "charge_scale": charge_scale,
+        "charged_phase": bool(chain_formal_charge != 0),
         "notes": tuple(notes),
     }
 
@@ -516,6 +517,7 @@ def _run_polymer_phase_round(
         phase="polymer",
         target_density_g_cm3=float(polymer.target_density_g_cm3),
         z_scale=float(polymer.initial_pack_z_scale),
+        charged=bool(phase_build.get("charged_phase", False)),
         work_dir=build_dir,
         retry=int(polymer.pack_retry),
         retry_step=int(polymer.pack_retry_step),
