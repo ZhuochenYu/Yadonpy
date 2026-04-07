@@ -37,9 +37,9 @@ def initial_bulk_pack_density(
     phase_key = str(phase).strip().lower()
     target = float(target_density_g_cm3)
     if phase_key == "polymer":
-        density = max(0.50, min(0.75, target * 0.60))
+        density = max(0.45, min(0.68, target * 0.52))
         if z_scale is not None and float(z_scale) > 1.0:
-            density = max(0.42, float(density) / float(z_scale))
+            density = max(0.38, float(density) / float(z_scale))
         return float(density)
     return max(0.65, min(0.90, target * 0.80))
 
