@@ -221,6 +221,68 @@ def test_ensure_initialized_refreshes_when_bundle_has_more_complete_variants(tmp
     assert state["audit"]["bundled_more_complete_records"] == []
 
 
+def test_ensure_initialized_refreshes_when_bundle_has_more_complete_charges(tmp_path: Path, monkeypatch):
+    data_root = tmp_path / "data_root"
+    bundle = tmp_path / "seed_repo" / "moldb"
+    bundle_obj = bundle / "objects" / "abc123"
+    bundle_obj.mkdir(parents=True, exist_ok=True)
+    (bundle_obj / "manifest.json").write_text(
+        json.dumps(
+            {
+                "key": "abc123",
+                "name": "charged-record",
+                "ready": True,
+                "variants": {
+                    "resp_default": {
+                        "variant_id": "resp_default",
+                        "ready": True,
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (bundle_obj / "charges.json").write_text(
+        json.dumps({"variant_id": "resp_default", "charges": [0.4, -1.4]}),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("YADONPY_HOME", str(data_root))
+    monkeypatch.setenv("YADONPY_DEFAULT_MOLDB", str(bundle))
+
+    layout = data_dir.ensure_initialized()
+    stale_obj = layout.moldb_dir / "objects" / "abc123"
+    (stale_obj / "manifest.json").write_text(
+        json.dumps(
+            {
+                "key": "abc123",
+                "name": "charged-record",
+                "ready": True,
+                "variants": {
+                    "resp_default": {
+                        "variant_id": "resp_default",
+                        "ready": True,
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (stale_obj / "charges.json").write_text(
+        json.dumps({"variant_id": "resp_default", "charges": [0.0, 0.0]}),
+        encoding="utf-8",
+    )
+    layout.bundle_state.unlink()
+
+    layout = data_dir.ensure_initialized()
+    state = json.loads(layout.bundle_state.read_text(encoding="utf-8"))
+    charges = json.loads((stale_obj / "charges.json").read_text(encoding="utf-8"))
+
+    assert charges["charges"] == [0.4, -1.4]
+    assert state["refreshed_stale_records"] == ["objects/abc123"]
+    assert state["audit"]["bundled_more_complete_records"] == []
+
+
 def test_audit_bundle_sync_reports_missing_stale_and_user_only_records(tmp_path: Path):
     layout = data_dir.DataLayout(tmp_path / "data_root")
     layout.root.mkdir(parents=True, exist_ok=True)

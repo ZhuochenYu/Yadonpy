@@ -154,6 +154,22 @@ def _safe_load_json(path: Path) -> dict[str, Any]:
     return {}
 
 
+def _charges_abs_sum(payload: dict[str, Any]) -> float:
+    charges = payload.get("charges")
+    if isinstance(charges, list):
+        total = 0.0
+        for q in charges:
+            try:
+                total += abs(float(q))
+            except Exception:
+                continue
+        return float(total)
+    try:
+        return abs(float(payload.get("total_charge", 0.0)))
+    except Exception:
+        return 0.0
+
+
 def _manifest_ready_score(payload: dict[str, Any]) -> tuple[int, int, int]:
     variants = payload.get("variants") or {}
     ready_variants = 0
@@ -218,29 +234,40 @@ def _bundle_record_is_more_complete(
     *,
     bundle_payload: dict[str, Any],
     user_payload: dict[str, Any],
+    bundle_charge_payload: dict[str, Any] | None = None,
+    user_charge_payload: dict[str, Any] | None = None,
 ) -> bool:
     if _manifest_ready_score(bundle_payload) > _manifest_ready_score(user_payload):
         return True
     delta = _record_variant_delta(bundle_payload, user_payload)
-    return any(
+    if any(
         bool(delta[key])
         for key in (
             "bundle_only_variant_ids",
             "bundle_only_ready_variant_ids",
             "bundle_only_bonded_variant_ids",
         )
-    )
+    ):
+        return True
+    if bundle_charge_payload is not None or user_charge_payload is not None:
+        if _charges_abs_sum(bundle_charge_payload or {}) > _charges_abs_sum(user_charge_payload or {}):
+            return True
+    return False
 
 
 def audit_bundle_sync(layout: DataLayout, bundle_dir: Path) -> dict[str, Any]:
     bundle_records: dict[str, dict[str, Any]] = {}
     user_records: dict[str, dict[str, Any]] = {}
+    bundle_charges: dict[str, dict[str, Any]] = {}
+    user_charges: dict[str, dict[str, Any]] = {}
     for src_manifest in sorted(bundle_dir.glob("objects/*/manifest.json")):
         prefix = src_manifest.relative_to(bundle_dir).parent.as_posix()
         bundle_records[prefix] = _safe_load_json(src_manifest)
+        bundle_charges[prefix] = _safe_load_json(src_manifest.parent / "charges.json")
     for dst_manifest in sorted(layout.moldb_dir.glob("objects/*/manifest.json")):
         prefix = dst_manifest.relative_to(layout.moldb_dir).parent.as_posix()
         user_records[prefix] = _safe_load_json(dst_manifest)
+        user_charges[prefix] = _safe_load_json(dst_manifest.parent / "charges.json")
 
     bundle_keys = set(bundle_records.keys())
     user_keys = set(user_records.keys())
@@ -253,6 +280,8 @@ def audit_bundle_sync(layout: DataLayout, bundle_dir: Path) -> dict[str, Any]:
         if _bundle_record_is_more_complete(
             bundle_payload=bundle_records[prefix],
             user_payload=user_records[prefix],
+            bundle_charge_payload=bundle_charges.get(prefix),
+            user_charge_payload=user_charges.get(prefix),
         ):
             bundle_more_complete_records.append(prefix)
     return {
@@ -279,9 +308,13 @@ def _bundle_record_prefixes_to_refresh(
             continue
         src_payload = _safe_load_json(src_manifest)
         dst_payload = _safe_load_json(dst_manifest)
+        src_charge_payload = _safe_load_json(src_manifest.parent / "charges.json")
+        dst_charge_payload = _safe_load_json(dst_manifest.parent / "charges.json")
         if _bundle_record_is_more_complete(
             bundle_payload=src_payload,
             user_payload=dst_payload,
+            bundle_charge_payload=src_charge_payload,
+            user_charge_payload=dst_charge_payload,
         ):
             refresh_prefixes.add(src_manifest.relative_to(bundle_dir).parent.as_posix())
     return refresh_prefixes
