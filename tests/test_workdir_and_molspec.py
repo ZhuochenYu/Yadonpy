@@ -11,6 +11,7 @@ from yadonpy.core import as_rdkit_mol, molecular_weight, workdir, utils, poly
 from yadonpy.ff.gaff2_mod import GAFF2_mod
 from yadonpy.ff.merz import MERZ
 from yadonpy.interface.charge_audit import format_cell_charge_audit
+from yadonpy.io.artifacts import write_molecule_artifacts
 from yadonpy.io.molecule_cache import ensure_cached_artifacts
 from yadonpy.io.gromacs_molecule import _format_gro_atom_line as format_single_gro_atom_line
 from yadonpy.io.gromacs_system import _format_gro_atom_line as format_system_gro_atom_line
@@ -36,6 +37,31 @@ def test_workdir_is_pathlike_and_non_destructive(tmp_path: Path):
     assert (wd / 'keep.txt').exists()
     assert marker.read_text(encoding='utf-8') == 'sentinel'
     assert wd.metadata_path.exists()
+
+
+def test_write_molecule_artifacts_uses_best_available_charge_property(tmp_path: Path):
+    mol = Chem.MolFromSmiles("CCO")
+    assert mol is not None
+    mol = Chem.AddHs(mol)
+    AllChem.EmbedMolecule(mol, randomSeed=7)
+    AllChem.UFFOptimizeMolecule(mol)
+    for atom in mol.GetAtoms():
+        atom.SetDoubleProp("AtomicCharge", 0.0)
+        atom.SetDoubleProp("RESP", 0.1 if atom.GetIdx() == 0 else -0.01)
+    out = tmp_path / "art"
+    write_molecule_artifacts(
+        mol,
+        out,
+        smiles="CCO",
+        ff_name="gaff2_mod",
+        charge_method="RESP",
+        total_charge=0,
+        mol_name="EtOH",
+        write_mol2=False,
+    )
+    meta = json.loads((out / "meta.json").read_text(encoding="utf-8"))
+    assert meta["charge_abs_sum"] > 0.0
+    assert meta["charge_signature"]
 
 
 def test_gro_atom_line_wraps_overflow_indices_without_shifting_coordinates():

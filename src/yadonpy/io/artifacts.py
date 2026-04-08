@@ -13,6 +13,8 @@ import hashlib
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from ..core import chem_utils as core_utils
+
 
 def _bonded_meta_from_mol(mol) -> Dict[str, Any]:
     """Collect bonded-override metadata that should survive caching."""
