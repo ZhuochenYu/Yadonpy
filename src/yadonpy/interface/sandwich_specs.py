@@ -144,10 +144,34 @@ def default_cmcna_polymer_spec(**kwargs) -> PolymerSlabSpec:
     base = PolymerSlabSpec(
         name="CMC",
         monomers=(
-            MoleculeSpec(name="glucose_0", smiles="*OC1OC(CO)C(*)C(O)C1O", polyelectrolyte_mode=False),
-            MoleculeSpec(name="glucose_2", smiles="*OC1OC(CO)C(*)C(O)C1OCC(=O)[O-]", polyelectrolyte_mode=True),
-            MoleculeSpec(name="glucose_3", smiles="*OC1OC(CO)C(*)C(OCC(=O)[O-])C1O", polyelectrolyte_mode=True),
-            MoleculeSpec(name="glucose_6", smiles="*OC1OC(COCC(=O)[O-])C(*)C(O)C1O", polyelectrolyte_mode=True),
+            MoleculeSpec(
+                name="glucose_0",
+                smiles="*OC1OC(CO)C(*)C(O)C1O",
+                prefer_db=True,
+                require_ready=True,
+                polyelectrolyte_mode=False,
+            ),
+            MoleculeSpec(
+                name="glucose_2",
+                smiles="*OC1OC(CO)C(*)C(O)C1OCC(=O)[O-]",
+                prefer_db=True,
+                require_ready=True,
+                polyelectrolyte_mode=True,
+            ),
+            MoleculeSpec(
+                name="glucose_3",
+                smiles="*OC1OC(CO)C(*)C(OCC(=O)[O-])C1O",
+                prefer_db=True,
+                require_ready=True,
+                polyelectrolyte_mode=True,
+            ),
+            MoleculeSpec(
+                name="glucose_6",
+                smiles="*OC1OC(COCC(=O)[O-])C(*)C(O)C1O",
+                prefer_db=True,
+                require_ready=True,
+                polyelectrolyte_mode=True,
+            ),
         ),
         monomer_ratio=(12.0, 26.0, 27.0, 35.0),
         terminal=MoleculeSpec(name="CMC_terminal", smiles="[H][*]", require_ready=False, prefer_db=False),
@@ -169,9 +193,9 @@ def default_cmcna_polymer_spec(**kwargs) -> PolymerSlabSpec:
 def default_carbonate_lipf6_electrolyte_spec(**kwargs) -> ElectrolyteSlabSpec:
     base = ElectrolyteSlabSpec(
         solvents=(
-            MoleculeSpec(name="EC", smiles="O=C1OCCO1"),
-            MoleculeSpec(name="DEC", smiles="CCOC(=O)OCC"),
-            MoleculeSpec(name="EMC", smiles="CCOC(=O)OC"),
+            MoleculeSpec(name="EC", smiles="O=C1OCCO1", prefer_db=True, require_ready=True),
+            MoleculeSpec(name="DEC", smiles="CCOC(=O)OCC", prefer_db=True, require_ready=True),
+            MoleculeSpec(name="EMC", smiles="CCOC(=O)OC", prefer_db=True, require_ready=True),
         ),
         salt_cation=MoleculeSpec(name="Li", smiles="[Li+]", use_ion_ff=True, charge_scale=0.8),
         salt_anion=MoleculeSpec(

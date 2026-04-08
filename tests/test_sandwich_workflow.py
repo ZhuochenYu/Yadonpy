@@ -727,6 +727,22 @@ def test_build_polymer_chain_forwards_polyelectrolyte_mode_to_db_lookup(monkeypa
     assert ff.mol_calls[0][1]["polyelectrolyte_mode"] is True
 
 
+def test_default_cmcna_and_carbonate_specs_require_ready_db_records():
+    import yadonpy.interface.sandwich as sandwich
+
+    polymer = sandwich.default_cmcna_polymer_spec()
+    assert polymer.monomers
+    assert all(spec.prefer_db for spec in polymer.monomers)
+    assert all(spec.require_ready for spec in polymer.monomers)
+
+    electrolyte = sandwich.default_carbonate_lipf6_electrolyte_spec()
+    assert electrolyte.solvents
+    assert all(spec.prefer_db for spec in electrolyte.solvents)
+    assert all(spec.require_ready for spec in electrolyte.solvents)
+    assert electrolyte.salt_anion.prefer_db is True
+    assert electrolyte.salt_anion.require_ready is True
+
+
 def test_rebox_block_for_phase_confinement_softens_catastrophic_xy_overlaps():
     mol = Chem.RWMol()
     for _ in range(2):
