@@ -159,19 +159,8 @@ def write_molecule_artifacts(
     # cache layer can invalidate and regenerate artifacts when needed.
     # ------------------------------------------------------------------
     def _mol_charge_abs_and_sig(_mol) -> tuple[float, str]:
-        qs: list[float] = []
-        for a in _mol.GetAtoms():
-            q = 0.0
-            try:
-                if a.HasProp('AtomicCharge'):
-                    q = float(a.GetDoubleProp('AtomicCharge'))
-                elif a.HasProp('RESP'):
-                    q = float(a.GetDoubleProp('RESP'))
-                elif a.HasProp('_GasteigerCharge'):
-                    q = float(a.GetProp('_GasteigerCharge'))
-            except Exception:
-                q = 0.0
-            qs.append(round(float(q), 6))
+        _, selected = core_utils.select_best_charge_property(_mol)
+        qs = [round(float(q), 6) for q in selected]
         abs_sum = float(sum(abs(x) for x in qs))
         payload = ",".join(f"{x:.6f}" for x in qs).encode('utf-8')
         sig = hashlib.sha1(payload).hexdigest()[:16]

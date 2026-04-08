@@ -15,9 +15,10 @@ from yadonpy.io.molecule_cache import ensure_cached_artifacts
 from yadonpy.io.gromacs_molecule import _format_gro_atom_line as format_single_gro_atom_line
 from yadonpy.io.gromacs_system import _format_gro_atom_line as format_system_gro_atom_line
 from yadonpy.io.gromacs_system import _load_gro_species_templates
+from yadonpy.io.gromacs_system import canonicalize_smiles
 from yadonpy.io.gromacs_system import _species_signature_from_smiles
 from yadonpy.io.gromacs_system import export_system_from_cell_meta
-from yadonpy.io.mol2 import write_mol2_from_rdkit
+from yadonpy.io.mol2 import read_mol2_with_charges, write_mol2_from_rdkit
 from yadonpy.core.data_dir import ensure_initialized
 from yadonpy.workflow.resume import file_signature as resume_file_signature
 import yadonpy.sim.qm as qm_mod
@@ -349,6 +350,34 @@ def test_mol_net_charge_recognizes_resp_only_atoms():
     assert poly._mol_net_charge(mol) == pytest.approx(0.0, abs=1.0e-12)
 
 
+def test_mol_net_charge_prefers_nonzero_resp_over_zero_atomiccharge():
+    mol = Chem.MolFromSmiles('CC')
+    atom0 = mol.GetAtomWithIdx(0)
+    atom1 = mol.GetAtomWithIdx(1)
+    atom0.SetDoubleProp('AtomicCharge', 0.0)
+    atom1.SetDoubleProp('AtomicCharge', 0.0)
+    atom0.SetDoubleProp('RESP', 0.45)
+    atom1.SetDoubleProp('RESP', -1.45)
+
+    assert poly._mol_net_charge(mol) == pytest.approx(-1.0, abs=1.0e-12)
+
+
+def test_write_mol2_prefers_resp_when_atomiccharge_is_zero_placeholder(tmp_path: Path):
+    mol = Chem.AddHs(Chem.MolFromSmiles('O'))
+    assert mol is not None
+    AllChem.EmbedMolecule(mol, randomSeed=0xF00D)
+    for idx, atom in enumerate(mol.GetAtoms()):
+        atom.SetDoubleProp('AtomicCharge', 0.0)
+        atom.SetDoubleProp('RESP', -0.8 if idx == 0 else 0.4)
+
+    out = write_mol2_from_rdkit(mol=mol, out_dir=tmp_path / 'mol2')
+    loaded = read_mol2_with_charges(out, sanitize=False)
+    charges = [float(atom.GetDoubleProp('AtomicCharge')) for atom in loaded.GetAtoms()]
+
+    assert sum(charges) == pytest.approx(0.0, abs=1.0e-8)
+    assert max(abs(q) for q in charges) > 0.1
+
+
 def test_molecular_weight_helper_handles_merz_ions_and_unsanitized_hypervalent_species():
     li = MERZ().mol('[Li+]')
     pf6 = Chem.MolFromSmiles('F[P-](F)(F)(F)(F)F', sanitize=False)
@@ -438,6 +467,11 @@ def test_species_signature_from_smiles_handles_pf6_without_sanitized_parser_fail
     nat, bond_sig = sig
     assert nat == 7
     assert bond_sig
+
+
+def test_canonicalize_smiles_preserves_pf6_input_for_hypervalent_ions():
+    smi = 'F[P-](F)(F)(F)(F)F'
+    assert canonicalize_smiles(smi) == smi
 
 
 def test_ensure_cached_artifacts_preserves_pf6_charge_sum_when_formal_charge_is_wrong(tmp_path: Path, monkeypatch):

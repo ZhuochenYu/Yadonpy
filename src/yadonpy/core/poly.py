@@ -1560,37 +1560,14 @@ def _mol_net_charge(mol, use_atomic_charge=True):
     """
     q = 0.0
     if use_atomic_charge:
-        charge_keys = (
-            'AtomicCharge',
-            'AtomicCharge_raw',
-            'RESP',
-            'RESP_raw',
-            'ESP',
-            'MullikenCharge',
-            'LowdinCharge',
-            '_GasteigerCharge',
-        )
-        used_any = False
-        for a in mol.GetAtoms():
-            for key in charge_keys:
-                if not a.HasProp(key):
-                    continue
-                try:
-                    q += float(a.GetDoubleProp(key))
-                    used_any = True
-                    break
-                except Exception:
-                    try:
-                        q += float(a.GetProp(key))
-                        used_any = True
-                        break
-                    except Exception:
-                        continue
-        if used_any:
-            for a in mol.GetAtoms():
-                if a.HasProp('AtomicCharge'):
-                    return q
-            return q
+        try:
+            from . import chem_utils as core_chem_utils
+
+            _, charges = core_chem_utils.select_best_charge_property(mol)
+            if charges:
+                return float(sum(float(v) for v in charges))
+        except Exception:
+            pass
     # fallback
     for a in mol.GetAtoms():
         q += float(a.GetFormalCharge())

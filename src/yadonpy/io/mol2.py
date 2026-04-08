@@ -27,6 +27,7 @@ from typing import List, Optional, Tuple
 
 import re
 
+from ..core import chem_utils as core_utils
 
 _COMMON_FF_TYPE_ELEMENT_MAP = {
     "h": "H",
@@ -586,21 +587,23 @@ def write_mol2(
     conf = mol.GetConformer()
     out_mol2.parent.mkdir(parents=True, exist_ok=True)
 
+    charge_order = []
+    if charge_prop:
+        if use_raw:
+            charge_order.append(f"{charge_prop}_raw")
+        charge_order.append(charge_prop)
+    if use_raw:
+        charge_order.extend(["RESP_raw", "AtomicCharge_raw"])
+    charge_order.extend(["RESP", "AtomicCharge"])
+    selected_charge_prop, _ = core_utils.select_best_charge_property(mol, preferred_props=tuple(charge_order))
+
     def _get_charge(a) -> float:
         """Return atomic charge from RDKit atom properties.
 
         If use_raw=True and a corresponding *_raw property exists, that value is used.
         """
-
-        def _pick(prop: str) -> Optional[float]:
-            if use_raw and a.HasProp(f"{prop}_raw"):
-                return float(a.GetDoubleProp(f"{prop}_raw"))
-            if a.HasProp(prop):
-                return float(a.GetDoubleProp(prop))
-            return None
-
-        for prop in (charge_prop, "RESP", "AtomicCharge"):
-            v = _pick(prop)
+        if selected_charge_prop:
+            v = core_utils._atom_charge_from_prop(a, selected_charge_prop)
             if v is not None:
                 return float(v)
         return 0.0

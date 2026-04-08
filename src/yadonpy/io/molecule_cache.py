@@ -152,20 +152,11 @@ def _mol_charge_abs_and_sig(mol) -> tuple[float, str]:
 
     We use AtomicCharge if present, else RESP, else _GasteigerCharge.
     """
-    qs: list[float] = []
     try:
-        for a in mol.GetAtoms():
-            q = 0.0
-            try:
-                if a.HasProp('AtomicCharge'):
-                    q = float(a.GetDoubleProp('AtomicCharge'))
-                elif a.HasProp('RESP'):
-                    q = float(a.GetDoubleProp('RESP'))
-                elif a.HasProp('_GasteigerCharge'):
-                    q = float(a.GetProp('_GasteigerCharge'))
-            except Exception:
-                q = 0.0
-            qs.append(round(float(q), 6))
+        from ..core import chem_utils as core_utils
+
+        _, charges = core_utils.select_best_charge_property(mol)
+        qs = [round(float(q), 6) for q in charges]
     except Exception:
         qs = []
 

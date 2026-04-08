@@ -156,6 +156,12 @@ def canonicalize_smiles(smiles_or_psmiles: str) -> str:
     if Chem is None:
         return s
     try:
+        if _prefer_unsanitized_smiles_parse(s):
+            # Preserve the caller-provided representation for hypervalent /
+            # inorganic ion-like species. RDKit can emit distorted canonical
+            # strings for these graphs (e.g. PF6-) even when the molecule is
+            # otherwise usable for metadata matching.
+            return s
         m = _parse_smiles_for_metadata(s)
         if m is None:
             return s

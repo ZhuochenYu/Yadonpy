@@ -1022,6 +1022,117 @@ def scale_atomic_charges(mol, *, scale: float, props=("AtomicCharge", "RESP")):
     return mol
 
 
+def _atom_charge_from_prop(atom, prop: str) -> float | None:
+    try:
+        if atom.HasProp(prop):
+            try:
+                return float(atom.GetDoubleProp(prop))
+            except Exception:
+                return float(atom.GetProp(prop))
+    except Exception:
+        return None
+    return None
+
+
+def select_best_charge_property(
+    mol,
+    *,
+    preferred_props=(
+        "AtomicCharge",
+        "AtomicCharge_raw",
+        "RESP",
+        "RESP_raw",
+        "ESP",
+        "MullikenCharge",
+        "LowdinCharge",
+        "_GasteigerCharge",
+    ),
+    tol: float = 1.0e-8,
+):
+    """Return the most trustworthy per-atom charge property for a molecule.
+
+    The historical code often preferred ``AtomicCharge`` whenever it existed,
+    even if every atom carried a zero placeholder while a meaningful RESP
+    charge set was also present. That behavior silently propagated all-zero
+    charges into exported MOL2/GROMACS artifacts. This selector prefers a
+    fully-covered, non-trivial charge set at the molecule level.
+
+    Returns
+    -------
+    tuple[str | None, list[float]]
+        The chosen property name and one value per atom. If no supported
+        charge property exists, ``(None, [0.0, ...])`` is returned.
+    """
+
+    try:
+        atoms = list(mol.GetAtoms())
+    except Exception:
+        return None, []
+
+    if not atoms:
+        return None, []
+
+    seen: set[str] = set()
+    ordered_props: list[str] = []
+    for prop in preferred_props:
+        if not prop or prop in seen:
+            continue
+        seen.add(str(prop))
+        ordered_props.append(str(prop))
+
+    full_nonzero: list[tuple[str, list[float], float]] = []
+    full_zeroish: list[tuple[str, list[float], float]] = []
+    partial_nonzero: list[tuple[str, list[float], float, int]] = []
+    partial_zeroish: list[tuple[str, list[float], float, int]] = []
+
+    for prop in ordered_props:
+        values: list[float] = []
+        count = 0
+        for atom in atoms:
+            q = _atom_charge_from_prop(atom, prop)
+            if q is None:
+                continue
+            values.append(float(q))
+            count += 1
+        if count <= 0:
+            continue
+        abs_sum = float(sum(abs(v) for v in values))
+        if count == len(atoms):
+            if abs_sum > tol:
+                full_nonzero.append((prop, values, abs_sum))
+            else:
+                full_zeroish.append((prop, values, abs_sum))
+        else:
+            if abs_sum > tol:
+                partial_nonzero.append((prop, values, abs_sum, count))
+            else:
+                partial_zeroish.append((prop, values, abs_sum, count))
+
+    if full_nonzero:
+        prop, values, _ = full_nonzero[0]
+        return prop, values
+    if full_zeroish:
+        prop, values, _ = full_zeroish[0]
+        return prop, values
+    if partial_nonzero:
+        partial_nonzero.sort(key=lambda item: (-item[3], ordered_props.index(item[0])))
+        prop, values, _, _ = partial_nonzero[0]
+        padded: list[float] = []
+        for atom in atoms:
+            q = _atom_charge_from_prop(atom, prop)
+            padded.append(float(q) if q is not None else 0.0)
+        return prop, padded
+    if partial_zeroish:
+        partial_zeroish.sort(key=lambda item: (-item[3], ordered_props.index(item[0])))
+        prop, values, _, _ = partial_zeroish[0]
+        padded = []
+        for atom in atoms:
+            q = _atom_charge_from_prop(atom, prop)
+            padded.append(float(q) if q is not None else 0.0)
+        return prop, padded
+    return None, [0.0 for _ in atoms]
+
+
 def restore_raw_charges(mol, *, props=("AtomicCharge", "RESP")):
     """Restore raw charges previously saved by :func:`scale_atomic_charges`.
 
