@@ -159,13 +159,6 @@ def default_cmcna_polymer_spec(**kwargs) -> PolymerSlabSpec:
                 polyelectrolyte_mode=True,
             ),
             MoleculeSpec(
-                name="glucose_3",
-                smiles="*OC1OC(CO)C(*)C(OCC(=O)[O-])C1O",
-                prefer_db=True,
-                require_ready=True,
-                polyelectrolyte_mode=True,
-            ),
-            MoleculeSpec(
                 name="glucose_6",
                 smiles="*OC1OC(COCC(=O)[O-])C(*)C(O)C1O",
                 prefer_db=True,
@@ -173,7 +166,7 @@ def default_cmcna_polymer_spec(**kwargs) -> PolymerSlabSpec:
                 polyelectrolyte_mode=True,
             ),
         ),
-        monomer_ratio=(12.0, 26.0, 27.0, 35.0),
+        monomer_ratio=(12.0, 26.0, 35.0),
         terminal=MoleculeSpec(name="CMC_terminal", smiles="[H][*]", require_ready=False, prefer_db=False),
         dp=60,
         target_density_g_cm3=1.50,

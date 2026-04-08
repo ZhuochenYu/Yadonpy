@@ -710,7 +710,7 @@ def test_build_polymer_chain_forwards_polyelectrolyte_mode_to_db_lookup(monkeypa
 
     base = sandwich.default_cmcna_polymer_spec()
     polymer = sandwich.default_cmcna_polymer_spec(
-        monomers=(base.monomers[3],),
+        monomers=(base.monomers[2],),
         monomer_ratio=(1.0,),
         dp=4,
     )
@@ -732,6 +732,7 @@ def test_default_cmcna_and_carbonate_specs_require_ready_db_records():
 
     polymer = sandwich.default_cmcna_polymer_spec()
     assert polymer.monomers
+    assert [spec.name for spec in polymer.monomers] == ["glucose_0", "glucose_2", "glucose_6"]
     assert all(spec.prefer_db for spec in polymer.monomers)
     assert all(spec.require_ready for spec in polymer.monomers)
 
