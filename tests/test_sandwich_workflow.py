@@ -42,6 +42,7 @@ from yadonpy.interface.sandwich import (
     _preflight_linear_headroom_xy,
     _preflight_required_xy_nm_from_target_area,
     _phase_local_density_summary,
+    _prepared_slab_lateral_span_nm,
     _prepared_slab_required_xy_nm,
     _phase_confined_relaxation_stages,
     _rebox_block_for_phase_confinement,
@@ -745,6 +746,53 @@ def test_maybe_expand_graphite_for_phase_footprint_expands_when_required_compres
     assert negotiation["polymer_required_xy_nm"] == pytest.approx([10.0, 10.0])
     assert negotiation["polymer_compression_aware_required_xy_nm"] == pytest.approx([8.2, 8.2])
     assert negotiation["electrolyte_compression_aware_required_xy_nm"] == pytest.approx([7.0, 8.0])
+
+
+def test_prepared_slab_lateral_span_is_capped_by_periodic_box(monkeypatch, tmp_path: Path):
+    import yadonpy.interface.sandwich as sandwich
+
+    class _Prepared:
+        box_nm = (5.0, 6.0, 4.0)
+        top_path = tmp_path / "phase.top"
+        gro_path = tmp_path / "phase.gro"
+        meta_path = tmp_path / "phase.json"
+
+    prepared = _Prepared()
+    prepared.meta_path.write_text(
+        '{"box_nm": [5.0, 6.0, 4.0]}',
+        encoding="utf-8",
+    )
+    block = Chem.RWMol()
+    for _ in range(2):
+        atom = Chem.Atom("C")
+        atom.SetNoImplicit(True)
+        block.AddAtom(atom)
+    mol = block.GetMol()
+    conf = Chem.Conformer(mol.GetNumAtoms())
+    conf.Set3D(True)
+    conf.SetAtomPosition(0, Geom.Point3D(0.0, 0.0, 0.0))
+    conf.SetAtomPosition(1, Geom.Point3D(100.0, 80.0, 0.0))
+    mol.AddConformer(conf, assignId=True)
+    setattr(
+        mol,
+        "cell",
+        SimpleNamespace(xhi=50.0, xlo=0.0, yhi=60.0, ylo=0.0, zhi=40.0, zlo=0.0),
+    )
+    monkeypatch.setattr(sandwich, "_load_block_from_top_gro", lambda **kwargs: mol)
+    monkeypatch.setattr(sandwich, "_molecule_atom_blocks", lambda **kwargs: [(0, 2)])
+    monkeypatch.setattr(sandwich, "_molecule_block_specs", lambda **kwargs: [(0, 2, _dummy_mol("frag"))])
+    monkeypatch.setattr(sandwich, "_restore_bonded_periodic_fragment_coordinates", lambda coords, **kwargs: (coords, False))
+    monkeypatch.setattr(sandwich, "_wrap_fragment_centers_into_box", lambda coords, **kwargs: (coords, False))
+    monkeypatch.setattr(sandwich, "_minimize_fragment_periodic_axis_span", lambda coords, **kwargs: (coords, False))
+
+    span_x, span_y = _prepared_slab_lateral_span_nm(
+        prepared_slab=prepared,
+        species=(_dummy_mol("frag"),),
+        counts=(1,),
+    )
+
+    assert span_x == pytest.approx(5.0)
+    assert span_y == pytest.approx(6.0)
 
 
 def test_build_polymer_chain_forwards_polyelectrolyte_mode_to_db_lookup(monkeypatch):

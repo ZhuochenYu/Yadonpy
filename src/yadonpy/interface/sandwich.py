@@ -1077,7 +1077,13 @@ def _prepared_slab_lateral_span_nm(
     mins = np.min(coords, axis=0)
     maxs = np.max(coords, axis=0)
     spans = maxs - mins
-    return float(spans[0]) / 10.0, float(spans[1]) / 10.0
+    span_x_nm = float(spans[0]) / 10.0
+    span_y_nm = float(spans[1]) / 10.0
+    # Prepared slabs are periodic XY blocks. If a read-back span still exceeds the slab box,
+    # treat the excess as a coordinate imaging artifact rather than expanding graphite around it.
+    span_x_nm = min(span_x_nm, float(fallback[0]))
+    span_y_nm = min(span_y_nm, float(fallback[1]))
+    return span_x_nm, span_y_nm
 
 
 def _required_xy_with_lateral_compression_floor(
