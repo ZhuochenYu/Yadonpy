@@ -307,8 +307,7 @@ if __name__ == "__main__":
     analy = npt.analyze()
     _ = analy.get_all_prop(temp=temp, press=press, save=True)
 
-    transport = analy.transport(center_mol=center_molecule, temp_k=temp)
-    rdf = transport.get("rdf")
-    msd = transport.get("msd")
-    sigma = transport.get("sigma")
+    rdf = analy.rdf(center_mol=center_molecule)
+    msd = analy.msd()
+    sigma = analy.sigma(temp_k=temp, msd=msd)
     density_distributionr = analy.den_dis()

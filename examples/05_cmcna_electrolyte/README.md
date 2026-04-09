@@ -10,7 +10,7 @@ Targets (as coded):
 - Counter-ion: Na+ to neutralize polymer formal charge
 - Charge scaling: polymer and all ions scaled by 0.8
 - RDF center: Li+
-- Transport analysis: `analy.transport(...)` with Li-centered RDF plus conductivity summary
+- Analysis style: independent `rdf()`, `msd()`, and `sigma()` calls
 
 ## Run
 

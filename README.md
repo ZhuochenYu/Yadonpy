@@ -128,7 +128,9 @@ For post-processing, the recommended pattern is now:
 
 ```python
 analy = production.analyze()
-transport = analy.transport(center_mol=li_mol, temp_k=300.0)
+rdf = analy.rdf(center_mol=li_mol)
+msd = analy.msd()
+sigma = analy.sigma(msd=msd, temp_k=300.0)
 ```
 
 This keeps the defaults physically aligned:
@@ -199,10 +201,11 @@ automatically instead of manually wiring `workflow.steps` calls.
 
 ## Transport Analysis Notes
 
-YadonPy now treats transport analysis as a physically opinionated workflow rather
-than a loose collection of plots.
+YadonPy now treats transport analysis as a physically opinionated set of
+independent analyses rather than a loose collection of plots.
 
-- `Analyzer.transport(...)` is the recommended entry point for `RDF + MSD + conductivity`.
+- `RDF` remains an independent analysis because it is the only one that needs a
+  center species.
 - `MSD` defaults are geometry-aware:
   - bulk: drift-corrected `3D`
   - sandwich/slab: drift-corrected `xy`

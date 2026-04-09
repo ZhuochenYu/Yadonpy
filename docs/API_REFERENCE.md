@@ -111,25 +111,16 @@ Analysis is normally driven from an `AnalyzeResult` returned by a workflow stage
 
 ```python
 analy = production.analyze()
-transport = analy.transport(center_mol=li_mol, temp_k=300.0)
+rdf = analy.rdf(center_mol=li_mol)
+msd = analy.msd()
+sigma = analy.sigma(msd=msd, temp_k=300.0)
 ```
 
 Recommended public methods:
 
 ```python
-AnalyzeResult.transport(
-    *,
-    center_mol=None,
-    rdf_targets=None,
-    temp_k: float | None = None,
-    geometry: str = "auto",
-    unwrap: str = "auto",
-    drift: str = "auto",
-    rdf_region: str = "auto",
-)
-
 AnalyzeResult.rdf(
-    mol_or_mols,
+    mol_or_mols=None,
     *,
     center_mol=None,
     region: str = "auto",
@@ -157,7 +148,8 @@ AnalyzeResult.sigma(
 
 Transport semantics:
 
-- `transport(...)` is the recommended bundled entry point for `RDF + MSD + conductivity`.
+- `RDF` remains an independent analysis because it is the only routine method
+  that requires a center species.
 - bulk systems default to drift-corrected `3D` diffusion.
 - slab and sandwich systems default to drift-corrected `xy` diffusion.
 - `sigma_ne_upper_bound_S_m` is reported explicitly as an upper bound.

@@ -158,12 +158,13 @@ This keeps later scaling and analysis tied to explicit charged-group metadata.
 
 ## 5A. Analyze Transport Carefully
 
-For routine post-processing, prefer the bundled transport entry point instead of
-calling `rdf()`, `msd()`, and `sigma()` separately:
+For routine post-processing, keep `rdf()`, `msd()`, and `sigma()` separate:
 
 ```python
 analy = production.analyze()
-transport = analy.transport(center_mol=li_mol, temp_k=300.0)
+rdf = analy.rdf(center_mol=li_mol)
+msd = analy.msd()
+sigma = analy.sigma(msd=msd, temp_k=300.0)
 ```
 
 This keeps the defaults physically aligned:
@@ -179,6 +180,8 @@ Practical interpretation:
 
 - A large `sigma_ne_upper_bound_S_m` with a much smaller `sigma_eh_total_S_m`
   usually means ion correlations are strong.
+- `RDF` stays independent because it is the only routine analysis that needs a
+  center species and coordination-shell semantics.
 - In interface systems, do not interpret the default diffusion coefficient as a
   free `3D` value unless you explicitly request `geometry="3d"`.
 - Charged-polymer results are kept as

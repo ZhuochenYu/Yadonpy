@@ -9,6 +9,7 @@ import yadonpy.api as api
 import yadonpy.moldb as moldb
 from yadonpy.core.polyelectrolyte import annotate_polyelectrolyte_metadata
 import yadonpy
+from yadonpy.sim.analyzer import AnalyzeResult
 
 
 class _DummyDB:
@@ -99,6 +100,10 @@ def test_top_level_api_exports_mechanics_helpers():
     assert hasattr(yadonpy, 'run_tg_scan_gmx')
     assert hasattr(yadonpy, 'run_elongation_gmx')
     assert 'doctor' in yadonpy.__all__
+
+
+def test_analyzer_does_not_expose_transport_bundle_api():
+    assert not hasattr(AnalyzeResult, 'transport')
 
 
 def test_parameterize_smiles_raises_when_charge_assignment_fails_by_default(monkeypatch, tmp_path):

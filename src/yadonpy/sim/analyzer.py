@@ -1255,7 +1255,7 @@ class AnalyzeResult:
 
     def rdf(
         self,
-        mol_or_mols: object,
+        mol_or_mols: object | None = None,
         *,
         center_mol: Optional[object] = None,
         include_h: bool = False,
@@ -1267,6 +1267,8 @@ class AnalyzeResult:
         region: str = "auto",
     ) -> Dict[str, Any]:
         """Compute RDF/CN with site-level analysis by default."""
+        if mol_or_mols is None and center_mol is None:
+            raise ValueError("rdf() requires at least one species target or center_mol.")
         region_mode = self._transport_rdf_region(region)
         t_all = self._section_begin("RDF/CN analysis", detail=f"granularity={granularity} | bin={float(bin_nm):.4f} nm | region={region_mode}")
         topo = parse_system_top(self.top)
@@ -1912,55 +1914,6 @@ class AnalyzeResult:
             detail += f" | Haven={float(haven_ratio):.3f}"
         self._section_done("Conductivity analysis", t_all, detail=detail)
         return out
-
-    def transport(
-        self,
-        *,
-        center_mol: Optional[object] = None,
-        rdf_targets: Optional[object] = None,
-        temp_k: Optional[float] = None,
-        geometry: str = "auto",
-        unwrap: str = "auto",
-        drift: str = "auto",
-        rdf_region: str = "auto",
-    ) -> Dict[str, Any]:
-        """Run a transport-focused post-processing bundle.
-
-        The bundle keeps MSD preprocessing, conductivity semantics, and RDF
-        region defaults aligned so scripts do not need to manually stitch them.
-        """
-        t_all = self._section_begin("Transport analysis", detail="RDF + MSD + conductivity")
-        geometry_mode = self._transport_geometry_mode(geometry)
-        region_mode = self._transport_rdf_region(rdf_region)
-        rdf_out = None
-        if center_mol is not None:
-            rdf_out = self.rdf(
-                rdf_targets if rdf_targets is not None else center_mol,
-                center_mol=center_mol,
-                region=region_mode,
-            )
-        msd_out = self.msd(geometry=geometry_mode, unwrap=unwrap, drift=drift, selection_mode="transport")
-        sigma_out = self.sigma(temp_k=temp_k, msd=msd_out, geometry=geometry_mode, unwrap=unwrap, drift=drift)
-        payload = {
-            "preprocessing": {
-                "geometry_mode": geometry_mode,
-                "rdf_region": region_mode,
-                "unwrap": str(unwrap).strip().lower() or "auto",
-                "drift": str(drift).strip().lower() or "auto",
-            },
-            "rdf": rdf_out,
-            "msd": msd_out,
-            "sigma": sigma_out,
-            "warnings": [],
-        }
-        if sigma_out.get("NE_is_upper_bound"):
-            payload["warnings"].append("Nernst-Einstein conductivity is reported as an upper bound.")
-        if sigma_out.get("collective_conductivity_unavailable"):
-            payload["warnings"].append("Einstein-Helfand conductivity was unavailable or unstable.")
-        self._update_summary_sections(transport=payload)
-        (self._analysis_dir() / "transport.json").write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-        self._section_done("Transport analysis", t_all, detail=f"geometry={geometry_mode} | rdf_region={region_mode}")
-        return payload
 
     def density_distribution(
         self,

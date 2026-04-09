@@ -168,6 +168,28 @@ def test_examples_do_not_wrap_pf6_moldb_loading_in_helpers():
     assert offenders == []
 
 
+def test_docs_and_examples_do_not_recommend_transport_bundle_api():
+    root = Path(__file__).resolve().parents[1]
+    offenders: list[str] = []
+    for rel in (
+        'README.md',
+        'docs/API_REFERENCE.md',
+        'docs/USER_GUIDE.md',
+        'examples/02_polymer_electrolyte/README.md',
+        'examples/02_polymer_electrolyte/run_full_workflow.py',
+        'examples/05_cmcna_electrolyte/README.md',
+        'examples/05_cmcna_electrolyte/run_cmcna_random_copolymer.py',
+        'examples/06_polymer_electrolyte_nvt/README.md',
+        'examples/06_polymer_electrolyte_nvt/run_full_workflow.py',
+        'examples/07_moldb_precompute_and_reuse/04_polymer_electrolyte_from_moldb.py',
+    ):
+        text = (root / rel).read_text(encoding='utf-8')
+        if 'transport = analy.transport(' in text or 'AnalyzeResult.transport(' in text or 'analy.transport(' in text:
+            offenders.append(rel)
+
+    assert offenders == []
+
+
 def test_interface_examples_keep_linear_script_style():
     root = Path(__file__).resolve().parents[1]
     helper_patterns = (

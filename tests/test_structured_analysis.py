@@ -263,7 +263,7 @@ def test_rdf_strict_center_raises_when_species_is_missing(tmp_path: Path):
         analyzer.rdf(li, strict_center=True)
 
 
-def test_transport_bundle_writes_summary_and_warnings(tmp_path: Path, monkeypatch):
+def test_rdf_accepts_center_only_call_style(tmp_path: Path, monkeypatch):
     work_dir = tmp_path
     analyzer = AnalyzeResult(
         work_dir=work_dir,
@@ -273,29 +273,33 @@ def test_transport_bundle_writes_summary_and_warnings(tmp_path: Path, monkeypatc
         top=work_dir / "system.top",
         ndx=work_dir / "system.ndx",
     )
-
-    monkeypatch.setattr(analyzer, "rdf", lambda *args, **kwargs: {"rdf": "ok"})
+    calls: dict[str, object] = {}
+    monkeypatch.setattr(analyzer, "_transport_rdf_region", lambda region="auto": "global")
+    monkeypatch.setattr(analyzer, "_strict_center_moltypes", lambda center_input, strict_center=True: ["Li"])
+    monkeypatch.setattr(analyzer, "_resolve_species_moltypes", lambda mols: ["Li"])
     monkeypatch.setattr(
-        analyzer,
-        "msd",
-        lambda *args, **kwargs: {"_transport": {"geometry_mode": "xy"}, "Li": {"D_m2_s": 1.0e-10}},
+        __import__("yadonpy.sim.analyzer", fromlist=["parse_system_top"]),
+        "parse_system_top",
+        lambda top: object(),
+    )
+    monkeypatch.setattr(analyzer, "_system_dir", lambda: work_dir / "02_system")
+    (work_dir / "02_system").mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(
+        __import__("yadonpy.sim.analyzer", fromlist=["build_species_catalog"]),
+        "build_species_catalog",
+        lambda topo, system_dir: {"Li": {"instances": [{"atom_indices_0": [0]}]}},
     )
     monkeypatch.setattr(
-        analyzer,
-        "sigma",
-        lambda *args, **kwargs: {
-            "sigma_ne_upper_bound_S_m": 1.0,
-            "sigma_eh_total_S_m": None,
-            "collective_conductivity_unavailable": True,
-            "NE_is_upper_bound": True,
-        },
+        __import__("yadonpy.sim.analyzer", fromlist=["build_site_map"]),
+        "build_site_map",
+        lambda topo, system_dir, include_h=False, selected_moltypes=None: {"site_groups": []},
+    )
+    monkeypatch.setattr(
+        AnalyzeResult,
+        "_update_summary_sections",
+        lambda self, **kwargs: calls.setdefault("summary", kwargs),
     )
 
-    out = analyzer.transport(center_mol=Chem.MolFromSmiles("[Li+]"), temp_k=300.0, geometry="xy")
-
-    assert out["preprocessing"]["geometry_mode"] == "xy"
-    assert out["rdf"] == {"rdf": "ok"}
-    assert out["sigma"]["NE_is_upper_bound"] is True
-    assert any("upper bound" in item for item in out["warnings"])
-    assert any("unavailable" in item for item in out["warnings"])
-    assert (work_dir / "06_analysis" / "transport.json").exists()
+    out = analyzer.rdf(center_mol=Chem.MolFromSmiles("[Li+]"))
+    assert isinstance(out, dict)
+    assert "_overlay" in out
