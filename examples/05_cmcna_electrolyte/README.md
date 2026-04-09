@@ -10,6 +10,7 @@ Targets (as coded):
 - Counter-ion: Na+ to neutralize polymer formal charge
 - Charge scaling: polymer and all ions scaled by 0.8
 - RDF center: Li+
+- Transport analysis: `analy.transport(...)` with Li-centered RDF plus conductivity summary
 
 ## Run
 
@@ -21,3 +22,4 @@ python run_cmcna_random_copolymer.py
 ## Notes
 - This system can be computationally heavy (often thousands of solvent molecules).
 - PF6- is expected to be precomputed in MolDB and is then reused through `ff.mol(...)` plus `ff.ff_assign(..., bonded="DRIH")`. Run Example 01 first if your MolDB does not yet contain the PF6 RESP + DRIH record.
+- `sigma_ne_upper_bound_S_m` is expected to overestimate the real conductivity in this concentrated charged-polymer system. Prefer `sigma_eh_total_S_m` and `haven_ratio` when available.

@@ -3,7 +3,7 @@
 ## Overview
 This example mirrors Example 02, but runs **NVT production** after equilibration.
 
-YadonPy will fix the NVT box size to an **equilibrium-average density target** (plateau window preferred; fallback: last 30% average), then run NVT production and analysis.
+YadonPy will fix the NVT box size to an **equilibrium-average density target** (plateau window preferred; fallback: last 30% average), then run NVT production and transport-aware analysis.
 
 ## Run
 
@@ -18,6 +18,8 @@ Same `work_dir/` layout as Example 02.
 ## Notes
 - PF6 is expected to be precomputed in MolDB for this example. Reuse it through `ff.mol(...)` plus `ff.ff_assign(..., bonded="DRIH")`, and run Example 01 first if your MolDB does not yet contain the PF6 RESP + DRIH record.
 - If you are comparing NPT vs NVT properties, ensure the production length and trajectory output frequency are comparable.
+- The script now uses `analy.transport(...)` so MSD defaults and conductivity semantics stay aligned.
+- `sigma_ne_upper_bound_S_m` is only an upper bound; prefer `sigma_eh_total_S_m` and `haven_ratio` when EH succeeds.
 - For conductivity (E-H), make sure your run writes velocities in a trajectory format that supports them (e.g., `.trr`).
 
 

@@ -28,6 +28,20 @@ def test_select_diffusive_window_accepts_linear_diffusion():
     assert fit["fit_slope_nm2_ps"] > 0.0
 
 
+def test_select_diffusive_window_respects_geometry_divisor():
+    t_ps = np.linspace(0.0, 1000.0, 201)
+    msd_nm2 = 0.0 + 0.012 * t_ps
+    fit_3d = select_diffusive_window(t_ps, msd_nm2, geometry="3d")
+    fit_xy = select_diffusive_window(t_ps, msd_nm2, geometry="xy")
+    fit_z = select_diffusive_window(t_ps, msd_nm2, geometry="z")
+
+    assert fit_3d["geometry"] == "3d"
+    assert fit_xy["geometry"] == "xy"
+    assert fit_z["geometry"] == "z"
+    assert fit_xy["D_m2_s"] > fit_3d["D_m2_s"]
+    assert fit_z["D_m2_s"] > fit_xy["D_m2_s"]
+
+
 def test_select_diffusive_window_rejects_plateau():
     t_ps = np.linspace(0.0, 1000.0, 201)
     msd_nm2 = 1.0 - np.exp(-t_ps / 50.0)
@@ -83,9 +97,14 @@ def test_build_ne_conductivity_from_msd_prefers_polymer_charged_groups():
     kinds = {c["component_kind"] for c in out["components"]}
     assert "polymer_charged_group" in kinds
     assert "species_default" in kinds
+    assert out["NE_is_upper_bound"] is True
+    assert out["sigma_ne_upper_bound_S_m"] == pytest.approx(out["sigma_S_m"])
+    assert out["polymer_charged_group_self_ne_contribution_S_m"] > 0.0
     assert not any(c.get("moltype") == "CMC" and c.get("component_kind") == "species_default" for c in out["components"])
     assert all(c["charge_e"] in {-1.0, 1.0} for c in out["components"])
     assert {c.get("charge_sign") for c in out["components"] if c.get("component_kind") == "polymer_charged_group"} == {"anion"}
+    assert all(c.get("interpretation") == "self_upper_bound" for c in out["components"])
+    assert all(c.get("component_semantics") for c in out["components"])
 
 
 def test_build_ne_conductivity_from_msd_rejects_charged_polymer_without_group_metric():
@@ -242,3 +261,41 @@ def test_rdf_strict_center_raises_when_species_is_missing(tmp_path: Path):
     li = Chem.MolFromSmiles("[Li+]")
     with pytest.raises(ValueError):
         analyzer.rdf(li, strict_center=True)
+
+
+def test_transport_bundle_writes_summary_and_warnings(tmp_path: Path, monkeypatch):
+    work_dir = tmp_path
+    analyzer = AnalyzeResult(
+        work_dir=work_dir,
+        tpr=work_dir / "md.tpr",
+        xtc=work_dir / "md.xtc",
+        edr=work_dir / "md.edr",
+        top=work_dir / "system.top",
+        ndx=work_dir / "system.ndx",
+    )
+
+    monkeypatch.setattr(analyzer, "rdf", lambda *args, **kwargs: {"rdf": "ok"})
+    monkeypatch.setattr(
+        analyzer,
+        "msd",
+        lambda *args, **kwargs: {"_transport": {"geometry_mode": "xy"}, "Li": {"D_m2_s": 1.0e-10}},
+    )
+    monkeypatch.setattr(
+        analyzer,
+        "sigma",
+        lambda *args, **kwargs: {
+            "sigma_ne_upper_bound_S_m": 1.0,
+            "sigma_eh_total_S_m": None,
+            "collective_conductivity_unavailable": True,
+            "NE_is_upper_bound": True,
+        },
+    )
+
+    out = analyzer.transport(center_mol=Chem.MolFromSmiles("[Li+]"), temp_k=300.0, geometry="xy")
+
+    assert out["preprocessing"]["geometry_mode"] == "xy"
+    assert out["rdf"] == {"rdf": "ok"}
+    assert out["sigma"]["NE_is_upper_bound"] is True
+    assert any("upper bound" in item for item in out["warnings"])
+    assert any("unavailable" in item for item in out["warnings"])
+    assert (work_dir / "06_analysis" / "transport.json").exists()

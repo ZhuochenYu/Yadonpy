@@ -281,6 +281,8 @@ def write_eh_dsp_from_unwrapped_positions(
     temp_k: float,
     vol_m3: float,
     charge_threshold_e: float = 0.1,
+    origin_stride_ps: float = 50.0,
+    max_origins: int = 64,
 ) -> Path:
     r"""Write an EH-like `-dsp` curve from unwrapped positions (no velocities required).
 
@@ -302,10 +304,11 @@ def write_eh_dsp_from_unwrapped_positions(
 
     Notes
     -----
-    - This implementation uses a single time origin (t0), which is usually
-      sufficient for long trajectories (ns scale) and makes the fallback robust.
-    - Positions must be unwrapped (nojump). Callers should ensure the input
-      trajectory has no PBC jumps.
+    - This implementation now uses multiple time origins by default, which is
+      substantially less noisy than a single-origin Helfand moment.
+    - The input trajectory does not need to be pre-unwrapped; a best-effort
+      nojump reconstruction is applied frame-to-frame with the unit-cell
+      lengths recorded in the trajectory.
     """
     out_dsp_xvg = Path(out_dsp_xvg)
     out_dsp_xvg.parent.mkdir(parents=True, exist_ok=True)
@@ -334,8 +337,8 @@ def write_eh_dsp_from_unwrapped_positions(
         raise ImportError("mdtraj is required for EH fallback from positions") from e
 
     try:
-        fr0 = md.load_frame(str(xtc), 0, top=str(tpr))
-        n_atoms = int(fr0.n_atoms)
+        trj = md.load(str(xtc), top=str(tpr))
+        n_atoms = int(trj.n_atoms)
     except Exception as e:
         raise RuntimeError(f"Failed to read trajectory for EH fallback: {xtc}") from e
 
@@ -352,31 +355,59 @@ def write_eh_dsp_from_unwrapped_positions(
 
     qC_ion = qC[ion_idx]
 
-    times_ps: list[float] = []
-    series: list[float] = []
-
-    # First frame reference moment.
-    r0_nm = fr0.xyz[0]  # (n_atoms,3) in nm
-    M0 = np.tensordot(r0_nm[ion_idx], qC_ion, axes=([0], [0])) * 1e-9  # (3,) C*m
-
-    # Stream trajectory to keep memory bounded.
-    for chunk in md.iterload(str(xtc), top=str(tpr), chunk=200):
-        r_nm = chunk.xyz  # (n_frames, n_atoms, 3)
-        # Charge-weighted moment for each frame: sum_i q_i r_i
-        M = np.tensordot(r_nm[:, ion_idx, :], qC_ion, axes=([1], [0])) * 1e-9  # (n_frames,3)
-        dM = M - M0[None, :]
-        msd_M = np.sum(dM * dM, axis=1)  # (n_frames,)
-        y = msd_M / (6.0 * float(vol_m3) * k_b * float(temp_k))
-        times_ps.extend([float(t) for t in chunk.time])
-        series.extend([float(v) for v in y])
-
-    if len(times_ps) < 10:
+    times_ps = np.asarray(trj.time, dtype=float)
+    if times_ps.size < 10:
         raise ValueError("Too few frames for EH fallback.")
+
+    r_nm = np.asarray(trj.xyz[:, ion_idx, :], dtype=float)
+    box_nm = np.asarray(getattr(trj, "unitcell_lengths", None), dtype=float)
+    if box_nm.ndim != 2 or box_nm.shape[0] != r_nm.shape[0] or box_nm.shape[1] < 3:
+        raise ValueError("Trajectory unit-cell lengths are required for EH fallback unwrapping.")
+
+    # Best-effort nojump reconstruction along all Cartesian axes.
+    r_unwrapped = np.array(r_nm, copy=True)
+    if r_unwrapped.shape[0] >= 2:
+        delta = r_nm[1:] - r_nm[:-1]
+        box_mid = 0.5 * (box_nm[1:, :3] + box_nm[:-1, :3])
+        delta -= box_mid[:, None, :] * np.round(delta / np.maximum(box_mid[:, None, :], 1.0e-12))
+        r_unwrapped[1:] = r_unwrapped[0] + np.cumsum(delta, axis=0)
+
+    # Charge-weighted Helfand moment per frame: M(t) = sum_i q_i r_i(t)
+    M = np.tensordot(r_unwrapped, qC_ion, axes=([1], [0])) * 1e-9  # (n_frames, 3), C*m
+
+    if times_ps.size >= 2:
+        dt_ps = float(np.median(np.diff(times_ps)))
+    else:
+        dt_ps = 1.0
+    stride = max(1, int(round(float(origin_stride_ps) / max(dt_ps, 1.0e-12))))
+    origin_idx = np.arange(0, int(times_ps.size), stride, dtype=int)
+    if origin_idx.size > int(max_origins):
+        pick = np.linspace(0, origin_idx.size - 1, int(max_origins), dtype=int)
+        origin_idx = origin_idx[pick]
+    origin_idx = origin_idx[origin_idx < int(times_ps.size) - 2]
+    if origin_idx.size == 0:
+        origin_idx = np.asarray([0], dtype=int)
+
+    msd_M = np.zeros(int(times_ps.size), dtype=float)
+    counts = np.zeros(int(times_ps.size), dtype=int)
+    for idx0 in origin_idx:
+        dM = M[idx0:, :] - M[idx0][None, :]
+        series = np.sum(dM * dM, axis=1)
+        n = int(series.size)
+        msd_M[:n] += series
+        counts[:n] += 1
+    valid = counts > 0
+    if not np.any(valid):
+        raise ValueError("No valid Helfand time origins for EH fallback.")
+    msd_M[valid] /= counts[valid].astype(float)
+    y = msd_M / (6.0 * float(vol_m3) * k_b * float(temp_k))
 
     # Write xvg (no metadata; consistent with xvg none used elsewhere).
     with out_dsp_xvg.open("w", encoding="utf-8") as f:
-        for t, v in zip(times_ps, series):
-            f.write(f"{t:.6f} {v:.12e}\n")
+        for t, v, n in zip(times_ps, y, counts):
+            if int(n) <= 0:
+                continue
+            f.write(f"{float(t):.6f} {float(v):.12e}\n")
     return out_dsp_xvg
 
 

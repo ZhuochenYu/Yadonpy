@@ -167,9 +167,9 @@ if __name__ == "__main__":
     _ = analy.get_all_prop(temp=temp, press=press, save=True)
 
     center_molecule = cation_A
-    _ = analy.rdf(center_molecule)
-    msd = analy.msd()
-    sigma = analy.sigma(msd=msd)
+    transport = analy.transport(center_mol=center_molecule, temp_k=temp)
+    msd = transport.get("msd")
+    sigma = transport.get("sigma")
 
     print("msd:", msd)
     print("sigma:", sigma)

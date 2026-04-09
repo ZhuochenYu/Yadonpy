@@ -156,6 +156,35 @@ qm.assign_charges(
 
 This keeps later scaling and analysis tied to explicit charged-group metadata.
 
+## 5A. Analyze Transport Carefully
+
+For routine post-processing, prefer the bundled transport entry point instead of
+calling `rdf()`, `msd()`, and `sigma()` separately:
+
+```python
+analy = production.analyze()
+transport = analy.transport(center_mol=li_mol, temp_k=300.0)
+```
+
+This keeps the defaults physically aligned:
+
+- bulk systems use drift-corrected `3D` diffusion by default;
+- sandwich and slab systems use drift-corrected `xy` diffusion by default;
+- wrapped trajectories are normalized before transport analysis;
+- `sigma_ne_upper_bound_S_m` is treated explicitly as an upper bound;
+- `sigma_eh_total_S_m` is preferred when a stable EH fit exists;
+- `haven_ratio` is reported whenever both conductivities are available.
+
+Practical interpretation:
+
+- A large `sigma_ne_upper_bound_S_m` with a much smaller `sigma_eh_total_S_m`
+  usually means ion correlations are strong.
+- In interface systems, do not interpret the default diffusion coefficient as a
+  free `3D` value unless you explicitly request `geometry="3d"`.
+- Charged-polymer results are kept as
+  `polymer_charged_group_self_ne_contribution_S_m`; they are not equivalent to
+  a rigorously separated polymer ionic conductivity.
+
 ## 6. Build Graphite-Polymer-Electrolyte Sandwich Systems
 
 YadonPy now exposes a high-level sandwich builder that packages the recommended logic:

@@ -243,8 +243,9 @@ if __name__ == '__main__':
     analy = npt.analyze()
     prop_data = analy.get_all_prop(temp=temp, press=press, save=True)
 
-    rdf = analy.rdf(center_molecule)
-    msd = analy.msd()
-    sigma = analy.sigma(msd=msd)
+    transport = analy.transport(center_mol=center_molecule, temp_k=temp)
+    rdf = transport.get("rdf")
+    msd = transport.get("msd")
+    sigma = transport.get("sigma")
     # Number density distribution (all moltypes by default)
     density_distributionr = analy.den_dis()

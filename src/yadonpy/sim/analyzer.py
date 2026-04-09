@@ -26,7 +26,7 @@ from ..gmx.analysis.thermo import (
     cv_molar_from_total_energy,
 )
 from ..core import utils
-from ..gmx.analysis.conductivity import conductivity_from_current_dsp, EHFit, plot_eh_fit_svg
+from ..gmx.analysis.conductivity import conductivity_from_current_dsp, EHFit, plot_eh_fit_svg, write_eh_dsp_from_unwrapped_positions
 from ..gmx.analysis.auto_plot import (
     plot_msd,
     plot_msd_overlay,
@@ -807,6 +807,39 @@ class AnalyzeResult:
             pass
         return xtc_path
 
+    def _is_interface_like_system(self) -> bool:
+        markers = [
+            self.work_dir / "05_sandwich" / "sandwich_manifest.json",
+            self.work_dir / "05_sandwich" / "sandwich_progress.json",
+            self.work_dir / "sandwich_manifest.json",
+            self.work_dir / "sandwich_progress.json",
+        ]
+        if any(p.exists() for p in markers):
+            return True
+        try:
+            meta = json.loads((self._system_dir() / "system_meta.json").read_text(encoding="utf-8"))
+            labels = " ".join(
+                str(sp.get("moltype") or sp.get("mol_name") or sp.get("mol_id") or "")
+                for sp in meta.get("species", []) or []
+            ).lower()
+            if any(tok in labels for tok in ("graphite", "graphene", "substrate")):
+                return True
+        except Exception:
+            pass
+        return False
+
+    def _transport_geometry_mode(self, geometry: str = "auto") -> str:
+        token = str(geometry or "auto").strip().lower()
+        if token in {"3d", "xy", "z"}:
+            return token
+        return "xy" if self._is_interface_like_system() else "3d"
+
+    def _transport_rdf_region(self, region: str = "auto") -> str:
+        token = str(region or "auto").strip().lower()
+        if token in {"global", "bulk_core", "interface_shell"}:
+            return token
+        return "bulk_core" if self._is_interface_like_system() else "global"
+
     def _resolve_species_moltypes(self, mol_or_mols: object) -> list[str]:
         return resolve_moltypes_from_mols(self._system_dir(), mol_or_mols)
 
@@ -1231,9 +1264,11 @@ class AnalyzeResult:
         exhaustive_atomtypes: bool = False,
         strict_center: bool = True,
         shell_policy: str = "confidence",
+        region: str = "auto",
     ) -> Dict[str, Any]:
         """Compute RDF/CN with site-level analysis by default."""
-        t_all = self._section_begin("RDF/CN analysis", detail=f"granularity={granularity} | bin={float(bin_nm):.4f} nm")
+        region_mode = self._transport_rdf_region(region)
+        t_all = self._section_begin("RDF/CN analysis", detail=f"granularity={granularity} | bin={float(bin_nm):.4f} nm | region={region_mode}")
         topo = parse_system_top(self.top)
         system_dir = self._system_dir()
         center_input = center_mol if center_mol is not None else mol_or_mols
@@ -1307,6 +1342,7 @@ class AnalyzeResult:
                 target_indices_0=site.get("atom_indices", []),
                 bin_nm=float(bin_nm),
                 r_max_nm=float(r_max_nm),
+                region=region_mode,
             )
             rdf_csv = self._write_series_csv(
                 out_csv=analysis_dir / f"rdf_{site_id.replace(':', '_')}.csv",
@@ -1341,6 +1377,7 @@ class AnalyzeResult:
                 "moltype": str(site.get("moltype") or ""),
                 "site_label": str(site.get("site_label") or ""),
                 "site_count": int(site.get("count") or 0),
+                "region": region_mode,
                 "rho_target_nm3": float(rdf_data.get("rho_target_nm3") or 0.0),
                 "rdf_csv": str(rdf_csv),
                 "cn_csv": str(cn_csv),
@@ -1381,13 +1418,35 @@ class AnalyzeResult:
         end_ps: Optional[float] = None,
         policy: str = "adaptive",
         include_legacy_atom_msd: bool = False,
+        geometry: str = "auto",
+        unwrap: str = "auto",
+        drift: str = "auto",
+        selection_mode: str = "default",
     ) -> Dict[str, Any]:
         """Compute adaptive MSD metrics with physically explicit semantics."""
         if str(policy).strip().lower() == "legacy":
             self._analysis_log("MSD policy=legacy requested; falling back to per-moltype atom-group MSD.", level=2)
-            return self.msd(mols=mols, begin_ps=begin_ps, end_ps=end_ps, policy="adaptive", include_legacy_atom_msd=True)
+            return self.msd(
+                mols=mols,
+                begin_ps=begin_ps,
+                end_ps=end_ps,
+                policy="adaptive",
+                include_legacy_atom_msd=True,
+                geometry=geometry,
+                unwrap=unwrap,
+                drift=drift,
+                selection_mode=selection_mode,
+            )
 
-        t_all = self._section_begin("MSD analysis", detail="adaptive ion/molecule/polymer MSD metrics")
+        geometry_mode = self._transport_geometry_mode(geometry)
+        t_all = self._section_begin(
+            "MSD analysis",
+            detail=(
+                "adaptive ion/molecule/polymer MSD metrics"
+                f" | geometry={geometry_mode} | unwrap={str(unwrap).strip().lower() or 'auto'}"
+                f" | drift={str(drift).strip().lower() or 'auto'} | selection_mode={selection_mode}"
+            ),
+        )
         topo = parse_system_top(self.top)
         outdir = self._analysis_dir() / "msd"
         outdir.mkdir(parents=True, exist_ok=True)
@@ -1478,11 +1537,16 @@ class AnalyzeResult:
                 if not group_specs:
                     continue
                 try:
-                    metric_data = compute_msd_series(
-                        gro_path=self._system_dir() / "system.gro",
-                        xtc_path=xtc_for_msd,
-                        group_specs=group_specs,
-                    )
+                        metric_data = compute_msd_series(
+                            gro_path=self._system_dir() / "system.gro",
+                            xtc_path=xtc_for_msd,
+                            top_path=self.top,
+                            system_dir=self._system_dir(),
+                            group_specs=group_specs,
+                            geometry_mode=geometry_mode,
+                            unwrap=unwrap,
+                            drift=drift,
+                        )
                 except Exception as e:
                     species_rec["metrics"][metric_name] = {"error": str(e), "group_kind": metric_entry.get("group_kind")}
                     continue
@@ -1507,6 +1571,7 @@ class AnalyzeResult:
                 )
                 metric_rec: Dict[str, Any] = {
                     "group_kind": str(metric_entry.get("group_kind") or metric_name),
+                    "geometry": str(metric_data.get("geometry") or geometry_mode),
                     "n_groups": int(metric_data.get("n_groups") or 0),
                     "frame_interval_ps": metric_data.get("frame_interval_ps"),
                     "series_csv": str(csv_path),
@@ -1522,6 +1587,7 @@ class AnalyzeResult:
                     "warning": fit.get("warning"),
                     "D_nm2_ps": fit.get("D_nm2_ps"),
                     "D_m2_s": fit.get("D_m2_s"),
+                    "preprocessing": dict(metric_data.get("preprocessing") or {}),
                 }
                 if plots:
                     metric_rec["plots"] = plots
@@ -1570,7 +1636,8 @@ class AnalyzeResult:
             d_val = species_rec.get("D_m2_s")
             detail = f"default={species_rec.get('default_metric')}"
             if d_val is not None:
-                detail += f" | D={float(d_val):.3e} m^2/s"
+                label = "D_parallel" if geometry_mode == "xy" else "D"
+                detail += f" | {label}={float(d_val):.3e} m^2/s"
             self._step_done(title, t0, detail=detail)
 
         try:
@@ -1586,6 +1653,15 @@ class AnalyzeResult:
         except Exception as e:
             self._step_warn("MSD overlay plots", detail=str(e))
 
+        res.setdefault("_transport", {})
+        res["_transport"].update(
+            {
+                "geometry_mode": geometry_mode,
+                "unwrap": str(unwrap).strip().lower() or "auto",
+                "drift": str(drift).strip().lower() or "auto",
+                "selection_mode": str(selection_mode or "default"),
+            }
+        )
         self._update_summary_sections(msd=res)
         (self._analysis_dir() / "msd.json").write_text(json.dumps(res, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
         self._item("msd_outputs", self._compact_path(outdir))
@@ -1651,12 +1727,20 @@ class AnalyzeResult:
         self._section_done("Rg analysis", t_all, detail=f"outputs={self._compact_path(outdir)}")
         return rec
 
-    def sigma(self, *, temp_k: Optional[float] = None, msd: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    def sigma(
+        self,
+        *,
+        temp_k: Optional[float] = None,
+        msd: Optional[Dict[str, Any]] = None,
+        geometry: str = "auto",
+        unwrap: str = "auto",
+        drift: str = "auto",
+    ) -> Dict[str, Any]:
         """Compute ionic conductivity."""
         t_all = self._section_begin("Conductivity analysis", detail="NE + EH conductivity")
         if msd is None:
             self._item("msd_source", "not provided -> recompute")
-            msd = self.msd()
+            msd = self.msd(geometry=geometry, unwrap=unwrap, drift=drift, selection_mode="transport")
         else:
             self._item("msd_source", "caller-provided MSD results")
 
@@ -1685,12 +1769,22 @@ class AnalyzeResult:
         if vol_nm3 is None:
             vol_nm3 = _read_box_volume_nm3(self._system_dir() / "system.gro")
         ne_out = build_ne_conductivity_from_msd(msd_payload=msd if isinstance(msd, dict) else {}, volume_nm3=float(vol_nm3), temp_k=float(temp_k))
-        sigma_ne = float(ne_out.get("sigma_S_m") or 0.0)
-        self._step_done("Step 1/2 Nernst-Einstein conductivity", t0, detail=f"sigma_NE={sigma_ne:.3e} S/m | active_components={len(ne_out.get('components', []))}")
-        self._stat("sigma_NE", f"{sigma_ne:.3e} S/m")
+        sigma_ne = float(ne_out.get("sigma_ne_upper_bound_S_m") or ne_out.get("sigma_S_m") or 0.0)
+        self._step_done(
+            "Step 1/2 Nernst-Einstein conductivity",
+            t0,
+            detail=f"sigma_NE_upper={sigma_ne:.3e} S/m | active_components={len(ne_out.get('components', []))}",
+        )
+        self._stat("sigma_NE_upper", f"{sigma_ne:.3e} S/m")
 
         t0 = self._step_begin("Step 2/2 Einstein-Helfand conductivity", detail="gmx current -dsp (velocity trajectory required)")
-        eh_out: Dict[str, Any] = {"sigma_S_m": None, "reason": None}
+        eh_out: Dict[str, Any] = {
+            "sigma_eh_total_S_m": None,
+            "sigma_S_m": None,
+            "reason": None,
+            "method": None,
+            "confidence": "failed",
+        }
         try:
             def _ndx_groups(ndx_path: Path) -> set[str]:
                 out = set()
@@ -1722,23 +1816,39 @@ class AnalyzeResult:
             outdir.mkdir(parents=True, exist_ok=True)
             main_xvg = outdir / f"current_{group}.xvg"
             dsp_xvg = outdir / f"current_dsp_{group}.xvg"
-            if trr is None or (not Path(trr).exists()):
-                raise FileNotFoundError(
-                    "No .trr trajectory found for EH conductivity. "
-                    "EH requires velocities; enable writing TRR (nstxout/nstvout) in mdp or analyze a stage that produces md.trr."
+            fit: EHFit | None = None
+            proc = None
+            if trr is not None and Path(trr).exists():
+                proc = GromacsRunner().current(
+                    tpr=self.tpr,
+                    traj=Path(trr),
+                    ndx=self.ndx,
+                    group=group,
+                    out_xvg=main_xvg,
+                    out_dsp=dsp_xvg,
+                    temp_k=float(temp_k),
+                    cwd=outdir,
                 )
-            proc = GromacsRunner().current(
-                tpr=self.tpr,
-                traj=Path(trr),
-                ndx=self.ndx,
-                group=group,
-                out_xvg=main_xvg,
-                out_dsp=dsp_xvg,
-                temp_k=float(temp_k),
-                cwd=outdir,
-            )
-            fit: EHFit = conductivity_from_current_dsp(dsp_xvg)
+                fit = conductivity_from_current_dsp(dsp_xvg)
+                method = "gmx current -dsp"
+            else:
+                fallback_dsp = outdir / f"current_dsp_fallback_{group}.xvg"
+                write_eh_dsp_from_unwrapped_positions(
+                    xtc=self._analysis_xtc_path(),
+                    tpr=self.tpr,
+                    top=self.top,
+                    gro=self._system_dir() / "system.gro",
+                    out_dsp_xvg=fallback_dsp,
+                    temp_k=float(temp_k),
+                    vol_m3=float(vol_nm3) * 1.0e-27,
+                )
+                dsp_xvg = fallback_dsp
+                fit = conductivity_from_current_dsp(dsp_xvg)
+                method = "helfand_unwrapped_positions"
+            if fit is None or float(fit.sigma_S_m) <= 0.0:
+                raise ValueError("No stable positive-slope EH conductivity regime detected.")
             eh_out = {
+                "sigma_eh_total_S_m": float(fit.sigma_S_m),
                 "sigma_S_m": float(fit.sigma_S_m),
                 "window_start_ps": float(fit.window_start_ps),
                 "window_end_ps": float(fit.window_end_ps),
@@ -1746,8 +1856,10 @@ class AnalyzeResult:
                 "note": str(fit.note),
                 "group": str(group),
                 "reason": None,
-                "method": "gmx current -dsp",
+                "method": method,
+                "confidence": "high" if float(fit.r2) >= 0.98 else "medium",
                 "dsp_xvg": str(dsp_xvg),
+                "collective_conductivity_unavailable": False,
             }
             try:
                 eh_svg = plot_eh_fit_svg(dsp_xvg, fit, out_svg=outdir / f"eh_fit_{group}.svg", title=f"EH ({group})")
@@ -1762,9 +1874,27 @@ class AnalyzeResult:
             self._step_done("Step 2/2 Einstein-Helfand conductivity", t0, detail=f"sigma_EH={float(fit.sigma_S_m):.3e} S/m")
         except Exception as e:
             eh_out["reason"] = str(e)
+            eh_out["collective_conductivity_unavailable"] = True
             self._step_warn("Step 2/2 Einstein-Helfand conductivity", detail=str(e))
 
-        out = {"ne": ne_out, "eh": eh_out}
+        sigma_eh = eh_out.get("sigma_eh_total_S_m")
+        haven_ratio = None
+        try:
+            if sigma_eh is not None and sigma_ne > 0.0:
+                haven_ratio = float(sigma_eh) / float(sigma_ne)
+        except Exception:
+            haven_ratio = None
+
+        out = {
+            "sigma_ne_upper_bound_S_m": float(sigma_ne),
+            "sigma_eh_total_S_m": float(sigma_eh) if sigma_eh is not None else None,
+            "haven_ratio": haven_ratio,
+            "collective_conductivity_unavailable": bool(eh_out.get("collective_conductivity_unavailable", sigma_eh is None)),
+            "NE_is_upper_bound": True,
+            "polymer_charged_group_self_ne_contribution_S_m": ne_out.get("polymer_charged_group_self_ne_contribution_S_m"),
+            "ne": ne_out,
+            "eh": eh_out,
+        }
         summary_path = self._analysis_dir() / "summary.json"
         summary_all: Dict[str, Any] = {}
         if summary_path.exists():
@@ -1775,10 +1905,62 @@ class AnalyzeResult:
         summary_all["sigma"] = out
         summary_path.write_text(json.dumps(self._prune_raw_paths(summary_all), indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
         (self._analysis_dir() / "sigma.json").write_text(json.dumps(out, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-        eh_detail = eh_out.get("sigma_S_m")
+        eh_detail = out.get("sigma_eh_total_S_m")
         eh_str = f"{float(eh_detail):.3e} S/m" if eh_detail is not None else "unavailable"
-        self._section_done("Conductivity analysis", t_all, detail=f"sigma_NE={sigma_ne:.3e} S/m | sigma_EH={eh_str}")
+        detail = f"sigma_NE_upper={sigma_ne:.3e} S/m | sigma_EH={eh_str}"
+        if haven_ratio is not None:
+            detail += f" | Haven={float(haven_ratio):.3f}"
+        self._section_done("Conductivity analysis", t_all, detail=detail)
         return out
+
+    def transport(
+        self,
+        *,
+        center_mol: Optional[object] = None,
+        rdf_targets: Optional[object] = None,
+        temp_k: Optional[float] = None,
+        geometry: str = "auto",
+        unwrap: str = "auto",
+        drift: str = "auto",
+        rdf_region: str = "auto",
+    ) -> Dict[str, Any]:
+        """Run a transport-focused post-processing bundle.
+
+        The bundle keeps MSD preprocessing, conductivity semantics, and RDF
+        region defaults aligned so scripts do not need to manually stitch them.
+        """
+        t_all = self._section_begin("Transport analysis", detail="RDF + MSD + conductivity")
+        geometry_mode = self._transport_geometry_mode(geometry)
+        region_mode = self._transport_rdf_region(rdf_region)
+        rdf_out = None
+        if center_mol is not None:
+            rdf_out = self.rdf(
+                rdf_targets if rdf_targets is not None else center_mol,
+                center_mol=center_mol,
+                region=region_mode,
+            )
+        msd_out = self.msd(geometry=geometry_mode, unwrap=unwrap, drift=drift, selection_mode="transport")
+        sigma_out = self.sigma(temp_k=temp_k, msd=msd_out, geometry=geometry_mode, unwrap=unwrap, drift=drift)
+        payload = {
+            "preprocessing": {
+                "geometry_mode": geometry_mode,
+                "rdf_region": region_mode,
+                "unwrap": str(unwrap).strip().lower() or "auto",
+                "drift": str(drift).strip().lower() or "auto",
+            },
+            "rdf": rdf_out,
+            "msd": msd_out,
+            "sigma": sigma_out,
+            "warnings": [],
+        }
+        if sigma_out.get("NE_is_upper_bound"):
+            payload["warnings"].append("Nernst-Einstein conductivity is reported as an upper bound.")
+        if sigma_out.get("collective_conductivity_unavailable"):
+            payload["warnings"].append("Einstein-Helfand conductivity was unavailable or unstable.")
+        self._update_summary_sections(transport=payload)
+        (self._analysis_dir() / "transport.json").write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        self._section_done("Transport analysis", t_all, detail=f"geometry={geometry_mode} | rdf_region={region_mode}")
+        return payload
 
     def density_distribution(
         self,

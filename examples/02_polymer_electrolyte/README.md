@@ -9,7 +9,7 @@ This example is the recommended starting point. It demonstrates a full end-to-en
 - Random-walk polymerization + termination
 - Amorphous cell packing (polymer + solvents + salt)
 - EQ21 equilibration preset (+ optional additional cycles)
-- Production MD (NPT) and analysis (thermo / MSD / RDF(+CN) / conductivity)
+- Production MD (NPT) and transport-aware analysis (`transport()` bundles RDF / MSD / conductivity)
 
 ## Run
 
@@ -25,6 +25,13 @@ All outputs are under `work_dir/`:
 - `04_eq_*` – equilibration runs (multi-stage)
 - `05_npt_production/` – production run
 - `06_analysis/` – analysis outputs (JSON/XVG/SVG)
+
+Transport notes:
+
+- The script now prefers `analy.transport(...)` over manually stitching
+  `rdf()`, `msd()`, and `sigma()`.
+- `sigma_ne_upper_bound_S_m` should be read as an upper bound.
+- `sigma_eh_total_S_m` is the preferred total conductivity when available.
 
 If you enable the MolDB helper in this script (v0.6.8+), you will also see:
 

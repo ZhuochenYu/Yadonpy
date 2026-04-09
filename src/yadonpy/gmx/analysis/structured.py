@@ -10,7 +10,7 @@ from typing import Any, Iterable, Optional, Sequence
 
 import numpy as np
 
-from ..topology import MoleculeType, SystemTopology
+from ..topology import MoleculeType, SystemTopology, parse_system_top
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -49,6 +49,161 @@ class GroupSpec:
     formal_charge_e: float = 0.0
     component_key: Optional[str] = None
     component_label: Optional[str] = None
+
+
+def _normalize_geometry_mode(mode: str | None) -> str:
+    token = str(mode or "auto").strip().lower()
+    if token in {"3d", "xy", "z", "auto"}:
+        return token
+    return "auto"
+
+
+def _normalize_unwrap_mode(mode: str | None) -> str:
+    token = str(mode or "auto").strip().lower()
+    if token in {"on", "off", "auto"}:
+        return token
+    return "auto"
+
+
+def _normalize_drift_mode(mode: str | None) -> str:
+    token = str(mode or "auto").strip().lower()
+    if token in {"auto", "mobile_phase", "system", "off"}:
+        return token
+    return "auto"
+
+
+def _geometry_axes(mode: str) -> np.ndarray:
+    token = _normalize_geometry_mode(mode)
+    if token == "xy":
+        return np.asarray([True, True, False], dtype=bool)
+    if token == "z":
+        return np.asarray([False, False, True], dtype=bool)
+    return np.asarray([True, True, True], dtype=bool)
+
+
+def _default_geometry_mode(*, system_dir: Path, requested: str | None = None) -> str:
+    token = _normalize_geometry_mode(requested)
+    if token != "auto":
+        return token
+    work_dir = Path(system_dir).parent
+    markers = [
+        work_dir / "05_sandwich" / "sandwich_manifest.json",
+        work_dir / "05_sandwich" / "sandwich_progress.json",
+        work_dir / "sandwich_manifest.json",
+        work_dir / "sandwich_progress.json",
+    ]
+    if any(p.exists() for p in markers):
+        return "xy"
+    try:
+        meta = load_export_metadata(system_dir)["system_meta"]
+        species = list(meta.get("species", []) or [])
+        labels = " ".join(
+            str(sp.get("moltype") or sp.get("mol_name") or sp.get("mol_id") or "")
+            for sp in species
+        ).lower()
+        if any(tok in labels for tok in ("graphite", "graphene", "substrate")):
+            return "xy"
+    except Exception:
+        pass
+    return "3d"
+
+
+def _species_is_mobile(moltype: str, payload: dict[str, Any]) -> bool:
+    kind = str(payload.get("kind") or "").strip().lower()
+    label = " ".join(
+        [
+            str(moltype or ""),
+            str(payload.get("moltype") or ""),
+            str(payload.get("mol_name") or ""),
+            str(payload.get("mol_id") or ""),
+            str(payload.get("name") or ""),
+            str(payload.get("smiles") or ""),
+        ]
+    ).lower()
+    if any(tok in label for tok in ("graphite", "graphene", "substrate", "frozen", "wall")):
+        return False
+    if kind in {"substrate", "wall", "frozen"}:
+        return False
+    return True
+
+
+def _build_mobile_atom_payload(top: SystemTopology, system_dir: Path) -> tuple[np.ndarray, np.ndarray]:
+    catalog = build_species_catalog(top, system_dir)
+    mobile_indices: list[int] = []
+    mobile_masses: list[float] = []
+    for moltype, sp in catalog.items():
+        if not _species_is_mobile(str(moltype), dict(sp)):
+            continue
+        masses = np.asarray(sp.get("masses"), dtype=float)
+        natoms = int(sp.get("natoms") or 0)
+        if masses.size != natoms or not np.isfinite(masses).all() or float(np.sum(masses)) <= 0.0:
+            masses = np.ones(natoms, dtype=float)
+        for inst in sp.get("instances", []) or []:
+            atom_idx = np.asarray(inst.get("atom_indices_0"), dtype=int)
+            if atom_idx.size != natoms:
+                continue
+            mobile_indices.extend(int(i) for i in atom_idx.tolist())
+            mobile_masses.extend(float(m) for m in masses.tolist())
+    return np.asarray(mobile_indices, dtype=int), np.asarray(mobile_masses, dtype=float)
+
+
+def _unwrap_position_series(positions_nm: np.ndarray, box_lengths_nm: np.ndarray, *, geometry_mode: str) -> np.ndarray:
+    pos = np.asarray(positions_nm, dtype=float)
+    box = np.asarray(box_lengths_nm, dtype=float)
+    if pos.ndim != 3 or pos.shape[0] == 0:
+        return np.asarray(pos, dtype=float)
+    out = np.array(pos, copy=True)
+    if out.shape[0] < 2:
+        return out
+    axes = _geometry_axes(geometry_mode)
+    if not np.any(axes):
+        return out
+    delta = pos[1:] - pos[:-1]
+    box_mid = 0.5 * (box[1:, :3] + box[:-1, :3])
+    for axis in range(3):
+        if not bool(axes[axis]):
+            continue
+        ref = np.maximum(box_mid[:, None, axis], 1.0e-12)
+        delta[:, :, axis] -= ref * np.round(delta[:, :, axis] / ref)
+    out[1:] = out[0] + np.cumsum(delta, axis=0)
+    return out
+
+
+def _compute_mobile_drift_series(
+    *,
+    gro_path: Path,
+    xtc_path: Path,
+    top_path: Path,
+    system_dir: Path,
+    chunk: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    try:
+        import mdtraj as md
+    except Exception as exc:  # pragma: no cover
+        raise RuntimeError(f"mdtraj is required for transport drift correction: {exc}") from exc
+
+    top = parse_system_top(Path(top_path))
+    atom_indices, masses = _build_mobile_atom_payload(top, system_dir)
+    if atom_indices.size == 0:
+        return np.zeros(0, dtype=float), np.zeros((0, 3), dtype=float)
+    if masses.size != atom_indices.size or not np.isfinite(masses).all() or float(np.sum(masses)) <= 0.0:
+        masses = np.ones(atom_indices.size, dtype=float)
+    weights = masses / float(np.sum(masses))
+
+    times: list[np.ndarray] = []
+    drift_chunks: list[np.ndarray] = []
+    for trj in md.iterload(str(xtc_path), top=str(gro_path), chunk=int(max(1, chunk))):
+        xyz = np.asarray(trj.xyz[:, atom_indices, :], dtype=float)
+        box = np.asarray(getattr(trj, "unitcell_lengths", None), dtype=float)
+        if box.ndim != 2 or box.shape[0] != xyz.shape[0] or box.shape[1] < 3:
+            continue
+        xyz = _unwrap_position_series(xyz, box[:, :3], geometry_mode="3d")
+        drift = np.tensordot(xyz, weights, axes=(1, 0))
+        times.append(np.asarray(trj.time, dtype=float))
+        drift_chunks.append(np.asarray(drift, dtype=float))
+    if not times:
+        return np.zeros(0, dtype=float), np.zeros((0, 3), dtype=float)
+    return np.concatenate(times, axis=0), np.concatenate(drift_chunks, axis=0)
 
 
 def _canonicalize_smiles_like(value: Any) -> str:
@@ -394,6 +549,8 @@ def _site_label_for_atom(
             return "sulfonyl_oxygen"
         if _bonded_to("P") or _bonded_to("Cl") or _bonded_to("B"):
             return "phosphate_or_oxo_oxygen"
+        if len(neigh) == 2 and all(e in {"C", "Si"} for e in neigh_elems):
+            return "ether_oxygen"
         if _bonded_to("C"):
             for cidx in neigh:
                 if _infer_element(mt.atomnames[cidx], mt.atomtypes[cidx]) != "C":
@@ -404,8 +561,6 @@ def _site_label_for_atom(
                         hetero += 1
                 if hetero >= 1:
                     return "carbonyl_oxygen"
-            if len(neigh) == 2 and all(e in {"C", "Si"} for e in neigh_elems):
-                return "ether_oxygen"
         return "oxygen_site"
     if elem == "F":
         if _bonded_to("P") or _bonded_to("B") or _bonded_to("S"):
@@ -471,19 +626,23 @@ def load_group_positions(
     xtc_path: Path,
     group_specs: Sequence[GroupSpec],
     chunk: int = 50,
-) -> tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     try:
         import mdtraj as md
     except Exception as exc:  # pragma: no cover
         raise RuntimeError(f"mdtraj is required for structured post-processing: {exc}") from exc
 
     if not group_specs:
-        return np.zeros(0, dtype=float), np.zeros((0, 0, 3), dtype=float)
+        return np.zeros(0, dtype=float), np.zeros((0, 0, 3), dtype=float), np.zeros((0, 3), dtype=float)
 
     times: list[np.ndarray] = []
     pos_chunks: list[np.ndarray] = []
+    box_chunks: list[np.ndarray] = []
     for trj in md.iterload(str(xtc_path), top=str(gro_path), chunk=int(max(1, chunk))):
         xyz = np.asarray(trj.xyz, dtype=float)
+        box = np.asarray(getattr(trj, "unitcell_lengths", None), dtype=float)
+        if box.ndim != 2 or box.shape[0] != xyz.shape[0] or box.shape[1] < 3:
+            raise RuntimeError("Trajectory unit-cell lengths are required for transport post-processing.")
         chunk_pos = np.zeros((xyz.shape[0], len(group_specs), 3), dtype=float)
         for gi, spec in enumerate(group_specs):
             idx = np.asarray(spec.atom_indices_0, dtype=int)
@@ -498,9 +657,84 @@ def load_group_positions(
             chunk_pos[:, gi, :] = np.tensordot(coords, w, axes=(1, 0))
         times.append(np.asarray(trj.time, dtype=float))
         pos_chunks.append(chunk_pos)
+        box_chunks.append(np.asarray(box[:, :3], dtype=float))
     if not times:
-        return np.zeros(0, dtype=float), np.zeros((0, 0, 3), dtype=float)
-    return np.concatenate(times, axis=0), np.concatenate(pos_chunks, axis=0)
+        return np.zeros(0, dtype=float), np.zeros((0, 0, 3), dtype=float), np.zeros((0, 3), dtype=float)
+    return np.concatenate(times, axis=0), np.concatenate(pos_chunks, axis=0), np.concatenate(box_chunks, axis=0)
+
+
+def preprocess_group_positions(
+    *,
+    gro_path: Path,
+    xtc_path: Path,
+    top_path: Path,
+    system_dir: Path,
+    group_specs: Sequence[GroupSpec],
+    chunk: int = 50,
+    geometry_mode: str = "auto",
+    unwrap: str = "auto",
+    drift: str = "auto",
+) -> dict[str, Any]:
+    geometry = _default_geometry_mode(system_dir=Path(system_dir), requested=geometry_mode)
+    unwrap_mode = _normalize_unwrap_mode(unwrap)
+    drift_mode = _normalize_drift_mode(drift)
+
+    t_ps, positions, box_nm = load_group_positions(
+        gro_path=gro_path,
+        xtc_path=xtc_path,
+        group_specs=group_specs,
+        chunk=chunk,
+    )
+    if positions.size == 0:
+        return {
+            "t_ps": t_ps,
+            "positions_nm": positions,
+            "box_lengths_nm": box_nm,
+            "preprocessing": {
+                "used_unwrapped_positions": False,
+                "drift_correction_mode": "off",
+                "drift_reference_group": None,
+                "geometry_mode": geometry,
+            },
+        }
+
+    use_unwrap = bool(unwrap_mode in {"auto", "on"})
+    if use_unwrap:
+        positions = _unwrap_position_series(positions, box_nm, geometry_mode=geometry)
+
+    effective_drift = drift_mode
+    if effective_drift == "auto":
+        effective_drift = "mobile_phase"
+    drift_reference = None
+    if effective_drift != "off":
+        drift_t, drift_series = _compute_mobile_drift_series(
+            gro_path=gro_path,
+            xtc_path=xtc_path,
+            top_path=top_path,
+            system_dir=system_dir,
+            chunk=max(int(chunk), 25),
+        )
+        if drift_series.size and drift_t.size == t_ps.size and np.allclose(drift_t, t_ps):
+            axes = _geometry_axes(geometry)
+            for axis in range(3):
+                if not bool(axes[axis]):
+                    drift_series[:, axis] = 0.0
+            positions = positions - drift_series[:, None, :]
+            drift_reference = "mobile_phase"
+        else:
+            effective_drift = "off"
+
+    return {
+        "t_ps": np.asarray(t_ps, dtype=float),
+        "positions_nm": np.asarray(positions, dtype=float),
+        "box_lengths_nm": np.asarray(box_nm, dtype=float),
+        "preprocessing": {
+            "used_unwrapped_positions": bool(use_unwrap),
+            "drift_correction_mode": str(effective_drift),
+            "drift_reference_group": drift_reference,
+            "geometry_mode": str(geometry),
+        },
+    }
 
 
 def _autocorr_fft(x: np.ndarray) -> np.ndarray:
@@ -542,6 +776,7 @@ def select_diffusive_window(
     alpha_target: float = 1.0,
     primary_tol: float = 0.15,
     secondary_tol: float = 0.25,
+    geometry: str = "3d",
 ) -> dict[str, Any]:
     t = np.asarray(t_ps, dtype=float)
     y = np.asarray(msd_nm2, dtype=float)
@@ -558,6 +793,7 @@ def select_diffusive_window(
         "D_nm2_ps": None,
         "D_m2_s": None,
         "warning": None,
+        "geometry": "3d" if _normalize_geometry_mode(geometry) == "auto" else _normalize_geometry_mode(geometry),
     }
     if t.size < 12 or y.size != t.size:
         out["warning"] = "too_few_points"
@@ -624,7 +860,13 @@ def select_diffusive_window(
     out.update(best)
     out["status"] = "ok"
     if best["confidence"] in {"high", "medium"}:
-        d_nm2_ps = float(best["fit_slope_nm2_ps"]) / 6.0
+        geometry_token = _normalize_geometry_mode(out.get("geometry"))
+        divisor = 6.0
+        if geometry_token == "xy":
+            divisor = 4.0
+        elif geometry_token == "z":
+            divisor = 2.0
+        d_nm2_ps = float(best["fit_slope_nm2_ps"]) / float(divisor)
         out["D_nm2_ps"] = float(d_nm2_ps)
         out["D_m2_s"] = float(d_nm2_ps) * 1.0e-6
     else:
@@ -636,21 +878,41 @@ def compute_msd_series(
     *,
     gro_path: Path,
     xtc_path: Path,
+    top_path: Path,
+    system_dir: Path,
     group_specs: Sequence[GroupSpec],
     chunk: int = 50,
+    geometry_mode: str = "auto",
+    unwrap: str = "auto",
+    drift: str = "auto",
 ) -> dict[str, Any]:
-    t_ps, positions = load_group_positions(gro_path=gro_path, xtc_path=xtc_path, group_specs=group_specs, chunk=chunk)
+    prepared = preprocess_group_positions(
+        gro_path=gro_path,
+        xtc_path=xtc_path,
+        top_path=top_path,
+        system_dir=system_dir,
+        group_specs=group_specs,
+        chunk=chunk,
+        geometry_mode=geometry_mode,
+        unwrap=unwrap,
+        drift=drift,
+    )
+    t_ps = np.asarray(prepared["t_ps"], dtype=float)
+    positions = np.asarray(prepared["positions_nm"], dtype=float)
+    geometry = str((prepared.get("preprocessing") or {}).get("geometry_mode") or _normalize_geometry_mode(geometry_mode))
     if t_ps.size == 0 or positions.size == 0:
         return {
             "t_ps": np.zeros(0, dtype=float),
             "msd_nm2": np.zeros(0, dtype=float),
-            "fit": select_diffusive_window(np.zeros(0, dtype=float), np.zeros(0, dtype=float)),
+            "fit": select_diffusive_window(np.zeros(0, dtype=float), np.zeros(0, dtype=float), geometry=geometry),
             "frame_interval_ps": None,
             "n_groups": int(len(group_specs)),
             "component_metrics": {},
+            "preprocessing": prepared.get("preprocessing") or {},
+            "geometry": geometry,
         }
     msd = msd_from_positions_fft(positions)
-    fit = select_diffusive_window(t_ps, msd)
+    fit = select_diffusive_window(t_ps, msd, geometry=geometry)
     frame_interval = float(np.median(np.diff(t_ps))) if t_ps.size >= 2 else None
     component_metrics: dict[str, Any] = {}
     component_map: dict[str, list[int]] = {}
@@ -660,7 +922,7 @@ def compute_msd_series(
     for key, idxs in component_map.items():
         comp_pos = positions[:, idxs, :]
         comp_msd = msd_from_positions_fft(comp_pos)
-        comp_fit = select_diffusive_window(t_ps, comp_msd)
+        comp_fit = select_diffusive_window(t_ps, comp_msd, geometry=geometry)
         first = group_specs[idxs[0]]
         component_metrics[key] = {
             "component_key": key,
@@ -679,6 +941,8 @@ def compute_msd_series(
         "frame_interval_ps": frame_interval,
         "n_groups": int(len(group_specs)),
         "component_metrics": component_metrics,
+        "preprocessing": prepared.get("preprocessing") or {},
+        "geometry": geometry,
     }
 
 
@@ -754,6 +1018,7 @@ def compute_site_rdf(
     bin_nm: float,
     r_max_nm: float,
     chunk: int = 10,
+    region: str = "global",
 ) -> dict[str, Any]:
     try:
         import mdtraj as md
@@ -775,12 +1040,15 @@ def compute_site_rdf(
             "shell": detect_first_shell(empty, empty, empty),
         }
 
+    region_token = str(region or "global").strip().lower()
     nbins = max(8, int(np.ceil(float(r_max_nm) / float(bin_nm))))
     edges = np.linspace(0.0, float(r_max_nm), nbins + 1)
     shell_vol = (4.0 / 3.0) * np.pi * (edges[1:] ** 3 - edges[:-1] ** 3)
     hist = np.zeros(nbins, dtype=float)
     frame_count = 0
     volume_samples: list[np.ndarray] = []
+    density_samples: list[float] = []
+    effective_ref_count = 0.0
 
     max_pairs = 200000
     block_size = max(1, int(max_pairs // max(1, center.size)))
@@ -788,26 +1056,68 @@ def compute_site_rdf(
 
     for trj in md.iterload(str(xtc_path), top=str(gro_path), chunk=int(max(1, chunk))):
         frame_count += int(trj.n_frames)
-        if getattr(trj, "unitcell_lengths", None) is not None:
+        box_lengths = np.asarray(getattr(trj, "unitcell_lengths", None), dtype=float)
+        if box_lengths.ndim == 2 and box_lengths.shape[0] == int(trj.n_frames) and box_lengths.shape[1] >= 3:
             try:
-                volume_samples.append(np.prod(np.asarray(trj.unitcell_lengths, dtype=float), axis=1))
+                volume_samples.append(np.prod(np.asarray(box_lengths[:, :3], dtype=float), axis=1))
             except Exception:
                 pass
-        for tgt_block in target_blocks:
-            pairs = []
-            for ci in center:
-                for tj in tgt_block:
-                    if int(ci) != int(tj):
-                        pairs.append((int(ci), int(tj)))
-            if not pairs:
+        if region_token == "global":
+            for tgt_block in target_blocks:
+                pairs = []
+                for ci in center:
+                    for tj in tgt_block:
+                        if int(ci) != int(tj):
+                            pairs.append((int(ci), int(tj)))
+                if not pairs:
+                    continue
+                pair_arr = np.asarray(pairs, dtype=int)
+                dist = md.compute_distances(trj, pair_arr, periodic=True)
+                hist += np.histogram(dist.reshape(-1), bins=edges)[0]
+            effective_ref_count += float(int(trj.n_frames) * int(center.size))
+            continue
+
+        xyz = np.asarray(trj.xyz, dtype=float)
+        for fi in range(int(trj.n_frames)):
+            box = np.asarray(box_lengths[fi, :3], dtype=float)
+            if box.size < 3:
                 continue
-            pair_arr = np.asarray(pairs, dtype=int)
-            dist = md.compute_distances(trj, pair_arr, periodic=True)
-            hist += np.histogram(dist.reshape(-1), bins=edges)[0]
+            z = xyz[fi, :, 2]
+            if region_token == "bulk_core":
+                lo = 0.25 * float(box[2])
+                hi = 0.75 * float(box[2])
+                mask = (z >= lo) & (z <= hi)
+                region_volume = float(box[0] * box[1] * max(hi - lo, 1.0e-12))
+            elif region_token == "interface_shell":
+                lo = 0.15 * float(box[2])
+                hi = 0.85 * float(box[2])
+                mask = (z <= lo) | (z >= hi)
+                region_volume = float(box[0] * box[1] * max(float(box[2]) - max(hi - lo, 0.0), 1.0e-12))
+            else:
+                mask = np.ones(xyz.shape[1], dtype=bool)
+                region_volume = float(box[0] * box[1] * box[2])
+            centers_f = center[mask[center]]
+            targets_f = target[mask[target]]
+            if centers_f.size == 0 or targets_f.size == 0:
+                continue
+            c = xyz[fi, centers_f, :]
+            t = xyz[fi, targets_f, :]
+            delta = c[:, None, :] - t[None, :, :]
+            delta -= box[None, None, :] * np.round(delta / np.maximum(box[None, None, :], 1.0e-12))
+            pair_mask = centers_f[:, None] != targets_f[None, :]
+            if not np.any(pair_mask):
+                continue
+            dist = np.linalg.norm(delta[pair_mask], axis=1).reshape(-1)
+            hist += np.histogram(dist, bins=edges)[0]
+            effective_ref_count += float(centers_f.size)
+            density_samples.append(float(targets_f.size) / max(region_volume, 1.0e-12))
 
     mean_vol = float(np.mean(np.concatenate(volume_samples))) if volume_samples else 1.0
-    rho_target_nm3 = float(target.size) / max(mean_vol, 1.0e-12)
-    denom = max(float(frame_count) * float(center.size) * max(rho_target_nm3, 1.0e-12), 1.0e-12)
+    if region_token == "global":
+        rho_target_nm3 = float(target.size) / max(mean_vol, 1.0e-12)
+    else:
+        rho_target_nm3 = float(np.mean(density_samples)) if density_samples else 0.0
+    denom = max(float(effective_ref_count) * max(rho_target_nm3, 1.0e-12), 1.0e-12)
     g_r = hist / (denom * shell_vol)
     r_mid = 0.5 * (edges[:-1] + edges[1:])
     cn_curve = _integrate_cn(r_mid, g_r, rho_target_nm3)
@@ -820,6 +1130,7 @@ def compute_site_rdf(
         "n_frames": int(frame_count),
         "n_ref": int(center.size),
         "n_target": int(target.size),
+        "region": region_token,
         "shell": shell,
     }
 
@@ -867,11 +1178,14 @@ def build_ne_conductivity_from_msd(*, msd_payload: dict[str, Any], volume_nm3: f
                         "component_key": str(comp_key),
                         "component_label": str(comp.get("component_label") or comp_key),
                         "component_kind": "polymer_charged_group",
+                        "component_semantics": "polymer_charged_group_self_ne_contribution",
+                        "interpretation": "self_upper_bound",
                         "charge_sign": str(comp.get("charge_sign") or "neutral"),
                         "count": count,
                         "charge_e": q_e,
                         "D_m2_s": float(d_val),
                         "sigma_component_S_m": float(term),
+                        "sigma_component_upper_bound_S_m": float(term),
                     }
                 )
         if has_poly_group_metric:
@@ -894,6 +1208,8 @@ def build_ne_conductivity_from_msd(*, msd_payload: dict[str, Any], volume_nm3: f
         comp = {
             "moltype": str(moltype),
             "component_kind": "species_default",
+            "component_semantics": "species_self_ne_contribution",
+            "interpretation": "self_upper_bound",
             "count": n_molecules,
             "charge_e": float(formal_q),
             "D_m2_s": float(d_val),
@@ -905,11 +1221,22 @@ def build_ne_conductivity_from_msd(*, msd_payload: dict[str, Any], volume_nm3: f
             continue
         term = (float(n_molecules) * (formal_q * e_c) ** 2 * float(d_val)) / (max(float(vol_m3), 1.0e-300) * k_b * float(temp_k))
         comp["sigma_component_S_m"] = float(term)
+        comp["sigma_component_upper_bound_S_m"] = float(term)
         components.append(comp)
 
     sigma = float(sum(float(c.get("sigma_component_S_m", 0.0)) for c in components))
+    polymer_self_term = float(
+        sum(
+            float(c.get("sigma_component_S_m", 0.0))
+            for c in components
+            if str(c.get("component_kind") or "") == "polymer_charged_group"
+        )
+    )
     return {
         "sigma_S_m": sigma,
+        "sigma_ne_upper_bound_S_m": sigma,
+        "NE_is_upper_bound": True,
+        "polymer_charged_group_self_ne_contribution_S_m": polymer_self_term,
         "temperature_K": float(temp_k),
         "volume_nm3": float(volume_nm3),
         "components": components,

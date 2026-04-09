@@ -124,6 +124,21 @@ solvents, ions, and salts. A typical workflow is:
 5. run staged equilibration;
 6. analyze density, transport, and coordination behavior.
 
+For post-processing, the recommended pattern is now:
+
+```python
+analy = production.analyze()
+transport = analy.transport(center_mol=li_mol, temp_k=300.0)
+```
+
+This keeps the defaults physically aligned:
+
+- bulk systems use drift-corrected `3D` diffusion by default;
+- sandwich and slab systems use drift-corrected `xy` diffusion by default;
+- `sigma_ne_upper_bound_S_m` is reported explicitly as an upper bound;
+- `sigma_eh_total_S_m` is the preferred total conductivity when a stable EH fit exists;
+- `haven_ratio` is written whenever both values are available.
+
 ### Interface systems
 
 For interface work, the recommended pattern is:
@@ -181,3 +196,20 @@ that work on an already prepared `gro/top` pair or on a standard equilibration
 
 The shipped examples for these studies now resolve the prepared system
 automatically instead of manually wiring `workflow.steps` calls.
+
+## Transport Analysis Notes
+
+YadonPy now treats transport analysis as a physically opinionated workflow rather
+than a loose collection of plots.
+
+- `Analyzer.transport(...)` is the recommended entry point for `RDF + MSD + conductivity`.
+- `MSD` defaults are geometry-aware:
+  - bulk: drift-corrected `3D`
+  - sandwich/slab: drift-corrected `xy`
+- `Nernst-Einstein` conductivity is reported as
+  `sigma_ne_upper_bound_S_m`, not as the default true conductivity.
+- `Einstein-Helfand` conductivity is reported as `sigma_eh_total_S_m` when a
+  stable positive-slope regime is found.
+- Charged-polymer self terms are retained only as
+  `polymer_charged_group_self_ne_contribution_S_m` and component diagnostics;
+  they are not labeled as total polymer ionic conductivity.
