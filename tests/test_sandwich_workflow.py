@@ -38,6 +38,7 @@ from yadonpy.interface.sandwich import (
     _molecule_atom_blocks,
     _needs_confined_rescue,
     _maybe_expand_graphite_for_phase_footprint,
+    _polymer_chain_effective_charge,
     _preflight_graphite_footprint_from_phase_targets,
     _preflight_linear_headroom_xy,
     _preflight_required_xy_nm_from_target_area,
@@ -793,6 +794,73 @@ def test_prepared_slab_lateral_span_is_capped_by_periodic_box(monkeypatch, tmp_p
 
     assert span_x == pytest.approx(5.0)
     assert span_y == pytest.approx(6.0)
+
+
+def test_polymer_chain_effective_charge_prefers_partial_charge_sum_when_integer_like():
+    chain = Chem.RWMol()
+    for idx in range(3):
+        atom = Chem.Atom("C")
+        atom.SetFormalCharge(-7 if idx == 0 else 0)
+        atom.SetNoImplicit(True)
+        chain.AddAtom(atom)
+    mol = chain.GetMol()
+    conf = Chem.Conformer(mol.GetNumAtoms())
+    conf.Set3D(True)
+    for idx in range(mol.GetNumAtoms()):
+        conf.SetAtomPosition(idx, Geom.Point3D(float(idx), 0.0, 0.0))
+    mol.AddConformer(conf, assignId=True)
+    charges = (-6.3, -6.3, -6.4)
+    for atom, q in zip(mol.GetAtoms(), charges):
+        atom.SetDoubleProp("AtomicCharge", float(q))
+
+    effective_charge, meta = _polymer_chain_effective_charge(mol)
+
+    assert effective_charge == -19
+    assert meta["source"] == "AtomicCharge"
+    assert meta["formal_charge"] == -7
+
+
+def test_prepare_polymer_phase_species_uses_effective_chain_charge_for_counterions(monkeypatch, tmp_path: Path):
+    import yadonpy.interface.sandwich as sandwich
+
+    chain = Chem.RWMol()
+    for idx in range(3):
+        atom = Chem.Atom("C")
+        atom.SetFormalCharge(-7 if idx == 0 else 0)
+        atom.SetNoImplicit(True)
+        chain.AddAtom(atom)
+    chain_mol = chain.GetMol()
+    conf = Chem.Conformer(chain_mol.GetNumAtoms())
+    conf.Set3D(True)
+    for idx in range(chain_mol.GetNumAtoms()):
+        conf.SetAtomPosition(idx, Geom.Point3D(float(idx), 0.0, 0.0))
+    chain_mol.AddConformer(conf, assignId=True)
+    chain_mol.SetProp("_Name", "CMC")
+    for atom, q in zip(chain_mol.GetAtoms(), (-6.3, -6.3, -6.4)):
+        atom.SetDoubleProp("AtomicCharge", float(q))
+
+    na = _dummy_mol("Na")
+    na.GetAtomWithIdx(0).SetFormalCharge(1)
+    na.GetAtomWithIdx(0).SetDoubleProp("AtomicCharge", 1.0)
+
+    monkeypatch.setattr(sandwich, "_build_polymer_chain", lambda **kwargs: (chain_mol, 60))
+    monkeypatch.setattr(sandwich, "_prepare_small_molecule", lambda spec, **kwargs: na)
+
+    out = sandwich._prepare_polymer_phase_species(
+        ff=SimpleNamespace(),
+        ion_ff=SimpleNamespace(),
+        polymer=PolymerSlabSpec(
+            name="CMC",
+            chain_count=32,
+            counterion=MoleculeSpec(name="Na", smiles="[Na+]", use_ion_ff=True),
+        ),
+        relax=SandwichRelaxationSpec(),
+        chain_dir=tmp_path / "chain",
+        box_nm=(4.0, 4.0, 4.0),
+    )
+
+    assert out["counts"] == [32, 608]
+    assert any("effective charge per chain=-19" in note for note in out["notes"])
 
 
 def test_build_polymer_chain_forwards_polyelectrolyte_mode_to_db_lookup(monkeypatch):

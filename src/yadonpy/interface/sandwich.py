@@ -10,6 +10,7 @@ import numpy as np
 from rdkit import Geometry as Geom
 
 from ..core import poly, utils
+from ..core.chem_utils import select_best_charge_property
 from ..core.graphite import GraphiteBuildResult, build_graphite, register_cell_species_metadata, stack_cell_blocks
 from ..core.molspec import as_rdkit_mol, molecular_weight
 from ..core.naming import get_name
@@ -266,6 +267,27 @@ def _polymer_chain_formal_charge(mol) -> int:
     return int(sum(int(atom.GetFormalCharge()) for atom in mol.GetAtoms()))
 
 
+def _polymer_chain_effective_charge(mol) -> tuple[int, dict[str, object]]:
+    formal_charge = int(_polymer_chain_formal_charge(mol))
+    prop, values = select_best_charge_property(mol)
+    if prop and values:
+        total_charge = float(sum(float(v) for v in values))
+        rounded_charge = int(round(total_charge))
+        if abs(total_charge - float(rounded_charge)) <= 0.25:
+            return rounded_charge, {
+                "source": str(prop),
+                "raw_total_charge": float(total_charge),
+                "rounded_charge": int(rounded_charge),
+                "formal_charge": int(formal_charge),
+            }
+    return formal_charge, {
+        "source": "formal_charge",
+        "raw_total_charge": float(formal_charge),
+        "rounded_charge": int(formal_charge),
+        "formal_charge": int(formal_charge),
+    }
+
+
 def _prepare_polymer_phase_species(*, ff, ion_ff, polymer: PolymerSlabSpec, relax: SandwichRelaxationSpec, chain_dir: Path, box_nm: tuple[float, float, float]):
     polymer_chain, polymer_dp = _build_polymer_chain(ff=ff, polymer=polymer, relax=relax, chain_dir=chain_dir)
     if polymer.chain_count is not None:
@@ -283,17 +305,17 @@ def _prepare_polymer_phase_species(*, ff, ion_ff, polymer: PolymerSlabSpec, rela
     charge_scale = [float(polymer.charge_scale)]
     notes: list[str] = []
 
-    chain_formal_charge = int(_polymer_chain_formal_charge(polymer_chain))
-    if chain_formal_charge != 0:
+    chain_charge, chain_charge_meta = _polymer_chain_effective_charge(polymer_chain)
+    if chain_charge != 0:
         if polymer.counterion is None:
             raise RuntimeError(
-                f"Polymer {polymer.name} carries formal charge {chain_formal_charge} per chain but no counterion was configured."
+                f"Polymer {polymer.name} carries charge {chain_charge} per chain but no counterion was configured."
             )
         counterion = _prepare_small_molecule(polymer.counterion, ff=ff, ion_ff=ion_ff)
         ion_charge = int(_smiles_formal_charge(polymer.counterion.smiles))
         if ion_charge == 0:
             raise RuntimeError(f"Configured polymer counterion {polymer.counterion.name} is neutral.")
-        total_polymer_charge = int(chain_formal_charge * chain_count)
+        total_polymer_charge = int(chain_charge * chain_count)
         if total_polymer_charge * ion_charge > 0:
             raise RuntimeError(
                 f"Configured counterion {polymer.counterion.name} has the same charge sign as polymer {polymer.name}."
@@ -308,7 +330,8 @@ def _prepare_polymer_phase_species(*, ff, ion_ff, polymer: PolymerSlabSpec, rela
             counts.append(counterion_count)
             charge_scale.append(float(polymer.counterion.charge_scale))
             notes.append(
-                f"polymer formal charge per chain={chain_formal_charge}; added {counterion_count} {polymer.counterion.name} counterions to neutralize the slab"
+                f"polymer effective charge per chain={chain_charge} via {chain_charge_meta['source']}; "
+                f"added {counterion_count} {polymer.counterion.name} counterions to neutralize the slab"
             )
 
     if polymer.chain_count is not None:
@@ -330,7 +353,7 @@ def _prepare_polymer_phase_species(*, ff, ion_ff, polymer: PolymerSlabSpec, rela
         "species": species,
         "counts": counts,
         "charge_scale": charge_scale,
-        "charged_phase": bool(chain_formal_charge != 0),
+        "charged_phase": bool(chain_charge != 0),
         "notes": tuple(notes),
     }
 
