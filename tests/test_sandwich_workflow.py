@@ -507,6 +507,40 @@ def test_rebox_block_for_phase_confinement_refuses_extreme_lateral_compression()
         )
 
 
+def test_rebox_block_for_phase_confinement_can_trust_periodic_xy_representation():
+    mol = Chem.RWMol()
+    for _ in range(2):
+        atom = Chem.Atom("C")
+        atom.SetNoImplicit(True)
+        mol.AddAtom(atom)
+    block = mol.GetMol()
+    conf = Chem.Conformer(block.GetNumAtoms())
+    conf.Set3D(True)
+    conf.SetAtomPosition(0, Geom.Point3D(1.0, 2.0, 4.0))
+    conf.SetAtomPosition(1, Geom.Point3D(31.0, 18.0, 6.0))
+    block.AddConformer(conf, assignId=True)
+    setattr(block, "cell", SimpleNamespace(xhi=20.0, xlo=0.0, yhi=20.0, ylo=0.0, zhi=18.0, zlo=0.0))
+
+    confined, summary, note = _rebox_block_for_phase_confinement(
+        block=block,
+        target_xy_nm=(2.0, 2.0),
+        target_thickness_nm=1.5,
+        vacuum_padding_ang=12.0,
+        trust_periodic_xy=True,
+    )
+
+    coords = confined.GetConformer(0).GetPositions()
+    xs = [float(x[0]) for x in coords]
+    ys = [float(x[1]) for x in coords]
+    assert min(xs) >= 0.0
+    assert max(xs) <= 20.0 + 1.0e-6
+    assert min(ys) >= 0.0
+    assert max(ys) <= 20.0 + 1.0e-6
+    assert summary["trust_periodic_xy_applied"] is True
+    assert summary["lateral_scale_xy"] == [1.0, 1.0]
+    assert "periodic XY representation" in note
+
+
 def test_graphite_repeat_factors_for_required_xy_expand_only_when_needed():
     assert _graphite_repeat_factors_for_required_xy(
         current_box_nm=(2.3, 4.1, 2.0),

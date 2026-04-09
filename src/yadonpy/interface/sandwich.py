@@ -1911,6 +1911,7 @@ def _rebox_block_for_phase_confinement(
     vacuum_padding_ang: float,
     species: Sequence | None = None,
     counts: Sequence[int] | None = None,
+    trust_periodic_xy: bool = False,
 ):
     confined = utils.deepcopy_mol(block)
     conf = confined.GetConformer(0)
@@ -1919,6 +1920,7 @@ def _rebox_block_for_phase_confinement(
         raise RuntimeError("Cannot confine an empty slab block.")
     periodic_lateral_wrap_applied = False
     bonded_lateral_unwrap_applied = False
+    trust_periodic_xy_applied = False
     lateral_scale_xy = (1.0, 1.0)
     blocks: list[tuple[int, int]] = []
     block_specs: list[tuple[int, int, object]] = []
@@ -1954,6 +1956,19 @@ def _rebox_block_for_phase_confinement(
     target_y_ang = float(target_xy_nm[1]) * 10.0
     slot_z_ang = max(float(target_thickness_nm) * 10.0, float(spans[2]))
     box_z_ang = slot_z_ang + 2.0 * float(vacuum_padding_ang)
+
+    if bool(trust_periodic_xy):
+        if target_x_ang > 0.0:
+            coords[:, 0] = np.mod(coords[:, 0], target_x_ang)
+        if target_y_ang > 0.0:
+            coords[:, 1] = np.mod(coords[:, 1], target_y_ang)
+        trust_periodic_xy_applied = True
+        periodic_lateral_wrap_applied = True
+        mins = np.min(coords, axis=0)
+        maxs = np.max(coords, axis=0)
+        spans = maxs - mins
+        slot_z_ang = max(float(target_thickness_nm) * 10.0, float(spans[2]))
+        box_z_ang = slot_z_ang + 2.0 * float(vacuum_padding_ang)
 
     if float(spans[0]) > target_x_ang + 1.0e-6 or float(spans[1]) > target_y_ang + 1.0e-6:
         coords, lateral_scale_xy, scaled_to_target = _scale_block_lateral_to_target(
@@ -2017,6 +2032,7 @@ def _rebox_block_for_phase_confinement(
         "vacuum_padding_ang": float(vacuum_padding_ang),
         "periodic_lateral_wrap_applied": bool(periodic_lateral_wrap_applied),
         "bonded_lateral_unwrap_applied": bool(bonded_lateral_unwrap_applied),
+        "trust_periodic_xy_applied": bool(trust_periodic_xy_applied),
         "lateral_scale_xy": [float(lateral_scale_xy[0]), float(lateral_scale_xy[1])],
         **overlap_summary,
     }
@@ -2025,6 +2041,8 @@ def _rebox_block_for_phase_confinement(
         note += " and restored bonded lateral periodic coordinates"
     if periodic_lateral_wrap_applied and not bonded_lateral_unwrap_applied:
         note += " and restored lateral periodic coordinates"
+    if trust_periodic_xy_applied:
+        note += " and kept the soft phase in a periodic XY representation"
     if lateral_scale_xy[0] < 1.0 - 1.0e-9 or lateral_scale_xy[1] < 1.0 - 1.0e-9:
         note += (
             " and anisotropically compressed the soft slab onto the graphite XY footprint"
@@ -2369,14 +2387,15 @@ def _run_final_xy_walled_phase_build(
                 relax=relax,
                 work_dir=attempt_dir / "01_confined",
                 restart=restart,
-                summary_extra={
-                    "phase_preparation_mode": "bulk_calibrate_walled_phase",
-                    "bulk_calibration_target_z_nm": float(target_z_nm),
-                    "initial_pack_density_g_cm3": float(pack_density),
-                    "initial_pack_box_nm": [float(target_xy_nm[0]), float(target_xy_nm[1]), float(initial_z_nm)],
-                    "source_mode": "final_xy_walled_phase",
-                },
-            )
+            summary_extra={
+                "phase_preparation_mode": "bulk_calibrate_walled_phase",
+                "bulk_calibration_target_z_nm": float(target_z_nm),
+                "initial_pack_density_g_cm3": float(pack_density),
+                "initial_pack_box_nm": [float(target_xy_nm[0]), float(target_xy_nm[1]), float(initial_z_nm)],
+                "source_mode": "final_xy_walled_phase",
+            },
+            trust_periodic_xy=True,
+        )
             score = _confined_summary_score(
                 summary=phase_result.summary,
                 target_density_g_cm3=float(target_density_g_cm3),
@@ -2462,6 +2481,7 @@ def _run_confined_phase_relaxation(
     work_dir: Path,
     restart: bool | None = None,
     summary_extra: dict[str, object] | None = None,
+    trust_periodic_xy: bool = False,
 ) -> _ConfinedPhaseResult:
     from .protocol import _resolve_route_b_wall_atomtype
 
@@ -2492,6 +2512,7 @@ def _run_confined_phase_relaxation(
         compress_to_target: bool,
         export_dir: Path,
         relax_dir: Path,
+        trust_periodic_xy: bool,
     ) -> tuple[object, dict[str, object], Path, Path]:
         confined_block, rebox_summary, rebox_note = _rebox_block_for_phase_confinement(
             block=source_block,
@@ -2500,6 +2521,7 @@ def _run_confined_phase_relaxation(
             vacuum_padding_ang=float(vacuum_padding_ang),
             species=species,
             counts=counts,
+            trust_periodic_xy=bool(trust_periodic_xy),
         )
         compression_summary = {"z_compression_applied": False, "z_compression_scale": 1.0}
         if bool(compress_to_target):
@@ -2571,6 +2593,7 @@ def _run_confined_phase_relaxation(
         compress_to_target=False,
         export_dir=work_dir / "00_export",
         relax_dir=work_dir / "01_relax",
+        trust_periodic_xy=bool(trust_periodic_xy),
     )
     round_scores = {
         "round_00": _confined_summary_score(
@@ -2598,6 +2621,7 @@ def _run_confined_phase_relaxation(
             compress_to_target=True,
             export_dir=work_dir / "02_rescue_export",
             relax_dir=work_dir / "02_rescue_relax",
+            trust_periodic_xy=bool(trust_periodic_xy),
         )
         round_scores["round_01_rescue"] = _confined_summary_score(
             summary=rescue_summary,
