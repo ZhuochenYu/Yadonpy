@@ -2811,6 +2811,21 @@ def build_graphite_polymer_electrolyte_sandwich(
         base_phase_dir=_phase_round_dir(polymer_eq_dir, 0),
         restart=restart,
     )
+    _write_sandwich_progress(
+        progress_path,
+        {
+            "stage": "polymer_bulk_calibration_completed",
+            "phase_preparation_rounds": int(preparation_round_count),
+            "phase_preparation_mode": phase_preparation_mode,
+            "graphite_box_nm": [float(x) for x in graphite_result.box_nm],
+            "graphite_spec": asdict(graphite),
+            "graphite_footprint_negotiations": graphite_negotiations,
+            "latest_graphite_footprint_negotiation": graphite_negotiation,
+            "polymer_bulk_calibration_summary": str(polymer_calibration["summary_path"]),
+            "polymer_bulk_pack_summary": str(polymer_calibration["pack"].summary_path),
+            "electrolyte_bulk_calibration_summary": None,
+        },
+    )
     electrolyte_calibration = _run_electrolyte_bulk_calibration(
         ff=ff,
         ion_ff=ion_ff,
@@ -2833,6 +2848,8 @@ def build_graphite_polymer_electrolyte_sandwich(
             "latest_graphite_footprint_negotiation": graphite_negotiation,
             "polymer_bulk_calibration_summary": str(polymer_calibration["summary_path"]),
             "electrolyte_bulk_calibration_summary": str(electrolyte_calibration["summary_path"]),
+            "polymer_bulk_pack_summary": str(polymer_calibration["pack"].summary_path),
+            "electrolyte_bulk_pack_summary": str(electrolyte_calibration["pack"].summary_path),
         },
     )
 
@@ -2871,6 +2888,8 @@ def build_graphite_polymer_electrolyte_sandwich(
                 "latest_graphite_footprint_negotiation": graphite_negotiation,
                 "polymer_bulk_calibration_summary": str(polymer_calibration["summary_path"]),
                 "electrolyte_bulk_calibration_summary": str(electrolyte_calibration["summary_path"]),
+                "polymer_bulk_pack_summary": str(polymer_calibration["pack"].summary_path),
+                "electrolyte_bulk_pack_summary": str(electrolyte_calibration["pack"].summary_path),
             },
         )
         polymer_confined, polymer_walled_build_summary, polymer_walled_build_summary_path = _run_final_xy_walled_phase_build(
