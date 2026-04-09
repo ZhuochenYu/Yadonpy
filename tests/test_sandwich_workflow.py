@@ -1407,63 +1407,30 @@ def test_build_graphite_polymer_electrolyte_sandwich_orchestrates_bulk_then_slab
             relax_mdp_overrides={"pcoupltype": "semiisotropic", "compressibility": "0 4.5e-05", "ref_p": "1 1"},
         ),
     )
-    polymer_prepared = SimpleNamespace(
-        top_path=tmp_path / "polymer.top",
-        gro_path=tmp_path / "polymer.gro",
-        meta_path=tmp_path / "polymer_meta.json",
-        box_nm=(2.0, 2.0, 3.0),
-    )
-    electrolyte_prepared = SimpleNamespace(
-        top_path=tmp_path / "electrolyte.top",
-        gro_path=tmp_path / "electrolyte.gro",
-        meta_path=tmp_path / "electrolyte_meta.json",
-        box_nm=(2.0, 2.0, 4.0),
-    )
+    walled_calls: list[dict] = []
     monkeypatch.setattr(
         sandwich,
-        "_prepare_slab_from_equilibrated_bulk",
+        "_run_final_xy_walled_phase_build",
         lambda **kwargs: (
-            polymer_prepared if kwargs["label"] == "polymer" else electrolyte_prepared,
-            f"{kwargs['label']} slab prepared",
-        ),
-    )
-    confined_calls: list[dict] = []
-    monkeypatch.setattr(
-        sandwich,
-        "_run_confined_phase_relaxation",
-        lambda **kwargs: (
-            confined_calls.append(kwargs)
-            or SimpleNamespace(
-                relaxed_block=polymer_cell if kwargs["label"] == "polymer" else electrolyte_cell,
-                report=SandwichPhaseReport(
-                    label=kwargs["label"],
-                    box_nm=(2.0, 2.0, 3.0 if kwargs["label"] == "polymer" else 4.0),
-                    density_g_cm3=(1.02 if kwargs["label"] == "polymer" else 1.11),
-                    species_names=("PEO",) if kwargs["label"] == "polymer" else ("DME", "Li", "FSI"),
-                    counts=(2,) if kwargs["label"] == "polymer" else (4, 2, 2),
-                    target_density_g_cm3=kwargs["target_density_g_cm3"],
+            walled_calls.append(kwargs)
+            or (
+                SimpleNamespace(
+                    relaxed_block=polymer_cell if kwargs["label"] == "polymer" else electrolyte_cell,
+                    report=SandwichPhaseReport(
+                        label=kwargs["label"],
+                        box_nm=(2.0, 2.0, 3.0 if kwargs["label"] == "polymer" else 4.0),
+                        density_g_cm3=(1.02 if kwargs["label"] == "polymer" else 1.11),
+                        species_names=("PEO",) if kwargs["label"] == "polymer" else ("DME", "Li", "FSI"),
+                        counts=(2,) if kwargs["label"] == "polymer" else (4, 2, 2),
+                        target_density_g_cm3=kwargs["target_density_g_cm3"],
+                    ),
+                    summary={"occupied_density_g_cm3": 1.02 if kwargs["label"] == "polymer" else 1.11},
+                    summary_path=tmp_path / f"{kwargs['label']}_summary.json",
                 ),
-                summary={"occupied_density_g_cm3": 1.02 if kwargs["label"] == "polymer" else 1.11},
-                summary_path=tmp_path / f"{kwargs['label']}_summary.json",
+                {"phase_preparation_mode": "bulk_calibrate_walled_phase", "success": True},
+                tmp_path / f"{kwargs['label']}_walled_build.json",
             )
         ),
-    )
-    monkeypatch.setattr(
-        sandwich,
-        "_prepared_slab_phase_report",
-        lambda **kwargs: SandwichPhaseReport(
-            label=kwargs["label"],
-            box_nm=(2.0, 2.0, 3.0 if kwargs["label"] == "polymer" else 4.0),
-            density_g_cm3=(1.02 if kwargs["label"] == "polymer" else 1.11),
-            species_names=("PEO",) if kwargs["label"] == "polymer" else ("DME", "Li", "FSI"),
-            counts=(2,) if kwargs["label"] == "polymer" else (4, 2, 2),
-            target_density_g_cm3=kwargs["target_density_g_cm3"],
-        ),
-    )
-    monkeypatch.setattr(
-        sandwich,
-        "_load_block_from_top_gro",
-        lambda **kwargs: polymer_cell if "polymer" in kwargs["gro_path"].name else electrolyte_cell,
     )
 
     def _fake_export(**kwargs):
@@ -1518,7 +1485,7 @@ def test_build_graphite_polymer_electrolyte_sandwich_orchestrates_bulk_then_slab
 
     assert len(eq_calls) == 2
     assert len(pack_calls) == 2
-    assert len(confined_calls) == 2
+    assert len(walled_calls) == 2
     assert pack_calls[0]["density"] < 1.05
     assert pack_calls[1]["density"] == pytest.approx(0.82)
     assert eq_calls[0]["label"] == "Polymer bulk"
@@ -1533,6 +1500,9 @@ def test_build_graphite_polymer_electrolyte_sandwich_orchestrates_bulk_then_slab
     assert '"electrolyte_phase"' in manifest
     assert '"polymer_phase_confined"' in manifest
     assert '"electrolyte_phase_confined"' in manifest
+    assert '"polymer_bulk_calibration"' in manifest
+    assert '"electrolyte_bulk_calibration"' in manifest
+    assert '"phase_preparation_mode": "bulk_calibrate_walled_phase"' in manifest
     assert '"polymer_bulk_pack"' in manifest
     assert '"electrolyte_bulk_pack"' in manifest
     assert '"ndx_groups"' in manifest
@@ -1540,7 +1510,7 @@ def test_build_graphite_polymer_electrolyte_sandwich_orchestrates_bulk_then_slab
     assert result.stack_checks["is_expected_order"] is True
 
 
-def test_build_graphite_polymer_electrolyte_sandwich_rebuilds_soft_phases_after_graphite_expansion(tmp_path: Path, monkeypatch):
+def test_build_graphite_polymer_electrolyte_sandwich_uses_preflight_graphite_negotiation_for_walled_phases(tmp_path: Path, monkeypatch):
     import yadonpy.interface.sandwich as sandwich
 
     graphite_cell = _dummy_mol("GRAPH", z_ang=1.0, cell_box_ang=(20.0, 20.0, 12.0))
@@ -1604,80 +1574,38 @@ def test_build_graphite_polymer_electrolyte_sandwich_rebuilds_soft_phases_after_
         )
 
     monkeypatch.setattr(sandwich, "plan_fixed_xy_direct_electrolyte_preparation", _fake_electrolyte_plan)
-    polymer_prepared = SimpleNamespace(
-        top_path=tmp_path / "polymer.top",
-        gro_path=tmp_path / "polymer.gro",
-        meta_path=tmp_path / "polymer_meta.json",
-        box_nm=(2.0, 2.0, 3.0),
-    )
-    electrolyte_prepared = SimpleNamespace(
-        top_path=tmp_path / "electrolyte.top",
-        gro_path=tmp_path / "electrolyte.gro",
-        meta_path=tmp_path / "electrolyte_meta.json",
-        box_nm=(2.0, 2.0, 4.0),
-    )
+    walled_calls: list[dict] = []
     monkeypatch.setattr(
         sandwich,
-        "_prepare_slab_from_equilibrated_bulk",
+        "_run_final_xy_walled_phase_build",
         lambda **kwargs: (
-            polymer_prepared if kwargs["label"] == "polymer" else electrolyte_prepared,
-            f"{kwargs['label']} slab prepared",
-        ),
-    )
-    monkeypatch.setattr(
-        sandwich,
-        "_prepared_slab_phase_report",
-        lambda **kwargs: SandwichPhaseReport(
-            label=kwargs["label"],
-            box_nm=(2.0, 2.0, 3.0 if kwargs["label"] == "polymer" else 4.0),
-            density_g_cm3=(1.02 if kwargs["label"] == "polymer" else 1.11),
-            species_names=("PEO",) if kwargs["label"] == "polymer" else ("DME", "Li", "FSI"),
-            counts=(2,) if kwargs["label"] == "polymer" else (4, 2, 2),
-            target_density_g_cm3=kwargs["target_density_g_cm3"],
-        ),
-    )
-    monkeypatch.setattr(
-        sandwich,
-        "_run_confined_phase_relaxation",
-        lambda **kwargs: SimpleNamespace(
-            relaxed_block=polymer_cell if kwargs["label"] == "polymer" else electrolyte_cell,
-            report=SandwichPhaseReport(
-                label=kwargs["label"],
-                box_nm=(4.0, 4.0, 3.0 if kwargs["label"] == "polymer" else 4.0),
-                density_g_cm3=(1.02 if kwargs["label"] == "polymer" else 1.11),
-                species_names=("PEO",) if kwargs["label"] == "polymer" else ("DME", "Li", "FSI"),
-                counts=(2,) if kwargs["label"] == "polymer" else (4, 2, 2),
-                target_density_g_cm3=kwargs["target_density_g_cm3"],
-            ),
-            summary={"occupied_density_g_cm3": 1.02 if kwargs["label"] == "polymer" else 1.11},
-            summary_path=tmp_path / f"{kwargs['label']}_summary.json",
+            walled_calls.append(kwargs)
+            or (
+                SimpleNamespace(
+                    relaxed_block=polymer_cell if kwargs["label"] == "polymer" else electrolyte_cell,
+                    report=SandwichPhaseReport(
+                        label=kwargs["label"],
+                        box_nm=(4.0, 4.0, 3.0 if kwargs["label"] == "polymer" else 4.0),
+                        density_g_cm3=(1.02 if kwargs["label"] == "polymer" else 1.11),
+                        species_names=("PEO",) if kwargs["label"] == "polymer" else ("DME", "Li", "FSI"),
+                        counts=(2,) if kwargs["label"] == "polymer" else (4, 2, 2),
+                        target_density_g_cm3=kwargs["target_density_g_cm3"],
+                    ),
+                    summary={"occupied_density_g_cm3": 1.02 if kwargs["label"] == "polymer" else 1.11},
+                    summary_path=tmp_path / f"{kwargs['label']}_summary.json",
+                ),
+                {"phase_preparation_mode": "bulk_calibrate_walled_phase", "success": True},
+                tmp_path / f"{kwargs['label']}_walled_build.json",
+            )
         ),
     )
 
     expansion_state = {"calls": 0}
-
-    def _fake_expand_graphite(**kwargs):
-        expansion_state["calls"] += 1
-        if expansion_state["calls"] == 1:
-            return (
-                GraphiteSubstrateSpec(nx=8, ny=8, n_layers=2),
-                SimpleNamespace(
-                    cell=graphite_cell,
-                    layer_mol=graphite_layer,
-                    layer_count=2,
-                    orientation="basal",
-                    edge_cap_summary={"H": 8},
-                    box_nm=(4.0, 4.0, 1.2),
-                ),
-                {
-                    "repeat_factors_xy": [2, 2],
-                    "graphite_box_before_nm": [2.0, 2.0, 1.2],
-                    "graphite_box_after_nm": [4.0, 4.0, 1.2],
-                },
-            )
-        return kwargs["graphite"], kwargs["graphite_result"], None
-
-    monkeypatch.setattr(sandwich, "_maybe_expand_graphite_for_phase_footprint", _fake_expand_graphite)
+    monkeypatch.setattr(
+        sandwich,
+        "_maybe_expand_graphite_for_phase_footprint",
+        lambda **kwargs: expansion_state.__setitem__("calls", expansion_state["calls"] + 1) or (kwargs["graphite"], kwargs["graphite_result"], None),
+    )
 
     def _fake_export(**kwargs):
         out_dir = Path(kwargs["out_dir"])
@@ -1707,7 +1635,18 @@ def test_build_graphite_polymer_electrolyte_sandwich_rebuilds_soft_phases_after_
     monkeypatch.setattr(
         sandwich,
         "_preflight_graphite_footprint_from_phase_targets",
-        lambda **kwargs: (kwargs["graphite"], kwargs["graphite_result"], []),
+        lambda **kwargs: (
+            GraphiteSubstrateSpec(nx=8, ny=8, n_layers=2),
+            SimpleNamespace(
+                cell=graphite_cell,
+                layer_mol=graphite_layer,
+                layer_count=2,
+                orientation="basal",
+                edge_cap_summary={"H": 8},
+                box_nm=(4.0, 4.0, 1.2),
+            ),
+            [{"graphite_box_after_nm": [4.0, 4.0, 1.2]}],
+        ),
     )
 
     result = build_graphite_polymer_electrolyte_sandwich(
@@ -1729,14 +1668,12 @@ def test_build_graphite_polymer_electrolyte_sandwich_rebuilds_soft_phases_after_
         restart=False,
     )
 
-    assert expansion_state["calls"] == 2
-    assert len(polymer_box_calls) == 2
-    assert polymer_box_calls[0][:2] == pytest.approx((2.0, 2.0))
-    assert polymer_box_calls[1][:2] == pytest.approx((4.0, 4.0))
-    assert len(electrolyte_ref_boxes) == 2
-    assert electrolyte_ref_boxes[1][:2] == pytest.approx((4.0, 4.0))
+    assert expansion_state["calls"] == 0
+    assert polymer_box_calls == [pytest.approx((4.0, 4.0, 3.0))]
+    assert electrolyte_ref_boxes == [pytest.approx((4.0, 4.0, 4.0))]
+    assert len(walled_calls) == 2
     manifest = result.manifest_path.read_text(encoding="utf-8")
     progress = (tmp_path / "sandwich_expand" / "05_sandwich" / "sandwich_progress.json").read_text(encoding="utf-8")
-    assert '"phase_preparation_rounds": 2' in manifest
+    assert '"phase_preparation_mode": "bulk_calibrate_walled_phase"' in manifest
     assert '"graphite_footprint_negotiations"' in progress
     assert '"latest_graphite_footprint_negotiation"' in progress

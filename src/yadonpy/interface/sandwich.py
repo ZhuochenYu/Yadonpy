@@ -28,7 +28,7 @@ from ..sim.preset.eq import _find_latest_equilibrated_gro
 from .bulk_resize import build_bulk_equilibrium_profile, fixed_xy_semiisotropic_npt_overrides, read_equilibrated_box_nm
 from . import builder as interface_builder
 from .postprocess import read_ndx_groups
-from .prep import equilibrate_bulk_with_eq21, plan_fixed_xy_direct_electrolyte_preparation
+from .prep import equilibrate_bulk_with_eq21, make_orthorhombic_pack_cell, plan_fixed_xy_direct_electrolyte_preparation
 from .sandwich_metrics import (
     build_sandwich_acceptance as _build_sandwich_acceptance,
     build_stack_checks as _build_stack_checks,
@@ -38,6 +38,12 @@ from .sandwich_metrics import (
     phase_gap_penalty_nm as _phase_gap_penalty_nm,
     phase_local_density_summary as _phase_local_density_summary,
     representative_phase_density as _representative_phase_density,
+)
+from .sandwich_phase_build import (
+    BulkCalibrationSummary as _BulkCalibrationSummary,
+    recommend_initial_walled_pack_density as _recommend_initial_walled_pack_density,
+    solve_phase_target_z_nm as _solve_phase_target_z_nm,
+    write_bulk_calibration_summary as _write_bulk_calibration_summary,
 )
 from .sandwich_packing import (
     PackBackoffResult as _PackBackoffResult,
@@ -72,6 +78,20 @@ class _ConfinedPhaseResult:
     summary_path: Path
     top_path: Path
     gro_path: Path
+
+
+@dataclass(frozen=True)
+class _BulkCalibrationResult:
+    label: str
+    species: tuple[object, ...]
+    counts: tuple[int, ...]
+    charge_scale: tuple[float, ...]
+    bulk: object
+    pack: _PackBackoffResult
+    target_z_nm: float
+    summary: dict[str, object]
+    summary_path: Path
+    notes: tuple[str, ...]
 
 
 def _write_sandwich_progress(progress_path: Path, payload: dict[str, object]) -> None:
@@ -649,6 +669,262 @@ def _prepare_electrolyte_phase_inputs(
         "mols": mols,
         "charge_scale": charge_scale,
         "prep": prep,
+    }
+
+
+def _cell_box_nm(cell, *, fallback: tuple[float, float, float]) -> tuple[float, float, float]:
+    current_box = getattr(cell, "cell", None)
+    if current_box is None:
+        return tuple(float(x) for x in fallback)
+    try:
+        return (
+            float(current_box.xhi - current_box.xlo) / 10.0,
+            float(current_box.yhi - current_box.ylo) / 10.0,
+            float(current_box.zhi - current_box.zlo) / 10.0,
+        )
+    except Exception:
+        return tuple(float(x) for x in fallback)
+
+
+def _bulk_eq_box_nm(*, work_dir: Path, fallback: tuple[float, float, float]) -> tuple[float, float, float]:
+    latest = _find_latest_equilibrated_gro(Path(work_dir))
+    if latest is None or not Path(latest).exists():
+        return tuple(float(x) for x in fallback)
+    try:
+        return tuple(float(x) for x in read_equilibrated_box_nm(Path(latest)))
+    except Exception:
+        return tuple(float(x) for x in fallback)
+
+
+def _build_bulk_calibration_summary(
+    *,
+    label: str,
+    master_xy_nm: tuple[float, float],
+    target_density_g_cm3: float,
+    total_mass_amu: float,
+    selected_bulk_pack_density_g_cm3: float,
+    bulk_reference_box_nm: tuple[float, float, float],
+    charged_phase: bool,
+    notes: Sequence[str] = (),
+) -> _BulkCalibrationSummary:
+    target_z_nm = _solve_phase_target_z_nm(
+        total_mass_amu=float(total_mass_amu),
+        target_density_g_cm3=float(target_density_g_cm3),
+        target_xy_nm=(float(master_xy_nm[0]), float(master_xy_nm[1])),
+    )
+    initial_walled_density = _recommend_initial_walled_pack_density(
+        phase=str(label),
+        target_density_g_cm3=float(target_density_g_cm3),
+        selected_bulk_pack_density_g_cm3=float(selected_bulk_pack_density_g_cm3),
+    )
+    return _BulkCalibrationSummary(
+        label=str(label),
+        phase_preparation_mode="bulk_calibrate_walled_phase",
+        master_xy_nm=(float(master_xy_nm[0]), float(master_xy_nm[1])),
+        bulk_reference_box_nm=tuple(float(x) for x in bulk_reference_box_nm),
+        target_density_g_cm3=float(target_density_g_cm3),
+        total_mass_amu=float(total_mass_amu),
+        target_z_nm=float(target_z_nm),
+        initial_walled_pack_density_g_cm3=float(initial_walled_density),
+        selected_bulk_pack_density_g_cm3=float(selected_bulk_pack_density_g_cm3),
+        charged_phase=bool(charged_phase),
+        notes=tuple(str(x) for x in notes),
+    )
+
+
+def _run_polymer_bulk_calibration(
+    *,
+    ff,
+    ion_ff,
+    graphite_box_nm: tuple[float, float, float],
+    polymer: PolymerSlabSpec,
+    relax: SandwichRelaxationSpec,
+    chain_dir: Path,
+    base_phase_dir: Path,
+    restart: bool | None,
+) -> dict[str, object]:
+    round_dir = Path(base_phase_dir)
+    build_dir = round_dir / "00_build"
+    reference_box_nm = (
+        float(graphite_box_nm[0]),
+        float(graphite_box_nm[1]),
+        float(polymer.slab_z_nm),
+    )
+    phase_build = _prepare_polymer_phase_species(
+        ff=ff,
+        ion_ff=ion_ff,
+        polymer=polymer,
+        relax=relax,
+        chain_dir=chain_dir,
+        box_nm=reference_box_nm,
+    )
+    pack_result = _run_amorphous_cell_with_density_backoff(
+        label="polymer",
+        pack_fn=poly.amorphous_cell,
+        mols=list(phase_build["species"]),
+        counts=list(phase_build["counts"]),
+        charge_scale=list(phase_build["charge_scale"]),
+        phase="polymer",
+        target_density_g_cm3=float(polymer.target_density_g_cm3),
+        z_scale=float(polymer.initial_pack_z_scale),
+        charged=bool(phase_build.get("charged_phase", False)),
+        work_dir=build_dir,
+        retry=int(polymer.pack_retry),
+        retry_step=int(polymer.pack_retry_step),
+        threshold=float(polymer.pack_threshold_ang),
+        dec_rate=float(polymer.pack_dec_rate),
+    )
+    bulk = pack_result.cell
+    register_cell_species_metadata(
+        bulk,
+        list(phase_build["species"]),
+        list(phase_build["counts"]),
+        charge_scale=list(phase_build["charge_scale"]),
+        pack_mode="sandwich_polymer_bulk",
+    )
+    bulk_eq21_exec_kwargs = {
+        "time": float(relax.bulk_eq21_final_ns),
+        "eq21_pre_nvt_ps": 5.0,
+        "eq21_tmax": max(float(relax.temperature_k), 650.0),
+        "eq21_pmax": 5000.0,
+        "eq21_npt_time_scale": 0.4,
+        **{str(k): float(v) for k, v in dict(relax.bulk_eq21_exec_kwargs).items()},
+    }
+    _ = equilibrate_bulk_with_eq21(
+        label="Polymer bulk",
+        ac=bulk,
+        work_dir=round_dir,
+        temp=float(relax.temperature_k),
+        press=float(relax.pressure_bar),
+        mpi=int(relax.mpi),
+        omp=int(relax.omp),
+        gpu=int(relax.gpu),
+        gpu_id=(0 if relax.gpu_id is None else int(relax.gpu_id)),
+        additional_loops=int(relax.bulk_additional_loops),
+        final_npt_ns=float(relax.bulk_eq21_final_ns),
+        eq21_exec_kwargs=bulk_eq21_exec_kwargs,
+    )
+    calibration = _build_bulk_calibration_summary(
+        label="polymer",
+        master_xy_nm=(float(graphite_box_nm[0]), float(graphite_box_nm[1])),
+        target_density_g_cm3=float(polymer.target_density_g_cm3),
+        total_mass_amu=_phase_total_mass_amu(
+            species=list(phase_build["species"]),
+            counts=list(phase_build["counts"]),
+        ),
+        selected_bulk_pack_density_g_cm3=float(pack_result.selected_density_g_cm3),
+        bulk_reference_box_nm=_bulk_eq_box_nm(work_dir=round_dir, fallback=_cell_box_nm(bulk, fallback=reference_box_nm)),
+        charged_phase=bool(phase_build.get("charged_phase", False)),
+        notes=phase_build.get("notes", ()),
+    )
+    summary_path = _write_bulk_calibration_summary(
+        calibration,
+        round_dir / "polymer_bulk_calibration_summary.json",
+    )
+    return {
+        "phase_build": phase_build,
+        "pack": pack_result,
+        "bulk": bulk,
+        "calibration": calibration,
+        "summary": asdict(calibration),
+        "summary_path": summary_path,
+    }
+
+
+def _run_electrolyte_bulk_calibration(
+    *,
+    ff,
+    ion_ff,
+    graphite_box_nm: tuple[float, float, float],
+    electrolyte: ElectrolyteSlabSpec,
+    relax: SandwichRelaxationSpec,
+    base_phase_dir: Path,
+    restart: bool | None,
+) -> dict[str, object]:
+    round_dir = Path(base_phase_dir)
+    inputs = _prepare_electrolyte_phase_inputs(
+        ff=ff,
+        ion_ff=ion_ff,
+        electrolyte=electrolyte,
+        graphite_box_nm=graphite_box_nm,
+        relax=relax,
+    )
+    pack_result = _run_amorphous_cell_with_density_backoff(
+        label="electrolyte",
+        pack_fn=poly.amorphous_cell,
+        mols=list(inputs["mols"]),
+        counts=list(inputs["prep"].direct_plan.target_counts),
+        charge_scale=list(inputs["charge_scale"]),
+        phase="electrolyte",
+        target_density_g_cm3=float(electrolyte.target_density_g_cm3),
+        requested_density_g_cm3=electrolyte.initial_pack_density_g_cm3,
+        work_dir=round_dir / "00_build",
+        retry=int(electrolyte.pack_retry),
+        retry_step=int(electrolyte.pack_retry_step),
+        threshold=float(electrolyte.pack_threshold_ang),
+        dec_rate=float(electrolyte.pack_dec_rate),
+    )
+    bulk = pack_result.cell
+    register_cell_species_metadata(
+        bulk,
+        list(inputs["mols"]),
+        list(inputs["prep"].direct_plan.target_counts),
+        charge_scale=list(inputs["charge_scale"]),
+        pack_mode="sandwich_electrolyte_bulk",
+    )
+    bulk_eq21_exec_kwargs = {
+        "time": float(relax.bulk_eq21_final_ns),
+        "eq21_pre_nvt_ps": 5.0,
+        "eq21_tmax": max(float(relax.temperature_k), 650.0),
+        "eq21_pmax": 5000.0,
+        "eq21_npt_time_scale": 0.4,
+        **{str(k): float(v) for k, v in dict(relax.bulk_eq21_exec_kwargs).items()},
+    }
+    _ = equilibrate_bulk_with_eq21(
+        label="Electrolyte bulk",
+        ac=bulk,
+        work_dir=round_dir,
+        temp=float(relax.temperature_k),
+        press=float(relax.pressure_bar),
+        mpi=int(relax.mpi),
+        omp=int(relax.omp),
+        gpu=int(relax.gpu),
+        gpu_id=(0 if relax.gpu_id is None else int(relax.gpu_id)),
+        additional_loops=int(relax.bulk_additional_loops),
+        final_npt_ns=float(relax.bulk_eq21_final_ns),
+        eq21_exec_kwargs=bulk_eq21_exec_kwargs,
+    )
+    notes = tuple(str(x) for x in getattr(inputs["prep"], "notes", ()))
+    calibration = _build_bulk_calibration_summary(
+        label="electrolyte",
+        master_xy_nm=(float(graphite_box_nm[0]), float(graphite_box_nm[1])),
+        target_density_g_cm3=float(electrolyte.target_density_g_cm3),
+        total_mass_amu=_phase_total_mass_amu(
+            species=list(inputs["mols"]),
+            counts=list(inputs["prep"].direct_plan.target_counts),
+        ),
+        selected_bulk_pack_density_g_cm3=float(pack_result.selected_density_g_cm3),
+        bulk_reference_box_nm=_bulk_eq_box_nm(
+            work_dir=round_dir,
+            fallback=_cell_box_nm(
+                bulk,
+                fallback=(float(graphite_box_nm[0]), float(graphite_box_nm[1]), float(electrolyte.slab_z_nm)),
+            ),
+        ),
+        charged_phase=False,
+        notes=notes,
+    )
+    summary_path = _write_bulk_calibration_summary(
+        calibration,
+        round_dir / "electrolyte_bulk_calibration_summary.json",
+    )
+    return {
+        "inputs": inputs,
+        "pack": pack_result,
+        "bulk": bulk,
+        "calibration": calibration,
+        "summary": asdict(calibration),
+        "summary_path": summary_path,
     }
 
 
@@ -1975,10 +2251,206 @@ def _normalize_confined_block_for_stack(
     return normalized
 
 
+def _run_final_xy_walled_phase_build(
+    *,
+    label: str,
+    species: Sequence,
+    counts: Sequence[int],
+    charge_scale: Sequence[float],
+    target_xy_nm: tuple[float, float],
+    target_density_g_cm3: float,
+    bulk_calibration: dict[str, object],
+    ff_name: str,
+    relax: SandwichRelaxationSpec,
+    work_dir: Path,
+    retry: int,
+    retry_step: int,
+    threshold: float,
+    dec_rate: float,
+    charged_phase: bool,
+    restart: bool | None = None,
+) -> tuple[_ConfinedPhaseResult, dict[str, object], Path]:
+    total_mass_amu = _phase_total_mass_amu(species=species, counts=counts)
+    initial_density = float(
+        bulk_calibration.get(
+            "initial_walled_pack_density_g_cm3",
+            _recommend_initial_walled_pack_density(
+                phase=str(label),
+                target_density_g_cm3=float(target_density_g_cm3),
+                selected_bulk_pack_density_g_cm3=float(bulk_calibration.get("selected_bulk_pack_density_g_cm3", target_density_g_cm3)),
+            ),
+        )
+    )
+    target_z_nm = float(
+        bulk_calibration.get(
+            "target_z_nm",
+            _solve_phase_target_z_nm(
+                total_mass_amu=float(total_mass_amu),
+                target_density_g_cm3=float(target_density_g_cm3),
+                target_xy_nm=(float(target_xy_nm[0]), float(target_xy_nm[1])),
+            ),
+        )
+    )
+    _policy, ladder = _build_pack_density_ladder(
+        phase=str(label),
+        target_density_g_cm3=float(target_density_g_cm3),
+        requested_density_g_cm3=float(initial_density),
+        charged=bool(charged_phase),
+    )
+    attempts: list[dict[str, object]] = []
+    best_result: _ConfinedPhaseResult | None = None
+    best_score: float | None = None
+    best_attempt_index: int | None = None
+    last_error: Exception | None = None
+    summary_path = Path(work_dir) / f"{label}_walled_phase_summary.json"
+
+    for attempt_index, pack_density in enumerate(ladder):
+        attempt_dir = Path(work_dir) / f"attempt_{attempt_index:02d}"
+        attempt_dir.mkdir(parents=True, exist_ok=True)
+        initial_z_nm = max(
+            float(target_z_nm),
+            _solve_phase_target_z_nm(
+                total_mass_amu=float(total_mass_amu),
+                target_density_g_cm3=float(pack_density),
+                target_xy_nm=(float(target_xy_nm[0]), float(target_xy_nm[1])),
+                min_z_nm=float(target_z_nm),
+            ),
+        )
+        attempt_record: dict[str, object] = {
+            "attempt_index": int(attempt_index),
+            "initial_pack_density_g_cm3": float(pack_density),
+            "target_z_nm": float(target_z_nm),
+            "initial_pack_box_nm": [float(target_xy_nm[0]), float(target_xy_nm[1]), float(initial_z_nm)],
+        }
+        try:
+            pack_cell = poly.amorphous_cell(
+                list(species),
+                list(counts),
+                cell=make_orthorhombic_pack_cell((float(target_xy_nm[0]), float(target_xy_nm[1]), float(initial_z_nm))),
+                density=None,
+                charge_scale=list(charge_scale),
+                neutralize=False,
+                retry=int(retry),
+                retry_step=int(retry_step),
+                threshold=float(threshold),
+                dec_rate=float(dec_rate),
+                work_dir=attempt_dir / "00_build",
+                restart=restart,
+            )
+            register_cell_species_metadata(
+                pack_cell,
+                list(species),
+                list(counts),
+                charge_scale=list(charge_scale),
+                pack_mode=f"{label}_fixed_xy_walled_phase",
+            )
+            pack_note = None
+            if str(label).strip().lower() == "polymer":
+                pack_cell, pack_note = _compact_packed_cell_z_by_molecule_centers(
+                    cell=pack_cell,
+                    species=species,
+                    counts=counts,
+                    target_box_nm=(float(target_xy_nm[0]), float(target_xy_nm[1]), float(target_z_nm)),
+                )
+            phase_result = _run_confined_phase_relaxation(
+                label=str(label),
+                source_block=pack_cell,
+                source_note=(
+                    "direct final-XY walled phase build from bulk calibration"
+                    + (f"; {pack_note}" if pack_note else "")
+                ),
+                species=species,
+                counts=counts,
+                charge_scale=charge_scale,
+                target_xy_nm=(float(target_xy_nm[0]), float(target_xy_nm[1])),
+                target_density_g_cm3=float(target_density_g_cm3),
+                target_thickness_nm=float(target_z_nm),
+                ff_name=str(ff_name),
+                relax=relax,
+                work_dir=attempt_dir / "01_confined",
+                restart=restart,
+                summary_extra={
+                    "phase_preparation_mode": "bulk_calibrate_walled_phase",
+                    "bulk_calibration_target_z_nm": float(target_z_nm),
+                    "initial_pack_density_g_cm3": float(pack_density),
+                    "initial_pack_box_nm": [float(target_xy_nm[0]), float(target_xy_nm[1]), float(initial_z_nm)],
+                    "source_mode": "final_xy_walled_phase",
+                },
+            )
+            score = _confined_summary_score(
+                summary=phase_result.summary,
+                target_density_g_cm3=float(target_density_g_cm3),
+                target_thickness_nm=float(target_z_nm),
+            )
+            attempt_record.update(
+                {
+                    "success": True,
+                    "score": float(score),
+                    "summary_path": str(phase_result.summary_path),
+                    "center_bulk_like_density_g_cm3": float(phase_result.summary.get("center_bulk_like_density_g_cm3", 0.0) or 0.0),
+                    "occupied_density_g_cm3": float(phase_result.summary.get("occupied_density_g_cm3", 0.0) or 0.0),
+                    "occupied_thickness_nm": float(phase_result.summary.get("occupied_thickness_nm", 0.0) or 0.0),
+                    "wrapped_across_z_boundary": bool(phase_result.summary.get("wrapped_across_z_boundary", False)),
+                }
+            )
+            attempts.append(attempt_record)
+            if best_score is None or float(score) < float(best_score):
+                best_result = phase_result
+                best_score = float(score)
+                best_attempt_index = int(attempt_index)
+            if not _needs_confined_rescue(
+                summary=phase_result.summary,
+                target_density_g_cm3=float(target_density_g_cm3),
+                target_thickness_nm=float(target_z_nm),
+            ):
+                break
+        except Exception as exc:
+            attempt_record["success"] = False
+            attempt_record["error"] = repr(exc)
+            attempts.append(attempt_record)
+            last_error = exc
+
+    if best_result is None or best_attempt_index is None:
+        build_summary = {
+            "label": str(label),
+            "phase_preparation_mode": "bulk_calibrate_walled_phase",
+            "target_density_g_cm3": float(target_density_g_cm3),
+            "target_xy_nm": [float(target_xy_nm[0]), float(target_xy_nm[1])],
+            "target_z_nm": float(target_z_nm),
+            "bulk_calibration": dict(bulk_calibration),
+            "attempts": attempts,
+            "success": False,
+        }
+        summary_path.parent.mkdir(parents=True, exist_ok=True)
+        summary_path.write_text(json.dumps(build_summary, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        raise RuntimeError(
+            f"Failed to build final-XY walled {label} phase after {len(attempts)} attempts. See {summary_path}."
+        ) from last_error
+
+    build_summary = {
+        "label": str(label),
+        "phase_preparation_mode": "bulk_calibrate_walled_phase",
+        "target_density_g_cm3": float(target_density_g_cm3),
+        "target_xy_nm": [float(target_xy_nm[0]), float(target_xy_nm[1])],
+        "target_z_nm": float(target_z_nm),
+        "bulk_calibration": dict(bulk_calibration),
+        "attempts": attempts,
+        "success": True,
+        "selected_attempt_index": int(best_attempt_index),
+        "selected_summary_path": str(best_result.summary_path),
+        "selected_round": str(best_result.summary.get("selected_round", "round_00")),
+    }
+    summary_path.parent.mkdir(parents=True, exist_ok=True)
+    summary_path.write_text(json.dumps(build_summary, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    return best_result, build_summary, summary_path
+
+
 def _run_confined_phase_relaxation(
     *,
     label: str,
-    prepared_slab,
+    prepared_slab=None,
+    source_block=None,
+    source_note: str | None = None,
     species: Sequence,
     counts: Sequence[int],
     charge_scale: Sequence[float],
@@ -1989,14 +2461,18 @@ def _run_confined_phase_relaxation(
     relax: SandwichRelaxationSpec,
     work_dir: Path,
     restart: bool | None = None,
+    summary_extra: dict[str, object] | None = None,
 ) -> _ConfinedPhaseResult:
     from .protocol import _resolve_route_b_wall_atomtype
 
-    base_block = _load_block_from_top_gro(
-        top_path=prepared_slab.top_path,
-        gro_path=prepared_slab.gro_path,
-        fallback_cell=None,
-    )
+    if source_block is not None:
+        base_block = utils.deepcopy_mol(source_block)
+    else:
+        base_block = _load_block_from_top_gro(
+            top_path=prepared_slab.top_path,
+            gro_path=prepared_slab.gro_path,
+            fallback_cell=None,
+        )
     if base_block is None:
         raise RuntimeError(f"Cannot load prepared slab geometry for confined {label} relaxation.")
 
@@ -2140,6 +2616,8 @@ def _run_confined_phase_relaxation(
         "rescue_applied": bool(rescue_applied),
         "round_scores": {str(k): float(v) for k, v in round_scores.items()},
         "selected_round": str(selected_summary.get("round_label", "round_00")),
+        "source_note": (None if source_note is None else str(source_note)),
+        **({} if summary_extra is None else dict(summary_extra)),
     }
     summary_path = work_dir / f"{label}_phase_confined_summary.json"
     summary_path.parent.mkdir(parents=True, exist_ok=True)
@@ -2313,18 +2791,130 @@ def build_graphite_polymer_electrolyte_sandwich(
             "graphite_box_nm": [float(x) for x in graphite_result.box_nm],
             "graphite_spec": asdict(graphite),
             "phase_preparation_rounds": 0,
+            "phase_preparation_mode": "bulk_calibrate_walled_phase",
             "graphite_footprint_negotiations": preflight_graphite_negotiations,
         },
     )
 
     graphite_negotiations: list[dict[str, object]] = list(preflight_graphite_negotiations)
+    graphite_negotiation = graphite_negotiations[-1] if graphite_negotiations else None
     preparation_round_count = 1
-    max_preparation_rounds = 3
-    while True:
-        round_index = int(preparation_round_count - 1)
-        polymer_round_dir = _phase_round_dir(polymer_eq_dir, round_index)
-        electrolyte_round_dir = _phase_round_dir(electrolyte_eq_dir, round_index)
+    phase_preparation_mode = "bulk_calibrate_walled_phase"
 
+    polymer_calibration = _run_polymer_bulk_calibration(
+        ff=ff,
+        ion_ff=ion_ff,
+        graphite_box_nm=tuple(float(x) for x in graphite_result.box_nm),
+        polymer=polymer,
+        relax=relax,
+        chain_dir=polymer_chain_dir,
+        base_phase_dir=_phase_round_dir(polymer_eq_dir, 0),
+        restart=restart,
+    )
+    electrolyte_calibration = _run_electrolyte_bulk_calibration(
+        ff=ff,
+        ion_ff=ion_ff,
+        graphite_box_nm=tuple(float(x) for x in graphite_result.box_nm),
+        electrolyte=electrolyte,
+        relax=relax,
+        base_phase_dir=_phase_round_dir(electrolyte_eq_dir, 0),
+        restart=restart,
+    )
+
+    _write_sandwich_progress(
+        progress_path,
+        {
+            "stage": "bulk_calibration_completed",
+            "phase_preparation_rounds": int(preparation_round_count),
+            "phase_preparation_mode": phase_preparation_mode,
+            "graphite_box_nm": [float(x) for x in graphite_result.box_nm],
+            "graphite_spec": asdict(graphite),
+            "graphite_footprint_negotiations": graphite_negotiations,
+            "latest_graphite_footprint_negotiation": graphite_negotiation,
+            "polymer_bulk_calibration_summary": str(polymer_calibration["summary_path"]),
+            "electrolyte_bulk_calibration_summary": str(electrolyte_calibration["summary_path"]),
+        },
+    )
+
+    polymer_phase_build = polymer_calibration["phase_build"]
+    polymer_chain = polymer_phase_build["chain"]
+    polymer_dp = int(polymer_phase_build["dp"])
+    chain_count = int(polymer_phase_build["chain_count"])
+    polymer_pack = polymer_calibration["pack"]
+    polymer_build_density = float(polymer_pack.selected_density_g_cm3)
+    polymer_selected_counts = list(polymer_phase_build["counts"])
+
+    electrolyte_inputs = electrolyte_calibration["inputs"]
+    electrolyte_mols = list(electrolyte_inputs["mols"])
+    electrolyte_charge_scale = list(electrolyte_inputs["charge_scale"])
+    electrolyte_pack = electrolyte_calibration["pack"]
+    electrolyte_build_density = float(electrolyte_pack.selected_density_g_cm3)
+    electrolyte_selected_counts = list(electrolyte_inputs["prep"].direct_plan.target_counts)
+
+    legacy_polymer_note = None
+    legacy_electrolyte_note = None
+    polymer_walled_build_summary: dict[str, object] | None = None
+    electrolyte_walled_build_summary: dict[str, object] | None = None
+    polymer_walled_build_summary_path: Path | None = None
+    electrolyte_walled_build_summary_path: Path | None = None
+
+    try:
+        _write_sandwich_progress(
+            progress_path,
+            {
+                "stage": "walled_phase_build_start",
+                "phase_preparation_rounds": int(preparation_round_count),
+                "phase_preparation_mode": phase_preparation_mode,
+                "graphite_box_nm": [float(x) for x in graphite_result.box_nm],
+                "graphite_spec": asdict(graphite),
+                "graphite_footprint_negotiations": graphite_negotiations,
+                "latest_graphite_footprint_negotiation": graphite_negotiation,
+                "polymer_bulk_calibration_summary": str(polymer_calibration["summary_path"]),
+                "electrolyte_bulk_calibration_summary": str(electrolyte_calibration["summary_path"]),
+            },
+        )
+        polymer_confined, polymer_walled_build_summary, polymer_walled_build_summary_path = _run_final_xy_walled_phase_build(
+            label="polymer",
+            species=list(polymer_phase_build["species"]),
+            counts=list(polymer_selected_counts),
+            charge_scale=list(polymer_phase_build["charge_scale"]),
+            target_xy_nm=(float(graphite_result.box_nm[0]), float(graphite_result.box_nm[1])),
+            target_density_g_cm3=float(polymer.target_density_g_cm3),
+            bulk_calibration=polymer_calibration["summary"],
+            ff_name=str(ff.name),
+            relax=relax,
+            work_dir=polymer_eq_dir / "06_walled_phase",
+            retry=int(polymer.pack_retry),
+            retry_step=int(polymer.pack_retry_step),
+            threshold=float(polymer.pack_threshold_ang),
+            dec_rate=float(polymer.pack_dec_rate),
+            charged_phase=bool(polymer_phase_build.get("charged_phase", False)),
+            restart=restart,
+        )
+        electrolyte_confined, electrolyte_walled_build_summary, electrolyte_walled_build_summary_path = _run_final_xy_walled_phase_build(
+            label="electrolyte",
+            species=list(electrolyte_mols),
+            counts=list(electrolyte_selected_counts),
+            charge_scale=list(electrolyte_charge_scale),
+            target_xy_nm=(float(graphite_result.box_nm[0]), float(graphite_result.box_nm[1])),
+            target_density_g_cm3=float(electrolyte.target_density_g_cm3),
+            bulk_calibration=electrolyte_calibration["summary"],
+            ff_name=str(ff.name),
+            relax=relax,
+            work_dir=electrolyte_eq_dir / "06_walled_phase",
+            retry=int(electrolyte.pack_retry),
+            retry_step=int(electrolyte.pack_retry_step),
+            threshold=float(electrolyte.pack_threshold_ang),
+            dec_rate=float(electrolyte.pack_dec_rate),
+            charged_phase=False,
+            restart=restart,
+        )
+    except Exception as exc:
+        phase_preparation_mode = "legacy_cut_slab"
+        utils.radon_print(
+            f"[WARN] bulk_calibrate_walled_phase failed; falling back to legacy prepared-slab path ({exc!r})",
+            level=2,
+        )
         polymer_round = _run_polymer_phase_round(
             ff=ff,
             ion_ff=ion_ff,
@@ -2332,7 +2922,7 @@ def build_graphite_polymer_electrolyte_sandwich(
             polymer=polymer,
             relax=relax,
             chain_dir=polymer_chain_dir,
-            base_phase_dir=polymer_round_dir,
+            base_phase_dir=_phase_round_dir(polymer_eq_dir, 0),
             restart=restart,
         )
         electrolyte_round = _run_electrolyte_phase_round(
@@ -2341,162 +2931,46 @@ def build_graphite_polymer_electrolyte_sandwich(
             graphite_box_nm=tuple(float(x) for x in graphite_result.box_nm),
             electrolyte=electrolyte,
             relax=relax,
-            base_phase_dir=electrolyte_round_dir,
+            base_phase_dir=_phase_round_dir(electrolyte_eq_dir, 0),
             restart=restart,
         )
-        _write_sandwich_progress(
-            progress_path,
-            {
-                "stage": "phase_preparation_round",
-                "current_round_index": int(round_index + 1),
-                "phase_preparation_rounds": int(preparation_round_count),
-                "graphite_box_nm": [float(x) for x in graphite_result.box_nm],
-                "graphite_spec": asdict(graphite),
-                "graphite_footprint_negotiations": graphite_negotiations,
-                "polymer_round": _phase_round_progress_snapshot(
-                    round_result=polymer_round,
-                    prepared_label="polymer",
-                ),
-                "electrolyte_round": _phase_round_progress_snapshot(
-                    round_result=electrolyte_round,
-                    prepared_label="electrolyte",
-                ),
-            },
+        polymer_selected_counts = list(polymer_round["selected_counts"])
+        electrolyte_selected_counts = list(electrolyte_round["selected_counts"])
+        polymer_confined = _run_confined_phase_relaxation(
+            label="polymer",
+            prepared_slab=polymer_round["prepared_slab"],
+            species=list(polymer_phase_build["species"]),
+            counts=list(polymer_selected_counts),
+            charge_scale=list(polymer_phase_build["charge_scale"]),
+            target_xy_nm=(float(graphite_result.box_nm[0]), float(graphite_result.box_nm[1])),
+            target_density_g_cm3=float(polymer.target_density_g_cm3),
+            target_thickness_nm=float(polymer.slab_z_nm),
+            ff_name=str(ff.name),
+            relax=relax,
+            work_dir=polymer_eq_dir / "06_confined_slab",
+            restart=restart,
+            summary_extra={"phase_preparation_mode": phase_preparation_mode},
         )
-
-        expanded_graphite, expanded_graphite_result, graphite_negotiation = _maybe_expand_graphite_for_phase_footprint(
-            graphite=graphite,
-            graphite_result=graphite_result,
-            ff=ff,
-            polymer_slab=polymer_round["prepared_slab"],
-            polymer_species=list(polymer_round["phase_build"]["species"]),
-            polymer_counts=list(polymer_round["selected_counts"]),
-            electrolyte_slab=electrolyte_round["prepared_slab"],
-            electrolyte_species=list(electrolyte_round["inputs"]["mols"]),
-            electrolyte_counts=list(electrolyte_round["selected_counts"]),
+        electrolyte_confined = _run_confined_phase_relaxation(
+            label="electrolyte",
+            prepared_slab=electrolyte_round["prepared_slab"],
+            species=list(electrolyte_mols),
+            counts=list(electrolyte_selected_counts),
+            charge_scale=list(electrolyte_charge_scale),
+            target_xy_nm=(float(graphite_result.box_nm[0]), float(graphite_result.box_nm[1])),
+            target_density_g_cm3=float(electrolyte.target_density_g_cm3),
+            target_thickness_nm=float(electrolyte.slab_z_nm),
+            ff_name=str(ff.name),
+            relax=relax,
+            work_dir=electrolyte_eq_dir / "06_confined_slab",
+            restart=restart,
+            summary_extra={"phase_preparation_mode": phase_preparation_mode},
         )
-        if graphite_negotiation is None:
-            break
-        graphite_counts_before_log = graphite_negotiation.get("graphite_counts_before_xy")
-        graphite_counts_after_log = graphite_negotiation.get("graphite_counts_after_xy")
-        graphite_scale_xy_log = graphite_negotiation.get("graphite_count_scale_xy")
-        polymer_required_xy_log = graphite_negotiation.get("polymer_required_xy_nm")
-        electrolyte_required_xy_log = graphite_negotiation.get("electrolyte_required_xy_nm")
-        polymer_required_comp_log = graphite_negotiation.get("polymer_compression_aware_required_xy_nm")
-        electrolyte_required_comp_log = graphite_negotiation.get("electrolyte_compression_aware_required_xy_nm")
-        utils.radon_print(
-            "[INFO] graphite footprint expansion requested | "
-            f"graphite_counts_before_xy={None if graphite_counts_before_log is None else tuple(int(x) for x in graphite_counts_before_log)} | "
-            f"graphite_counts_after_xy={None if graphite_counts_after_log is None else tuple(int(x) for x in graphite_counts_after_log)} | "
-            f"graphite_count_scale_xy={None if graphite_scale_xy_log is None else tuple(float(x) for x in graphite_scale_xy_log)} | "
-            f"before_nm={tuple(float(x) for x in graphite_negotiation['graphite_box_before_nm'])} | "
-            f"after_nm={tuple(float(x) for x in graphite_negotiation['graphite_box_after_nm'])} | "
-            f"polymer_required_xy_nm={None if polymer_required_xy_log is None else tuple(float(x) for x in polymer_required_xy_log)} | "
-            f"electrolyte_required_xy_nm={None if electrolyte_required_xy_log is None else tuple(float(x) for x in electrolyte_required_xy_log)} | "
-            f"polymer_compression_aware_required_xy_nm={None if polymer_required_comp_log is None else tuple(float(x) for x in polymer_required_comp_log)} | "
-            f"electrolyte_compression_aware_required_xy_nm={None if electrolyte_required_comp_log is None else tuple(float(x) for x in electrolyte_required_comp_log)}",
-            level=1,
-        )
-        graphite_negotiations.append(graphite_negotiation)
-        _write_sandwich_progress(
-            progress_path,
-            {
-                "stage": "graphite_footprint_expansion",
-                "current_round_index": int(round_index + 1),
-                "next_round_index": int(round_index + 2),
-                "phase_preparation_rounds": int(preparation_round_count),
-                "graphite_box_nm": [float(x) for x in graphite_result.box_nm],
-                "graphite_spec": asdict(graphite),
-                "latest_graphite_footprint_negotiation": graphite_negotiation,
-                "graphite_footprint_negotiations": graphite_negotiations,
-                "polymer_round": _phase_round_progress_snapshot(
-                    round_result=polymer_round,
-                    prepared_label="polymer",
-                ),
-                "electrolyte_round": _phase_round_progress_snapshot(
-                    round_result=electrolyte_round,
-                    prepared_label="electrolyte",
-                ),
-            },
-        )
-        if preparation_round_count >= max_preparation_rounds:
-            raise RuntimeError(
-                f"Could not converge graphite master footprint negotiation within {max_preparation_rounds} preparation rounds."
-            )
-        graphite = expanded_graphite
-        graphite_result = expanded_graphite_result
-        preparation_round_count += 1
+        legacy_polymer_note = str(polymer_round["slab_note"])
+        legacy_electrolyte_note = str(electrolyte_round["slab_note"])
 
-    polymer_phase_build = polymer_round["phase_build"]
-    polymer_chain = polymer_phase_build["chain"]
-    polymer_dp = int(polymer_phase_build["dp"])
-    chain_count = int(polymer_phase_build["chain_count"])
-    polymer_pack = polymer_round["pack"]
-    polymer_build_density = float(polymer_pack.selected_density_g_cm3)
-    polymer_slab = polymer_round["prepared_slab"]
-    polymer_slab_note = polymer_round["slab_note"]
-    polymer_selected_counts = list(polymer_round["selected_counts"])
-
-    electrolyte_inputs = electrolyte_round["inputs"]
-    electrolyte_mols = list(electrolyte_inputs["mols"])
-    electrolyte_charge_scale = list(electrolyte_inputs["charge_scale"])
-    electrolyte_pack = electrolyte_round["pack"]
-    electrolyte_build_density = float(electrolyte_pack.selected_density_g_cm3)
-    electrolyte_slab = electrolyte_round["prepared_slab"]
-    electrolyte_slab_note = electrolyte_round["slab_note"]
-    electrolyte_selected_counts = list(electrolyte_round["selected_counts"])
-
-    graphite_negotiation = graphite_negotiations[-1] if graphite_negotiations else None
-    _write_sandwich_progress(
-        progress_path,
-        {
-            "stage": "confined_phase_relaxation_start",
-            "current_round_index": int(preparation_round_count),
-            "phase_preparation_rounds": int(preparation_round_count),
-            "graphite_box_nm": [float(x) for x in graphite_result.box_nm],
-            "graphite_spec": asdict(graphite),
-            "graphite_footprint_negotiations": graphite_negotiations,
-            "latest_graphite_footprint_negotiation": graphite_negotiation,
-            "polymer_round": _phase_round_progress_snapshot(
-                round_result=polymer_round,
-                prepared_label="polymer",
-            ),
-            "electrolyte_round": _phase_round_progress_snapshot(
-                round_result=electrolyte_round,
-                prepared_label="electrolyte",
-            ),
-        },
-    )
-    polymer_confined = _run_confined_phase_relaxation(
-        label="polymer",
-        prepared_slab=polymer_slab,
-        species=list(polymer_phase_build["species"]),
-        counts=list(polymer_selected_counts),
-        charge_scale=list(polymer_phase_build["charge_scale"]),
-        target_xy_nm=(float(graphite_result.box_nm[0]), float(graphite_result.box_nm[1])),
-        target_density_g_cm3=float(polymer.target_density_g_cm3),
-        target_thickness_nm=float(polymer.slab_z_nm),
-        ff_name=str(ff.name),
-        relax=relax,
-        work_dir=polymer_eq_dir / "06_confined_slab",
-        restart=restart,
-    )
     polymer_report = polymer_confined.report
     polymer_relaxed_block = polymer_confined.relaxed_block
-    electrolyte_confined = _run_confined_phase_relaxation(
-        label="electrolyte",
-        prepared_slab=electrolyte_slab,
-        species=list(electrolyte_mols),
-        counts=list(electrolyte_selected_counts),
-        charge_scale=list(electrolyte_charge_scale),
-        target_xy_nm=(float(graphite_result.box_nm[0]), float(graphite_result.box_nm[1])),
-        target_density_g_cm3=float(electrolyte.target_density_g_cm3),
-        target_thickness_nm=float(electrolyte.slab_z_nm),
-        ff_name=str(ff.name),
-        relax=relax,
-        work_dir=electrolyte_eq_dir / "06_confined_slab",
-        restart=restart,
-    )
     electrolyte_report = electrolyte_confined.report
     electrolyte_relaxed_block = electrolyte_confined.relaxed_block
 
@@ -2586,31 +3060,26 @@ def build_graphite_polymer_electrolyte_sandwich(
 
     manifest_path = stack_dir / "sandwich_manifest.json"
     notes = (
-        "polymer and electrolyte were first equilibrated as standalone bulk phases, then graphite-matched slabs were cut from dense equilibrium windows before three-phase stacking",
-        "each dense slab then underwent a separate fixed-XY confined pre-relaxation with z walls and explicit vacuum so the final stack no longer relies on z-periodic healing",
+        "polymer and electrolyte were first equilibrated as standalone bulk calibration phases, then rebuilt directly on the graphite master footprint before wall-backed soft-phase relaxation",
+        "the default path now uses bulk calibration plus direct final-XY walled soft phases, so the final sandwich stack only needs z translation instead of relying on cut-slab periodic healing",
         "graphite stays frozen during the stacked relaxation so the liquid and polymer phases can relax density mainly along the surface normal",
+        f"phase_preparation_mode={phase_preparation_mode}",
         f"phase preparation rounds={int(preparation_round_count)}",
-        *(
-            ()
-            if graphite_negotiation is None
-            else (
-                "graphite master footprint was automatically expanded to cover the prepared soft-phase slabs before confined relaxation",
-                f"graphite footprint expansion counts={None if graphite_negotiation.get('graphite_counts_after_xy') is None else tuple(int(x) for x in graphite_negotiation['graphite_counts_after_xy'])} "
-                f"from_counts={None if graphite_negotiation.get('graphite_counts_before_xy') is None else tuple(int(x) for x in graphite_negotiation['graphite_counts_before_xy'])} "
-                f"from {tuple(float(x) for x in graphite_negotiation['graphite_box_before_nm'])} nm "
-                f"to {tuple(float(x) for x in graphite_negotiation['graphite_box_after_nm'])} nm",
-            )
-        ),
+        "graphite master footprint is negotiated once from phase mass, target density, and target thickness before soft-phase construction",
         f"polymer chain target atoms={int(polymer.chain_target_atoms)} -> built DP={int(polymer_dp)} and chain_count={int(chain_count)}",
         f"polymer bulk initial pack density={float(polymer_build_density):.4f} g/cm^3 -> target equilibrium density={float(polymer.target_density_g_cm3):.4f} g/cm^3",
         f"electrolyte bulk initial pack density={float(electrolyte_build_density):.4f} g/cm^3 -> target equilibrium density={float(electrolyte.target_density_g_cm3):.4f} g/cm^3",
+        f"polymer bulk calibration summary={polymer_calibration['summary_path']}",
+        f"electrolyte bulk calibration summary={electrolyte_calibration['summary_path']}",
         f"polymer bulk pack backoff summary={polymer_pack.summary_path}",
         f"electrolyte bulk pack backoff summary={electrolyte_pack.summary_path}",
         f"stack master footprint={float(stack_master_xy_nm[0]):.4f} x {float(stack_master_xy_nm[1]):.4f} nm",
         f"adaptive stack gaps: graphite/polymer={float(graphite_polymer_gap_ang) / 10.0:.3f} nm, polymer/electrolyte={float(polymer_electrolyte_gap_ang) / 10.0:.3f} nm",
         *tuple(str(x) for x in polymer_phase_build["notes"]),
-        str(polymer_slab_note),
-        str(electrolyte_slab_note),
+        *(() if legacy_polymer_note is None else (str(legacy_polymer_note),)),
+        *(() if legacy_electrolyte_note is None else (str(legacy_electrolyte_note),)),
+        *(() if polymer_walled_build_summary_path is None else (f"polymer walled-phase build summary={polymer_walled_build_summary_path}",)),
+        *(() if electrolyte_walled_build_summary_path is None else (f"electrolyte walled-phase build summary={electrolyte_walled_build_summary_path}",)),
         f"polymer confined summary={polymer_confined.summary_path}",
         f"electrolyte confined summary={electrolyte_confined.summary_path}",
     )
@@ -2623,14 +3092,23 @@ def build_graphite_polymer_electrolyte_sandwich(
                 "relax": asdict(relax),
                 "graphite_box_nm": [float(x) for x in graphite_result.box_nm],
                 "phase_preparation_rounds": int(preparation_round_count),
+                "phase_preparation_mode": phase_preparation_mode,
                 "graphite_footprint_negotiation": graphite_negotiation,
                 "graphite_footprint_negotiations": graphite_negotiations,
+                "polymer_bulk_calibration": polymer_calibration["summary"],
+                "electrolyte_bulk_calibration": electrolyte_calibration["summary"],
+                "polymer_bulk_calibration_summary": str(polymer_calibration["summary_path"]),
+                "electrolyte_bulk_calibration_summary": str(electrolyte_calibration["summary_path"]),
                 "polymer_phase": asdict(polymer_report),
                 "electrolyte_phase": asdict(electrolyte_report),
                 "polymer_bulk_pack": polymer_pack.summary,
                 "electrolyte_bulk_pack": electrolyte_pack.summary,
                 "polymer_bulk_pack_summary": str(polymer_pack.summary_path),
                 "electrolyte_bulk_pack_summary": str(electrolyte_pack.summary_path),
+                "polymer_walled_phase_build": polymer_walled_build_summary,
+                "electrolyte_walled_phase_build": electrolyte_walled_build_summary,
+                "polymer_walled_phase_build_summary": (None if polymer_walled_build_summary_path is None else str(polymer_walled_build_summary_path)),
+                "electrolyte_walled_phase_build_summary": (None if electrolyte_walled_build_summary_path is None else str(electrolyte_walled_build_summary_path)),
                 "polymer_phase_confined": polymer_confined.summary,
                 "electrolyte_phase_confined": electrolyte_confined.summary,
                 "polymer_phase_confined_summary": str(polymer_confined.summary_path),
@@ -2659,10 +3137,15 @@ def build_graphite_polymer_electrolyte_sandwich(
             {
                 "stage": "completed",
                 "phase_preparation_rounds": int(preparation_round_count),
+                "phase_preparation_mode": phase_preparation_mode,
                 "graphite_footprint_negotiations": graphite_negotiations,
                 "latest_graphite_footprint_negotiation": graphite_negotiation,
+                "polymer_bulk_calibration_summary": str(polymer_calibration["summary_path"]),
+                "electrolyte_bulk_calibration_summary": str(electrolyte_calibration["summary_path"]),
                 "polymer_bulk_pack_summary": str(polymer_pack.summary_path),
                 "electrolyte_bulk_pack_summary": str(electrolyte_pack.summary_path),
+                "polymer_walled_phase_build_summary": (None if polymer_walled_build_summary_path is None else str(polymer_walled_build_summary_path)),
+                "electrolyte_walled_phase_build_summary": (None if electrolyte_walled_build_summary_path is None else str(electrolyte_walled_build_summary_path)),
                 "polymer_phase_confined_summary": str(polymer_confined.summary_path),
                 "electrolyte_phase_confined_summary": str(electrolyte_confined.summary_path),
                 "manifest_path": str(manifest_path),

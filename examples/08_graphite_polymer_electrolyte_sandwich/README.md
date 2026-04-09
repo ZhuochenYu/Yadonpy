@@ -4,13 +4,15 @@ This merged example replaces the old Example 10/11/12/13 split with one
 coherent workflow family built around the same high-level sandwich builder:
 
 1. equilibrate true 3D polymer and electrolyte bulk phases independently;
-2. cut dense graphite-matched slabs from those equilibrated bulk snapshots;
-3. rebox each slab onto the graphite footprint and run a short confined slab
-   pre-relaxation with `pbc=xy`, explicit vacuum, and Z walls;
-4. stack `graphite -> polymer -> electrolyte` explicitly;
-5. relax the stacked system with graphite frozen so the soft phases can settle
+2. keep those bulk phases only as calibration references for density, composition,
+   and packing difficulty;
+3. negotiate one graphite master footprint in `XY`;
+4. rebuild each soft phase directly on that final `XY` footprint with explicit
+   vacuum and repulsive-only Z walls;
+5. stack `graphite -> polymer -> electrolyte` by direct Z translation;
+6. relax the stacked system with graphite frozen so the soft phases can settle
    mainly along the surface normal;
-6. record phase summaries, confined-slab diagnostics, and final phase ordering.
+7. record bulk-calibration summaries, walled-phase diagnostics, and final phase ordering.
 
 The scripts are intentionally short. Most of the workflow logic now lives in
 `yadonpy.interface.sandwich` plus the small preset helpers in
@@ -52,8 +54,9 @@ treated as parameter choices on one substrate-assisted sandwich path.
   the same chemistry can be validated with a much smaller remote-friendly system
   before launching the exact production-sized case.
 - The manifest written under each work directory includes:
-  - polymer/electrolyte bulk density reports
-  - confined slab summaries for each soft phase
+  - polymer/electrolyte bulk calibration summaries
+  - walled-phase build summaries for each soft phase
+  - confined phase summaries for each soft phase
   - final `GRAPHITE -> POLYMER -> ELECTROLYTE` phase-order checks
   - explicit acceptance fields for density windows, wrapped-Z detection, and
     positive core gaps

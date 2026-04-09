@@ -269,6 +269,10 @@ def format_sandwich_result_summary(
         lines.append(f"profile = {str(profile).strip().lower()}")
     lines.append(f"manifest_path = {result.manifest_path}")
     lines.append(f"relaxed_gro = {result.relaxed_gro}")
+    for note in getattr(result, "notes", ()):
+        if str(note).startswith("phase_preparation_mode="):
+            lines.append(str(note))
+            break
     lines.append(f"polymer_density_g_cm3 = {round(float(result.polymer_phase.density_g_cm3), 4)}")
     lines.append(f"electrolyte_density_g_cm3 = {round(float(result.electrolyte_phase.density_g_cm3), 4)}")
     if acceptance:

@@ -161,10 +161,10 @@ This keeps later scaling and analysis tied to explicit charged-group metadata.
 YadonPy now exposes a high-level sandwich builder that packages the recommended logic:
 
 - equilibrate each phase independently,
-- derive slabs from equilibrated bulk instead of trusting only initial packed cells,
-- preserve the graphite footprint as the lateral reference,
-- rebox each soft-phase slab onto that shared XY footprint and run a short confined-slab pre-relaxation with explicit vacuum and Z walls,
-- assemble the stack with explicit gaps,
+- treat those bulk runs as calibration for density, chain count, solvent counts, and packing backoff,
+- preserve the graphite footprint as the one lateral reference,
+- rebuild each soft phase directly on that shared XY footprint with repulsive-only Z walls and explicit vacuum,
+- assemble the stack by direct Z translation instead of relying on cut-slab periodic healing,
 - relax the combined system in stages.
 
 PEO-based smoke-scale example:

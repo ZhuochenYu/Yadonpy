@@ -92,17 +92,19 @@ The current builder logic prefers minimum-correct robustness over brittle short-
 
 ## 6. Bulk-First Interface Logic
 
-YadonPy’s current interface philosophy is bulk first:
+YadonPy’s current interface philosophy is bulk first, but not bulk-direct-to-stack:
 
 1. equilibrate each phase independently;
-2. extract slabs from equilibrated bulk;
-3. align lateral dimensions carefully;
-4. for graphite-assisted sandwich systems, pre-relax each soft-phase slab in a confined `pbc=xy` box before final assembly;
+2. keep those bulk runs as calibration references for density, composition, and packing difficulty;
+3. negotiate the graphite master footprint once in `XY`;
+4. rebuild each soft phase directly on that final `XY` footprint with repulsive-only Z walls and explicit vacuum;
+5. for graphite-assisted sandwich systems, pre-relax each rebuilt soft phase in a confined `pbc=xy` box before final assembly;
 5. assemble the interface or sandwich structure;
-5. run staged relaxation.
+6. run staged relaxation.
 
 This avoids a common failure mode where an interface is assembled from unrealistic
-unrelaxed packed phases and then expected to fix itself during MD.
+unrelaxed packed phases and then expected to fix itself during MD. It also avoids
+letting a periodic cut-slab artifact drive the graphite footprint.
 
 The graphite-polymer-electrolyte sandwich builder follows the same rule.
 It is meant to be the cleanest high-level expression of this architecture.
