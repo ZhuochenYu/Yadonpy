@@ -11,7 +11,7 @@ from rdkit import Geometry as Geom
 
 from ..core import poly, utils
 from ..core.graphite import GraphiteBuildResult, build_graphite, register_cell_species_metadata, stack_cell_blocks
-from ..core.molspec import molecular_weight
+from ..core.molspec import as_rdkit_mol, molecular_weight
 from ..core.naming import get_name
 from ..core.polyelectrolyte import detect_charged_groups
 from ..core.workdir import workdir
@@ -1128,7 +1128,10 @@ def _molecule_atom_blocks(*, species: Sequence, counts: Sequence[int]) -> list[t
     blocks: list[tuple[int, int]] = []
     cursor = 0
     for mol, count in zip(species, counts):
-        nat = int(mol.GetNumAtoms())
+        rdmol = as_rdkit_mol(mol, strict=False)
+        if rdmol is None:
+            raise TypeError("species entry does not expose RDKit atom topology for block partitioning")
+        nat = int(rdmol.GetNumAtoms())
         for _ in range(int(count)):
             blocks.append((cursor, cursor + nat))
             cursor += nat
@@ -1139,15 +1142,21 @@ def _molecule_block_specs(*, species: Sequence, counts: Sequence[int]) -> list[t
     specs: list[tuple[int, int, object]] = []
     cursor = 0
     for mol, count in zip(species, counts):
-        nat = int(mol.GetNumAtoms())
+        rdmol = as_rdkit_mol(mol, strict=False)
+        if rdmol is None:
+            raise TypeError("species entry does not expose RDKit atom topology for block partitioning")
+        nat = int(rdmol.GetNumAtoms())
         for _ in range(int(count)):
-            specs.append((cursor, cursor + nat, mol))
+            specs.append((cursor, cursor + nat, rdmol))
             cursor += nat
     return specs
 
 
 def _unwrap_fragment_bonded_periodic_axis(fragment: np.ndarray, mol, *, axis: int, box_len_ang: float) -> tuple[np.ndarray, bool]:
+    mol = as_rdkit_mol(mol, strict=False)
     out = np.asarray(fragment, dtype=float).copy()
+    if mol is None:
+        return out, False
     if out.size == 0 or box_len_ang <= 0.0 or int(mol.GetNumAtoms()) != int(out.shape[0]) or int(mol.GetNumBonds()) <= 0:
         return out, False
 
@@ -1556,6 +1565,8 @@ def _rebox_block_for_phase_confinement(
     periodic_lateral_wrap_applied = False
     bonded_lateral_unwrap_applied = False
     lateral_scale_xy = (1.0, 1.0)
+    blocks: list[tuple[int, int]] = []
+    block_specs: list[tuple[int, int, object]] = []
 
     if species is not None and counts is not None:
         try:
@@ -1563,9 +1574,6 @@ def _rebox_block_for_phase_confinement(
             block_specs = _molecule_block_specs(species=species, counts=counts)
         except Exception:
             blocks = []
-            if block_specs and int(block_specs[-1][1]) != int(confined.GetNumAtoms()):
-                block_specs = []
-        except Exception:
             block_specs = []
         if block_specs:
             box_x_ang = float(target_xy_nm[0]) * 10.0
@@ -2354,6 +2362,26 @@ def build_graphite_polymer_electrolyte_sandwich(
     electrolyte_selected_counts = list(electrolyte_round["selected_counts"])
 
     graphite_negotiation = graphite_negotiations[-1] if graphite_negotiations else None
+    _write_sandwich_progress(
+        progress_path,
+        {
+            "stage": "confined_phase_relaxation_start",
+            "current_round_index": int(preparation_round_count),
+            "phase_preparation_rounds": int(preparation_round_count),
+            "graphite_box_nm": [float(x) for x in graphite_result.box_nm],
+            "graphite_spec": asdict(graphite),
+            "graphite_footprint_negotiations": graphite_negotiations,
+            "latest_graphite_footprint_negotiation": graphite_negotiation,
+            "polymer_round": _phase_round_progress_snapshot(
+                round_result=polymer_round,
+                prepared_label="polymer",
+            ),
+            "electrolyte_round": _phase_round_progress_snapshot(
+                round_result=electrolyte_round,
+                prepared_label="electrolyte",
+            ),
+        },
+    )
     polymer_confined = _run_confined_phase_relaxation(
         label="polymer",
         prepared_slab=polymer_slab,

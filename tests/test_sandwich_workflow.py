@@ -8,6 +8,7 @@ from rdkit import Chem
 from rdkit import Geometry as Geom
 
 from yadonpy.core.graphite import stack_cell_blocks
+from yadonpy.core.molspec import MolSpec
 from yadonpy.interface import (
     build_graphite_cmcna_example_case,
     build_graphite_peo_example_case,
@@ -33,6 +34,7 @@ from yadonpy.interface.sandwich import (
     _confined_phase_report,
     _graphite_counts_for_required_xy,
     _graphite_repeat_factors_for_required_xy,
+    _molecule_atom_blocks,
     _needs_confined_rescue,
     _maybe_expand_graphite_for_phase_footprint,
     _preflight_graphite_footprint_from_phase_targets,
@@ -235,6 +237,16 @@ def test_confined_phase_report_prefers_center_bulk_like_density():
     assert report.density_g_cm3 == pytest.approx(1.57)
     assert report.occupied_density_g_cm3 == pytest.approx(0.84)
     assert report.bulk_like_density_g_cm3 == pytest.approx(1.57)
+
+
+def test_molecule_atom_blocks_accept_resolved_molspec():
+    mol = _dummy_mol("SPEC")
+    spec = MolSpec(smiles="C", name="SPEC")
+    spec.cache_resolved_mol(mol)
+
+    blocks = _molecule_atom_blocks(species=[spec], counts=[3])
+
+    assert blocks == [(0, 1), (1, 2), (2, 3)]
 
 
 def test_compress_phase_block_z_to_target_thickness_shrinks_overdilated_slab():
