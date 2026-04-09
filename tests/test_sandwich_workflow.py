@@ -34,6 +34,7 @@ from yadonpy.interface.sandwich import (
     _confined_phase_report,
     _graphite_counts_for_required_xy,
     _graphite_repeat_factors_for_required_xy,
+    _expand_graphite_to_meet_required_xy,
     _molecule_atom_blocks,
     _needs_confined_rescue,
     _maybe_expand_graphite_for_phase_footprint,
@@ -531,6 +532,58 @@ def test_graphite_counts_for_required_xy_expand_by_minimum_lattice_increment():
         current_box_nm=(4.7892, 4.183094328, 2.5),
         required_xy_nm=(9.58, 8.37),
     ) == (21, 21)
+
+
+def test_expand_graphite_to_meet_required_xy_retries_on_real_box_shortfall(monkeypatch):
+    import yadonpy.interface.sandwich as sandwich
+    from yadonpy.core.graphite import GraphiteBuildResult
+
+    graphite = GraphiteSubstrateSpec(nx=10, ny=10, n_layers=2)
+    seed = GraphiteBuildResult(
+        cell=_dummy_mol("GRAPH"),
+        layer_mol=_dummy_mol("LAYER"),
+        layer_count=2,
+        orientation="basal",
+        edge_cap_summary={},
+        box_nm=(11.0, 9.0, 2.0),
+    )
+
+    calls: list[tuple[int, int]] = []
+
+    def _fake_build_graphite(*, nx, ny, **kwargs):
+        calls.append((int(nx), int(ny)))
+        if len(calls) == 1:
+            return GraphiteBuildResult(
+                cell=_dummy_mol("GRAPH"),
+                layer_mol=_dummy_mol("LAYER"),
+                layer_count=2,
+                orientation="basal",
+                edge_cap_summary={},
+                box_nm=(11.0, 9.0, 2.0),
+            )
+        return GraphiteBuildResult(
+            cell=_dummy_mol("GRAPH"),
+            layer_mol=_dummy_mol("LAYER"),
+            layer_count=2,
+            orientation="basal",
+            edge_cap_summary={},
+            box_nm=(14.6, 9.8, 2.0),
+        )
+
+    monkeypatch.setattr(sandwich, "build_graphite", _fake_build_graphite)
+
+    expanded_graphite, expanded_result = _expand_graphite_to_meet_required_xy(
+        graphite=graphite,
+        graphite_result=seed,
+        ff=object(),
+        required_xy_nm=(14.2, 9.6),
+    )
+
+    assert calls
+    assert expanded_graphite.nx > graphite.nx
+    assert expanded_graphite.ny > graphite.ny
+    assert expanded_result.box_nm[0] >= 14.2 - 1.0e-6
+    assert expanded_result.box_nm[1] >= 9.6 - 1.0e-6
 
 
 def test_preflight_graphite_footprint_from_phase_targets_expands_before_bulk_rounds(monkeypatch, tmp_path: Path):

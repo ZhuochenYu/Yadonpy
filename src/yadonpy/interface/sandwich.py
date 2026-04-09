@@ -415,7 +415,7 @@ def _preflight_graphite_footprint_from_phase_targets(
         if target_nx == int(current_graphite.nx) and target_ny == int(current_graphite.ny):
             break
         next_graphite = replace(current_graphite, nx=int(target_nx), ny=int(target_ny))
-        next_result = build_graphite(
+        seed_result = build_graphite(
             nx=int(next_graphite.nx),
             ny=int(next_graphite.ny),
             n_layers=int(next_graphite.n_layers),
@@ -424,6 +424,12 @@ def _preflight_graphite_footprint_from_phase_targets(
             ff=ff,
             name=next_graphite.name,
             top_padding_ang=float(next_graphite.top_padding_ang),
+        )
+        next_graphite, next_result = _expand_graphite_to_meet_required_xy(
+            graphite=next_graphite,
+            graphite_result=seed_result,
+            ff=ff,
+            required_xy_nm=required_xy_nm,
         )
         negotiations.append(
             {
@@ -1124,6 +1130,50 @@ def _graphite_counts_for_required_xy(
     return int(target_nx), int(target_ny)
 
 
+def _expand_graphite_to_meet_required_xy(
+    *,
+    graphite: GraphiteSubstrateSpec,
+    graphite_result: GraphiteBuildResult,
+    ff,
+    required_xy_nm: tuple[float, float],
+    max_adjust_rounds: int = 6,
+) -> tuple[GraphiteSubstrateSpec, GraphiteBuildResult]:
+    required_x = max(float(required_xy_nm[0]), float(graphite_result.box_nm[0]))
+    required_y = max(float(required_xy_nm[1]), float(graphite_result.box_nm[1]))
+    current_graphite = graphite
+    current_result = graphite_result
+
+    for _ in range(max(1, int(max_adjust_rounds))):
+        if (
+            float(current_result.box_nm[0]) >= required_x - 1.0e-6
+            and float(current_result.box_nm[1]) >= required_y - 1.0e-6
+        ):
+            break
+        next_nx = max(
+            int(current_graphite.nx) + 1,
+            int(math.ceil(int(current_graphite.nx) * required_x / max(float(current_result.box_nm[0]), 1.0e-9))),
+        )
+        next_ny = max(
+            int(current_graphite.ny) + 1,
+            int(math.ceil(int(current_graphite.ny) * required_y / max(float(current_result.box_nm[1]), 1.0e-9))),
+        )
+        if next_nx == int(current_graphite.nx) and next_ny == int(current_graphite.ny):
+            break
+        current_graphite = replace(current_graphite, nx=int(next_nx), ny=int(next_ny))
+        current_result = build_graphite(
+            nx=int(current_graphite.nx),
+            ny=int(current_graphite.ny),
+            n_layers=int(current_graphite.n_layers),
+            orientation=current_graphite.orientation,
+            edge_cap=current_graphite.edge_cap,
+            ff=ff,
+            name=current_graphite.name,
+            top_padding_ang=float(current_graphite.top_padding_ang),
+        )
+
+    return current_graphite, current_result
+
+
 def _molecule_atom_blocks(*, species: Sequence, counts: Sequence[int]) -> list[tuple[int, int]]:
     blocks: list[tuple[int, int]] = []
     cursor = 0
@@ -1793,7 +1843,7 @@ def _maybe_expand_graphite_for_phase_footprint(
         nx=int(target_nx),
         ny=int(target_ny),
     )
-    expanded_result = build_graphite(
+    seed_result = build_graphite(
         nx=int(expanded_graphite.nx),
         ny=int(expanded_graphite.ny),
         n_layers=int(expanded_graphite.n_layers),
@@ -1802,6 +1852,12 @@ def _maybe_expand_graphite_for_phase_footprint(
         ff=ff,
         name=expanded_graphite.name,
         top_padding_ang=float(expanded_graphite.top_padding_ang),
+    )
+    expanded_graphite, expanded_result = _expand_graphite_to_meet_required_xy(
+        graphite=expanded_graphite,
+        graphite_result=seed_result,
+        ff=ff,
+        required_xy_nm=required_xy_nm,
     )
     return expanded_graphite, expanded_result, {
         "polymer_required_xy_nm": [float(polymer_xy_nm[0]), float(polymer_xy_nm[1])],
