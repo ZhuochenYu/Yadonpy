@@ -95,6 +95,22 @@ def _ensure_charge_group_ready(species_payload: Mapping[str, Any], *, effective_
         "but no grouped metadata were found. Re-run charge assignment / MolDB generation with polyelectrolyte_mode=True."
     )
 
+
+def _uses_charge_group_scaling(species_payload: Mapping[str, Any], *, effective_polyelectrolyte_mode: bool) -> bool:
+    """Return True only for species that genuinely need grouped charge scaling.
+
+    Ordinary ions such as TFSI- can carry incidental ``charge_groups`` metadata from
+    graph detection, but those groups are diagnostic and must not trigger
+    polyelectrolyte-style re-targeting of RESP charges. Group scaling is reserved for
+    species that explicitly require polyelectrolyte-aware export semantics.
+    """
+    if not effective_polyelectrolyte_mode:
+        return False
+    if not _requires_charge_groups(species_payload):
+        return False
+    groups = species_payload.get("charge_groups")
+    return bool(isinstance(groups, list) and groups)
+
 from ..api import get_ff
 from .artifacts import write_molecule_artifacts
 
@@ -1574,7 +1590,7 @@ def export_system_from_cell_meta(
     effective_polyelectrolyte_mode = bool(
         polyelectrolyte_mode
         or meta.get("polyelectrolyte_mode")
-        or any(sp.get("charge_groups") for sp in species)
+        or any(_requires_charge_groups(sp) for sp in species)
     )
     assembly_plan.effective_polyelectrolyte_mode = bool(effective_polyelectrolyte_mode)
     for sp in species:
@@ -1673,7 +1689,10 @@ def export_system_from_cell_meta(
         # Apply per-species simulation-level charge scaling when copying to the run directory.
         itp_text = itp.read_text(encoding="utf-8", errors="replace")
         charge_groups = sp.get("charge_groups") if isinstance(sp.get("charge_groups"), list) else None
-        use_group_scaling = bool(effective_polyelectrolyte_mode and charge_groups)
+        use_group_scaling = _uses_charge_group_scaling(
+            sp,
+            effective_polyelectrolyte_mode=bool(effective_polyelectrolyte_mode),
+        )
         if use_group_scaling:
             itp_text, scale_report = _scale_itp_charge_groups(itp_text, charge_groups, scale=float(scale))
         else:

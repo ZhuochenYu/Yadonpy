@@ -25,6 +25,62 @@ from yadonpy.workflow.resume import file_signature as resume_file_signature
 import yadonpy.sim.qm as qm_mod
 
 
+def _parse_itp_atom_charges(itp_path: Path) -> list[float]:
+    charges: list[float] = []
+    in_atoms = False
+    for raw in itp_path.read_text(encoding="utf-8").splitlines():
+        stripped = raw.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            in_atoms = stripped.strip("[]").strip().lower() == "atoms"
+            continue
+        if not in_atoms or not stripped or stripped.startswith(";"):
+            continue
+        cols = raw.split(";", 1)[0].split()
+        if len(cols) < 7:
+            continue
+        charges.append(float(cols[6]))
+    return charges
+
+
+def _write_minimal_species_artifacts(base_dir: Path, *, mol_name: str, charges: list[float]) -> Path:
+    mol_dir = base_dir / mol_name
+    mol_dir.mkdir(parents=True, exist_ok=True)
+
+    itp_lines = [
+        "[ moleculetype ]",
+        f"{mol_name} 3",
+        "",
+        "[ atoms ]",
+        "; nr  type  resnr  residue  atom  cgnr  charge  mass",
+    ]
+    for idx, charge in enumerate(charges, start=1):
+        itp_lines.append(
+            f"{idx:5d}  XX  1  {mol_name[:5]:<5}  A{idx:<3d}  {idx:5d}  {charge: .6f}  12.011"
+        )
+    (mol_dir / f"{mol_name}.itp").write_text("\n".join(itp_lines) + "\n", encoding="utf-8")
+
+    gro_lines = [mol_name, f"{len(charges):5d}"]
+    for idx in range(1, len(charges) + 1):
+        gro_lines.append(
+            format_system_gro_atom_line(
+                resnr=1,
+                resname=mol_name[:5],
+                atomname=f"A{idx}",
+                atomnr=idx,
+                x=0.01 * idx,
+                y=0.0,
+                z=0.0,
+            )
+        )
+    gro_lines.append("   4.00000   4.00000   4.00000")
+    (mol_dir / f"{mol_name}.gro").write_text("\n".join(gro_lines) + "\n", encoding="utf-8")
+    (mol_dir / f"{mol_name}.top").write_text(
+        f'#include "{mol_name}.itp"\n\n[ system ]\n{mol_name}\n\n[ molecules ]\n{mol_name} 1\n',
+        encoding="utf-8",
+    )
+    return mol_dir
+
+
 def test_workdir_is_pathlike_and_non_destructive(tmp_path: Path):
     root = tmp_path / 'work'
     root.mkdir(parents=True)
@@ -921,6 +977,86 @@ def test_export_system_fails_closed_for_polyelectrolyte_scaling_without_charge_g
             polyelectrolyte_mode=True,
             write_system_mol2=False,
         )
+
+
+def test_export_system_does_not_apply_polyelectrolyte_group_scaling_to_tfsi(tmp_path: Path):
+    tfsi_charges = [
+        0.429088,
+        -0.168652,
+        -0.168652,
+        -0.168652,
+        0.885514,
+        -0.508368,
+        -0.508368,
+        -0.583821,
+        0.885514,
+        -0.508368,
+        -0.508368,
+        0.429088,
+        -0.168652,
+        -0.168652,
+        -0.168652,
+    ]
+    tfsi_smiles = "FC(F)(F)S(=O)(=O)[N-]S(=O)(=O)C(F)(F)F"
+    source_root = tmp_path / "source_molecules"
+    _write_minimal_species_artifacts(source_root, mol_name="TFSI", charges=tfsi_charges)
+
+    cell = Chem.Mol()
+    setattr(cell, "cell", utils.Cell(4.0, 0.0, 4.0, 0.0, 4.0, 0.0))
+    meta = {
+        "density_g_cm3": 1.2,
+        "species": [
+            {
+                "smiles": tfsi_smiles,
+                "n": 4,
+                "natoms": len(tfsi_charges),
+                "name": "TFSI",
+                "charge_scale": 0.75,
+                "charge_groups": [
+                    {
+                        "group_id": "group_1",
+                        "label": "graph_group_1",
+                        "atom_indices": [1, 4, 5, 6, 7, 8, 9, 10, 11],
+                        "formal_charge": -1,
+                        "source": "graph",
+                    }
+                ],
+                "polyelectrolyte_summary": {
+                    "is_polyelectrolyte": False,
+                    "groups": [
+                        {
+                            "group_id": "group_1",
+                            "label": "graph_group_1",
+                            "atom_indices": [1, 4, 5, 6, 7, 8, 9, 10, 11],
+                            "formal_charge": -1,
+                            "source": "graph",
+                        }
+                    ],
+                },
+                "polyelectrolyte_mode": False,
+            }
+        ],
+    }
+    cell.SetProp("_yadonpy_cell_meta", json.dumps(meta, ensure_ascii=False))
+
+    out = export_system_from_cell_meta(
+        cell_mol=cell,
+        out_dir=tmp_path / "scaled",
+        ff_name="gaff2_mod",
+        charge_method="RESP",
+        source_molecules_dir=source_root,
+        write_system_mol2=False,
+    )
+
+    itp_path = out.molecules_dir / "TFSI" / "TFSI.itp"
+    exported_charges = _parse_itp_atom_charges(itp_path)
+    assert len(exported_charges) == len(tfsi_charges)
+    for actual, expected in zip(exported_charges, tfsi_charges):
+        assert actual == pytest.approx(expected * 0.75, abs=1.0e-8)
+    assert max(abs(q) for q in exported_charges) < 1.0
+
+    report = json.loads((out.system_top.parent / "charge_scaling_report.json").read_text(encoding="utf-8"))
+    assert report["species"][0]["used_group_scaling"] is False
 
 
 def test_export_system_normalizes_embedded_parameter_blocks_with_compact_moleculetype_headers(tmp_path: Path):
