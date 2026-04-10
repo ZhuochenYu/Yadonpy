@@ -812,6 +812,8 @@ def select_diffusive_window(
         "fit_intercept_nm2": None,
         "alpha_mean": None,
         "alpha_std": None,
+        "alpha_deviation": None,
+        "selection_basis": "loglog_slope_closest_to_one",
         "confidence": "failed",
         "status": "failed",
         "D_nm2_ps": None,
@@ -864,37 +866,82 @@ def select_diffusive_window(
                                 "fit_intercept_nm2": float(intercept),
                                 "alpha_mean": float(np.mean(alpha_slice)),
                                 "alpha_std": float(np.std(alpha_slice)),
+                                "alpha_deviation": float(abs(float(np.mean(alpha_slice)) - float(alpha_target))),
                                 "duration_ps": float(tt[-1] - tt[0]),
+                                "selection_basis": "loglog_slope_closest_to_one",
                             }
                         )
                 start = None
     if not candidates:
-        out["warning"] = "no_diffusive_regime_detected"
-        out["confidence"] = "low"
-        out["status"] = "no_formal_diffusion"
-        return out
+        finite_alpha = np.isfinite(alpha)
+        if int(np.sum(finite_alpha)) < min_run:
+            out["warning"] = "no_diffusive_regime_detected"
+            out["confidence"] = "low"
+            out["status"] = "no_formal_diffusion"
+            return out
+        alpha_dev_all = np.where(finite_alpha, np.abs(alpha - float(alpha_target)), np.inf)
+        best_center = int(np.argmin(alpha_dev_all))
+        start = int(np.clip(best_center - min_run // 2, 0, max(tv.size - min_run, 0)))
+        end = int(min(tv.size - 1, start + min_run - 1))
+        tt = tv[start : end + 1]
+        yy = yv[start : end + 1]
+        slope, intercept = np.polyfit(tt, yy, 1)
+        if not np.isfinite(slope) or float(slope) <= 0.0:
+            out["warning"] = "no_positive_slope_window_detected"
+            out["confidence"] = "low"
+            out["status"] = "no_formal_diffusion"
+            return out
+        yhat = slope * tt + intercept
+        ss_res = float(np.sum((yy - yhat) ** 2))
+        ss_tot = float(np.sum((yy - float(np.mean(yy))) ** 2))
+        r2 = 1.0 - ss_res / ss_tot if ss_tot > 0.0 else float("nan")
+        alpha_slice = alpha[start : end + 1]
+        candidates.append(
+            {
+                "confidence": "low",
+                "fit_t_start_ps": float(tt[0]),
+                "fit_t_end_ps": float(tt[-1]),
+                "fit_r2": float(r2),
+                "fit_slope_nm2_ps": float(slope),
+                "fit_intercept_nm2": float(intercept),
+                "alpha_mean": float(np.mean(alpha_slice)),
+                "alpha_std": float(np.std(alpha_slice)),
+                "alpha_deviation": float(abs(float(np.mean(alpha_slice)) - float(alpha_target))),
+                "duration_ps": float(tt[-1] - tt[0]),
+                "selection_basis": "loglog_slope_closest_to_one",
+                "warning": "closest_loglog_slope_window",
+            }
+        )
 
-    def _score(item: dict[str, Any]) -> tuple[float, float, float]:
-        conf_rank = 2.0 if item["confidence"] == "high" else 1.0
-        alpha_dev = abs(float(item["alpha_mean"]) - float(alpha_target))
-        return (conf_rank, float(item["duration_ps"]), float(item["fit_r2"]) - alpha_dev)
+    def _score(item: dict[str, Any]) -> tuple[float, int, float, float]:
+        conf_rank = {"high": 0, "medium": 1, "low": 2}.get(str(item.get("confidence") or "low"), 3)
+        return (
+            float(item.get("alpha_deviation", float("inf"))),
+            int(conf_rank),
+            -float(item.get("duration_ps", 0.0)),
+            -float(item.get("fit_r2", float("-inf"))),
+        )
 
-    best = sorted(candidates, key=_score, reverse=True)[0]
+    best = sorted(candidates, key=_score)[0]
     best.pop("duration_ps", None)
     out.update(best)
-    out["status"] = "ok"
+    alpha_mean = float(best.get("alpha_mean")) if best.get("alpha_mean") is not None else float("nan")
     if best["confidence"] in {"high", "medium"}:
-        geometry_token = _normalize_geometry_mode(out.get("geometry"))
-        divisor = 6.0
-        if geometry_token == "xy":
-            divisor = 4.0
-        elif geometry_token == "z":
-            divisor = 2.0
-        d_nm2_ps = float(best["fit_slope_nm2_ps"]) / float(divisor)
-        out["D_nm2_ps"] = float(d_nm2_ps)
-        out["D_m2_s"] = float(d_nm2_ps) * 1.0e-6
+        out["status"] = "ok"
+    elif np.isfinite(alpha_mean) and alpha_mean < float(alpha_target):
+        out["status"] = "subdiffusive_risk"
     else:
-        out["status"] = "no_formal_diffusion"
+        out["status"] = "superdiffusive_risk"
+
+    geometry_token = _normalize_geometry_mode(out.get("geometry"))
+    divisor = 6.0
+    if geometry_token == "xy":
+        divisor = 4.0
+    elif geometry_token == "z":
+        divisor = 2.0
+    d_nm2_ps = float(best["fit_slope_nm2_ps"]) / float(divisor)
+    out["D_nm2_ps"] = float(d_nm2_ps)
+    out["D_m2_s"] = float(d_nm2_ps) * 1.0e-6
     return out
 
 
@@ -1165,6 +1212,26 @@ def build_ne_conductivity_from_msd(*, msd_payload: dict[str, Any], volume_nm3: f
     vol_m3 = float(volume_nm3) * 1.0e-27
     components: list[dict[str, Any]] = []
     ignored: list[dict[str, Any]] = []
+    risk_annotations: list[dict[str, Any]] = []
+
+    def _append_mobile_ion_risk(*, moltype: str, status: Any, alpha_mean: Any, confidence: Any, reason: Any = None) -> None:
+        status_s = str(status or "")
+        alpha_val = None
+        try:
+            alpha_val = float(alpha_mean) if alpha_mean is not None else None
+        except Exception:
+            alpha_val = None
+        if status_s not in {"subdiffusive_risk", "no_formal_diffusion"}:
+            return
+        risk_annotations.append(
+            {
+                "moltype": str(moltype),
+                "status": status_s,
+                "alpha_mean": alpha_val,
+                "confidence": str(confidence or ""),
+                "reason": str(reason or "mobile ions remain subdiffusive; N-E used the log-log MSD window whose slope is closest to 1"),
+            }
+        )
 
     for moltype, record in (msd_payload or {}).items():
         if str(moltype).startswith("_") or not isinstance(record, dict):
@@ -1208,6 +1275,9 @@ def build_ne_conductivity_from_msd(*, msd_payload: dict[str, Any], volume_nm3: f
                         "count": count,
                         "charge_e": q_e,
                         "D_m2_s": float(d_val),
+                        "msd_status": comp.get("status"),
+                        "msd_confidence": comp.get("confidence"),
+                        "msd_alpha_mean": comp.get("alpha_mean"),
                         "sigma_component_S_m": float(term),
                         "sigma_component_upper_bound_S_m": float(term),
                     }
@@ -1227,7 +1297,27 @@ def build_ne_conductivity_from_msd(*, msd_payload: dict[str, Any], volume_nm3: f
         default_metric = str(record.get("default_metric") or "")
         default_rec = metrics.get(default_metric) if isinstance(metrics, dict) else None
         d_val = default_rec.get("D_m2_s") if isinstance(default_rec, dict) else record.get("D_m2_s")
-        if abs(formal_q) < 1.0e-12 or d_val is None:
+        if abs(formal_q) < 1.0e-12:
+            continue
+        if d_val is None:
+            ignored.append(
+                {
+                    "moltype": str(moltype),
+                    "component_kind": "species_default",
+                    "reason": "no_formal_diffusion_coefficient",
+                    "status": default_rec.get("status") if isinstance(default_rec, dict) else None,
+                    "confidence": default_rec.get("confidence") if isinstance(default_rec, dict) else None,
+                    "alpha_mean": default_rec.get("alpha_mean") if isinstance(default_rec, dict) else None,
+                }
+            )
+            if not is_polymer:
+                _append_mobile_ion_risk(
+                    moltype=str(moltype),
+                    status=default_rec.get("status") if isinstance(default_rec, dict) else None,
+                    alpha_mean=default_rec.get("alpha_mean") if isinstance(default_rec, dict) else None,
+                    confidence=default_rec.get("confidence") if isinstance(default_rec, dict) else None,
+                    reason="mobile ions remain subdiffusive; no formal MSD diffusion window was available for N-E",
+                )
             continue
         comp = {
             "moltype": str(moltype),
@@ -1237,7 +1327,17 @@ def build_ne_conductivity_from_msd(*, msd_payload: dict[str, Any], volume_nm3: f
             "count": n_molecules,
             "charge_e": float(formal_q),
             "D_m2_s": float(d_val),
+            "msd_status": default_rec.get("status") if isinstance(default_rec, dict) else None,
+            "msd_confidence": default_rec.get("confidence") if isinstance(default_rec, dict) else None,
+            "msd_alpha_mean": default_rec.get("alpha_mean") if isinstance(default_rec, dict) else None,
         }
+        if not is_polymer:
+            _append_mobile_ion_risk(
+                moltype=str(moltype),
+                status=comp.get("msd_status"),
+                alpha_mean=comp.get("msd_alpha_mean"),
+                confidence=comp.get("msd_confidence"),
+            )
         if abs(formal_q) >= 5.0 and natoms >= 30:
             comp["ignored_as_polyionic_macromolecule"] = True
             comp["reason"] = "large net charge on a large molecule; no charged-group MSD available"
@@ -1256,10 +1356,23 @@ def build_ne_conductivity_from_msd(*, msd_payload: dict[str, Any], volume_nm3: f
             if str(c.get("component_kind") or "") == "polymer_charged_group"
         )
     )
+    mobile_ion_subdiffusive_risk = bool(risk_annotations)
+    risk_note = None
+    if mobile_ion_subdiffusive_risk:
+        risk_note = (
+            "risk: mobile ions remain subdiffusive; N-E used the log-log MSD window whose slope is closest to 1"
+        )
+    sigma_display = f"{sigma:.3e} S/m"
+    if risk_note:
+        sigma_display += f" ({risk_note})"
     return {
         "sigma_S_m": sigma,
         "sigma_ne_upper_bound_S_m": sigma,
+        "sigma_ne_upper_bound_display": sigma_display,
+        "sigma_ne_upper_bound_note": risk_note,
         "NE_is_upper_bound": True,
+        "mobile_ion_subdiffusive_risk": mobile_ion_subdiffusive_risk,
+        "risk_annotations": risk_annotations,
         "polymer_charged_group_self_ne_contribution_S_m": polymer_self_term,
         "temperature_K": float(temp_k),
         "volume_nm3": float(volume_nm3),

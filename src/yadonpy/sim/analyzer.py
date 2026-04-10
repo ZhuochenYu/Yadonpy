@@ -1895,10 +1895,14 @@ class AnalyzeResult:
 
         out = {
             "sigma_ne_upper_bound_S_m": float(sigma_ne),
+            "sigma_ne_upper_bound_display": ne_out.get("sigma_ne_upper_bound_display", f"{sigma_ne:.3e} S/m"),
+            "sigma_ne_upper_bound_note": ne_out.get("sigma_ne_upper_bound_note"),
             "sigma_eh_total_S_m": float(sigma_eh) if sigma_eh is not None else None,
             "haven_ratio": haven_ratio,
             "collective_conductivity_unavailable": bool(eh_out.get("collective_conductivity_unavailable", sigma_eh is None)),
             "NE_is_upper_bound": True,
+            "mobile_ion_subdiffusive_risk": bool(ne_out.get("mobile_ion_subdiffusive_risk", False)),
+            "risk_annotations": list(ne_out.get("risk_annotations") or []),
             "polymer_charged_group_self_ne_contribution_S_m": ne_out.get("polymer_charged_group_self_ne_contribution_S_m"),
             "ne": ne_out,
             "eh": eh_out,
@@ -1915,7 +1919,11 @@ class AnalyzeResult:
         (self._analysis_dir() / "sigma.json").write_text(json.dumps(out, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
         eh_detail = out.get("sigma_eh_total_S_m")
         eh_str = f"{float(eh_detail):.3e} S/m" if eh_detail is not None else "unavailable"
-        detail = f"sigma_NE_upper={sigma_ne:.3e} S/m | sigma_EH={eh_str}"
+        detail = f"sigma_NE_upper={sigma_ne:.3e} S/m"
+        ne_note = out.get("sigma_ne_upper_bound_note")
+        if ne_note:
+            detail += f" ({ne_note})"
+        detail += f" | sigma_EH={eh_str}"
         if haven_ratio is not None:
             detail += f" | Haven={float(haven_ratio):.3f}"
         self._section_done("Conductivity analysis", t_all, detail=detail)

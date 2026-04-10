@@ -50,10 +50,13 @@ def test_select_diffusive_window_respects_geometry_divisor():
 
 def test_select_diffusive_window_rejects_plateau():
     t_ps = np.linspace(0.0, 1000.0, 201)
-    msd_nm2 = 1.0 - np.exp(-t_ps / 50.0)
+    msd_nm2 = 0.02 * np.power(np.maximum(t_ps, 1.0), 0.6)
     fit = select_diffusive_window(t_ps, msd_nm2)
-    assert fit["D_m2_s"] is None
-    assert fit["status"] in {"failed", "no_formal_diffusion"}
+    assert fit["D_m2_s"] is not None
+    assert fit["selection_basis"] == "loglog_slope_closest_to_one"
+    assert fit["status"] == "subdiffusive_risk"
+    assert fit["confidence"] == "low"
+    assert fit["alpha_mean"] < 1.0
 
 
 def test_detect_first_shell_returns_confident_minimum():
@@ -172,6 +175,32 @@ def test_build_ne_conductivity_from_msd_accepts_netzero_polymer_group_metrics():
     assert len(out["components"]) == 2
     assert {c["charge_sign"] for c in out["components"]} == {"cation", "anion"}
     assert all(c["component_kind"] == "polymer_charged_group" for c in out["components"])
+
+
+def test_build_ne_conductivity_from_msd_marks_subdiffusive_mobile_ion_risk():
+    msd_payload = {
+        "Li": {
+            "kind": "cation",
+            "natoms": 1,
+            "n_molecules": 20,
+            "formal_charge_e": 1.0,
+            "default_metric": "ion_atomic_msd",
+            "metrics": {
+                "ion_atomic_msd": {
+                    "D_m2_s": 1.2e-10,
+                    "status": "subdiffusive_risk",
+                    "confidence": "low",
+                    "alpha_mean": 0.72,
+                }
+            },
+        },
+    }
+    out = build_ne_conductivity_from_msd(msd_payload=msd_payload, volume_nm3=120.0, temp_k=353.0)
+    assert out["sigma_ne_upper_bound_S_m"] > 0.0
+    assert out["mobile_ion_subdiffusive_risk"] is True
+    assert "risk:" in str(out["sigma_ne_upper_bound_display"])
+    assert "subdiffusive" in str(out["sigma_ne_upper_bound_note"])
+    assert out["risk_annotations"]
 
 
 def test_build_site_map_classifies_common_sites(tmp_path: Path):
