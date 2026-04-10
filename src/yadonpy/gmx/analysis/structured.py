@@ -147,6 +147,9 @@ def _build_mobile_atom_payload(top: SystemTopology, system_dir: Path) -> tuple[n
     return np.asarray(mobile_indices, dtype=int), np.asarray(mobile_masses, dtype=float)
 
 
+_MOBILE_DRIFT_CACHE: dict[tuple[str, str, str, str, int], tuple[np.ndarray, np.ndarray]] = {}
+
+
 def _unwrap_position_series(positions_nm: np.ndarray, box_lengths_nm: np.ndarray, *, geometry_mode: str) -> np.ndarray:
     pos = np.asarray(positions_nm, dtype=float)
     box = np.asarray(box_lengths_nm, dtype=float)
@@ -182,6 +185,18 @@ def _compute_mobile_drift_series(
     except Exception as exc:  # pragma: no cover
         raise RuntimeError(f"mdtraj is required for transport drift correction: {exc}") from exc
 
+    cache_key = (
+        str(Path(gro_path).resolve()),
+        str(Path(xtc_path).resolve()),
+        str(Path(top_path).resolve()),
+        str(Path(system_dir).resolve()),
+        int(max(1, chunk)),
+    )
+    cached = _MOBILE_DRIFT_CACHE.get(cache_key)
+    if cached is not None:
+        t_cached, drift_cached = cached
+        return np.array(t_cached, copy=True), np.array(drift_cached, copy=True)
+
     top = parse_system_top(Path(top_path))
     atom_indices, masses = _build_mobile_atom_payload(top, system_dir)
     if atom_indices.size == 0:
@@ -192,18 +207,27 @@ def _compute_mobile_drift_series(
 
     times: list[np.ndarray] = []
     drift_chunks: list[np.ndarray] = []
+    box_chunks: list[np.ndarray] = []
     for trj in md.iterload(str(xtc_path), top=str(gro_path), chunk=int(max(1, chunk))):
         xyz = np.asarray(trj.xyz[:, atom_indices, :], dtype=float)
         box = np.asarray(getattr(trj, "unitcell_lengths", None), dtype=float)
         if box.ndim != 2 or box.shape[0] != xyz.shape[0] or box.shape[1] < 3:
             continue
-        xyz = _unwrap_position_series(xyz, box[:, :3], geometry_mode="3d")
+        # For drift correction we only need the global mobile-phase COM trajectory.
+        # Computing the wrapped COM first and unwrapping that 3-vector time series is
+        # substantially cheaper than unwrapping every mobile atom in large systems.
         drift = np.tensordot(xyz, weights, axes=(1, 0))
         times.append(np.asarray(trj.time, dtype=float))
         drift_chunks.append(np.asarray(drift, dtype=float))
+        box_chunks.append(np.asarray(box[:, :3], dtype=float))
     if not times:
         return np.zeros(0, dtype=float), np.zeros((0, 3), dtype=float)
-    return np.concatenate(times, axis=0), np.concatenate(drift_chunks, axis=0)
+    t_ps = np.concatenate(times, axis=0)
+    drift_wrapped = np.concatenate(drift_chunks, axis=0)
+    box_nm = np.concatenate(box_chunks, axis=0)
+    drift = _unwrap_position_series(drift_wrapped[:, None, :], box_nm, geometry_mode="3d")[:, 0, :]
+    _MOBILE_DRIFT_CACHE[cache_key] = (np.array(t_ps, copy=True), np.array(drift, copy=True))
+    return t_ps, drift
 
 
 def _canonicalize_smiles_like(value: Any) -> str:

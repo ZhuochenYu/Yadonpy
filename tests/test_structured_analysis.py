@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import sys
+import types
 from pathlib import Path
 
 import numpy as np
@@ -11,6 +13,7 @@ from yadonpy.gmx.analysis.conductivity import EHFit
 from yadonpy.gmx.engine import GromacsError
 from yadonpy.gmx.analysis.auto_plot import plot_msd_series, plot_rdf_cn_series
 from yadonpy.gmx.analysis.structured import (
+    _compute_mobile_drift_series,
     build_ne_conductivity_from_msd,
     build_site_map,
     detect_first_shell,
@@ -392,3 +395,43 @@ def test_sigma_falls_back_to_position_helfand_when_gmx_current_fails(tmp_path: P
     assert out["collective_conductivity_unavailable"] is False
     assert out["eh"]["method"] == "helfand_unwrapped_positions"
     assert "gmx current produced an empty -dsp output" in str(out["eh"].get("gmx_current_warning"))
+
+
+def test_compute_mobile_drift_series_unwraps_wrapped_mobile_com(tmp_path: Path, monkeypatch):
+    class _FakeTraj:
+        def __init__(self):
+            self.xyz = np.asarray(
+                [
+                    [[0.90, 0.00, 0.00], [0.95, 0.00, 0.00]],
+                    [[0.05, 0.00, 0.00], [0.10, 0.00, 0.00]],
+                    [[0.15, 0.00, 0.00], [0.20, 0.00, 0.00]],
+                ],
+                dtype=float,
+            )
+            self.unitcell_lengths = np.ones((3, 3), dtype=float)
+            self.time = np.asarray([0.0, 1.0, 2.0], dtype=float)
+
+    fake_mdtraj = types.SimpleNamespace(iterload=lambda *args, **kwargs: [_FakeTraj()])
+    monkeypatch.setitem(sys.modules, "mdtraj", fake_mdtraj)
+
+    import yadonpy.gmx.analysis.structured as structured_mod
+
+    monkeypatch.setattr(structured_mod, "parse_system_top", lambda path: object())
+    monkeypatch.setattr(
+        structured_mod,
+        "_build_mobile_atom_payload",
+        lambda top, system_dir: (np.asarray([0, 1], dtype=int), np.asarray([1.0, 1.0], dtype=float)),
+    )
+    structured_mod._MOBILE_DRIFT_CACHE.clear()
+
+    t_ps, drift = _compute_mobile_drift_series(
+        gro_path=tmp_path / "system.gro",
+        xtc_path=tmp_path / "md.xtc",
+        top_path=tmp_path / "system.top",
+        system_dir=tmp_path,
+        chunk=3,
+    )
+
+    assert np.allclose(t_ps, np.asarray([0.0, 1.0, 2.0], dtype=float))
+    assert np.allclose(drift[:, 0], np.asarray([0.925, 1.075, 1.175], dtype=float))
+    assert np.allclose(drift[:, 1:], 0.0)
