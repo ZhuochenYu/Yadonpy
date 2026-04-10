@@ -7,6 +7,8 @@ import numpy as np
 import pytest
 from rdkit import Chem
 
+from yadonpy.gmx.analysis.conductivity import EHFit
+from yadonpy.gmx.engine import GromacsError
 from yadonpy.gmx.analysis.auto_plot import plot_msd_series, plot_rdf_cn_series
 from yadonpy.gmx.analysis.structured import (
     build_ne_conductivity_from_msd,
@@ -303,3 +305,90 @@ def test_rdf_accepts_center_only_call_style(tmp_path: Path, monkeypatch):
     out = analyzer.rdf(center_mol=Chem.MolFromSmiles("[Li+]"))
     assert isinstance(out, dict)
     assert "_overlay" in out
+
+
+def test_sigma_falls_back_to_position_helfand_when_gmx_current_fails(tmp_path: Path, monkeypatch):
+    work_dir = tmp_path
+    system_dir = work_dir / "02_system"
+    analysis_dir = work_dir / "06_analysis"
+    system_dir.mkdir(parents=True, exist_ok=True)
+    analysis_dir.mkdir(parents=True, exist_ok=True)
+
+    gro = system_dir / "system.gro"
+    gro.write_text(
+        "test\n"
+        "1\n"
+        "    1LIT     Li    1   0.000   0.000   0.000\n"
+        "   1.00000   1.00000   1.00000\n",
+        encoding="utf-8",
+    )
+    top = work_dir / "system.top"
+    top.write_text("", encoding="utf-8")
+    ndx = work_dir / "system.ndx"
+    ndx.write_text("[ IONS ]\n1\n", encoding="utf-8")
+    tpr = work_dir / "md.tpr"
+    xtc = work_dir / "md.xtc"
+    trr = work_dir / "md.trr"
+    edr = work_dir / "md.edr"
+    for path in (tpr, xtc, trr, edr):
+        path.write_text("", encoding="utf-8")
+
+    analyzer = AnalyzeResult(work_dir=work_dir, tpr=tpr, xtc=xtc, trr=trr, edr=edr, top=top, ndx=ndx)
+
+    monkeypatch.setattr(analyzer, "_analysis_dir", lambda: analysis_dir)
+    monkeypatch.setattr(analyzer, "_system_dir", lambda: system_dir)
+    monkeypatch.setattr(analyzer, "_analysis_xtc_path", lambda: xtc)
+
+    import yadonpy.sim.analyzer as analyzer_mod
+
+    monkeypatch.setattr(
+        analyzer_mod,
+        "build_ne_conductivity_from_msd",
+        lambda **kwargs: {
+            "sigma_S_m": 0.0,
+            "sigma_ne_upper_bound_S_m": 0.0,
+            "components": [],
+            "ignored_components": [],
+            "polymer_charged_group_self_ne_contribution_S_m": 0.0,
+        },
+    )
+
+    class _BrokenRunner:
+        def current(self, **kwargs):
+            raise GromacsError("gmx current produced an empty -dsp output")
+
+    monkeypatch.setattr(analyzer_mod, "GromacsRunner", lambda: _BrokenRunner())
+
+    def _fake_write_eh_dsp_from_unwrapped_positions(**kwargs):
+        out = Path(kwargs["out_dsp_xvg"])
+        out.write_text(
+            "0.0 0.0\n"
+            "1000.0 1.0e-11\n"
+            "2000.0 2.0e-11\n"
+            "3000.0 3.0e-11\n"
+            "4000.0 4.0e-11\n",
+            encoding="utf-8",
+        )
+        return out
+
+    monkeypatch.setattr(analyzer_mod, "write_eh_dsp_from_unwrapped_positions", _fake_write_eh_dsp_from_unwrapped_positions)
+    monkeypatch.setattr(
+        analyzer_mod,
+        "conductivity_from_current_dsp",
+        lambda path: EHFit(
+            sigma_S_m=0.123,
+            window_start_ps=1000.0,
+            window_end_ps=4000.0,
+            slope_per_ps=1.23e-13,
+            intercept=0.0,
+            r2=0.99,
+            note="test-fit",
+        ),
+    )
+
+    out = analyzer.sigma(msd={}, temp_k=353.0)
+
+    assert out["sigma_eh_total_S_m"] == pytest.approx(0.123)
+    assert out["collective_conductivity_unavailable"] is False
+    assert out["eh"]["method"] == "helfand_unwrapped_positions"
+    assert "gmx current produced an empty -dsp output" in str(out["eh"].get("gmx_current_warning"))

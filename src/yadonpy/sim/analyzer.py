@@ -1820,20 +1820,24 @@ class AnalyzeResult:
             dsp_xvg = outdir / f"current_dsp_{group}.xvg"
             fit: EHFit | None = None
             proc = None
+            gmx_current_error: str | None = None
             if trr is not None and Path(trr).exists():
-                proc = GromacsRunner().current(
-                    tpr=self.tpr,
-                    traj=Path(trr),
-                    ndx=self.ndx,
-                    group=group,
-                    out_xvg=main_xvg,
-                    out_dsp=dsp_xvg,
-                    temp_k=float(temp_k),
-                    cwd=outdir,
-                )
-                fit = conductivity_from_current_dsp(dsp_xvg)
-                method = "gmx current -dsp"
-            else:
+                try:
+                    proc = GromacsRunner().current(
+                        tpr=self.tpr,
+                        traj=Path(trr),
+                        ndx=self.ndx,
+                        group=group,
+                        out_xvg=main_xvg,
+                        out_dsp=dsp_xvg,
+                        temp_k=float(temp_k),
+                        cwd=outdir,
+                    )
+                    fit = conductivity_from_current_dsp(dsp_xvg)
+                    method = "gmx current -dsp"
+                except Exception as current_exc:
+                    gmx_current_error = str(current_exc)
+            if fit is None:
                 fallback_dsp = outdir / f"current_dsp_fallback_{group}.xvg"
                 write_eh_dsp_from_unwrapped_positions(
                     xtc=self._analysis_xtc_path(),
@@ -1863,6 +1867,8 @@ class AnalyzeResult:
                 "dsp_xvg": str(dsp_xvg),
                 "collective_conductivity_unavailable": False,
             }
+            if gmx_current_error is not None:
+                eh_out["gmx_current_warning"] = str(gmx_current_error)
             try:
                 eh_svg = plot_eh_fit_svg(dsp_xvg, fit, out_svg=outdir / f"eh_fit_{group}.svg", title=f"EH ({group})")
                 eh_out["eh_fit_svg"] = str(eh_svg)
