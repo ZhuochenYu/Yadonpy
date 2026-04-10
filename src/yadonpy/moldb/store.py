@@ -17,7 +17,7 @@ except Exception:  # pragma: no cover - optional on some stripped RDKit builds
     RDLogger = None
 
 from ..core import chem_utils as utils
-from ..core.polyelectrolyte import uses_localized_charge_groups
+from ..core.polyelectrolyte import annotate_polyelectrolyte_metadata, uses_localized_charge_groups
 from ..io.mol2 import write_mol2
 
 
@@ -515,6 +515,27 @@ def _restore_polyelectrolyte_variant(mol: Chem.Mol, meta: dict[str, Any] | None)
             mol.SetProp("_YADONPY_POLYELECTROLYTE_DETECTION", str(meta.get("polyelectrolyte_detection")))
         if meta.get("constraint_signature"):
             mol.SetProp("_YADONPY_CONSTRAINT_SIGNATURE", str(meta.get("constraint_signature")))
+    except Exception:
+        pass
+
+    try:
+        needs_regen = bool(meta.get("polyelectrolyte_mode")) and (
+            not bool(meta.get("charge_groups"))
+            or not isinstance(meta.get("polyelectrolyte_summary"), dict)
+            or not bool(meta.get("polyelectrolyte_summary"))
+        )
+        if needs_regen:
+            detection = str(meta.get("polyelectrolyte_detection") or "auto").strip() or "auto"
+            regenerated = annotate_polyelectrolyte_metadata(mol, detection=detection)
+            charge_groups = regenerated.get("charge_groups")
+            resp_constraints = regenerated.get("resp_constraints")
+            summary = regenerated.get("summary")
+            if isinstance(charge_groups, list):
+                mol.SetProp("_yadonpy_charge_groups_json", json.dumps(charge_groups, ensure_ascii=False))
+            if isinstance(resp_constraints, dict):
+                mol.SetProp("_yadonpy_resp_constraints_json", json.dumps(resp_constraints, ensure_ascii=False))
+            if isinstance(summary, dict):
+                mol.SetProp("_yadonpy_polyelectrolyte_summary_json", json.dumps(summary, ensure_ascii=False))
     except Exception:
         pass
 

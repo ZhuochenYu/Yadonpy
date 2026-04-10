@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -286,3 +287,39 @@ def test_moldb_load_restores_polyelectrolyte_metadata(tmp_path: Path):
     assert loaded.HasProp('_yadonpy_charge_groups_json')
     assert loaded.HasProp('_yadonpy_resp_constraints_json')
     assert loaded.HasProp('_yadonpy_polyelectrolyte_summary_json')
+
+
+def test_moldb_load_regenerates_localized_charge_groups_for_stale_polyelectrolyte_variant(tmp_path: Path):
+    db = moldb.MolDB(db_dir=tmp_path / 'moldb')
+    smiles = '*OC1OC(CO)C(*)C(O)C1OCC(=O)[O-]'
+    mol = api.mol_from_smiles(smiles, coord=True, name='glucose_6')
+    for atom in mol.GetAtoms():
+        atom.SetDoubleProp('AtomicCharge', float(atom.GetFormalCharge()) * 0.1)
+
+    rec = db.update_from_mol(
+        mol,
+        smiles_or_psmiles=smiles,
+        name='glucose_6',
+        charge='RESP',
+        polyelectrolyte_mode=True,
+    )
+    vid = next(iter(rec.variants))
+    rec.variants[vid]['charge_groups'] = []
+    rec.variants[vid]['resp_constraints'] = {}
+    rec.variants[vid]['polyelectrolyte_summary'] = {}
+    db.save_record(rec)
+
+    loaded, _ = db.load_mol(
+        smiles,
+        require_ready=True,
+        charge='RESP',
+        polyelectrolyte_mode=True,
+    )
+
+    groups = json.loads(loaded.GetProp('_yadonpy_charge_groups_json'))
+    constraints = json.loads(loaded.GetProp('_yadonpy_resp_constraints_json'))
+    summary = json.loads(loaded.GetProp('_yadonpy_polyelectrolyte_summary_json'))
+
+    assert groups
+    assert constraints.get('mode') == 'grouped'
+    assert summary.get('groups')
