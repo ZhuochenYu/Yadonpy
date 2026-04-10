@@ -438,6 +438,11 @@ def plot_msd_series(
     fit_t_end_ps: Optional[float] = None,
     confidence: Optional[str] = None,
     status: Optional[str] = None,
+    geometry: Optional[str] = None,
+    alpha_mean: Optional[float] = None,
+    selection_basis: Optional[str] = None,
+    D_m2_s: Optional[float] = None,
+    warning: Optional[str] = None,
     window: Optional[int] = None,
 ) -> Dict[str, str]:
     out_dir = _as_path(out_dir)
@@ -450,9 +455,25 @@ def plot_msd_series(
     if window is None:
         window = int(min(51, max(11, len(msd) // 50)))
     msd_plot = _moving_average_1d(msd, int(window))
-    note = None
-    if confidence or status:
-        note = " | ".join([str(x) for x in (confidence, status) if x])
+    note_lines: list[str] = []
+    headline = " | ".join([str(x) for x in (confidence, status, geometry) if x])
+    if headline:
+        note_lines.append(headline)
+    if alpha_mean is not None:
+        try:
+            note_lines.append(f"alpha_mean={float(alpha_mean):.3f}")
+        except Exception:
+            pass
+    if D_m2_s is not None:
+        try:
+            note_lines.append(f"D={float(D_m2_s):.3e} m^2/s")
+        except Exception:
+            pass
+    if selection_basis:
+        note_lines.append(str(selection_basis))
+    if warning:
+        note_lines.append(f"warning={warning}")
+    note = "\n".join(note_lines) if note_lines else None
     try:
         import matplotlib
 
@@ -469,7 +490,16 @@ def plot_msd_series(
             plt.axvspan(float(fit_t_start_ps) / 1000.0, float(fit_t_end_ps) / 1000.0, alpha=0.15, label="fit window")
         plt.title(f"MSD - {group}")
         if note:
-            plt.text(0.98, 0.98, note, transform=plt.gca().transAxes, ha="right", va="top")
+            plt.text(
+                0.98,
+                0.98,
+                note,
+                transform=plt.gca().transAxes,
+                ha="right",
+                va="top",
+                fontsize=8,
+                bbox={"boxstyle": "round,pad=0.3", "facecolor": "white", "alpha": 0.85, "edgecolor": "0.8"},
+            )
         plt.xlabel("Time (ns)")
         plt.ylabel("MSD (nm$^2$)")
         plt.grid(True)
@@ -497,9 +527,27 @@ def plot_msd_series(
             fit_mask = (t_ps >= float(fit_t_start_ps)) & (t_ps <= float(fit_t_end_ps)) & (t_ps > 0.0) & (msd > 0.0)
             if np.any(fit_mask):
                 plt.loglog(t_ns[fit_mask], msd[fit_mask], linewidth=2.0, label="fit window")
+                if alpha_mean is not None:
+                    try:
+                        x_ref = float(np.sqrt(t_ns[fit_mask][0] * t_ns[fit_mask][-1]))
+                        y_ref = float(np.exp(np.interp(np.log(x_ref), np.log(t_ns[fit_mask]), np.log(msd_plot[fit_mask]))))
+                        guide_x = np.asarray([float(np.min(t_ns[fit_mask])), float(np.max(t_ns[fit_mask]))], dtype=float)
+                        guide_y = y_ref * (guide_x / max(x_ref, 1.0e-30))
+                        plt.loglog(guide_x, guide_y, linestyle="--", alpha=0.55, label="slope=1 guide")
+                    except Exception:
+                        pass
         plt.title(f"MSD (log-log) - {group}")
         if note:
-            plt.text(0.98, 0.98, note, transform=plt.gca().transAxes, ha="right", va="top")
+            plt.text(
+                0.98,
+                0.98,
+                note,
+                transform=plt.gca().transAxes,
+                ha="right",
+                va="top",
+                fontsize=8,
+                bbox={"boxstyle": "round,pad=0.3", "facecolor": "white", "alpha": 0.85, "edgecolor": "0.8"},
+            )
         plt.xlabel("Time (ns)")
         plt.ylabel("MSD (nm$^2$)")
         plt.grid(True)

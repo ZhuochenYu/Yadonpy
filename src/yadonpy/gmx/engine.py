@@ -1067,13 +1067,22 @@ class GromacsRunner:
         Notes:
             - `gmx current` typically requires velocities; a `.trr` trajectory is recommended.
             - We pre-generate a `-pbc nojump` trajectory to reduce artifacts.
+            - The nojump trajectory is cached under the analysis directory so
+              repeated post-processing runs do not pay the conversion cost again.
         """
         out_xvg.parent.mkdir(parents=True, exist_ok=True)
 
         traj_in = Path(traj)
         nojump = out_xvg.parent / f"_nojump{traj_in.suffix}"
         try:
-            self._trjconv_nojump(tpr=tpr, traj=traj_in, out_traj=nojump, cwd=cwd)
+            sources = [Path(tpr), Path(traj)]
+            cache_fresh = (
+                nojump.exists()
+                and nojump.stat().st_size > 0
+                and nojump.stat().st_mtime >= max(p.stat().st_mtime for p in sources if p.exists())
+            )
+            if not cache_fresh:
+                self._trjconv_nojump(tpr=tpr, traj=traj_in, out_traj=nojump, cwd=cwd)
             traj_in = nojump
         except Exception:
             # fall back to raw trajectory
@@ -1120,13 +1129,6 @@ class GromacsRunner:
                     )
             except OSError:
                 raise GromacsError("gmx current did not produce a readable -dsp output.")
-
-        # cleanup
-        try:
-            if nojump.exists():
-                nojump.unlink()
-        except Exception:
-            pass
 
         if proc.returncode != 0:
             raise GromacsError(

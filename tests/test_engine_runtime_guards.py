@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -115,3 +116,46 @@ def test_mdrun_cuda_internal_error_falls_back_to_cpu_kernels(monkeypatch, tmp_pa
     assert second_cmd[second_cmd.index('-pmefft') + 1] == 'cpu'
     assert '-gpu_id' not in second_cmd
     assert second_env.get('GMX_DISABLE_GPU_DETECTION') == '1'
+
+
+def test_current_reuses_cached_nojump_trajectory(monkeypatch, tmp_path: Path):
+    runner = GromacsRunner(exec_=GromacsExec('gmx'), verbose=False)
+    tpr = tmp_path / 'md.tpr'
+    trr = tmp_path / 'md.trr'
+    ndx = tmp_path / 'system.ndx'
+    out_xvg = tmp_path / 'current.xvg'
+    out_dsp = tmp_path / 'current_dsp.xvg'
+    for path in (tpr, trr):
+        path.write_text('stub\n', encoding='utf-8')
+    ndx.write_text('[ IONS ]\n1\n', encoding='utf-8')
+    nojump = tmp_path / '_nojump.trr'
+    nojump.write_text('cached\n', encoding='utf-8')
+    fresh_mtime = trr.stat().st_mtime + 10.0
+    nojump.touch()
+    import os
+    os.utime(nojump, (fresh_mtime, fresh_mtime))
+
+    def _unexpected_nojump(**kwargs):
+        raise AssertionError('cached nojump trajectory should be reused')
+
+    monkeypatch.setattr(runner, '_trjconv_nojump', _unexpected_nojump)
+
+    def _fake_run(args, *, cwd=None, stdin_text=None, check=False):
+        out_dsp.write_text('0.0 0.0\n100.0 1.0e-12\n', encoding='utf-8')
+        return subprocess.CompletedProcess(args=list(args), returncode=0, stdout=b'', stderr=b'')
+
+    monkeypatch.setattr(runner, 'run', _fake_run)
+
+    proc = runner.current(
+        tpr=tpr,
+        traj=trr,
+        ndx=ndx,
+        group='IONS',
+        out_xvg=out_xvg,
+        out_dsp=out_dsp,
+        temp_k=353.0,
+        cwd=tmp_path,
+    )
+
+    assert proc.returncode == 0
+    assert nojump.exists()

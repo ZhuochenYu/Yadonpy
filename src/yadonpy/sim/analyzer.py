@@ -26,7 +26,13 @@ from ..gmx.analysis.thermo import (
     cv_molar_from_total_energy,
 )
 from ..core import utils
-from ..gmx.analysis.conductivity import conductivity_from_current_dsp, EHFit, plot_eh_fit_svg, write_eh_dsp_from_unwrapped_positions
+from ..gmx.analysis.conductivity import (
+    conductivity_from_current_dsp,
+    EHFit,
+    classify_eh_confidence,
+    plot_eh_fit_svg,
+    write_eh_dsp_from_unwrapped_positions,
+)
 from ..gmx.analysis.auto_plot import (
     plot_msd,
     plot_msd_overlay,
@@ -1479,6 +1485,12 @@ class AnalyzeResult:
                 "natoms": int(entry.get("natoms") or 0),
                 "formal_charge_e": float(entry.get("formal_charge_e") or 0.0),
                 "default_metric": str(entry.get("default_metric") or ""),
+                "geometry": None,
+                "status": None,
+                "confidence": None,
+                "alpha_mean": None,
+                "alpha_std": None,
+                "warning": None,
                 "metrics": {},
             }
             metrics = dict(entry.get("metrics") or {})
@@ -1570,6 +1582,11 @@ class AnalyzeResult:
                     fit_t_end_ps=fit.get("fit_t_end_ps"),
                     confidence=fit.get("confidence"),
                     status=fit.get("status"),
+                    geometry=metric_data.get("geometry"),
+                    alpha_mean=fit.get("alpha_mean"),
+                    selection_basis=fit.get("selection_basis"),
+                    D_m2_s=fit.get("D_m2_s"),
+                    warning=fit.get("warning"),
                 )
                 metric_rec: Dict[str, Any] = {
                     "group_kind": str(metric_entry.get("group_kind") or metric_name),
@@ -1627,6 +1644,12 @@ class AnalyzeResult:
                 species_rec["metrics"][metric_name] = metric_rec
                 if metric_name == species_rec["default_metric"]:
                     species_rec["metric"] = metric_name
+                    species_rec["geometry"] = metric_rec.get("geometry")
+                    species_rec["status"] = metric_rec.get("status")
+                    species_rec["confidence"] = metric_rec.get("confidence")
+                    species_rec["alpha_mean"] = metric_rec.get("alpha_mean")
+                    species_rec["alpha_std"] = metric_rec.get("alpha_std")
+                    species_rec["warning"] = metric_rec.get("warning")
                     species_rec["D_nm2_ps"] = metric_rec.get("D_nm2_ps")
                     species_rec["D_m2_s"] = metric_rec.get("D_m2_s")
                     overlay_series[str(moltype)] = (
@@ -1853,6 +1876,7 @@ class AnalyzeResult:
                 method = "helfand_unwrapped_positions"
             if fit is None or float(fit.sigma_S_m) <= 0.0:
                 raise ValueError("No stable positive-slope EH conductivity regime detected.")
+            eh_confidence, eh_quality_note = classify_eh_confidence(fit)
             eh_out = {
                 "sigma_eh_total_S_m": float(fit.sigma_S_m),
                 "sigma_S_m": float(fit.sigma_S_m),
@@ -1863,7 +1887,8 @@ class AnalyzeResult:
                 "group": str(group),
                 "reason": None,
                 "method": method,
-                "confidence": "high" if float(fit.r2) >= 0.98 else "medium",
+                "confidence": eh_confidence,
+                "quality_note": eh_quality_note,
                 "dsp_xvg": str(dsp_xvg),
                 "collective_conductivity_unavailable": False,
             }
@@ -1887,9 +1912,15 @@ class AnalyzeResult:
 
         sigma_eh = eh_out.get("sigma_eh_total_S_m")
         haven_ratio = None
+        haven_ratio_warning = None
         try:
             if sigma_eh is not None and sigma_ne > 0.0:
                 haven_ratio = float(sigma_eh) / float(sigma_ne)
+                if float(haven_ratio) > 1.0:
+                    haven_ratio_warning = (
+                        "sigma_EH exceeds the N-E upper bound; likely insufficient sampling "
+                        "or unstable MSD/EH fits"
+                    )
         except Exception:
             haven_ratio = None
 
@@ -1899,6 +1930,7 @@ class AnalyzeResult:
             "sigma_ne_upper_bound_note": ne_out.get("sigma_ne_upper_bound_note"),
             "sigma_eh_total_S_m": float(sigma_eh) if sigma_eh is not None else None,
             "haven_ratio": haven_ratio,
+            "haven_ratio_warning": haven_ratio_warning,
             "collective_conductivity_unavailable": bool(eh_out.get("collective_conductivity_unavailable", sigma_eh is None)),
             "NE_is_upper_bound": True,
             "mobile_ion_subdiffusive_risk": bool(ne_out.get("mobile_ion_subdiffusive_risk", False)),

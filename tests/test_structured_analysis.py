@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 from rdkit import Chem
 
-from yadonpy.gmx.analysis.conductivity import EHFit
+from yadonpy.gmx.analysis.conductivity import EHFit, classify_eh_confidence
 from yadonpy.gmx.analysis import conductivity as conductivity_mod
 from yadonpy.gmx.engine import GromacsError
 from yadonpy.gmx.analysis.auto_plot import plot_msd_series, plot_rdf_cn_series
@@ -256,6 +256,10 @@ def test_plot_series_helpers_emit_svg(tmp_path: Path):
         fit_t_end_ps=800.0,
         confidence="high",
         status="ok",
+        geometry="3d",
+        alpha_mean=1.0,
+        selection_basis="loglog_slope_closest_to_one",
+        D_m2_s=2.0e-9,
     )
     assert Path(plots["msd_svg"]).exists()
     assert Path(plots["msd_loglog_svg"]).exists()
@@ -427,6 +431,21 @@ def test_sigma_falls_back_to_position_helfand_when_gmx_current_fails(tmp_path: P
     assert "gmx current produced an empty -dsp output" in str(out["eh"].get("gmx_current_warning"))
 
 
+def test_classify_eh_confidence_marks_best_r2_fallback_as_low():
+    fit = EHFit(
+        sigma_S_m=1.0e-3,
+        window_start_ps=1000.0,
+        window_end_ps=3000.0,
+        slope_per_ps=1.0e-15,
+        intercept=0.0,
+        r2=0.91,
+        note="Auto EH window: no window passed r2>=thr (thr=0.980); using best-r2 window.",
+    )
+    confidence, reason = classify_eh_confidence(fit)
+    assert confidence == "low"
+    assert reason == "fallback_best_r2_window"
+
+
 def test_compute_mobile_drift_series_unwraps_wrapped_mobile_com(tmp_path: Path, monkeypatch):
     class _FakeTraj:
         def __init__(self):
@@ -492,20 +511,20 @@ def test_write_eh_dsp_from_unwrapped_positions_uses_gro_topology(tmp_path: Path,
     monkeypatch.setattr(conductivity_mod, "parse_system_top", lambda path: topo)
 
     class _FakeTraj:
-        def __init__(self):
+        def __init__(self, start: int, stop: int):
             self.n_atoms = 1
-            self.time = np.asarray([float(i * 50.0) for i in range(10)], dtype=float)
-            self.xyz = np.asarray([[[0.1 * float(i), 0.0, 0.0]] for i in range(10)], dtype=float)
-            self.unitcell_lengths = np.ones((10, 3), dtype=float)
+            self.time = np.asarray([float(i * 50.0) for i in range(start, stop)], dtype=float)
+            self.xyz = np.asarray([[[0.1 * float(i), 0.0, 0.0]] for i in range(start, stop)], dtype=float)
+            self.unitcell_lengths = np.ones((stop - start, 3), dtype=float)
 
     calls: dict[str, str] = {}
 
-    def _fake_load(path: str, *, top: str):
+    def _fake_iterload(path: str, *, top: str, chunk: int):
         calls["path"] = path
         calls["top"] = top
-        return _FakeTraj()
+        return [_FakeTraj(0, 5), _FakeTraj(5, 10)]
 
-    fake_mdtraj = types.SimpleNamespace(load=_fake_load)
+    fake_mdtraj = types.SimpleNamespace(iterload=_fake_iterload)
     monkeypatch.setitem(sys.modules, "mdtraj", fake_mdtraj)
 
     conductivity_mod.write_eh_dsp_from_unwrapped_positions(

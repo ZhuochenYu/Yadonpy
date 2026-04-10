@@ -117,6 +117,29 @@ class EHFit:
     note: str = ""
 
 
+def classify_eh_confidence(fit: EHFit) -> tuple[str, str]:
+    """Classify EH fit confidence and expose the main reason.
+
+    The goal is to avoid over-selling noisy EH fits as reliable conductivity
+    values. We treat explicit fallback window-selection notes as lower
+    confidence even if the local linear fit is numerically positive.
+    """
+    note = str(getattr(fit, "note", "") or "").strip()
+    note_l = note.lower()
+    r2 = float(getattr(fit, "r2", float("nan")))
+    if ("no window passed" in note_l) or ("best-r2 window" in note_l):
+        return "low", "fallback_best_r2_window"
+    if not np.isfinite(r2):
+        return "failed", "invalid_r2"
+    if r2 >= 0.985:
+        return "high", "stable_linear_window"
+    if r2 >= 0.92:
+        return "medium", "acceptable_linear_window"
+    if r2 >= 0.75:
+        return "low", "weak_linear_window"
+    return "failed", "no_stable_positive_slope_regime"
+
+
 @dataclass(frozen=True)
 class EHWindowSelection:
     window_start_ps: float
@@ -283,6 +306,7 @@ def write_eh_dsp_from_unwrapped_positions(
     charge_threshold_e: float = 0.1,
     origin_stride_ps: float = 50.0,
     max_origins: int = 64,
+    chunk_frames: int = 200,
 ) -> Path:
     r"""Write an EH-like `-dsp` curve from unwrapped positions (no velocities required).
 
@@ -330,26 +354,13 @@ def write_eh_dsp_from_unwrapped_positions(
             charges_C.extend(q)
             ion_mask.extend([is_ion] * len(q))
 
-    # Determine atom count from the trajectory (most reliable).
+    # Determine the ionic Helfand moment M(t) from the trajectory in a
+    # streaming fashion so memory scales with n_frames rather than
+    # n_frames * n_atoms.
     try:
         import mdtraj as md
     except Exception as e:
         raise ImportError("mdtraj is required for EH fallback from positions") from e
-
-    try:
-        # mdtraj is most reliable with coordinate-style topologies here; using
-        # the GRO that matches the exported system keeps the EH fallback usable
-        # on installations where loading XTC with a TPR-backed topology fails.
-        trj = md.load(str(xtc), top=str(gro))
-        n_atoms = int(trj.n_atoms)
-    except Exception as e:
-        raise RuntimeError(f"Failed to read trajectory for EH fallback: {xtc}") from e
-
-    if len(charges_C) != n_atoms:
-        raise ValueError(
-            f"Atom count mismatch for EH fallback: topology charges len={len(charges_C)} vs traj n_atoms={n_atoms}. "
-            f"Check that {top} matches {xtc}."
-        )
 
     qC = np.asarray(charges_C, dtype=float)
     ion_idx = np.nonzero(np.asarray(ion_mask, dtype=bool))[0]
@@ -357,26 +368,57 @@ def write_eh_dsp_from_unwrapped_positions(
         raise ValueError("No ionic atoms selected for EH fallback (all moltypes are near-neutral).")
 
     qC_ion = qC[ion_idx]
+    times_chunks: list[np.ndarray] = []
+    moment_chunks: list[np.ndarray] = []
+    prev_wrapped_last: np.ndarray | None = None
+    prev_unwrapped_last: np.ndarray | None = None
+    prev_box_last: np.ndarray | None = None
+    n_atoms: int | None = None
+    try:
+        iterator = md.iterload(str(xtc), top=str(gro), chunk=int(max(1, chunk_frames)))
+        for trj in iterator:
+            if n_atoms is None:
+                n_atoms = int(trj.n_atoms)
+                if len(charges_C) != int(n_atoms):
+                    raise ValueError(
+                        f"Atom count mismatch for EH fallback: topology charges len={len(charges_C)} vs traj n_atoms={n_atoms}. "
+                        f"Check that {top} matches {xtc}."
+                    )
+            xyz = np.asarray(trj.xyz[:, ion_idx, :], dtype=float)
+            box_nm = np.asarray(getattr(trj, "unitcell_lengths", None), dtype=float)
+            if box_nm.ndim != 2 or box_nm.shape[0] != xyz.shape[0] or box_nm.shape[1] < 3:
+                raise ValueError("Trajectory unit-cell lengths are required for EH fallback unwrapping.")
+            r_unwrapped = np.array(xyz, copy=True)
+            if r_unwrapped.shape[0] >= 1 and prev_wrapped_last is not None and prev_unwrapped_last is not None and prev_box_last is not None:
+                ref0 = 0.5 * (np.asarray(box_nm[0, :3], dtype=float) + np.asarray(prev_box_last[:3], dtype=float))
+                delta0 = xyz[0] - prev_wrapped_last
+                delta0 -= ref0[None, :] * np.round(delta0 / np.maximum(ref0[None, :], 1.0e-12))
+                r_unwrapped[0] = prev_unwrapped_last + delta0
+            if r_unwrapped.shape[0] >= 2:
+                delta = xyz[1:] - xyz[:-1]
+                if prev_wrapped_last is None:
+                    box_mid = 0.5 * (box_nm[1:, :3] + box_nm[:-1, :3])
+                    delta -= box_mid[:, None, :] * np.round(delta / np.maximum(box_mid[:, None, :], 1.0e-12))
+                    r_unwrapped[1:] = r_unwrapped[0] + np.cumsum(delta, axis=0)
+                else:
+                    box_mid = 0.5 * (box_nm[1:, :3] + box_nm[:-1, :3])
+                    delta -= box_mid[:, None, :] * np.round(delta / np.maximum(box_mid[:, None, :], 1.0e-12))
+                    r_unwrapped[1:] = r_unwrapped[0] + np.cumsum(delta, axis=0)
+            prev_wrapped_last = np.asarray(xyz[-1], dtype=float)
+            prev_unwrapped_last = np.asarray(r_unwrapped[-1], dtype=float)
+            prev_box_last = np.asarray(box_nm[-1, :3], dtype=float)
+            moment = np.tensordot(r_unwrapped, qC_ion, axes=([1], [0])) * 1e-9
+            times_chunks.append(np.asarray(trj.time, dtype=float))
+            moment_chunks.append(np.asarray(moment, dtype=float))
+    except Exception as e:
+        raise RuntimeError(f"Failed to read trajectory for EH fallback: {xtc}") from e
 
-    times_ps = np.asarray(trj.time, dtype=float)
+    if not times_chunks or not moment_chunks:
+        raise ValueError("Too few frames for EH fallback.")
+    times_ps = np.concatenate(times_chunks, axis=0)
     if times_ps.size < 10:
         raise ValueError("Too few frames for EH fallback.")
-
-    r_nm = np.asarray(trj.xyz[:, ion_idx, :], dtype=float)
-    box_nm = np.asarray(getattr(trj, "unitcell_lengths", None), dtype=float)
-    if box_nm.ndim != 2 or box_nm.shape[0] != r_nm.shape[0] or box_nm.shape[1] < 3:
-        raise ValueError("Trajectory unit-cell lengths are required for EH fallback unwrapping.")
-
-    # Best-effort nojump reconstruction along all Cartesian axes.
-    r_unwrapped = np.array(r_nm, copy=True)
-    if r_unwrapped.shape[0] >= 2:
-        delta = r_nm[1:] - r_nm[:-1]
-        box_mid = 0.5 * (box_nm[1:, :3] + box_nm[:-1, :3])
-        delta -= box_mid[:, None, :] * np.round(delta / np.maximum(box_mid[:, None, :], 1.0e-12))
-        r_unwrapped[1:] = r_unwrapped[0] + np.cumsum(delta, axis=0)
-
-    # Charge-weighted Helfand moment per frame: M(t) = sum_i q_i r_i(t)
-    M = np.tensordot(r_unwrapped, qC_ion, axes=([1], [0])) * 1e-9  # (n_frames, 3), C*m
+    M = np.concatenate(moment_chunks, axis=0)
 
     if times_ps.size >= 2:
         dt_ps = float(np.median(np.diff(times_ps)))
@@ -432,23 +474,53 @@ def plot_eh_fit_svg(dsp_xvg: Path, fit: EHFit, *, out_svg: Path, title: str = "E
     t = np.asarray(df["x"].to_numpy(dtype=float))
     ycol = [c for c in df.columns if c != "x"][0]
     y = np.asarray(df[ycol].to_numpy(dtype=float))
+    confidence, quality_note = classify_eh_confidence(fit)
+    y_plot = np.asarray(y, dtype=float)
+    if y_plot.size >= 11:
+        w = int(min(101, max(11, y_plot.size // 80)))
+        if w % 2 == 0:
+            w += 1
+        pad = w // 2
+        y_pad = np.pad(y_plot, (pad, pad), mode="edge")
+        kernel = np.ones(w, dtype=float) / float(w)
+        y_plot = np.convolve(y_pad, kernel, mode="valid")
 
     apply_matplotlib_style()
-    plt.figure(figsize=golden_figsize(8.0))
-    plt.plot(t, y, label=ycol)
+    plt.figure(figsize=golden_figsize(8.6))
+    plt.plot(t, y, alpha=0.28, linewidth=1.0, label=f"{ycol} (raw)")
+    plt.plot(t, y_plot, linewidth=1.8, label=f"{ycol} (smoothed)")
 
     # highlight fit window
     m = (t >= float(fit.window_start_ps)) & (t <= float(fit.window_end_ps))
     if int(m.sum()) >= 2:
-        plt.plot(t[m], y[m], label="fit window")
+        plt.axvspan(float(fit.window_start_ps), float(fit.window_end_ps), alpha=0.10, color="tab:green", label="fit window")
         # fitted line
         yhat = float(fit.slope_per_ps) * t[m] + float(fit.intercept)
-        plt.plot(t[m], yhat, label=f"linear fit (r2={fit.r2:.3f})")
+        plt.plot(t[m], yhat, linewidth=2.1, color="tab:green", label=f"linear fit (r2={fit.r2:.3f})")
 
-    plt.title(f"{title}\nσ={fit.sigma_S_m:.4g} S/m, [{fit.window_start_ps:.1f},{fit.window_end_ps:.1f}] ps")
+    plt.title(f"{title}\nσ={fit.sigma_S_m:.4g} S/m")
     plt.xlabel("Time (ps)")
     plt.ylabel(str(ycol))
     plt.grid(True)
+    note_lines = [
+        f"window = [{fit.window_start_ps:.1f}, {fit.window_end_ps:.1f}] ps",
+        f"r2 = {fit.r2:.3f}",
+        f"confidence = {confidence}",
+        f"quality = {quality_note}",
+    ]
+    fit_note = str(fit.note or "").strip()
+    if fit_note:
+        note_lines.append(fit_note)
+    plt.gca().text(
+        0.98,
+        0.02,
+        "\n".join(note_lines),
+        transform=plt.gca().transAxes,
+        ha="right",
+        va="bottom",
+        fontsize=8,
+        bbox={"boxstyle": "round,pad=0.3", "facecolor": "white", "alpha": 0.85, "edgecolor": "0.8"},
+    )
     place_legend(plt.gca())
     plt.tight_layout()
     plt.savefig(out_svg, format="svg")
