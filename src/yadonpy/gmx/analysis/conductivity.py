@@ -337,7 +337,10 @@ def write_eh_dsp_from_unwrapped_positions(
         raise ImportError("mdtraj is required for EH fallback from positions") from e
 
     try:
-        trj = md.load(str(xtc), top=str(tpr))
+        # mdtraj is most reliable with coordinate-style topologies here; using
+        # the GRO that matches the exported system keeps the EH fallback usable
+        # on installations where loading XTC with a TPR-backed topology fails.
+        trj = md.load(str(xtc), top=str(gro))
         n_atoms = int(trj.n_atoms)
     except Exception as e:
         raise RuntimeError(f"Failed to read trajectory for EH fallback: {xtc}") from e

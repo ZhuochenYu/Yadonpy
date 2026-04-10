@@ -10,6 +10,7 @@ import pytest
 from rdkit import Chem
 
 from yadonpy.gmx.analysis.conductivity import EHFit
+from yadonpy.gmx.analysis import conductivity as conductivity_mod
 from yadonpy.gmx.engine import GromacsError
 from yadonpy.gmx.analysis.auto_plot import plot_msd_series, plot_rdf_cn_series
 from yadonpy.gmx.analysis.structured import (
@@ -435,3 +436,59 @@ def test_compute_mobile_drift_series_unwraps_wrapped_mobile_com(tmp_path: Path, 
     assert np.allclose(t_ps, np.asarray([0.0, 1.0, 2.0], dtype=float))
     assert np.allclose(drift[:, 0], np.asarray([0.925, 1.075, 1.175], dtype=float))
     assert np.allclose(drift[:, 1:], 0.0)
+
+
+def test_write_eh_dsp_from_unwrapped_positions_uses_gro_topology(tmp_path: Path, monkeypatch):
+    xtc = tmp_path / "md.xtc"
+    tpr = tmp_path / "md.tpr"
+    top = tmp_path / "system.top"
+    gro = tmp_path / "system.gro"
+    out = tmp_path / "eh_dsp.xvg"
+    for path in (xtc, tpr, top, gro):
+        path.write_text("", encoding="utf-8")
+
+    topo = SystemTopology(
+        moleculetypes={
+            "Li": MoleculeType(
+                name="Li",
+                atomtypes=["li"],
+                atomnames=["Li"],
+                charges=[1.0],
+                masses=[6.94],
+                bonds=[],
+            )
+        },
+        molecules=[("Li", 1)],
+    )
+    monkeypatch.setattr(conductivity_mod, "parse_system_top", lambda path: topo)
+
+    class _FakeTraj:
+        def __init__(self):
+            self.n_atoms = 1
+            self.time = np.asarray([float(i * 50.0) for i in range(10)], dtype=float)
+            self.xyz = np.asarray([[[0.1 * float(i), 0.0, 0.0]] for i in range(10)], dtype=float)
+            self.unitcell_lengths = np.ones((10, 3), dtype=float)
+
+    calls: dict[str, str] = {}
+
+    def _fake_load(path: str, *, top: str):
+        calls["path"] = path
+        calls["top"] = top
+        return _FakeTraj()
+
+    fake_mdtraj = types.SimpleNamespace(load=_fake_load)
+    monkeypatch.setitem(sys.modules, "mdtraj", fake_mdtraj)
+
+    conductivity_mod.write_eh_dsp_from_unwrapped_positions(
+        xtc=xtc,
+        tpr=tpr,
+        top=top,
+        gro=gro,
+        out_dsp_xvg=out,
+        temp_k=353.0,
+        vol_m3=1.0e-24,
+    )
+
+    assert calls["path"] == str(xtc)
+    assert calls["top"] == str(gro)
+    assert out.exists()
