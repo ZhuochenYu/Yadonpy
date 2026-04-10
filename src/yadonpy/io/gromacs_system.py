@@ -33,6 +33,7 @@ from ..core.polyelectrolyte import (
     get_charge_groups,
     get_polyelectrolyte_summary,
     get_resp_constraints,
+    uses_localized_charge_groups,
 )
 from ..gmx.topology import parse_system_top
 from ..gmx.analysis.structured import build_site_map
@@ -72,11 +73,9 @@ def _artifact_digest(artifact_dir: Path, moltype: str) -> dict[str, Any]:
 
 def _requires_charge_groups(species_payload: Mapping[str, Any]) -> bool:
     summary = species_payload.get("polyelectrolyte_summary")
-    if isinstance(summary, Mapping) and bool(summary.get("is_polyelectrolyte")):
+    if isinstance(summary, Mapping) and uses_localized_charge_groups(dict(summary)):
         return True
     if bool(species_payload.get("polyelectrolyte_mode")):
-        return True
-    if str(species_payload.get("kind") or "").strip().lower() == "polymer" and int(species_payload.get("formal_charge", 0) or 0) != 0:
         return True
     return False
 

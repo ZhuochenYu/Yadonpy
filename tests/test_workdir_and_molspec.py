@@ -1059,6 +1059,69 @@ def test_export_system_does_not_apply_polyelectrolyte_group_scaling_to_tfsi(tmp_
     assert report["species"][0]["used_group_scaling"] is False
 
 
+def test_export_system_applies_group_scaling_to_localized_small_molecule_anion(tmp_path: Path):
+    acetate_charges = [0.10, 0.20, -0.60, -0.70]
+    acetate_smiles = "CC(=O)[O-]"
+    source_root = tmp_path / "source_molecules"
+    _write_minimal_species_artifacts(source_root, mol_name="Acetate", charges=acetate_charges)
+
+    cell = Chem.Mol()
+    setattr(cell, "cell", utils.Cell(4.0, 0.0, 4.0, 0.0, 4.0, 0.0))
+    meta = {
+        "density_g_cm3": 1.0,
+        "species": [
+            {
+                "smiles": acetate_smiles,
+                "n": 3,
+                "natoms": len(acetate_charges),
+                "name": "Acetate",
+                "charge_scale": 0.8,
+                "charge_groups": [
+                    {
+                        "group_id": "group_1",
+                        "label": "carboxylate",
+                        "atom_indices": [1, 2, 3],
+                        "formal_charge": -1,
+                        "source": "template",
+                    }
+                ],
+                "polyelectrolyte_summary": {
+                    "is_polyelectrolyte": False,
+                    "groups": [
+                        {
+                            "group_id": "group_1",
+                            "label": "carboxylate",
+                            "atom_indices": [1, 2, 3],
+                            "formal_charge": -1,
+                            "source": "template",
+                        }
+                    ],
+                },
+                "polyelectrolyte_mode": False,
+            }
+        ],
+    }
+    cell.SetProp("_yadonpy_cell_meta", json.dumps(meta, ensure_ascii=False))
+
+    out = export_system_from_cell_meta(
+        cell_mol=cell,
+        out_dir=tmp_path / "scaled_localized",
+        ff_name="gaff2_mod",
+        charge_method="RESP",
+        source_molecules_dir=source_root,
+        write_system_mol2=False,
+    )
+
+    exported = _parse_itp_atom_charges(out.molecules_dir / "Acetate" / "Acetate.itp")
+    assert exported[0] == pytest.approx(acetate_charges[0], abs=1.0e-8)
+    assert sum(exported[1:]) == pytest.approx(-0.8, abs=1.0e-8)
+
+    report = json.loads((out.system_top.parent / "charge_scaling_report.json").read_text(encoding="utf-8"))
+    species_report = report["species"][0]
+    assert species_report["used_group_scaling"] is True
+    assert species_report["report"]["groups"][0]["target_total_charge"] == pytest.approx(-0.8, abs=1.0e-8)
+
+
 def test_export_system_normalizes_embedded_parameter_blocks_with_compact_moleculetype_headers(tmp_path: Path):
     from yadonpy.io.gromacs_system import export_system_from_cell_meta
 

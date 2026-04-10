@@ -220,8 +220,9 @@ def detect_charged_groups(mol, *, detection: str = "auto") -> dict[str, Any]:
 
 def annotate_polyelectrolyte_metadata(mol, *, detection: str = "auto") -> dict[str, Any]:
     summary = detect_charged_groups(mol, detection=detection)
+    localized_groups = uses_localized_charge_groups(summary)
     constraints = {
-        "mode": "grouped" if summary["groups"] else "whole_molecule_scale",
+        "mode": "grouped" if localized_groups else "whole_molecule_scale",
         "charged_group_constraints": [
             {
                 "group_id": grp["group_id"],
@@ -236,6 +237,9 @@ def annotate_polyelectrolyte_metadata(mol, *, detection: str = "auto") -> dict[s
         "equivalence_groups": [list(g) for g in summary["equivalence_groups"]],
         "fallback": summary["fallback"],
     }
+    if summary["groups"] and not localized_groups and constraints["fallback"] is None:
+        constraints["fallback"] = "whole_molecule_scale"
+        summary["fallback"] = "whole_molecule_scale"
     try:
         mol.SetProp(_CHARGE_GROUPS_PROP, json.dumps(summary["groups"], ensure_ascii=False))
         mol.SetProp(_RESP_CONSTRAINTS_PROP, json.dumps(constraints, ensure_ascii=False))
@@ -276,6 +280,38 @@ def get_polyelectrolyte_summary(mol) -> dict[str, Any]:
     except Exception:
         pass
     return annotate_polyelectrolyte_metadata(mol)["summary"]
+
+
+def uses_localized_charge_groups(summary_or_mol) -> bool:
+    """Return True when grouped charge semantics should be applied.
+
+    The key distinction is between:
+      - localized charged functional groups (e.g. carboxylates), where RESP
+        constraints / simulation-level charge scaling should target the group only
+      - compact whole-ion anions (e.g. PF6-, TFSI-), where the net charge is
+        delocalized over the entire ion and grouped scaling would distort RESP
+        charges by over-correcting only the graph-detected core.
+
+    Current rule:
+      - any polymer-like charged-group summary -> grouped semantics
+      - any template-detected charged group -> grouped semantics
+      - graph-only groups on ordinary small molecules -> whole-molecule semantics
+    """
+    if summary_or_mol is None:
+        return False
+    if isinstance(summary_or_mol, dict):
+        summary = summary_or_mol
+    else:
+        summary = get_polyelectrolyte_summary(summary_or_mol)
+
+    if not isinstance(summary, dict):
+        return False
+    groups = list(summary.get("groups") or [])
+    if not groups:
+        return False
+    if bool(summary.get("is_polyelectrolyte")):
+        return True
+    return any(str(grp.get("source") or "").strip().lower() == "template" for grp in groups)
 
 
 def build_residue_map(mol, *, mol_name: str | None = None) -> dict[str, Any]:

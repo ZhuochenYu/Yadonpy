@@ -17,6 +17,7 @@ except Exception:  # pragma: no cover - optional on some stripped RDKit builds
     RDLogger = None
 
 from ..core import chem_utils as utils
+from ..core.polyelectrolyte import uses_localized_charge_groups
 from ..io.mol2 import write_mol2
 
 
@@ -98,7 +99,7 @@ def _polyelectrolyte_variant_meta_from_mol(
     summary = _json_prop(mol, "_yadonpy_polyelectrolyte_summary_json")
     charge_groups = _json_prop(mol, "_yadonpy_charge_groups_json")
     constraints = _json_prop(mol, "_yadonpy_resp_constraints_json")
-    inferred_mode = bool(charge_groups or constraints or summary)
+    inferred_mode = bool(uses_localized_charge_groups(summary))
     mode = bool(polyelectrolyte_mode) if polyelectrolyte_mode is not None else inferred_mode
     detection = str(polyelectrolyte_detection).strip() if polyelectrolyte_detection is not None else None
     if not detection and isinstance(summary, dict):

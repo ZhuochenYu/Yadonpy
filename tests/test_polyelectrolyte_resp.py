@@ -9,6 +9,7 @@ from yadonpy.core.polyelectrolyte import (
     build_residue_map,
     detect_charged_groups,
     scale_charged_groups_inplace,
+    uses_localized_charge_groups,
 )
 from yadonpy.io.gromacs_system import (
     _rewrite_gro_resname,
@@ -100,3 +101,28 @@ def test_scale_charged_groups_inplace_scales_only_target_group():
     assert report["groups"]
     unchanged = mol.GetAtomWithIdx(0).GetDoubleProp("AtomicCharge")
     assert abs(unchanged - 0.1) < 1.0e-12
+
+
+def test_localized_charge_group_semantics_distinguish_carboxylate_from_tfsi():
+    acetate = Chem.MolFromSmiles("CC(=O)[O-]")
+    tfsi = Chem.MolFromSmiles("FC(F)(F)S(=O)(=O)[N-]S(=O)(=O)C(F)(F)F")
+    pf6 = Chem.MolFromSmiles("F[P-](F)(F)(F)(F)F")
+
+    acetate_summary = detect_charged_groups(acetate, detection="auto")
+    tfsi_summary = detect_charged_groups(tfsi, detection="auto")
+    pf6_summary = detect_charged_groups(pf6, detection="auto")
+
+    assert uses_localized_charge_groups(acetate_summary) is True
+    assert uses_localized_charge_groups(tfsi_summary) is False
+    assert uses_localized_charge_groups(pf6_summary) is False
+
+
+def test_annotate_polyelectrolyte_metadata_marks_graph_only_small_ions_as_whole_molecule_scale():
+    tfsi = Chem.MolFromSmiles("FC(F)(F)S(=O)(=O)[N-]S(=O)(=O)C(F)(F)F")
+    annotated = annotate_polyelectrolyte_metadata(tfsi)
+    assert annotated["constraints"]["mode"] == "whole_molecule_scale"
+    assert annotated["constraints"]["fallback"] == "whole_molecule_scale"
+
+    acetate = Chem.MolFromSmiles("CC(=O)[O-]")
+    annotated_acetate = annotate_polyelectrolyte_metadata(acetate)
+    assert annotated_acetate["constraints"]["mode"] == "grouped"

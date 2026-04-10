@@ -9,6 +9,7 @@ from rdkit import Chem
 
 from ..core import utils
 from ..core.polyelectrolyte import annotate_polyelectrolyte_metadata
+from ..core.polyelectrolyte import uses_localized_charge_groups
 from ..diagnostics import _psiresp_hint
 
 psiresp = None
@@ -68,12 +69,11 @@ def _charge_constraints_for_molecule(
     polyelectrolyte_mode: bool,
     polyelectrolyte_detection: str,
 ) -> tuple[Any, dict[str, Any] | None]:
-    if not polyelectrolyte_mode:
-        return psiresp.ChargeConstraintOptions(), None
-
     annotated = annotate_polyelectrolyte_metadata(mol, detection=polyelectrolyte_detection)
     summary = annotated["summary"]
     constraints_meta = annotated["constraints"]
+    if not (bool(polyelectrolyte_mode) or uses_localized_charge_groups(summary)):
+        return psiresp.ChargeConstraintOptions(), None
     options = psiresp.ChargeConstraintOptions(
         symmetric_methyls=False,
         symmetric_methylenes=False,
