@@ -182,7 +182,27 @@ class EquilibrationJob:
                 params[key] = cutoff_cap_nm
                 adjusted[key] = {"old": current, "new": cutoff_cap_nm}
 
-        if not adjusted:
+        verlet_safety: dict[str, dict[str, float]] = {}
+        if cutoff_cap_nm <= 0.85:
+            try:
+                current_nstlist = int(params.get("nstlist", 20))
+            except Exception:
+                current_nstlist = 20
+            target_nstlist = 10 if cutoff_cap_nm >= 0.7 else 5
+            if current_nstlist > target_nstlist:
+                params["nstlist"] = target_nstlist
+                verlet_safety["nstlist"] = {"old": float(current_nstlist), "new": float(target_nstlist)}
+
+            try:
+                current_vbt = float(params.get("verlet_buffer_tolerance", 0.005))
+            except Exception:
+                current_vbt = 0.005
+            target_vbt = 0.02 if cutoff_cap_nm >= 0.7 else 0.05
+            if current_vbt < target_vbt:
+                params["verlet_buffer_tolerance"] = target_vbt
+                verlet_safety["verlet_buffer_tolerance"] = {"old": current_vbt, "new": target_vbt}
+
+        if not adjusted and not verlet_safety:
             return mdp, None
 
         return (
@@ -192,6 +212,7 @@ class EquilibrationJob:
                 "min_box_nm": round(min_box_nm, 4),
                 "cutoff_cap_nm": cutoff_cap_nm,
                 "cutoffs": adjusted,
+                "verlet_safety": verlet_safety,
             },
         )
 

@@ -481,10 +481,14 @@ def test_equilibration_job_auto_shrinks_cutoffs_for_small_box(tmp_path, monkeypa
     assert any('rlist                    = 0.81' in text for text in runner.grompp_mdp_texts)
     assert any('rcoulomb                 = 0.81' in text for text in runner.grompp_mdp_texts)
     assert any('rvdw                     = 0.81' in text for text in runner.grompp_mdp_texts)
+    assert any('nstlist                  = 10' in text for text in runner.grompp_mdp_texts)
+    assert any('verlet-buffer-tolerance  = 0.02' in text for text in runner.grompp_mdp_texts)
 
     summary = json.loads(summary_path.read_text(encoding='utf-8'))
     assert summary['stages'][0]['auto_cutoff_adjustments']
     assert summary['stages'][0]['auto_cutoff_adjustments'][0]['cutoff_cap_nm'] == 0.81
+    assert summary['stages'][0]['auto_cutoff_adjustments'][0]['verlet_safety']['nstlist']['new'] == 10.0
+    assert summary['stages'][0]['auto_cutoff_adjustments'][0]['verlet_safety']['verlet_buffer_tolerance']['new'] == 0.02
     assert any('Auto-shrinking nonbond cutoffs' in msg for msg in runner.logs)
 
 

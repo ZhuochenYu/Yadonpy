@@ -25,6 +25,7 @@ nsteps                   = {nsteps}
 ; nonbonded settings (yzc-gmx-gen style)
 cutoff-scheme            = {cutoff_scheme}
 nstlist                  = {nstlist}
+verlet-buffer-tolerance  = {verlet_buffer_tolerance}
 rlist                    = {rlist}
 
 vdwtype                  = {vdwtype}
@@ -57,6 +58,7 @@ nsteps                   = {nsteps}
 ; nonbonded settings (yzc-gmx-gen style)
 cutoff-scheme            = {cutoff_scheme}
 nstlist                  = {nstlist}
+verlet-buffer-tolerance  = {verlet_buffer_tolerance}
 rlist                    = {rlist}
 
 vdwtype                  = {vdwtype}
@@ -95,6 +97,7 @@ nsteps                   = {nsteps}
 ; nonbonded settings (yzc-gmx-gen style)
 cutoff-scheme            = {cutoff_scheme}
 nstlist                  = {nstlist}
+verlet-buffer-tolerance  = {verlet_buffer_tolerance}
 rlist                    = {rlist}
 
 vdwtype                  = {vdwtype}
@@ -136,6 +139,7 @@ nsteps                   = {nsteps}
 ; nonbonded settings (yzc-gmx-gen style)
 cutoff-scheme            = {cutoff_scheme}
 nstlist                  = {nstlist}
+verlet-buffer-tolerance  = {verlet_buffer_tolerance}
 rlist                    = {rlist}
 
 vdwtype                  = {vdwtype}
@@ -188,6 +192,7 @@ nsteps                   = {nsteps}
 ; nonbonded settings (yzc-gmx-gen style)
 cutoff-scheme            = {cutoff_scheme}
 nstlist                  = {nstlist}
+verlet-buffer-tolerance  = {verlet_buffer_tolerance}
 rlist                    = {rlist}
 
 vdwtype                  = {vdwtype}
@@ -438,6 +443,7 @@ def default_mdp_params() -> Dict[str, object]:
         # yzc-gmx-gen style nonbond defaults
         "cutoff_scheme": "Verlet",
         "nstlist": 20,
+        "verlet_buffer_tolerance": 0.005,
         "rlist": 1.2,
         "rcoulomb": 1.2,
         "rvdw": 1.2,
