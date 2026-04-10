@@ -258,6 +258,10 @@ class GAFF2(GAFF):
                             self.set_ptype(p, 'ne')
                     else:
                         self.set_ptype(p, 'n2')
+                elif self._is_sulfonimide_like_nitrogen(p):
+                    # Keep FSI-/TFSI-like central nitrogens on the amide-like path
+                    # instead of rejecting their degree-2 / single-bond topology.
+                    self.set_ptype(p, 'n')
                 else:
                     utils.radon_print('Cannot assignment index %i, element %s, num. of bonds %i, hybridization %s'
                                 % (p.GetIdx(), p.GetSymbol(), p.GetTotalDegree(), str(p.GetHybridization())), level=2 )
@@ -503,4 +507,3 @@ class GAFF2(GAFF):
             result_flag = False
         
         return result_flag
-

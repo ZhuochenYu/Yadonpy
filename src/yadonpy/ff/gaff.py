@@ -77,6 +77,30 @@ class GAFF():
             's4': 'sx', 'sx': 's4', 's6': 'sy', 'sy': 's6'
         }
 
+    def _is_sulfonimide_like_nitrogen(self, atom) -> bool:
+        """Return True for N(-SO2-)2 style centers such as FSI-/TFSI-."""
+        try:
+            if atom.GetSymbol() != 'N' or int(atom.GetTotalDegree()) != 2:
+                return False
+            neighbors = list(atom.GetNeighbors())
+            if len(neighbors) != 2:
+                return False
+            for nb in neighbors:
+                if nb.GetSymbol() != 'S':
+                    return False
+                sulfonyl_oxo = 0
+                for bond in nb.GetBonds():
+                    other = bond.GetBeginAtom() if nb.GetIdx() == bond.GetEndAtom().GetIdx() else bond.GetEndAtom()
+                    if other.GetIdx() == atom.GetIdx():
+                        continue
+                    if other.GetSymbol() == 'O' and bond.GetBondTypeAsDouble() == 2:
+                        sulfonyl_oxo += 1
+                if sulfonyl_oxo < 2:
+                    return False
+            return True
+        except Exception:
+            return False
+
 
     def ff_assign(
         self,
@@ -551,6 +575,10 @@ class GAFF():
                             self.set_ptype(p, 'ne')
                     else:
                         self.set_ptype(p, 'n2')
+                elif self._is_sulfonimide_like_nitrogen(p):
+                    # Sulfonimide anions such as FSI-/TFSI- have an amide-like
+                    # central nitrogen bonded to two sulfonyl sulfurs.
+                    self.set_ptype(p, 'n')
                 else:
                     utils.radon_print('Cannot assignment index %i, element %s, num. of bonds %i, hybridization %s'
                                 % (p.GetIdx(), p.GetSymbol(), p.GetTotalDegree(), str(p.GetHybridization())), level=2 )

@@ -70,6 +70,15 @@ def test_gaff2_mod_assigns_disiloxane_hydride_terms_explicitly():
     assert {dih.ff.type for dih in mol.dihedrals.values()} == {"hi,si,oss,si"}
 
 
+def test_gaff2_mod_assigns_tfsi_sulfonimide_nitrogen():
+    mol = _assign_gaff2_mod("FC(F)(F)S(=O)(=O)[N-]S(=O)(=O)C(F)(F)F")
+    atom_types = [atom.GetProp("ff_type") for atom in mol.GetAtoms()]
+
+    assert "n" in atom_types
+    assert atom_types.count("s6") == 2
+    assert atom_types.count("o") == 4
+
+
 def test_gaff2_mod_records_qm_backed_si_h_sources():
     with open(ff_data_path("ff_dat", "gaff2_mod.json"), "r", encoding="utf-8") as fh:
         data = json.load(fh)
