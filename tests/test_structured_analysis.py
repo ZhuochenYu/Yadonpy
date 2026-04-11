@@ -429,6 +429,9 @@ def test_sigma_falls_back_to_position_helfand_when_gmx_current_fails(tmp_path: P
 
     class _BrokenRunner:
         def current(self, **kwargs):
+            Path(kwargs["out_xvg"]).write_text("", encoding="utf-8")
+            Path(kwargs["out_dsp"]).write_text("", encoding="utf-8")
+            (Path(kwargs["out_xvg"]).parent / "_nojump.trr").write_text("temporary", encoding="utf-8")
             raise GromacsError("gmx current produced an empty -dsp output")
 
     monkeypatch.setattr(analyzer_mod, "GromacsRunner", lambda: _BrokenRunner())
@@ -466,6 +469,9 @@ def test_sigma_falls_back_to_position_helfand_when_gmx_current_fails(tmp_path: P
     assert out["collective_conductivity_unavailable"] is False
     assert out["eh"]["method"] == "helfand_unwrapped_positions"
     assert "gmx current produced an empty -dsp output" in str(out["eh"].get("gmx_current_warning"))
+    cleaned = out["eh"].get("gmx_current_artifacts_cleaned") or []
+    assert any(str(item).endswith("_nojump.trr") for item in cleaned)
+    assert not (analyzer._analysis_dir() / "sigma" / "_nojump.trr").exists()
 
 
 def test_classify_eh_confidence_marks_best_r2_fallback_as_low():

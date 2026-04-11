@@ -1819,6 +1819,18 @@ class AnalyzeResult:
             "confidence": "failed",
         }
         try:
+            def _cleanup_failed_gmx_current_artifacts(paths: Sequence[Path]) -> list[str]:
+                cleaned: list[str] = []
+                for raw_path in paths:
+                    try:
+                        path = Path(raw_path)
+                        if path.exists() and path.is_file():
+                            path.unlink()
+                            cleaned.append(str(path))
+                    except Exception:
+                        continue
+                return cleaned
+
             def _ndx_groups(ndx_path: Path) -> set[str]:
                 out = set()
                 try:
@@ -1852,6 +1864,7 @@ class AnalyzeResult:
             fit: EHFit | None = None
             proc = None
             gmx_current_error: str | None = None
+            gmx_current_cleanup: list[str] = []
             if trr is not None and Path(trr).exists():
                 try:
                     proc = GromacsRunner().current(
@@ -1868,6 +1881,13 @@ class AnalyzeResult:
                     method = "gmx current -dsp"
                 except Exception as current_exc:
                     gmx_current_error = str(current_exc)
+                    gmx_current_cleanup = _cleanup_failed_gmx_current_artifacts(
+                        [
+                            outdir / f"_nojump{Path(trr).suffix}",
+                            main_xvg,
+                            dsp_xvg,
+                        ]
+                    )
             if fit is None:
                 fallback_dsp = outdir / f"current_dsp_fallback_{group}.xvg"
                 write_eh_dsp_from_unwrapped_positions(
@@ -1902,6 +1922,8 @@ class AnalyzeResult:
             }
             if gmx_current_error is not None:
                 eh_out["gmx_current_warning"] = str(gmx_current_error)
+            if gmx_current_cleanup:
+                eh_out["gmx_current_artifacts_cleaned"] = list(gmx_current_cleanup)
             try:
                 eh_svg = plot_eh_fit_svg(dsp_xvg, fit, out_svg=outdir / f"eh_fit_{group}.svg", title=f"EH ({group})")
                 eh_out["eh_fit_svg"] = str(eh_svg)
