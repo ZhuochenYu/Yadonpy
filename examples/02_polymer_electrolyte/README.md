@@ -31,6 +31,18 @@ The benchmark also accepts optional screening variables to match the JPCB 2020 c
 - `LI_CHARGE_SCALE`
 - `ANION_CHARGE_SCALE`
 
+You can also select built-in literature presets:
+
+- `LITERATURE_PRESET=JPCB2020_P1.00S1.00`
+- `LITERATURE_PRESET=JPCB2020_P1.00S0.75`
+- `LITERATURE_PRESET=JPCB2020_P1.20S0.75`
+
+These presets keep the simulation in the `1万–3万` atom range while matching the paper's key knobs more closely:
+
+- `DP = 25`
+- `EO:Li = 12.5:1`
+- `melt_temp_k = 400 K`
+
 Screening comparison helper:
 
 ```bash

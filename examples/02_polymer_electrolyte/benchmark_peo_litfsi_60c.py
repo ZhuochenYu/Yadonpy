@@ -44,6 +44,54 @@ def _env_float(name: str, default: float) -> float:
     return float(raw)
 
 
+def _apply_literature_preset() -> dict[str, float | int | str] | None:
+    preset = str(os.environ.get("LITERATURE_PRESET", "") or "").strip()
+    if not preset:
+        return None
+    key = preset.upper()
+    presets: dict[str, dict[str, float | int | str]] = {
+        "JPCB2020_P1.00S1.00": {
+            "paper_label": "P1.00S1.00",
+            "polymer_charge_scale": 1.0,
+            "li_charge_scale": 1.0,
+            "anion_charge_scale": 1.0,
+            "chain_dp": 25,
+            "chain_count": 96,
+            "salt_pairs": 192,
+            "melt_temp_k": 400.0,
+            "target_temp_k": 333.15,
+        },
+        "JPCB2020_P1.00S0.75": {
+            "paper_label": "P1.00S0.75",
+            "polymer_charge_scale": 1.0,
+            "li_charge_scale": 0.75,
+            "anion_charge_scale": 0.75,
+            "chain_dp": 25,
+            "chain_count": 96,
+            "salt_pairs": 192,
+            "melt_temp_k": 400.0,
+            "target_temp_k": 333.15,
+        },
+        "JPCB2020_P1.20S0.75": {
+            "paper_label": "P1.20S0.75",
+            "polymer_charge_scale": 1.2,
+            "li_charge_scale": 0.75,
+            "anion_charge_scale": 0.75,
+            "chain_dp": 25,
+            "chain_count": 96,
+            "salt_pairs": 192,
+            "melt_temp_k": 400.0,
+            "target_temp_k": 333.15,
+        },
+    }
+    if key not in presets:
+        raise ValueError(
+            f"Unsupported LITERATURE_PRESET={preset!r}. "
+            "Expected one of: JPCB2020_P1.00S1.00, JPCB2020_P1.00S0.75, JPCB2020_P1.20S0.75."
+        )
+    return {"preset_name": key, **presets[key]}
+
+
 BASE_DIR = Path(__file__).resolve().parent
 
 restart_status = _env_bool("RESTART_STATUS", False)
@@ -74,6 +122,17 @@ max_melt_additional = _env_int("MAX_MELT_ADDITIONAL", 2)
 li_charge_scale = _env_float("LI_CHARGE_SCALE", 1.0)
 anion_charge_scale = _env_float("ANION_CHARGE_SCALE", 1.0)
 polymer_charge_scale = _env_float("POLYMER_CHARGE_SCALE", 1.0)
+
+literature_preset = _apply_literature_preset()
+if literature_preset is not None:
+    melt_temp_k = float(literature_preset["melt_temp_k"])
+    target_temp_k = float(literature_preset["target_temp_k"])
+    chain_dp = int(literature_preset["chain_dp"])
+    chain_count = int(literature_preset["chain_count"])
+    salt_pairs = int(literature_preset["salt_pairs"])
+    polymer_charge_scale = float(literature_preset["polymer_charge_scale"])
+    li_charge_scale = float(literature_preset["li_charge_scale"])
+    anion_charge_scale = float(literature_preset["anion_charge_scale"])
 
 work_dir_name = os.environ.get("WORK_DIR_NAME", "benchmark_peo_litfsi_60c_work")
 work_root = Path(os.environ.get("WORK_DIR", str(BASE_DIR / work_dir_name))).resolve()
@@ -242,6 +301,7 @@ if __name__ == "__main__":
 
     metadata = {
         "benchmark_name": "PEO/LiTFSI 60C",
+        "literature_preset": dict(literature_preset) if literature_preset is not None else None,
         "eo_li_ratio": "20:1",
         "melt_temp_k": melt_temp_k,
         "target_temp_k": target_temp_k,
@@ -249,6 +309,7 @@ if __name__ == "__main__":
         "chain_dp": chain_dp,
         "chain_count": chain_count,
         "salt_pairs": salt_pairs,
+        "effective_eo_li_ratio": float(chain_dp * chain_count) / max(float(salt_pairs), 1.0),
         "estimated_total_atoms": estimated_atoms,
         "charge_scale": {"polymer": polymer_charge_scale, "li": li_charge_scale, "tfsi": anion_charge_scale},
         "gpu": gpu,

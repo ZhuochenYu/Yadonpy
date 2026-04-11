@@ -303,3 +303,11 @@ def test_load_benchmark_analysis_dir_reads_compare_payload(tmp_path: Path):
     assert out["benchmark_compare"]["charge_scale_li"] == pytest.approx(0.8)
     assert out["benchmark_compare"]["charge_scale_polymer"] == pytest.approx(1.0)
     assert out["coordination_partition"]["coordination_bias"] == "mixed"
+
+
+def test_jpcb_screening_metadata_shape():
+    chain_dp = 25
+    chain_count = 96
+    salt_pairs = 192
+    effective_eo_li_ratio = float(chain_dp * chain_count) / float(salt_pairs)
+    assert effective_eo_li_ratio == pytest.approx(12.5)
