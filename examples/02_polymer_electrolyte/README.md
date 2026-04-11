@@ -25,6 +25,12 @@ cd examples/02_polymer_electrolyte
 python benchmark_peo_litfsi_60c.py
 ```
 
+The benchmark also accepts optional screening variables to match the JPCB 2020 charge-scaling study more closely:
+
+- `POLYMER_CHARGE_SCALE`
+- `LI_CHARGE_SCALE`
+- `ANION_CHARGE_SCALE`
+
 Screening comparison helper:
 
 ```bash

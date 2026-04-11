@@ -469,6 +469,7 @@ def build_benchmark_compare(
     force_balance_report: Mapping[str, Any],
     coordination_partition: Mapping[str, Any],
     transport_summary: Mapping[str, Any],
+    charge_scale_polymer: float,
     charge_scale_li: float,
     charge_scale_anion: float,
     production_ns: float,
@@ -496,6 +497,7 @@ def build_benchmark_compare(
         notes.append(f"EH conductivity is about {float(factor_below):.1f}x below the lower edge of the literature band.")
 
     return {
+        "charge_scale_polymer": float(charge_scale_polymer),
         "charge_scale_li": float(charge_scale_li),
         "charge_scale_anion": float(charge_scale_anion),
         "production_ns": float(production_ns),
@@ -548,6 +550,11 @@ def build_screening_compare(
             if compare.get("charge_scale_li") is not None
             else (metadata.get("charge_scale") or {}).get("li")
         )
+        scale_polymer = _safe_float(
+            compare.get("charge_scale_polymer")
+            if compare.get("charge_scale_polymer") is not None
+            else (metadata.get("charge_scale") or {}).get("polymer")
+        )
         scale_anion = _safe_float(
             compare.get("charge_scale_anion")
             if compare.get("charge_scale_anion") is not None
@@ -560,6 +567,7 @@ def build_screening_compare(
         normalized.append(
             {
                 "analysis_dir": str(run.get("analysis_dir") or ""),
+                "charge_scale_polymer": scale_polymer,
                 "charge_scale_li": scale_li,
                 "charge_scale_anion": scale_anion,
                 "sigma_eh_total_S_m": sigma_eh,
@@ -649,6 +657,7 @@ def build_screening_compare(
     literature = dict(literature_band or literature_band_peo_litfsi_60c())
     recommended_next = {
         "candidate_charge_scale_li": best.get("charge_scale_li"),
+        "candidate_charge_scale_polymer": best.get("charge_scale_polymer"),
         "candidate_charge_scale_anion": best.get("charge_scale_anion"),
         "reason": diagnosis,
         "suggested_followup": "Run 3 replicas x 20 ns for baseline and best candidate once remote resources are available.",

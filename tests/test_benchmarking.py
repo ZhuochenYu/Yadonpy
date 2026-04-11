@@ -215,6 +215,7 @@ def test_build_benchmark_compare_prefers_force_balance_when_anion_bias_is_strong
                 "haven_gt_one": False,
             },
         },
+        charge_scale_polymer=1.0,
         charge_scale_li=0.8,
         charge_scale_anion=0.8,
         production_ns=10.0,
@@ -228,6 +229,7 @@ def test_build_screening_compare_detects_force_balance_recovery():
         {
             "analysis_dir": "/tmp/s100",
             "benchmark_compare": {
+                "charge_scale_polymer": 1.0,
                 "charge_scale_li": 1.0,
                 "charge_scale_anion": 1.0,
                 "sigma_eh_total_S_m": None,
@@ -251,6 +253,7 @@ def test_build_screening_compare_detects_force_balance_recovery():
         {
             "analysis_dir": "/tmp/s080",
             "benchmark_compare": {
+                "charge_scale_polymer": 1.0,
                 "charge_scale_li": 0.8,
                 "charge_scale_anion": 0.8,
                 "sigma_eh_total_S_m": None,
@@ -275,6 +278,7 @@ def test_build_screening_compare_detects_force_balance_recovery():
     out = build_screening_compare(runs=runs)
     assert out["diagnosis"]["primary_diagnosis"] == "force_balance_overbinding_likely"
     assert out["best_candidate_run"]["charge_scale_li"] == pytest.approx(0.8)
+    assert out["best_candidate_run"]["charge_scale_polymer"] == pytest.approx(1.0)
     assert out["gains_vs_baseline"]["sigma_ne_gain"] == pytest.approx(12.0)
 
 
@@ -285,7 +289,7 @@ def test_load_benchmark_analysis_dir_reads_compare_payload(tmp_path: Path):
         json.dumps(
             {
                 "metadata": {"prod_ns": 10.0, "charge_scale": {"li": 0.8, "tfsi": 0.8}},
-                "compare": {"charge_scale_li": 0.8, "charge_scale_anion": 0.8, "sigma_ne_upper_bound_S_m": 1.2e-2},
+                "compare": {"charge_scale_polymer": 1.0, "charge_scale_li": 0.8, "charge_scale_anion": 0.8, "sigma_ne_upper_bound_S_m": 1.2e-2},
             }
         ),
         encoding="utf-8",
@@ -297,4 +301,5 @@ def test_load_benchmark_analysis_dir_reads_compare_payload(tmp_path: Path):
     out = load_benchmark_analysis_dir(analysis_dir)
     assert out["metadata"]["prod_ns"] == pytest.approx(10.0)
     assert out["benchmark_compare"]["charge_scale_li"] == pytest.approx(0.8)
+    assert out["benchmark_compare"]["charge_scale_polymer"] == pytest.approx(1.0)
     assert out["coordination_partition"]["coordination_bias"] == "mixed"

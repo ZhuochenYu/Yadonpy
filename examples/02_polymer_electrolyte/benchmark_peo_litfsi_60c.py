@@ -73,6 +73,7 @@ max_melt_additional = _env_int("MAX_MELT_ADDITIONAL", 2)
 
 li_charge_scale = _env_float("LI_CHARGE_SCALE", 1.0)
 anion_charge_scale = _env_float("ANION_CHARGE_SCALE", 1.0)
+polymer_charge_scale = _env_float("POLYMER_CHARGE_SCALE", 1.0)
 
 work_dir_name = os.environ.get("WORK_DIR_NAME", "benchmark_peo_litfsi_60c_work")
 work_root = Path(os.environ.get("WORK_DIR", str(BASE_DIR / work_dir_name))).resolve()
@@ -154,7 +155,7 @@ if __name__ == "__main__":
         raise RuntimeError("Failed to assign force field parameters for TFSI.")
 
     counts = [chain_count, salt_pairs, salt_pairs]
-    charge_scale = [1.0, li_charge_scale, anion_charge_scale]
+    charge_scale = [polymer_charge_scale, li_charge_scale, anion_charge_scale]
 
     estimated_atoms = chain_count * int(peo.GetNumAtoms()) + salt_pairs * int(li.GetNumAtoms()) + salt_pairs * int(tfsi.GetNumAtoms())
     if estimated_atoms < 10000 or estimated_atoms > 30000:
@@ -164,7 +165,7 @@ if __name__ == "__main__":
         )
 
     pre_export = [
-        summarize_rdkit_species_forcefield(peo, label="PEO", moltype_hint="PEO", charge_scale=1.0),
+        summarize_rdkit_species_forcefield(peo, label="PEO", moltype_hint="PEO", charge_scale=polymer_charge_scale),
         summarize_rdkit_species_forcefield(li, label="Li", moltype_hint="Li", charge_scale=li_charge_scale),
         summarize_rdkit_species_forcefield(tfsi, label="TFSI", moltype_hint="TFSI", charge_scale=anion_charge_scale),
     ]
@@ -233,6 +234,7 @@ if __name__ == "__main__":
         force_balance_report=force_balance,
         coordination_partition=coordination,
         transport_summary=transport,
+        charge_scale_polymer=polymer_charge_scale,
         charge_scale_li=li_charge_scale,
         charge_scale_anion=anion_charge_scale,
         production_ns=prod_ns,
@@ -248,7 +250,7 @@ if __name__ == "__main__":
         "chain_count": chain_count,
         "salt_pairs": salt_pairs,
         "estimated_total_atoms": estimated_atoms,
-        "charge_scale": {"polymer": 1.0, "li": li_charge_scale, "tfsi": anion_charge_scale},
+        "charge_scale": {"polymer": polymer_charge_scale, "li": li_charge_scale, "tfsi": anion_charge_scale},
         "gpu": gpu,
         "gpu_id": gpu_id,
         "melt_equilibrated": bool(melt_ok),
