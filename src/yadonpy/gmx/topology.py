@@ -41,6 +41,14 @@ class SystemTopology:
     molecules: List[Tuple[str, int]]  # (molname, count)
 
 
+@dataclass
+class AtomTypeParam:
+    name: str
+    mass: float
+    sigma_nm: float
+    epsilon_kj: float
+
+
 def _strip_comment(line: str) -> str:
     # GROMACS comments use ';'
     return line.split(';', 1)[0].strip()
@@ -179,6 +187,47 @@ def parse_defined_atomtypes_from_itp(itp_path: Path) -> List[str]:
     return atomtypes
 
 
+def parse_atomtype_params_from_itp(itp_path: Path) -> Dict[str, AtomTypeParam]:
+    """Parse [ atomtypes ] records from a molecule or force-field ITP file."""
+
+    lines = itp_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    section = None
+    out: Dict[str, AtomTypeParam] = {}
+
+    for raw in lines:
+        line = _strip_comment(raw)
+        if not line:
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            section = line.strip("[]").strip().lower()
+            continue
+        if section != "atomtypes":
+            continue
+        parts = line.split()
+        if len(parts) < 6:
+            continue
+        name = parts[0].strip()
+        if not name or name.lower() == "name":
+            continue
+        try:
+            mass = float(parts[1])
+        except Exception:
+            mass = 0.0
+        try:
+            sigma_nm = float(parts[-2])
+            epsilon_kj = float(parts[-1])
+        except Exception:
+            sigma_nm = 0.0
+            epsilon_kj = 0.0
+        out[name] = AtomTypeParam(
+            name=name,
+            mass=float(mass),
+            sigma_nm=float(sigma_nm),
+            epsilon_kj=float(epsilon_kj),
+        )
+    return out
+
+
 def parse_defined_atomtypes_from_system_top(top_path: Path) -> List[str]:
     """Collect unique atomtypes defined by includes referenced from system.top."""
 
@@ -200,3 +249,23 @@ def parse_defined_atomtypes_from_system_top(top_path: Path) -> List[str]:
                 seen.add(atomtype)
                 ordered.append(atomtype)
     return ordered
+
+
+def parse_system_atomtype_params(top_path: Path) -> Dict[str, AtomTypeParam]:
+    """Collect atomtype LJ parameters from ITPs included by system.top."""
+
+    base = top_path.parent
+    txt = top_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    merged: Dict[str, AtomTypeParam] = {}
+
+    for raw in txt:
+        line = _strip_comment(raw)
+        if not line or not line.lower().startswith("#include"):
+            continue
+        inc_rel = line.split(None, 1)[1].strip().strip('"')
+        inc = (base / inc_rel).resolve()
+        if not inc.exists():
+            continue
+        for name, param in parse_atomtype_params_from_itp(inc).items():
+            merged[name] = param
+    return merged

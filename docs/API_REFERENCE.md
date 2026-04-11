@@ -143,6 +143,7 @@ AnalyzeResult.sigma(
     geometry: str = "auto",
     unwrap: str = "auto",
     drift: str = "auto",
+    eh_mode: str = "auto",
 )
 ```
 
@@ -155,6 +156,9 @@ Transport semantics:
 - `sigma_ne_upper_bound_S_m` is reported explicitly as an upper bound.
 - `sigma_eh_total_S_m` is the preferred total conductivity when a stable
   Einstein-Helfand fit is available.
+- `eh_mode="gmx_current_only"` disables positions-based EH fallback and is the
+  recommended mode for benchmark / literature-comparison workflows that must use
+  only `gmx current -dsp`.
 - `haven_ratio` is reported whenever both conductivities are available.
 - charged-polymer self terms are retained as
   `polymer_charged_group_self_ne_contribution_S_m` and component diagnostics;

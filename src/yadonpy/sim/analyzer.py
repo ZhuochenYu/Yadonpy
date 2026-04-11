@@ -1768,9 +1768,13 @@ class AnalyzeResult:
         geometry: str = "auto",
         unwrap: str = "auto",
         drift: str = "auto",
+        eh_mode: str = "auto",
     ) -> Dict[str, Any]:
         """Compute ionic conductivity."""
-        t_all = self._section_begin("Conductivity analysis", detail="NE + EH conductivity")
+        eh_mode_norm = str(eh_mode or "auto").strip().lower() or "auto"
+        if eh_mode_norm not in {"auto", "gmx_current_only"}:
+            raise ValueError(f"Unsupported eh_mode={eh_mode!r}; expected 'auto' or 'gmx_current_only'.")
+        t_all = self._section_begin("Conductivity analysis", detail=f"NE + EH conductivity | eh_mode={eh_mode_norm}")
         if msd is None:
             self._item("msd_source", "not provided -> recompute")
             msd = self.msd(geometry=geometry, unwrap=unwrap, drift=drift, selection_mode="transport")
@@ -1810,7 +1814,10 @@ class AnalyzeResult:
         )
         self._stat("sigma_NE_upper", f"{sigma_ne:.3e} S/m")
 
-        t0 = self._step_begin("Step 2/2 Einstein-Helfand conductivity", detail="gmx current -dsp (velocity trajectory required)")
+        t0 = self._step_begin(
+            "Step 2/2 Einstein-Helfand conductivity",
+            detail=f"gmx current -dsp (velocity trajectory required) | eh_mode={eh_mode_norm}",
+        )
         eh_out: Dict[str, Any] = {
             "sigma_eh_total_S_m": None,
             "sigma_S_m": None,
@@ -1888,7 +1895,7 @@ class AnalyzeResult:
                             dsp_xvg,
                         ]
                     )
-            if fit is None:
+            if fit is None and eh_mode_norm != "gmx_current_only":
                 fallback_dsp = outdir / f"current_dsp_fallback_{group}.xvg"
                 write_eh_dsp_from_unwrapped_positions(
                     xtc=self._analysis_xtc_path(),
@@ -1902,6 +1909,11 @@ class AnalyzeResult:
                 dsp_xvg = fallback_dsp
                 fit = conductivity_from_current_dsp(dsp_xvg)
                 method = "helfand_unwrapped_positions"
+            elif fit is None and eh_mode_norm == "gmx_current_only":
+                reason = "gmx current -dsp failed or produced no usable dsp output; EH fallback is disabled by eh_mode='gmx_current_only'."
+                if gmx_current_error:
+                    reason += f" root cause: {gmx_current_error}"
+                raise ValueError(reason)
             if fit is None or float(fit.sigma_S_m) <= 0.0:
                 raise ValueError("No stable positive-slope EH conductivity regime detected.")
             eh_confidence, eh_quality_note = classify_eh_confidence(fit)
@@ -1919,6 +1931,7 @@ class AnalyzeResult:
                 "quality_note": eh_quality_note,
                 "dsp_xvg": str(dsp_xvg),
                 "collective_conductivity_unavailable": False,
+                "eh_mode": eh_mode_norm,
             }
             if gmx_current_error is not None:
                 eh_out["gmx_current_warning"] = str(gmx_current_error)
@@ -1938,6 +1951,14 @@ class AnalyzeResult:
         except Exception as e:
             eh_out["reason"] = str(e)
             eh_out["collective_conductivity_unavailable"] = True
+            eh_out["eh_mode"] = eh_mode_norm
+            try:
+                if gmx_current_error is not None:
+                    eh_out["gmx_current_warning"] = str(gmx_current_error)
+                if gmx_current_cleanup:
+                    eh_out["gmx_current_artifacts_cleaned"] = list(gmx_current_cleanup)
+            except Exception:
+                pass
             self._step_warn("Step 2/2 Einstein-Helfand conductivity", detail=str(e))
 
         sigma_eh = eh_out.get("sigma_eh_total_S_m")
@@ -1963,6 +1984,7 @@ class AnalyzeResult:
             "haven_ratio_warning": haven_ratio_warning,
             "collective_conductivity_unavailable": bool(eh_out.get("collective_conductivity_unavailable", sigma_eh is None)),
             "NE_is_upper_bound": True,
+            "eh_mode": eh_mode_norm,
             "mobile_ion_subdiffusive_risk": bool(ne_out.get("mobile_ion_subdiffusive_risk", False)),
             "risk_annotations": list(ne_out.get("risk_annotations") or []),
             "polymer_charged_group_self_ne_contribution_S_m": ne_out.get("polymer_charged_group_self_ne_contribution_S_m"),

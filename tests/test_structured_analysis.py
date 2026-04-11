@@ -474,6 +474,72 @@ def test_sigma_falls_back_to_position_helfand_when_gmx_current_fails(tmp_path: P
     assert not (analyzer._analysis_dir() / "sigma" / "_nojump.trr").exists()
 
 
+def test_sigma_gmx_current_only_marks_eh_unavailable_without_fallback(tmp_path: Path, monkeypatch):
+    work_dir = tmp_path / "work_dir"
+    analysis_dir = work_dir / "06_analysis"
+    analysis_dir.mkdir(parents=True, exist_ok=True)
+    system_dir = work_dir / "02_system"
+    system_dir.mkdir(parents=True, exist_ok=True)
+
+    (analysis_dir / "thermo_summary.json").write_text(json.dumps({"Volume": {"mean": 123.0}}, indent=2) + "\n", encoding="utf-8")
+    (system_dir / "system_meta.json").write_text(json.dumps({"species": []}, indent=2) + "\n", encoding="utf-8")
+    top = system_dir / "system.top"
+    top.write_text("", encoding="utf-8")
+    ndx = work_dir / "system.ndx"
+    ndx.write_text("[ IONS ]\n1\n", encoding="utf-8")
+    tpr = work_dir / "md.tpr"
+    xtc = work_dir / "md.xtc"
+    trr = work_dir / "md.trr"
+    edr = work_dir / "md.edr"
+    for path in (tpr, xtc, trr, edr):
+        path.write_text("", encoding="utf-8")
+
+    analyzer = AnalyzeResult(work_dir=work_dir, tpr=tpr, xtc=xtc, trr=trr, edr=edr, top=top, ndx=ndx)
+    monkeypatch.setattr(analyzer, "_analysis_dir", lambda: analysis_dir)
+    monkeypatch.setattr(analyzer, "_system_dir", lambda: system_dir)
+    monkeypatch.setattr(analyzer, "_analysis_xtc_path", lambda: xtc)
+
+    import yadonpy.sim.analyzer as analyzer_mod
+
+    monkeypatch.setattr(
+        analyzer_mod,
+        "build_ne_conductivity_from_msd",
+        lambda **kwargs: {
+            "sigma_S_m": 1.0e-3,
+            "sigma_ne_upper_bound_S_m": 1.0e-3,
+            "components": [],
+            "ignored_components": [],
+            "polymer_charged_group_self_ne_contribution_S_m": 0.0,
+        },
+    )
+
+    class _BrokenRunner:
+        def current(self, **kwargs):
+            Path(kwargs["out_xvg"]).write_text("", encoding="utf-8")
+            Path(kwargs["out_dsp"]).write_text("", encoding="utf-8")
+            (Path(kwargs["out_xvg"]).parent / "_nojump.trr").write_text("temporary", encoding="utf-8")
+            raise GromacsError("gmx current failed for benchmark mode")
+
+    monkeypatch.setattr(analyzer_mod, "GromacsRunner", lambda: _BrokenRunner())
+
+    def _unexpected_fallback(**kwargs):
+        raise AssertionError("positions-based EH fallback must not run when eh_mode='gmx_current_only'")
+
+    monkeypatch.setattr(analyzer_mod, "write_eh_dsp_from_unwrapped_positions", _unexpected_fallback)
+
+    out = analyzer.sigma(msd={}, temp_k=333.15, eh_mode="gmx_current_only")
+
+    assert out["sigma_ne_upper_bound_S_m"] == pytest.approx(1.0e-3)
+    assert out["sigma_eh_total_S_m"] is None
+    assert out["collective_conductivity_unavailable"] is True
+    assert out["eh"]["method"] is None
+    assert out["eh"]["eh_mode"] == "gmx_current_only"
+    assert "fallback is disabled" in str(out["eh"].get("reason"))
+    cleaned = out["eh"].get("gmx_current_artifacts_cleaned") or []
+    assert any(str(item).endswith("_nojump.trr") for item in cleaned)
+    assert not (analyzer._analysis_dir() / "sigma" / "_nojump.trr").exists()
+
+
 def test_classify_eh_confidence_marks_best_r2_fallback_as_low():
     fit = EHFit(
         sigma_S_m=1.0e-3,

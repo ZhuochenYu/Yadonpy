@@ -18,6 +18,13 @@ cd examples/02_polymer_electrolyte
 python run_full_workflow.py
 ```
 
+Benchmark / experiment-comparison workflow:
+
+```bash
+cd examples/02_polymer_electrolyte
+python benchmark_peo_litfsi_60c.py
+```
+
 ## Outputs
 All outputs are under `work_dir/`:
 
@@ -26,11 +33,19 @@ All outputs are under `work_dir/`:
 - `05_npt_production/` – production run
 - `06_analysis/` – analysis outputs (JSON/XVG/SVG)
 
+The benchmark script also writes dedicated diagnosis files under `06_analysis/`:
+
+- `force_balance_report.json`
+- `coordination_partition.json`
+- `transport_summary.json`
+- `benchmark_compare.json`
+
 Transport notes:
 
 - `RDF`, `MSD`, and conductivity are called independently.
 - `sigma_ne_upper_bound_S_m` should be read as an upper bound.
 - `sigma_eh_total_S_m` is the preferred total conductivity when available.
+- For experiment comparison, `benchmark_peo_litfsi_60c.py` uses `eh_mode="gmx_current_only"`, so EH is reported only from `gmx current -dsp`. If `gmx current` fails, EH is marked unavailable rather than replaced by a fallback estimate.
 
 If you enable the MolDB helper in this script (v0.6.8+), you will also see:
 
