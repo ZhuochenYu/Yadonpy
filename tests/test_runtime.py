@@ -200,3 +200,22 @@ def test_polymer_density_gate_is_more_relaxed_than_liquid_gate(tmp_path: Path):
 
     assert polymer_kwargs['slope_threshold_per_ps'] > liquid_kwargs['slope_threshold_per_ps']
     assert polymer_kwargs['rel_std_threshold'] > liquid_kwargs['rel_std_threshold']
+
+
+def test_system_dir_can_be_resolved_from_parent_work_root(tmp_path: Path):
+    work_root = tmp_path / 'benchmark' / 'work_dir'
+    system_dir = work_root / '02_system'
+    stage_dir = work_root / '05_cool_to_60c' / '03_prod_60c'
+    system_dir.mkdir(parents=True, exist_ok=True)
+    stage_dir.mkdir(parents=True, exist_ok=True)
+
+    analyzer = AnalyzeResult(
+        work_dir=stage_dir,
+        tpr=stage_dir / 'md.tpr',
+        xtc=stage_dir / 'md.xtc',
+        edr=stage_dir / 'md.edr',
+        top=work_root / '02_system' / 'system.top',
+        ndx=work_root / '02_system' / 'system.ndx',
+    )
+
+    assert analyzer._system_dir() == system_dir

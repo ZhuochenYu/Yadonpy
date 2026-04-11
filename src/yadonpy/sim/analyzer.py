@@ -214,12 +214,17 @@ class AnalyzeResult:
         """Locate the exported GROMACS system directory.
 
         YadonPy v0.2.7+ organizes module outputs under numbered folders.
-        We keep a small backward-compatible probe for older layouts.
+        We keep a small backward-compatible probe for older layouts and
+        for stage-local analyses that live under a child directory of the
+        exported system work root.
         """
-        for name in ("02_system", "00_system"):
-            d = self.work_dir / name
-            if d.exists():
-                return d
+        roots = [self.work_dir]
+        roots.extend(list(self.work_dir.parents[:3]))
+        for root in roots:
+            for name in ("02_system", "00_system"):
+                d = root / name
+                if d.exists():
+                    return d
         # default (even if not yet created)
         return self.work_dir / "02_system"
 
