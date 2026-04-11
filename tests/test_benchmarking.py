@@ -8,9 +8,11 @@ import pytest
 from yadonpy.sim.benchmarking import (
     build_benchmark_compare,
     build_coordination_partition,
+    build_screening_compare,
     build_transport_summary,
     collect_force_balance_report,
     literature_band_peo_litfsi_60c,
+    load_benchmark_analysis_dir,
 )
 
 
@@ -219,3 +221,80 @@ def test_build_benchmark_compare_prefers_force_balance_when_anion_bias_is_strong
     )
     assert out["primary_cause"] == "force_balance_likely_anion_biased"
     assert out["factor_below_literature_min"] == pytest.approx(10.0)
+
+
+def test_build_screening_compare_detects_force_balance_recovery():
+    runs = [
+        {
+            "analysis_dir": "/tmp/s100",
+            "benchmark_compare": {
+                "charge_scale_li": 1.0,
+                "charge_scale_anion": 1.0,
+                "sigma_eh_total_S_m": None,
+                "sigma_ne_upper_bound_S_m": 1.0e-3,
+                "production_ns": 10.0,
+            },
+            "coordination_partition": {
+                "coordination_bias": "anion_rich",
+                "anion_to_polymer_cn_ratio": 3.0,
+            },
+            "transport_summary": {
+                "li_alpha_mean": 0.30,
+                "sampling_flags": {
+                    "li_subdiffusive": True,
+                },
+            },
+            "force_balance_report": {
+                "diagnosis": {"primary_force_balance_flag": "anion_proxy_stronger"},
+            },
+        },
+        {
+            "analysis_dir": "/tmp/s080",
+            "benchmark_compare": {
+                "charge_scale_li": 0.8,
+                "charge_scale_anion": 0.8,
+                "sigma_eh_total_S_m": None,
+                "sigma_ne_upper_bound_S_m": 1.2e-2,
+                "production_ns": 10.0,
+            },
+            "coordination_partition": {
+                "coordination_bias": "mixed",
+                "anion_to_polymer_cn_ratio": 1.5,
+            },
+            "transport_summary": {
+                "li_alpha_mean": 0.82,
+                "sampling_flags": {
+                    "li_subdiffusive": False,
+                },
+            },
+            "force_balance_report": {
+                "diagnosis": {"primary_force_balance_flag": "anion_proxy_stronger"},
+            },
+        },
+    ]
+    out = build_screening_compare(runs=runs)
+    assert out["diagnosis"]["primary_diagnosis"] == "force_balance_overbinding_likely"
+    assert out["best_candidate_run"]["charge_scale_li"] == pytest.approx(0.8)
+    assert out["gains_vs_baseline"]["sigma_ne_gain"] == pytest.approx(12.0)
+
+
+def test_load_benchmark_analysis_dir_reads_compare_payload(tmp_path: Path):
+    analysis_dir = tmp_path / "06_analysis"
+    analysis_dir.mkdir(parents=True, exist_ok=True)
+    (analysis_dir / "benchmark_compare.json").write_text(
+        json.dumps(
+            {
+                "metadata": {"prod_ns": 10.0, "charge_scale": {"li": 0.8, "tfsi": 0.8}},
+                "compare": {"charge_scale_li": 0.8, "charge_scale_anion": 0.8, "sigma_ne_upper_bound_S_m": 1.2e-2},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (analysis_dir / "coordination_partition.json").write_text(json.dumps({"coordination_bias": "mixed"}), encoding="utf-8")
+    (analysis_dir / "transport_summary.json").write_text(json.dumps({"li_alpha_mean": 0.8}), encoding="utf-8")
+    (analysis_dir / "force_balance_report.json").write_text(json.dumps({"diagnosis": {"primary_force_balance_flag": "anion_proxy_stronger"}}), encoding="utf-8")
+
+    out = load_benchmark_analysis_dir(analysis_dir)
+    assert out["metadata"]["prod_ns"] == pytest.approx(10.0)
+    assert out["benchmark_compare"]["charge_scale_li"] == pytest.approx(0.8)
+    assert out["coordination_partition"]["coordination_bias"] == "mixed"

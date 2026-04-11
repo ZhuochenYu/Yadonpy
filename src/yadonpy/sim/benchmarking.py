@@ -26,6 +26,15 @@ def _dump_json(path: Path, payload: Mapping[str, Any]) -> Path:
     return out
 
 
+def _safe_float(value: Any) -> Optional[float]:
+    try:
+        if value is None:
+            return None
+        return float(value)
+    except Exception:
+        return None
+
+
 def literature_band_peo_litfsi_60c() -> dict[str, Any]:
     """Return a deliberately broad experimental conductivity band for PEO20-LiTFSI @ 60°C."""
 
@@ -501,13 +510,177 @@ def build_benchmark_compare(
     }
 
 
+def load_benchmark_analysis_dir(analysis_dir: Path | str) -> dict[str, Any]:
+    analysis_dir = Path(analysis_dir)
+
+    def _maybe(name: str) -> dict[str, Any]:
+        path = analysis_dir / f"{name}.json"
+        return _load_json(path) if path.exists() else {}
+
+    compare_payload = _maybe("benchmark_compare")
+    compare_block = dict(compare_payload.get("compare") or compare_payload)
+    metadata = dict(compare_payload.get("metadata") or _maybe("benchmark_metadata"))
+    return {
+        "analysis_dir": str(analysis_dir),
+        "metadata": metadata,
+        "benchmark_compare": compare_block,
+        "coordination_partition": _maybe("coordination_partition"),
+        "transport_summary": _maybe("transport_summary"),
+        "force_balance_report": _maybe("force_balance_report"),
+    }
+
+
+def build_screening_compare(
+    *,
+    runs: Sequence[Mapping[str, Any]],
+    literature_band: Optional[Mapping[str, Any]] = None,
+) -> dict[str, Any]:
+    normalized: list[dict[str, Any]] = []
+    for run in runs:
+        compare = dict(run.get("benchmark_compare") or {})
+        transport = dict(run.get("transport_summary") or {})
+        coordination = dict(run.get("coordination_partition") or {})
+        force_balance = dict(run.get("force_balance_report") or {})
+        metadata = dict(run.get("metadata") or {})
+
+        scale_li = _safe_float(
+            compare.get("charge_scale_li")
+            if compare.get("charge_scale_li") is not None
+            else (metadata.get("charge_scale") or {}).get("li")
+        )
+        scale_anion = _safe_float(
+            compare.get("charge_scale_anion")
+            if compare.get("charge_scale_anion") is not None
+            else (metadata.get("charge_scale") or {}).get("tfsi")
+        )
+        sigma_eh = _safe_float(compare.get("sigma_eh_total_S_m"))
+        sigma_ne = _safe_float(compare.get("sigma_ne_upper_bound_S_m"))
+        li_alpha = _safe_float(transport.get("li_alpha_mean") if transport else compare.get("li_alpha_mean"))
+        coord_ratio = _safe_float(coordination.get("anion_to_polymer_cn_ratio"))
+        normalized.append(
+            {
+                "analysis_dir": str(run.get("analysis_dir") or ""),
+                "charge_scale_li": scale_li,
+                "charge_scale_anion": scale_anion,
+                "sigma_eh_total_S_m": sigma_eh,
+                "sigma_ne_upper_bound_S_m": sigma_ne,
+                "li_alpha_mean": li_alpha,
+                "li_subdiffusive": bool((transport.get("sampling_flags") or {}).get("li_subdiffusive", compare.get("li_subdiffusive", False))),
+                "coordination_bias": str(coordination.get("coordination_bias") or compare.get("coordination_bias") or "undetermined"),
+                "anion_to_polymer_cn_ratio": coord_ratio,
+                "force_balance_flag": str((force_balance.get("diagnosis") or {}).get("primary_force_balance_flag") or compare.get("force_balance_flag") or "undetermined"),
+                "primary_cause": str(compare.get("primary_cause") or "undetermined"),
+                "production_ns": _safe_float(compare.get("production_ns") if compare.get("production_ns") is not None else metadata.get("prod_ns")),
+            }
+        )
+
+    normalized = [item for item in normalized if item.get("charge_scale_li") is not None]
+    normalized.sort(key=lambda item: float(item["charge_scale_li"]), reverse=True)
+    if not normalized:
+        return {
+            "runs": [],
+            "diagnosis": {
+                "primary_diagnosis": "no_runs",
+                "notes": ["No valid screening runs were provided."],
+            },
+        }
+
+    baseline = min(normalized, key=lambda item: abs(float(item["charge_scale_li"]) - 1.0))
+    best = max(
+        normalized,
+        key=lambda item: (
+            _safe_float(item.get("sigma_eh_total_S_m")) or -1.0,
+            _safe_float(item.get("sigma_ne_upper_bound_S_m")) or -1.0,
+            _safe_float(item.get("li_alpha_mean")) or -1.0,
+        ),
+    )
+    base_sigma_eh = _safe_float(baseline.get("sigma_eh_total_S_m"))
+    best_sigma_eh = _safe_float(best.get("sigma_eh_total_S_m"))
+    base_sigma_ne = _safe_float(baseline.get("sigma_ne_upper_bound_S_m"))
+    best_sigma_ne = _safe_float(best.get("sigma_ne_upper_bound_S_m"))
+    base_alpha = _safe_float(baseline.get("li_alpha_mean"))
+    best_alpha = _safe_float(best.get("li_alpha_mean"))
+    base_ratio = _safe_float(baseline.get("anion_to_polymer_cn_ratio"))
+    best_ratio = _safe_float(best.get("anion_to_polymer_cn_ratio"))
+
+    gain_eh = None
+    if base_sigma_eh not in (None, 0.0) and best_sigma_eh is not None:
+        gain_eh = best_sigma_eh / base_sigma_eh
+    gain_ne = None
+    if base_sigma_ne not in (None, 0.0) and best_sigma_ne is not None:
+        gain_ne = best_sigma_ne / base_sigma_ne
+    alpha_gain = None if base_alpha is None or best_alpha is None else best_alpha - base_alpha
+    ratio_change = None
+    if base_ratio not in (None, 0.0) and best_ratio is not None:
+        ratio_change = best_ratio / base_ratio
+
+    diagnosis = "inconclusive"
+    notes: list[str] = []
+    if gain_ne is not None:
+        notes.append(f"NE screening gain from baseline to best candidate: {gain_ne:.2f}x.")
+    if gain_eh is not None:
+        notes.append(f"EH gain from baseline to best candidate: {gain_eh:.2f}x.")
+    if alpha_gain is not None:
+        notes.append(f"Li alpha_mean changed by {alpha_gain:+.3f} between baseline and best candidate.")
+    if ratio_change is not None:
+        notes.append(f"Anion/polymer first-shell CN ratio changed by a factor of {ratio_change:.3f}.")
+
+    strong_screening_gain = bool(gain_ne is not None and gain_ne >= 3.0)
+    alpha_recovers = bool(best_alpha is not None and best_alpha >= 0.7 and alpha_gain is not None and alpha_gain >= 0.15)
+    anion_bias_relaxes = bool(
+        (baseline.get("coordination_bias") == "anion_rich" and best.get("coordination_bias") != "anion_rich")
+        or (ratio_change is not None and ratio_change <= 0.8)
+    )
+    baseline_force_biased = (
+        baseline.get("coordination_bias") == "anion_rich"
+        and baseline.get("force_balance_flag") == "anion_proxy_stronger"
+    )
+
+    if strong_screening_gain and alpha_recovers and (anion_bias_relaxes or baseline_force_biased):
+        diagnosis = "force_balance_overbinding_likely"
+        notes.append("Lower charge scaling materially improves Li mobility; over-strong Coulomb binding is the leading diagnosis.")
+    elif strong_screening_gain and (best.get("li_subdiffusive") or baseline.get("li_subdiffusive")):
+        diagnosis = "mixed_sampling_and_force_balance"
+        notes.append("Charge scaling helps strongly, but subdiffusion persists; both force balance and sampling maturity matter.")
+    elif all(bool(item.get("li_subdiffusive")) for item in normalized):
+        diagnosis = "sampling_limited"
+        notes.append("All screening runs remain subdiffusive, so sampling maturity still limits firm transport conclusions.")
+
+    literature = dict(literature_band or literature_band_peo_litfsi_60c())
+    recommended_next = {
+        "candidate_charge_scale_li": best.get("charge_scale_li"),
+        "candidate_charge_scale_anion": best.get("charge_scale_anion"),
+        "reason": diagnosis,
+        "suggested_followup": "Run 3 replicas x 20 ns for baseline and best candidate once remote resources are available.",
+    }
+    return {
+        "runs": normalized,
+        "baseline_run": baseline,
+        "best_candidate_run": best,
+        "gains_vs_baseline": {
+            "sigma_eh_gain": gain_eh,
+            "sigma_ne_gain": gain_ne,
+            "li_alpha_gain": alpha_gain,
+            "anion_to_polymer_cn_ratio_factor": ratio_change,
+        },
+        "diagnosis": {
+            "primary_diagnosis": diagnosis,
+            "notes": notes,
+        },
+        "literature_band": literature,
+        "recommended_next_step": recommended_next,
+    }
+
+
 __all__ = [
     "build_benchmark_compare",
     "build_coordination_partition",
     "build_transport_summary",
+    "build_screening_compare",
     "collect_force_balance_report",
     "estimate_density_drift_fraction",
     "literature_band_peo_litfsi_60c",
+    "load_benchmark_analysis_dir",
     "summarize_rdkit_species_forcefield",
     "_dump_json",
 ]

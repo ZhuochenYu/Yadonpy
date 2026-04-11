@@ -25,6 +25,16 @@ cd examples/02_polymer_electrolyte
 python benchmark_peo_litfsi_60c.py
 ```
 
+Screening comparison helper:
+
+```bash
+cd examples/02_polymer_electrolyte
+python compare_peo_litfsi_60c_screening.py \
+  /path/to/s100/work_dir/06_analysis \
+  /path/to/s090/work_dir/06_analysis \
+  /path/to/s080/work_dir/06_analysis
+```
+
 ## Outputs
 All outputs are under `work_dir/`:
 
@@ -39,6 +49,10 @@ The benchmark script also writes dedicated diagnosis files under `06_analysis/`:
 - `coordination_partition.json`
 - `transport_summary.json`
 - `benchmark_compare.json`
+
+The screening comparison helper writes:
+
+- `screening_compare.json`
 
 Transport notes:
 
