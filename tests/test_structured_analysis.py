@@ -231,6 +231,43 @@ def test_build_site_map_classifies_common_sites(tmp_path: Path):
     assert "ether_oxygen" in labels or "oxygen_site" in labels
 
 
+def test_build_site_map_marks_fluorine_as_weaker_coordination_site(tmp_path: Path):
+    system_dir = tmp_path / "02_system"
+    system_dir.mkdir(parents=True, exist_ok=True)
+    (system_dir / "system_meta.json").write_text(
+        json.dumps(
+            {
+                "species": [
+                    {"moltype": "TFSI", "smiles": "O=S(=O)([N-]S(=O)(=O)C(F)(F)F)C(F)(F)F", "kind": "ion"}
+                ]
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (system_dir / "residue_map.json").write_text(json.dumps({"species": []}, indent=2) + "\n", encoding="utf-8")
+    (system_dir / "charge_groups.json").write_text(json.dumps({"species": []}, indent=2) + "\n", encoding="utf-8")
+    top = SystemTopology(
+        moleculetypes={
+            "TFSI": MoleculeType(
+                name="TFSI",
+                atomtypes=["f", "c3f", "f", "f", "s6", "o", "o", "n", "s6", "o", "o", "c3f", "f", "f", "f"],
+                atomnames=["F1", "C2", "F3", "F4", "S5", "O6", "O7", "N8", "S9", "O10", "O11", "C12", "F13", "F14", "F15"],
+                charges=[0.0] * 15,
+                masses=[18.998, 12.011, 18.998, 18.998, 32.067, 15.999, 15.999, 14.007, 32.067, 15.999, 15.999, 12.011, 18.998, 18.998, 18.998],
+                bonds=[(1, 2), (2, 3), (2, 4), (2, 5), (5, 6), (5, 7), (5, 8), (8, 9), (9, 10), (9, 11), (9, 12), (12, 13), (12, 14), (12, 15)],
+            )
+        },
+        molecules=[("TFSI", 1)],
+    )
+    site_map = build_site_map(top, system_dir)
+    entries = {entry["site_label"]: entry for entry in site_map["site_groups"]}
+    assert entries["fluorine_site"]["coordination_relevance"] == "weak"
+    assert entries["sulfonyl_oxygen"]["coordination_relevance"] == "primary"
+    assert entries["fluorine_site"]["coordination_priority"] > entries["sulfonyl_oxygen"]["coordination_priority"]
+
+
 def test_resolve_moltypes_from_mols_uses_smiles_from_system_meta(tmp_path: Path):
     system_dir = tmp_path / "02_system"
     system_dir.mkdir(parents=True, exist_ok=True)

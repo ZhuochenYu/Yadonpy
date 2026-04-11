@@ -599,6 +599,49 @@ def _site_label_for_atom(
     return None
 
 
+def _site_coordination_metadata(site_label: str) -> dict[str, Any]:
+    label = str(site_label or "").strip().lower()
+    if label in {
+        "carboxylate_oxygen",
+        "anionic_oxygen",
+        "oxo_anion_oxygen",
+        "sulfonyl_oxygen",
+        "phosphate_or_oxo_oxygen",
+        "carbonyl_oxygen",
+        "ether_oxygen",
+        "hydroxyl_oxygen",
+        "oxygen_site",
+    }:
+        return {
+            "coordination_priority": 0,
+            "coordination_relevance": "primary",
+            "coordination_note": "oxygen-donor site; prioritize for cation coordination interpretation",
+        }
+    if label in {"anion_nitrogen", "nitrogen_site", "cationic_nitrogen"}:
+        return {
+            "coordination_priority": 1,
+            "coordination_relevance": "secondary",
+            "coordination_note": "nitrogen-centered site; keep as secondary coordination evidence",
+        }
+    if label in {"halide_anion_site", "cation_center", "cationic_site"}:
+        return {
+            "coordination_priority": 2,
+            "coordination_relevance": "contextual",
+            "coordination_note": "contextual site; useful for ion pairing or clustering, not a preferred donor interpretation",
+        }
+    if label in {"anion_fluorine", "coordination_fluorine", "fluorine_site", "halogen_site"}:
+        return {
+            "coordination_priority": 3,
+            "coordination_relevance": "weak",
+            "coordination_note": "halogen/fluorine site; default summaries should de-emphasize it versus O/N donor sites",
+        }
+    return {
+        "coordination_priority": 2,
+        "coordination_relevance": "contextual",
+        "coordination_note": "site has no stronger coordination heuristic; treat as contextual",
+    }
+
+
 def build_site_map(
     top: SystemTopology,
     system_dir: Path,
@@ -631,6 +674,7 @@ def build_site_map(
             for inst in sp["instances"]:
                 atom_offset = int(inst["atom_indices_0"][0])
                 global_indices.extend([atom_offset + int(i) for i in local_indices])
+            coord_meta = _site_coordination_metadata(site_label)
             entries.append(
                 {
                     "site_id": f"{moltype}:{site_label}",
@@ -639,6 +683,7 @@ def build_site_map(
                     "local_atom_indices": [int(i) for i in local_indices],
                     "atom_indices": global_indices,
                     "count": len(global_indices),
+                    **coord_meta,
                 }
             )
     return {"site_groups": entries}
