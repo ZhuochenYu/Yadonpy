@@ -152,6 +152,44 @@ def test_select_recipe_skips_already_applied_confined_selection_for_gap(tmp_path
     assert decision["recipe"] == "reduce_release_gap_or_padding"
 
 
+def test_select_recipe_chooses_density_targeting_for_density_only_acceptance(tmp_path: Path):
+    repo_root = tmp_path / "repo"
+    (repo_root / "src/yadonpy/interface").mkdir(parents=True, exist_ok=True)
+    (repo_root / "src/yadonpy/interface/sandwich_metrics.py").write_text(
+        "center_bulk_like_window_nm\nscore += 1.75\n",
+        encoding="utf-8",
+    )
+    (repo_root / "src/yadonpy/interface/sandwich.py").write_text(
+        "    graphite_polymer_gap_nm = (float(relax.graphite_to_polymer_gap_ang) / 10.0) + 0.18 * polymer_shell_nm\n"
+        "    polymer_electrolyte_gap_nm = (float(relax.polymer_to_electrolyte_gap_ang) / 10.0) + 0.18 * (\n",
+        encoding="utf-8",
+    )
+    (repo_root / "src/yadonpy/interface/sandwich_phase_build.py").write_text(
+        "        return float(max(0.30, min(0.74 * target, max(0.75 * bulk_density, 0.34))))\n"
+        "    return float(max(0.65, min(0.92 * target, max(0.85 * bulk_density, 0.72))))\n",
+        encoding="utf-8",
+    )
+    signature = {
+        "primary_failure_class": "acceptance_failure",
+        "acceptance_failure_breakdown": {
+            "polymer_density_ok": 2,
+            "electrolyte_density_ok": 2,
+            "wrapped_ok": 0,
+            "order_ok": 0,
+            "core_gaps_ok": 0,
+        },
+        "stack_gap_ang_stats": {"polymer_to_electrolyte_mean": 18.0},
+        "cases": [{"wrapped": {"polymer": False, "electrolyte": False}}],
+    }
+    decision = autofix.select_recipe(
+        signature=signature,
+        repo_root=repo_root,
+        config=autofix.AutofixConfig(),
+        attempted=set(),
+    )
+    assert decision["recipe"] == "refine_wrap_density_scoring_or_candidate_ranking"
+
+
 def test_push_safety_requires_explicit_main_unlock(tmp_path: Path, monkeypatch):
     repo_root = tmp_path / "repo"
     (repo_root / "src/yadonpy/interface").mkdir(parents=True, exist_ok=True)

@@ -1727,6 +1727,33 @@ def test_build_sandwich_acceptance_reports_failed_checks():
     ]
 
 
+def test_build_sandwich_acceptance_uses_phase_target_density_ranges():
+    from yadonpy.interface.sandwich_metrics import build_sandwich_acceptance
+
+    acceptance = build_sandwich_acceptance(
+        polymer_summary={
+            "center_bulk_like_density_g_cm3": 1.00,
+            "target_density_g_cm3": 1.08,
+            "wrapped_across_z_boundary": False,
+        },
+        electrolyte_summary={
+            "center_bulk_like_density_g_cm3": 1.10,
+            "target_density_g_cm3": 1.28,
+            "wrapped_across_z_boundary": False,
+        },
+        stack_checks={
+            "observed_order": ["GRAPHITE", "POLYMER", "ELECTROLYTE"],
+            "graphite_polymer_core_gap_nm": 0.2,
+            "polymer_electrolyte_core_gap_nm": 0.2,
+        },
+    )
+
+    assert acceptance["polymer_density_range_g_cm3"] == pytest.approx([0.918, 1.242])
+    assert acceptance["electrolyte_density_range_g_cm3"] == pytest.approx([1.088, 1.472])
+    assert acceptance["polymer_density_ok"] is True
+    assert acceptance["electrolyte_density_ok"] is True
+
+
 def test_build_graphite_polymer_electrolyte_sandwich_orchestrates_bulk_then_slab_prep(tmp_path: Path, monkeypatch):
     import yadonpy.interface.sandwich as sandwich
 

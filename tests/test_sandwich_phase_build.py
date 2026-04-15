@@ -32,8 +32,8 @@ def test_recommend_initial_walled_pack_density_prefers_polymer_and_electrolyte_s
         target_density_g_cm3=1.30,
         selected_bulk_pack_density_g_cm3=0.86,
     )
-    assert polymer_density == pytest.approx(0.36)
-    assert electrolyte_density == pytest.approx(0.731)
+    assert polymer_density == pytest.approx(0.68)
+    assert electrolyte_density == pytest.approx(0.95)
 
 
 def test_write_bulk_calibration_summary_round_trips_json(tmp_path):

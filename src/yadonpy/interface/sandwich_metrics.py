@@ -121,24 +121,34 @@ def build_sandwich_acceptance(
     polymer_summary: dict[str, object],
     electrolyte_summary: dict[str, object],
     stack_checks: dict[str, object],
-    polymer_density_range_g_cm3: tuple[float, float] = (1.35, 1.65),
-    electrolyte_density_range_g_cm3: tuple[float, float] = (1.15, 1.40),
+    polymer_density_range_g_cm3: tuple[float, float] | None = None,
+    electrolyte_density_range_g_cm3: tuple[float, float] | None = None,
 ) -> dict[str, object]:
     polymer_density = representative_phase_density(polymer_summary)
     electrolyte_density = representative_phase_density(electrolyte_summary)
+    polymer_range = _density_acceptance_range(
+        polymer_summary,
+        fallback=(1.35, 1.65),
+        explicit=polymer_density_range_g_cm3,
+    )
+    electrolyte_range = _density_acceptance_range(
+        electrolyte_summary,
+        fallback=(1.15, 1.40),
+        explicit=electrolyte_density_range_g_cm3,
+    )
     graphite_polymer_core_gap = float(stack_checks.get("graphite_polymer_core_gap_nm", stack_checks.get("graphite_polymer_gap_nm", 0.0)) or 0.0)
     polymer_electrolyte_core_gap = float(stack_checks.get("polymer_electrolyte_core_gap_nm", stack_checks.get("polymer_electrolyte_gap_nm", 0.0)) or 0.0)
     observed_order = list(stack_checks.get("observed_order") or [])
     expected_order = ["GRAPHITE", "POLYMER", "ELECTROLYTE"]
     polymer_wrapped = bool(polymer_summary.get("wrapped_across_z_boundary", False))
     electrolyte_wrapped = bool(electrolyte_summary.get("wrapped_across_z_boundary", False))
-    polymer_density_ok = float(polymer_density_range_g_cm3[0]) <= float(polymer_density) <= float(polymer_density_range_g_cm3[1])
-    electrolyte_density_ok = float(electrolyte_density_range_g_cm3[0]) <= float(electrolyte_density) <= float(electrolyte_density_range_g_cm3[1])
+    polymer_density_ok = float(polymer_range[0]) <= float(polymer_density) <= float(polymer_range[1])
+    electrolyte_density_ok = float(electrolyte_range[0]) <= float(electrolyte_density) <= float(electrolyte_range[1])
     acceptance = {
         "polymer_density_g_cm3": float(polymer_density),
         "electrolyte_density_g_cm3": float(electrolyte_density),
-        "polymer_density_range_g_cm3": [float(polymer_density_range_g_cm3[0]), float(polymer_density_range_g_cm3[1])],
-        "electrolyte_density_range_g_cm3": [float(electrolyte_density_range_g_cm3[0]), float(electrolyte_density_range_g_cm3[1])],
+        "polymer_density_range_g_cm3": [float(polymer_range[0]), float(polymer_range[1])],
+        "electrolyte_density_range_g_cm3": [float(electrolyte_range[0]), float(electrolyte_range[1])],
         "polymer_density_ok": bool(polymer_density_ok),
         "electrolyte_density_ok": bool(electrolyte_density_ok),
         "graphite_polymer_core_gap_nm": float(graphite_polymer_core_gap),
@@ -170,6 +180,24 @@ def build_sandwich_acceptance(
         and acceptance["order_ok"]
     )
     return acceptance
+
+
+def _density_acceptance_range(
+    summary: dict[str, object],
+    *,
+    fallback: tuple[float, float],
+    explicit: tuple[float, float] | None,
+) -> tuple[float, float]:
+    if explicit is not None:
+        return float(explicit[0]), float(explicit[1])
+    try:
+        target = float(summary.get("target_density_g_cm3", 0.0))
+    except Exception:
+        target = 0.0
+    if target <= 0.0:
+        return float(fallback[0]), float(fallback[1])
+    rel_tol = 0.15
+    return float((1.0 - rel_tol) * target), float((1.0 + rel_tol) * target)
 
 
 def phase_local_density_summary(*, gro_path: Path, species: Sequence, counts: Sequence[int]) -> dict[str, object]:

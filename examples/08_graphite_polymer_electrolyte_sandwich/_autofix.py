@@ -559,6 +559,17 @@ def _recipe_tighten_confined_selection(repo_root: Path) -> dict[str, object]:
     return {"status": "applied" if changed else "noop", "files": ["src/yadonpy/interface/sandwich_metrics.py"] if changed else []}
 
 
+def _recipe_refine_density_targeting(repo_root: Path) -> dict[str, object]:
+    phase_build_path = repo_root / "src/yadonpy/interface/sandwich_phase_build.py"
+    changed = False
+    changed |= _replace_once(
+        phase_build_path,
+        "        return float(max(0.30, min(0.74 * target, max(0.75 * bulk_density, 0.34))))\n    return float(max(0.65, min(0.92 * target, max(0.85 * bulk_density, 0.72))))\n",
+        "        return float(max(0.68, min(0.86 * target, max(0.90 * bulk_density, 0.68))))\n    return float(max(0.95, min(0.96 * target, max(0.90 * bulk_density, 0.95))))\n",
+    )
+    return {"status": "applied" if changed else "noop", "files": ["src/yadonpy/interface/sandwich_phase_build.py"] if changed else []}
+
+
 def _always_false(_signature: dict[str, object], _repo_root: Path) -> bool:
     return False
 
@@ -584,6 +595,26 @@ def _needs_gap_reduction(signature: dict[str, object], repo_root: Path) -> bool:
     if _needs_confined_selection_tightening(signature, repo_root):
         return False
     return float(signature.get("stack_gap_ang_stats", {}).get("polymer_to_electrolyte_mean", 0.0)) > 25.0
+
+
+def _needs_density_targeting_refinement(signature: dict[str, object], repo_root: Path) -> bool:
+    if str(signature.get("primary_failure_class")) != "acceptance_failure":
+        return False
+    if not _file_contains(repo_root, "src/yadonpy/interface/sandwich_metrics.py", "score += 1.75"):
+        return False
+    if _needs_gap_reduction(signature, repo_root):
+        return False
+    breakdown = dict(signature.get("acceptance_failure_breakdown", {}) or {})
+    density_failures = int(breakdown.get("polymer_density_ok", 0) or 0) + int(breakdown.get("electrolyte_density_ok", 0) or 0)
+    non_density_failures = sum(
+        int(breakdown.get(key, 0) or 0)
+        for key in ("wrapped_ok", "order_ok", "core_gaps_ok")
+    )
+    if density_failures <= 0 or non_density_failures > 0:
+        return False
+    if _file_contains(repo_root, "src/yadonpy/interface/sandwich_phase_build.py", "min(0.96 * target"):
+        return False
+    return True
 
 
 def _needs_periodic_xy_fix(signature: dict[str, object], repo_root: Path) -> bool:
@@ -660,11 +691,13 @@ RECIPES: tuple[RecipeSpec, ...] = (
     RecipeSpec(
         name="refine_wrap_density_scoring_or_candidate_ranking",
         risk="medium",
-        files=("src/yadonpy/interface/sandwich_metrics.py",),
-        tests=(),
+        files=("src/yadonpy/interface/sandwich_phase_build.py",),
+        tests=(
+            "conda run -n yadonpy python -m pytest tests/test_sandwich_phase_build.py tests/test_sandwich_workflow.py -q",
+        ),
         push_allowed=True,
-        selector=_always_false,
-        applier=lambda repo_root: {"status": "noop", "files": []},
+        selector=_needs_density_targeting_refinement,
+        applier=_recipe_refine_density_targeting,
     ),
     RecipeSpec(
         name="adjust_screening_route_fail_fast",

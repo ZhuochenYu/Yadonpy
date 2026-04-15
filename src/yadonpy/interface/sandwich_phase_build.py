@@ -51,12 +51,11 @@ def recommend_initial_walled_pack_density(
     target = float(target_density_g_cm3)
     bulk_density = float(selected_bulk_pack_density_g_cm3)
     if phase_key == "polymer":
-        # Keep the direct final-XY polymer build deliberately loose.
-        # The confined NPT stage is a better place to densify than the initial
-        # pack, especially for charged CMC-like phases that otherwise enter EM
-        # with severe overlaps.
-        return float(max(0.30, min(0.74 * target, max(0.75 * bulk_density, 0.34))))
-    return float(max(0.65, min(0.92 * target, max(0.85 * bulk_density, 0.72))))
+        # The final-XY phase is already the stack-ready object, so its initial
+        # packing should be loose enough for EM but not so dilute that the
+        # short walled relaxation must recover several nm of excess thickness.
+        return float(max(0.68, min(0.86 * target, max(0.90 * bulk_density, 0.68))))
+    return float(max(0.95, min(0.96 * target, max(0.90 * bulk_density, 0.95))))
 
 
 def write_bulk_calibration_summary(summary: BulkCalibrationSummary, path: Path) -> Path:
