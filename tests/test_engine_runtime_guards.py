@@ -55,6 +55,22 @@ def test_run_capture_tee_respects_verbose_flag(monkeypatch, tmp_path: Path):
     assert fake_stdout.buffer.chunks == []
 
 
+def test_gmx_help_timeout_falls_back_to_supported(monkeypatch, tmp_path: Path):
+    runner = GromacsRunner(exec_=GromacsExec('gmx'), verbose=False)
+    calls = []
+
+    def _timeout(*args, **kwargs):
+        calls.append((args, kwargs))
+        raise subprocess.TimeoutExpired(args[0], kwargs.get('timeout'))
+
+    monkeypatch.setattr(subprocess, 'run', _timeout)
+
+    assert runner._tool_has_option('mdrun', '-pin', cwd=tmp_path) is True
+    assert calls
+    assert calls[0][1]['timeout'] == 8
+    assert runner._help_cache['mdrun'] == ''
+
+
 
 def test_effective_restart_flag_uses_runtime_default_when_no_explicit_override():
     with run_options(restart=True):

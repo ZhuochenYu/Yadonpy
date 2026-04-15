@@ -127,9 +127,21 @@ class GromacsRunner:
         if subcmd in self._help_cache:
             return self._help_cache[subcmd]
         try:
-            proc = self.run([subcmd, "-h"], cwd=cwd, check=False, capture=True)
+            # Help probes are option-detection metadata, not part of the real
+            # workflow. Keep them quiet and bounded so a wrapper-specific
+            # `gmx mdrun -h` stall cannot block a simulation stage.
+            proc = subprocess.run(
+                [self.exec.gmx_cmd, subcmd, "-h"],
+                cwd=str(cwd) if cwd else None,
+                env={**os.environ, **(self.env or {})},
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=8,
+            )
             out = (proc.stdout or b"") + (proc.stderr or b"")
             text = out.decode("utf-8", errors="replace")
+        except subprocess.TimeoutExpired:
+            text = ""
         except Exception:
             text = ""
         self._help_cache[subcmd] = text
