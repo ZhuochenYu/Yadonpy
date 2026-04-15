@@ -216,9 +216,18 @@ def load_autofix_config(path: Path = DEFAULT_CONFIG_PATH) -> AutofixConfig:
 def _ensure_snapshot_workspace(*, source_repo: Path, workspace_root: Path, base_branch: str) -> Path:
     if workspace_root.exists() and (workspace_root / ".git").exists():
         return workspace_root
+    source_origin = _run_local("git remote get-url origin", cwd=source_repo).stdout.strip()
     workspace_root.parent.mkdir(parents=True, exist_ok=True)
     _run_local(f"git clone --shared {shlex.quote(str(source_repo))} {shlex.quote(str(workspace_root))}", cwd=source_repo, check=True)
+    if source_origin:
+        _run_local(f"git remote set-url origin {shlex.quote(source_origin)}", cwd=workspace_root, check=True)
     _run_local(f"git checkout {shlex.quote(base_branch)}", cwd=workspace_root, check=True)
+    exclude_path = workspace_root / ".git/info/exclude"
+    exclude_text = exclude_path.read_text(encoding="utf-8") if exclude_path.exists() else ""
+    additions = [".codex", ".codex/**", "__pycache__/", "*.pyc"]
+    missing = [item for item in additions if item not in exclude_text.splitlines()]
+    if missing:
+        exclude_path.write_text(exclude_text.rstrip() + "\n" + "\n".join(missing) + "\n", encoding="utf-8")
     rsync_proc = subprocess.run(
         [
             "rsync",
@@ -236,7 +245,7 @@ def _ensure_snapshot_workspace(*, source_repo: Path, workspace_root: Path, base_
     if rsync_proc.returncode != 0:
         raise RuntimeError(f"Failed to seed snapshot workspace:\n{rsync_proc.stdout}\n{rsync_proc.stderr}")
     if _run_local("git diff --quiet && git diff --cached --quiet", cwd=workspace_root).returncode != 0:
-        _run_local("git add -A", cwd=workspace_root, check=True)
+        _git_add_safe(workspace_root)
         _run_local("git commit -m 'autofix baseline snapshot'", cwd=workspace_root, check=True)
     return workspace_root
 
@@ -265,6 +274,21 @@ def _git_diff_stats(repo_root: Path) -> dict[str, object]:
         "changed_lines": changed_lines,
         "files": files,
     }
+
+
+def _git_add_safe(repo_root: Path) -> None:
+    codex_path = repo_root / ".codex"
+    if codex_path.is_dir():
+        shutil.rmtree(codex_path)
+    elif codex_path.exists():
+        codex_path.unlink()
+    for pycache in repo_root.rglob("__pycache__"):
+        if pycache.is_dir():
+            shutil.rmtree(pycache)
+    for pyc in repo_root.rglob("*.pyc"):
+        if pyc.exists():
+            pyc.unlink()
+    _run_local("git add -A", cwd=repo_root, check=True)
 
 
 def _recipe_by_name(recipe_name: str) -> RecipeSpec | None:
@@ -769,7 +793,7 @@ def _build_push_safety_report(
 
 
 def _git_commit_and_push(*, repo_root: Path, push: PushPolicy, round_id: int, recipe_name: str, before_metrics: dict[str, object], after_metrics: dict[str, object]) -> dict[str, object]:
-    _run_local("git add -A", cwd=repo_root, check=True)
+    _git_add_safe(repo_root)
     message = (
         f"autofix(example08): round {round_id:03d} {recipe_name}\n\n"
         f"before={json.dumps(before_metrics, ensure_ascii=False)}\n"
