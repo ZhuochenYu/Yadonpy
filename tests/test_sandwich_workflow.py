@@ -313,6 +313,60 @@ def test_phase_local_density_summary_uses_atomwise_mass_not_whole_molecule_com(t
     assert summary["center_bulk_like_density_g_cm3"] == pytest.approx(0.0)
 
 
+def test_phase_local_density_summary_does_not_flag_thick_centered_slab_as_wrapped(tmp_path: Path):
+    mol = Chem.RWMol()
+    for _ in range(4):
+        atom = Chem.Atom("C")
+        atom.SetNoImplicit(True)
+        mol.AddAtom(atom)
+    gro = tmp_path / "thick_centered.gro"
+    gro.write_text(
+        "\n".join(
+            [
+                "dummy",
+                "4",
+                "    1POL     C    1   0.000   0.000   1.000",
+                "    1POL     C    2   0.000   0.000   2.000",
+                "    1POL     C    3   0.000   0.000   5.000",
+                "    1POL     C    4   0.000   0.000   6.000",
+                "2.00000 2.00000 8.00000",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    summary = _phase_local_density_summary(gro_path=gro, species=[mol.GetMol()], counts=[1])
+    assert summary["occupied_thickness_nm"] == pytest.approx(5.0)
+    assert summary["wrapped_across_z_boundary"] is False
+
+
+def test_phase_local_density_summary_flags_real_z_boundary_crossing(tmp_path: Path):
+    mol = Chem.RWMol()
+    for _ in range(4):
+        atom = Chem.Atom("C")
+        atom.SetNoImplicit(True)
+        mol.AddAtom(atom)
+    gro = tmp_path / "wrapped_boundary.gro"
+    gro.write_text(
+        "\n".join(
+            [
+                "dummy",
+                "4",
+                "    1POL     C    1   0.000   0.000   0.080",
+                "    1POL     C    2   0.000   0.000   0.120",
+                "    1POL     C    3   0.000   0.000   7.880",
+                "    1POL     C    4   0.000   0.000   7.940",
+                "2.00000 2.00000 8.00000",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    summary = _phase_local_density_summary(gro_path=gro, species=[mol.GetMol()], counts=[1])
+    assert summary["wrapped_across_z_boundary"] is True
+    assert summary["occupied_thickness_nm"] < 0.30
+
+
 def test_compact_packed_cell_z_by_molecule_centers_preserves_order_and_target_box():
     species = [_dummy_mol("PEO_monomer")]
     cell = Chem.RWMol()

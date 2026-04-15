@@ -54,6 +54,29 @@ def _unwrap_phase_z(values: Sequence[float], *, box_z_nm: float) -> list[float]:
     return [float(x) for x in arr]
 
 
+def _phase_crosses_z_boundary(values: Sequence[float], *, box_z_nm: float) -> tuple[bool, list[float]]:
+    arr = np.asarray(list(values), dtype=float)
+    if arr.size == 0 or box_z_nm <= 0.0:
+        return False, [float(x) for x in arr]
+    raw_span = float(np.max(arr) - np.min(arr))
+    if raw_span <= 0.5 * float(box_z_nm):
+        return False, [float(x) for x in arr]
+
+    # A thick, centered slab can legitimately occupy more than half of its
+    # z-box. Only call it wrapped when atoms touch both periodic boundaries
+    # and cyclic unwrapping gives a materially more compact phase.
+    margin_nm = min(0.35, max(0.08, 0.05 * float(box_z_nm)))
+    touches_lower = float(np.min(arr)) <= margin_nm
+    touches_upper = float(np.max(arr)) >= float(box_z_nm) - margin_nm
+    if not (touches_lower and touches_upper):
+        return False, [float(x) for x in arr]
+
+    unwrapped = np.asarray(_unwrap_phase_z(arr.tolist(), box_z_nm=float(box_z_nm)), dtype=float)
+    unwrapped_span = float(np.max(unwrapped) - np.min(unwrapped)) if unwrapped.size else raw_span
+    crosses = bool(unwrapped_span < 0.85 * raw_span and unwrapped_span < 0.60 * float(box_z_nm))
+    return crosses, [float(x) for x in (unwrapped if crosses else arr)]
+
+
 def build_stack_checks(*, gro_path: Path, ndx_groups: dict[str, list[int]]) -> dict[str, object]:
     z_coords = _read_gro_z_coords(gro_path)
     _box_x_nm, _box_y_nm, box_z_nm = _read_gro_box_nm(gro_path)
@@ -164,11 +187,10 @@ def phase_local_density_summary(*, gro_path: Path, species: Sequence, counts: Se
 
     box_nm = _read_gro_box_nm(gro_path)
     box_z_nm = max(float(box_nm[2]), 1.0e-9)
-    ordered = np.sort(coords)
-    wrapped = bool(float(np.max(coords) - np.min(coords)) > 0.5 * box_z_nm)
+    wrapped, normalized_z = _phase_crosses_z_boundary(coords.tolist(), box_z_nm=box_z_nm)
     if wrapped:
-        coords = np.asarray(_unwrap_phase_z(coords.tolist(), box_z_nm=box_z_nm), dtype=float)
-        ordered = np.sort(coords)
+        coords = np.asarray(normalized_z, dtype=float)
+    ordered = np.sort(coords)
 
     total_atoms = int(sum(int(mol.GetNumAtoms()) * int(count) for mol, count in zip(species, counts)))
     if total_atoms <= 0:
