@@ -14,7 +14,8 @@
   "matrix": {
     "hours_per_round": 0.25,
     "timeout_min": 180,
-    "max_iterations_per_round": 1
+    "max_iterations_per_round": 1,
+    "phases": ["fresh"]
   },
   "diff_limits": {
     "max_changed_files": 6,

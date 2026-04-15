@@ -43,6 +43,22 @@ CASES: tuple[CaseSpec, ...] = (
     ),
 )
 
+DEFAULT_PHASES: tuple[str, ...] = ("fresh", "restart")
+
+
+def parse_phases(raw: str | Sequence[str] | None) -> tuple[str, ...]:
+    if raw is None:
+        return DEFAULT_PHASES
+    if isinstance(raw, str):
+        tokens = [item.strip().lower() for item in raw.split(",")]
+    else:
+        tokens = [str(item).strip().lower() for item in raw]
+    phases = tuple(item for item in tokens if item)
+    invalid = [item for item in phases if item not in {"fresh", "restart"}]
+    if invalid:
+        raise ValueError(f"Unsupported matrix phase(s): {', '.join(invalid)}")
+    return phases or DEFAULT_PHASES
+
 
 def _timestamp() -> str:
     return time.strftime("%Y-%m-%d %H:%M:%S")
@@ -116,6 +132,7 @@ def write_matrix_metadata(
     base_dir: Path,
     timeout_s: int,
     cases: Sequence[CaseSpec] = CASES,
+    phases: Sequence[str] = DEFAULT_PHASES,
 ) -> dict[str, object]:
     metadata = {
         "started_at": _timestamp(),
@@ -124,6 +141,7 @@ def write_matrix_metadata(
         "src_dir": str(SRC_DIR),
         "base_dir": str(base_dir),
         "timeout_s": int(timeout_s),
+        "phases": list(phases),
         "cases": [asdict(case) for case in cases],
     }
     (base_dir / "run_metadata.json").write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
@@ -136,6 +154,7 @@ def run_matrix_iteration(
     iteration: int,
     timeout_s: int,
     cases: Sequence[CaseSpec] = CASES,
+    phases: Sequence[str] = DEFAULT_PHASES,
 ) -> dict[str, object]:
     status_jsonl = base_dir / "status.jsonl"
     latest_status = base_dir / "latest_status.json"
@@ -143,7 +162,7 @@ def run_matrix_iteration(
     iter_dir.mkdir(parents=True, exist_ok=True)
     iteration_results: list[dict[str, object]] = []
 
-    for phase in ("fresh", "restart"):
+    for phase in phases:
         phase_dir = iter_dir / phase
         phase_dir.mkdir(parents=True, exist_ok=True)
         with ExitStack() as stack:
@@ -217,13 +236,15 @@ def run_matrix_loop(
     max_iterations: int = 0,
     dry_run: bool = False,
     cases: Sequence[CaseSpec] = CASES,
+    phases: Sequence[str] = DEFAULT_PHASES,
 ) -> int:
     base_dir = base_dir.expanduser().resolve()
     base_dir.mkdir(parents=True, exist_ok=True)
     timeout_s = max(600, int(timeout_min) * 60)
     deadline = time.time() + max(0.25, float(hours)) * 3600.0
 
-    metadata = write_matrix_metadata(base_dir=base_dir, timeout_s=timeout_s, cases=cases)
+    selected_phases = parse_phases(phases)
+    metadata = write_matrix_metadata(base_dir=base_dir, timeout_s=timeout_s, cases=cases, phases=selected_phases)
     if dry_run:
         print(json.dumps(metadata, indent=2, ensure_ascii=False))
         return 0
@@ -238,6 +259,7 @@ def run_matrix_loop(
             iteration=iteration,
             timeout_s=timeout_s,
             cases=cases,
+            phases=selected_phases,
         )
 
     finished = {
@@ -257,6 +279,11 @@ def main() -> int:
     parser.add_argument("--base-dir", type=Path, default=BASE_DIR / "overnight_iteration_runs")
     parser.add_argument("--timeout-min", type=int, default=180, help="Per case timeout in minutes.")
     parser.add_argument("--max-iterations", type=int, default=0, help="Optional hard stop; 0 means unlimited.")
+    parser.add_argument(
+        "--phases",
+        default="fresh,restart",
+        help="Comma-separated phases to run. Use 'fresh' for fast autofix screening.",
+    )
     parser.add_argument("--dry-run", action="store_true", help="Write metadata and print the planned matrix without running cases.")
     args = parser.parse_args()
     if args.mode == "autofix":
@@ -275,6 +302,7 @@ def main() -> int:
         max_iterations=args.max_iterations,
         dry_run=args.dry_run,
         cases=CASES,
+        phases=parse_phases(args.phases),
     )
 
 

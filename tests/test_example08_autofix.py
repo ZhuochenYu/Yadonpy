@@ -11,6 +11,7 @@ if str(EX08_DIR) not in sys.path:
     sys.path.insert(0, str(EX08_DIR))
 
 import _autofix as autofix  # noqa: E402
+import run_iteration_matrix as matrix  # noqa: E402
 
 
 def test_build_failure_signature_classifies_acceptance_failure(tmp_path: Path):
@@ -163,3 +164,21 @@ def test_push_safety_requires_explicit_main_unlock(tmp_path: Path, monkeypatch):
         comparison=comparison,
     )
     assert unlocked["ok"] is True
+
+
+def test_matrix_dry_run_records_selected_phases(tmp_path: Path):
+    rc = matrix.run_matrix_loop(
+        base_dir=tmp_path,
+        hours=0.25,
+        max_iterations=1,
+        dry_run=True,
+        phases=("fresh",),
+    )
+    metadata = json.loads((tmp_path / "run_metadata.json").read_text(encoding="utf-8"))
+    assert rc == 0
+    assert metadata["phases"] == ["fresh"]
+
+
+def test_autofix_config_defaults_to_fresh_only():
+    config = autofix.load_autofix_config()
+    assert config.matrix.phases == ("fresh",)

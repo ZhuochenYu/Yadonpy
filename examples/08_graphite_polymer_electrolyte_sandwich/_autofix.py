@@ -43,6 +43,7 @@ class MatrixConfig:
     hours_per_round: float = 0.25
     timeout_min: int = 180
     max_iterations_per_round: int = 1
+    phases: tuple[str, ...] = ("fresh",)
 
 
 @dataclass(frozen=True)
@@ -192,7 +193,13 @@ def load_autofix_config(path: Path = DEFAULT_CONFIG_PATH) -> AutofixConfig:
     raw = _read_json(path) or {}
     workspace = WorkspaceConfig(**raw.get("workspace", {}))
     remote = RemoteConfig(**raw.get("remote", {}))
-    matrix = MatrixConfig(**raw.get("matrix", {}))
+    matrix_raw = dict(raw.get("matrix", {}))
+    phases_raw = matrix_raw.pop("phases", MatrixConfig().phases)
+    if isinstance(phases_raw, str):
+        phases = tuple(item.strip().lower() for item in phases_raw.split(",") if item.strip())
+    else:
+        phases = tuple(str(item).strip().lower() for item in phases_raw if str(item).strip())
+    matrix = MatrixConfig(**matrix_raw, phases=phases or MatrixConfig().phases)
     diff_limits = DiffLimits(**raw.get("diff_limits", {}))
     push = PushPolicy(**raw.get("push", {}))
     stop = StopPolicy(**raw.get("stop", {}))
@@ -822,7 +829,8 @@ def _run_remote_round(*, config: AutofixConfig, remote_round_dir: str) -> dict[s
         f"--mode observe --base-dir {shlex.quote(remote_round_dir)} "
         f"--hours {float(config.matrix.hours_per_round):.3f} "
         f"--max-iterations {int(config.matrix.max_iterations_per_round)} "
-        f"--timeout-min {int(config.matrix.timeout_min)}"
+        f"--timeout-min {int(config.matrix.timeout_min)} "
+        f"--phases {shlex.quote(','.join(config.matrix.phases))}"
     )
     return _run_remote_command(config.remote, remote_cmd, timeout=max(3600, int(config.matrix.timeout_min) * 60 * 2))
 
