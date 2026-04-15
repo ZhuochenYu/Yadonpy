@@ -65,13 +65,13 @@ def build_pack_density_ladder(
     phase_key = str(phase).strip().lower()
     if phase_key == "polymer":
         if bool(charged):
+            attempts = 6 if max_attempts is None else max(1, int(max_attempts))
+            factor = 0.82 if backoff_factor is None else float(backoff_factor)
+            floor = 0.22 if floor_density_g_cm3 is None else float(floor_density_g_cm3)
+        else:
             attempts = 5 if max_attempts is None else max(1, int(max_attempts))
             factor = 0.86 if backoff_factor is None else float(backoff_factor)
-            floor = 0.30 if floor_density_g_cm3 is None else float(floor_density_g_cm3)
-        else:
-            attempts = 4 if max_attempts is None else max(1, int(max_attempts))
-            factor = 0.88 if backoff_factor is None else float(backoff_factor)
-            floor = 0.40 if floor_density_g_cm3 is None else float(floor_density_g_cm3)
+            floor = 0.32 if floor_density_g_cm3 is None else float(floor_density_g_cm3)
     else:
         attempts = 3 if max_attempts is None else max(1, int(max_attempts))
         factor = 0.90 if backoff_factor is None else float(backoff_factor)

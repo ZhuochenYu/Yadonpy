@@ -54,6 +54,111 @@ def build_graphite_polymer_electrolyte_sandwich(**kwargs):
     return _build_sandwich(**kwargs)
 
 
+def prepare_graphite_substrate(**kwargs):
+    """Thin wrapper around :func:`yadonpy.interface.prepare_graphite_substrate`."""
+    from .interface import prepare_graphite_substrate as _prepare_graphite_substrate
+
+    return _prepare_graphite_substrate(**kwargs)
+
+
+def calibrate_polymer_bulk_phase(**kwargs):
+    """Thin wrapper around :func:`yadonpy.interface.calibrate_polymer_bulk_phase`."""
+    from .interface import calibrate_polymer_bulk_phase as _calibrate_polymer_bulk_phase
+
+    return _calibrate_polymer_bulk_phase(**kwargs)
+
+
+def calibrate_electrolyte_bulk_phase(**kwargs):
+    """Thin wrapper around :func:`yadonpy.interface.calibrate_electrolyte_bulk_phase`."""
+    from .interface import calibrate_electrolyte_bulk_phase as _calibrate_electrolyte_bulk_phase
+
+    return _calibrate_electrolyte_bulk_phase(**kwargs)
+
+
+def default_peo_polymer_spec(**kwargs):
+    """Thin wrapper around :func:`yadonpy.interface.default_peo_polymer_spec`."""
+    from .interface import default_peo_polymer_spec as _default_peo_polymer_spec
+
+    return _default_peo_polymer_spec(**kwargs)
+
+
+def default_peo_electrolyte_spec(**kwargs):
+    """Thin wrapper around :func:`yadonpy.interface.default_peo_electrolyte_spec`."""
+    from .interface import default_peo_electrolyte_spec as _default_peo_electrolyte_spec
+
+    return _default_peo_electrolyte_spec(**kwargs)
+
+
+def default_cmcna_polymer_spec(**kwargs):
+    """Thin wrapper around :func:`yadonpy.interface.default_cmcna_polymer_spec`."""
+    from .interface import default_cmcna_polymer_spec as _default_cmcna_polymer_spec
+
+    return _default_cmcna_polymer_spec(**kwargs)
+
+
+def default_carbonate_lipf6_electrolyte_spec(**kwargs):
+    """Thin wrapper around :func:`yadonpy.interface.default_carbonate_lipf6_electrolyte_spec`."""
+    from .interface import default_carbonate_lipf6_electrolyte_spec as _default_carbonate_lipf6_electrolyte_spec
+
+    return _default_carbonate_lipf6_electrolyte_spec(**kwargs)
+
+
+def build_graphite_polymer_interphase(**kwargs):
+    """Thin wrapper around :func:`yadonpy.interface.build_graphite_polymer_interphase`."""
+    from .interface import build_graphite_polymer_interphase as _build_graphite_polymer_interphase
+
+    return _build_graphite_polymer_interphase(**kwargs)
+
+
+def build_graphite_cmc_interphase(**kwargs):
+    """Thin wrapper around :func:`yadonpy.interface.build_graphite_cmc_interphase`."""
+    from .interface import build_graphite_cmc_interphase as _build_graphite_cmc_interphase
+
+    return _build_graphite_cmc_interphase(**kwargs)
+
+
+def build_polymer_electrolyte_interphase(**kwargs):
+    """Thin wrapper around :func:`yadonpy.interface.build_polymer_electrolyte_interphase`."""
+    from .interface import build_polymer_electrolyte_interphase as _build_polymer_electrolyte_interphase
+
+    return _build_polymer_electrolyte_interphase(**kwargs)
+
+
+def build_cmc_electrolyte_interphase(**kwargs):
+    """Thin wrapper around :func:`yadonpy.interface.build_cmc_electrolyte_interphase`."""
+    from .interface import build_cmc_electrolyte_interphase as _build_cmc_electrolyte_interphase
+
+    return _build_cmc_electrolyte_interphase(**kwargs)
+
+
+def release_graphite_polymer_electrolyte_stack(**kwargs):
+    """Thin wrapper around :func:`yadonpy.interface.release_graphite_polymer_electrolyte_stack`."""
+    from .interface import release_graphite_polymer_electrolyte_stack as _release_graphite_polymer_electrolyte_stack
+
+    return _release_graphite_polymer_electrolyte_stack(**kwargs)
+
+
+def release_graphite_cmc_electrolyte_stack(**kwargs):
+    """Thin wrapper around :func:`yadonpy.interface.release_graphite_cmc_electrolyte_stack`."""
+    from .interface import release_graphite_cmc_electrolyte_stack as _release_graphite_cmc_electrolyte_stack
+
+    return _release_graphite_cmc_electrolyte_stack(**kwargs)
+
+
+def analyze_interface_transport(**kwargs):
+    """Thin wrapper around :func:`yadonpy.interface.analyze_interface_transport`."""
+    from .interface import analyze_interface_transport as _analyze_interface_transport
+
+    return _analyze_interface_transport(**kwargs)
+
+
+def print_interface_result_summary(*args, **kwargs):
+    """Thin wrapper around :func:`yadonpy.interface.print_interface_result_summary`."""
+    from .interface import print_interface_result_summary as _print_interface_result_summary
+
+    return _print_interface_result_summary(*args, **kwargs)
+
+
 def build_graphite_cmcna_electrolyte_sandwich(**kwargs):
     """Thin wrapper around :func:`yadonpy.interface.sandwich.build_graphite_cmcna_electrolyte_sandwich`."""
     from .interface.sandwich import build_graphite_cmcna_electrolyte_sandwich as _build_sandwich
@@ -255,16 +360,27 @@ def parameterize_smiles(
 
 __all__ = [
     'audit_default_moldb_sync',
+    'analyze_interface_transport',
     'assign_charges',
     'assign_forcefield',
     'build_graphite',
+    'build_cmc_electrolyte_interphase',
+    'build_graphite_cmc_interphase',
     'build_graphite_cmcna_example_case',
     'build_graphite_cmcna_glucose6_periodic_case',
     'build_graphite_cmcna_electrolyte_sandwich',
     'build_graphite_peo_example_case',
     'build_graphite_peo_electrolyte_sandwich',
+    'build_graphite_polymer_interphase',
     'build_graphite_polymer_electrolyte_sandwich',
+    'build_polymer_electrolyte_interphase',
+    'calibrate_electrolyte_bulk_phase',
+    'calibrate_polymer_bulk_phase',
     'conformation_search',
+    'default_carbonate_lipf6_electrolyte_spec',
+    'default_cmcna_polymer_spec',
+    'default_peo_electrolyte_spec',
+    'default_peo_polymer_spec',
     'format_mechanics_result_summary',
     'get_ff',
     'list_charge_methods',
@@ -272,7 +388,11 @@ __all__ = [
     'load_from_moldb',
     'mol_from_smiles',
     'parameterize_smiles',
+    'prepare_graphite_substrate',
+    'print_interface_result_summary',
     'print_mechanics_result_summary',
+    'release_graphite_cmc_electrolyte_stack',
+    'release_graphite_polymer_electrolyte_stack',
     'resolve_prepared_system',
     'run_elongation_gmx',
     'run_tg_scan_gmx',

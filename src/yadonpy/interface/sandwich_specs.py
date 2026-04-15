@@ -132,6 +132,79 @@ class GraphitePolymerElectrolyteSandwichResult:
     notes: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True)
+class GraphitePreparationResult:
+    work_dir: Path
+    summary_path: Path
+    graphite_spec: GraphiteSubstrateSpec
+    graphite: GraphiteBuildResult
+    master_xy_nm: tuple[float, float]
+    box_nm: tuple[float, float, float]
+    route: str = "screening"
+    footprint_negotiations: tuple[dict[str, object], ...] = ()
+    notes: tuple[str, ...] = ()
+    context: dict[str, object] = field(default_factory=dict, repr=False, compare=False)
+
+
+@dataclass(frozen=True)
+class BulkCalibrationResult:
+    label: str
+    work_dir: Path
+    summary_path: Path
+    phase_preparation_mode: str
+    target_xy_nm: tuple[float, float]
+    bulk_reference_box_nm: tuple[float, float, float]
+    target_z_nm: float
+    target_density_g_cm3: float
+    selected_bulk_pack_density_g_cm3: float
+    charged_phase: bool
+    species_names: tuple[str, ...]
+    counts: tuple[int, ...]
+    notes: tuple[str, ...] = ()
+    context: dict[str, object] = field(default_factory=dict, repr=False, compare=False)
+
+
+@dataclass(frozen=True)
+class InterphaseBuildResult:
+    label: str
+    work_dir: Path
+    summary_path: Path
+    report: SandwichPhaseReport
+    top_path: Path
+    gro_path: Path
+    phase_preparation_mode: str
+    occupied_thickness_nm: float
+    route: str = "screening"
+    notes: tuple[str, ...] = ()
+    context: dict[str, object] = field(default_factory=dict, repr=False, compare=False)
+
+
+@dataclass(frozen=True)
+class StackReleaseResult:
+    work_dir: Path
+    manifest_path: Path
+    relaxed_gro: Path
+    graphite: GraphiteBuildResult
+    polymer_phase: SandwichPhaseReport
+    electrolyte_phase: SandwichPhaseReport
+    stack_checks: dict[str, object] = field(default_factory=dict)
+    acceptance: dict[str, object] = field(default_factory=dict)
+    route: str = "screening"
+    notes: tuple[str, ...] = ()
+    sandwich_result: GraphitePolymerElectrolyteSandwichResult | None = field(default=None, repr=False, compare=False)
+
+
+@dataclass(frozen=True)
+class InterfaceTransportResult:
+    work_dir: Path
+    analysis_dir: Path
+    summary_path: Path
+    rdf: dict[str, object]
+    msd: dict[str, object]
+    sigma: dict[str, object]
+    migration: dict[str, object] | None = None
+
+
 def default_peo_polymer_spec(**kwargs) -> PolymerSlabSpec:
     return PolymerSlabSpec(**kwargs)
 

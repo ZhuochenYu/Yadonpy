@@ -30,6 +30,7 @@ def build_graphite_peo_example_case(
     restart: bool | None = None,
 ) -> GraphitePolymerElectrolyteSandwichResult:
     smoke = str(profile).strip().lower() == "smoke"
+    route = "screening" if smoke else "production"
     default_graphite = GraphiteSubstrateSpec(
         nx=(4 if smoke else 6),
         ny=(4 if smoke else 5),
@@ -86,6 +87,7 @@ def build_graphite_peo_example_case(
         polymer=(polymer if polymer is not None else default_polymer),
         electrolyte=(electrolyte if electrolyte is not None else default_electrolyte),
         relax=(relax if relax is not None else default_relax),
+        route=route,
         restart=restart,
     )
 
@@ -103,6 +105,7 @@ def build_graphite_cmcna_example_case(
     restart: bool | None = None,
 ) -> GraphitePolymerElectrolyteSandwichResult:
     smoke = str(profile).strip().lower() == "smoke"
+    route = "screening" if smoke else "production"
     default_graphite = GraphiteSubstrateSpec(
         nx=(4 if smoke else 6),
         ny=(4 if smoke else 5),
@@ -160,6 +163,7 @@ def build_graphite_cmcna_example_case(
         polymer=(polymer if polymer is not None else default_polymer),
         electrolyte=(electrolyte if electrolyte is not None else default_electrolyte),
         relax=(relax if relax is not None else default_relax),
+        route=route,
         restart=restart,
     )
 
@@ -177,6 +181,7 @@ def build_graphite_cmcna_glucose6_periodic_case(
     restart: bool | None = None,
 ) -> GraphitePolymerElectrolyteSandwichResult:
     smoke = str(profile).strip().lower() == "smoke"
+    route = "screening" if smoke else "production"
     default_graphite = GraphiteSubstrateSpec(
         nx=(10 if smoke else 16),
         ny=(10 if smoke else 14),
@@ -253,6 +258,7 @@ def build_graphite_cmcna_glucose6_periodic_case(
         polymer=(polymer if polymer is not None else default_polymer),
         electrolyte=(electrolyte if electrolyte is not None else default_electrolyte),
         relax=(relax if relax is not None else default_relax),
+        route=route,
         restart=restart,
     )
 

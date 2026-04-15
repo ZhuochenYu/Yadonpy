@@ -51,7 +51,11 @@ def recommend_initial_walled_pack_density(
     target = float(target_density_g_cm3)
     bulk_density = float(selected_bulk_pack_density_g_cm3)
     if phase_key == "polymer":
-        return float(max(0.34, min(0.82 * target, max(0.75 * bulk_density, 0.40))))
+        # Keep the direct final-XY polymer build deliberately loose.
+        # The confined NPT stage is a better place to densify than the initial
+        # pack, especially for charged CMC-like phases that otherwise enter EM
+        # with severe overlaps.
+        return float(max(0.30, min(0.74 * target, max(0.75 * bulk_density, 0.34))))
     return float(max(0.65, min(0.92 * target, max(0.85 * bulk_density, 0.72))))
 
 

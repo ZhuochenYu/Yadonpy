@@ -167,6 +167,54 @@ class AnalyzeResult:
         if self.trr is not None:
             self.trr = _resolve_missing(self.trr, suffix=".trr")
 
+    @classmethod
+    def from_work_dir(cls, work_dir: Path | str) -> "AnalyzeResult":
+        """Best-effort construction from an analysis or workflow directory."""
+
+        root = Path(work_dir).resolve()
+        search_roots = [root]
+        search_roots.extend(list(root.parents[:3]))
+
+        system_dir: Optional[Path] = None
+        for base in search_roots:
+            for name in ("02_system", "00_system"):
+                cand = base / name
+                if cand.exists():
+                    system_dir = cand
+                    break
+            if system_dir is not None:
+                break
+        if system_dir is None:
+            raise FileNotFoundError(f"Could not locate 02_system/00_system under {root}")
+
+        def _latest(ext: str) -> Path:
+            direct_hits = sorted(
+                [p for p in root.rglob(f"*{ext}") if p.is_file()],
+                key=lambda p: p.stat().st_mtime,
+                reverse=True,
+            )
+            if direct_hits:
+                return direct_hits[0]
+            parent_hits = sorted(
+                [p for p in system_dir.parent.rglob(f"*{ext}") if p.is_file()],
+                key=lambda p: p.stat().st_mtime,
+                reverse=True,
+            )
+            if parent_hits:
+                return parent_hits[0]
+            raise FileNotFoundError(f"Could not locate *{ext} under {root}")
+
+        top = system_dir / "system.top"
+        ndx = system_dir / "system.ndx"
+        tpr = _latest(".tpr")
+        xtc = _latest(".xtc")
+        edr = _latest(".edr")
+        try:
+            trr = _latest(".trr")
+        except FileNotFoundError:
+            trr = None
+        return cls(work_dir=root, tpr=tpr, xtc=xtc, edr=edr, top=top, ndx=ndx, trr=trr)
+
     @staticmethod
     def _normalize_term_name(name: object) -> str:
         import re
@@ -876,6 +924,27 @@ class AnalyzeResult:
         header = f"{x_name},{y_name}"
         np.savetxt(out_csv, arr, delimiter=",", header=header, comments="")
         return out_csv
+
+    def _load_existing_rdf_summary(self, *, center_group: str) -> Optional[Dict[str, Any]]:
+        summary_path = self._analysis_dir() / "rdf_first_shell.json"
+        if not summary_path.exists():
+            return None
+        try:
+            payload = json.loads(summary_path.read_text(encoding="utf-8"))
+        except Exception:
+            return None
+        if not isinstance(payload, dict):
+            return None
+        records = [
+            v
+            for k, v in payload.items()
+            if not str(k).startswith("_") and isinstance(v, dict)
+        ]
+        if not records:
+            return None
+        if any(str(rec.get("center_group") or "") != str(center_group) for rec in records):
+            return None
+        return payload
 
     def _rdf_atomtype_legacy(
         self,
@@ -1700,6 +1769,107 @@ class AnalyzeResult:
         self._item("msd_outputs", self._compact_path(outdir))
         self._section_done("MSD analysis", t_all, detail=f"species={len([k for k in res.keys() if not str(k).startswith('_')])} | outputs={self._compact_path(outdir)}")
         return res
+
+    def migration(
+        self,
+        center_mol: object,
+        *,
+        polymer_mols: object | None = None,
+        solvent_mols: object | None = None,
+        anion_mols: object | None = None,
+        cation_mols: object | None = None,
+        stride: int | str = "auto",
+        rdf_stride: int = 10,
+        lag_ps: str | float | int = "auto",
+        state_basis: str = "dual",
+        residence: bool = True,
+        markov: bool = True,
+        expert_mode: bool = False,
+        out_dir: Optional[Path] = None,
+    ) -> Dict[str, Any]:
+        """Run residence + Markov migration analysis for a mobile center species."""
+        from .migration import run_migration_analysis
+
+        center_moltypes = self._strict_center_moltypes(center_mol, strict_center=True)
+        if len(center_moltypes) != 1:
+            raise ValueError(f"migration() center_mol must resolve to exactly one moltype, got {center_moltypes}")
+        center_group = str(center_moltypes[0])
+        analysis_dir = Path(out_dir) if out_dir is not None else (self._analysis_dir() / "migration")
+        t_all = self._section_begin(
+            "Migration analysis",
+            detail=(
+                f"center={center_group} | stride={stride} | rdf_stride={int(max(1, rdf_stride))}"
+                f" | lag_ps={lag_ps} | state_basis={state_basis}"
+                f" | residence={bool(residence)} | markov={bool(markov)} | expert_mode={bool(expert_mode)}"
+            ),
+        )
+
+        rdf_summary = self._load_existing_rdf_summary(center_group=center_group)
+        if rdf_summary is None:
+            self._item("rdf_source", "recompute")
+            rdf_summary = self.rdf(center_mol=center_mol, region="auto")
+        else:
+            self._item("rdf_source", "reuse 06_analysis/rdf_first_shell.json")
+
+        topo = parse_system_top(self.top)
+        result = run_migration_analysis(
+            top=topo,
+            system_dir=self._system_dir(),
+            gro_path=self._system_dir() / "system.gro",
+            xtc_path=self._analysis_xtc_path(),
+            center_moltype=center_group,
+            rdf_summary=rdf_summary,
+            resolve_moltypes=self._resolve_species_moltypes,
+            polymer_mols=polymer_mols,
+            solvent_mols=solvent_mols,
+            anion_mols=anion_mols,
+            cation_mols=cation_mols,
+            stride=stride,
+            rdf_stride=int(max(1, rdf_stride)),
+            lag_ps=lag_ps,
+            state_basis=str(state_basis or "dual"),
+            residence=bool(residence),
+            markov=bool(markov),
+            expert_mode=bool(expert_mode),
+            out_dir=analysis_dir,
+        )
+        self._update_summary_sections(migration=result.get("migration_summary") or result)
+        self._item("migration_outputs", self._compact_path(analysis_dir))
+        self._section_done(
+            "Migration analysis",
+            t_all,
+            detail=(
+                f"center_count={int((result.get('migration_summary') or {}).get('center_count') or 0)}"
+                f" | outputs={self._compact_path(analysis_dir)}"
+            ),
+        )
+        return result
+
+    def migration_residence(self, center_mol: object, **kwargs: Any) -> Dict[str, Any]:
+        result = self.migration(center_mol=center_mol, markov=False, **kwargs)
+        return dict(result.get("residence_summary") or {})
+
+    def migration_markov(self, center_mol: object, **kwargs: Any) -> Dict[str, Any]:
+        result = self.migration(center_mol=center_mol, residence=False, markov=True, **kwargs)
+        return {
+            "markov_role_summary": dict(result.get("markov_role_summary") or {}),
+            "markov_site_summary": dict(result.get("markov_site_summary") or {}),
+            "event_flux_summary": dict(result.get("event_flux_summary") or {}),
+            "state_catalog": dict(result.get("state_catalog") or {}),
+            "migration_summary": dict(result.get("migration_summary") or {}),
+        }
+
+    def migration_hopping(self, center_mol: object, **kwargs: Any) -> Dict[str, Any]:
+        result = self.migration_markov(center_mol=center_mol, **kwargs)
+        return {
+            "deprecated": True,
+            "note": "migration_hopping() is now a compatibility alias over Markov event-flux outputs.",
+            "event_counts": dict((result.get("event_flux_summary") or {}).get("event_counts_observed") or {}),
+            "predicted_event_counts": list((result.get("event_flux_summary") or {}).get("predicted_event_counts") or []),
+            "markov_role_summary": dict(result.get("markov_role_summary") or {}),
+            "markov_site_summary": dict(result.get("markov_site_summary") or {}),
+            "migration_summary": dict(result.get("migration_summary") or {}),
+        }
 
     def rg(self, *, begin_ps: Optional[float] = None, end_ps: Optional[float] = None) -> Dict[str, Any]:
         """Compute and plot radius of gyration time series (best-effort)."""

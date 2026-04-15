@@ -157,6 +157,7 @@ def phase_local_density_summary(*, gro_path: Path, species: Sequence, counts: Se
             "occupied_thickness_nm": 0.0,
             "occupied_density_g_cm3": 0.0,
             "center_window_nm": 0.0,
+            "center_bulk_like_window_nm": [0.0, 0.0],
             "center_bulk_like_density_g_cm3": 0.0,
             "wrapped_across_z_boundary": False,
         }
@@ -176,6 +177,7 @@ def phase_local_density_summary(*, gro_path: Path, species: Sequence, counts: Se
             "occupied_thickness_nm": 0.0,
             "occupied_density_g_cm3": 0.0,
             "center_window_nm": 0.0,
+            "center_bulk_like_window_nm": [0.0, 0.0],
             "center_bulk_like_density_g_cm3": 0.0,
             "wrapped_across_z_boundary": wrapped,
         }
@@ -204,6 +206,7 @@ def phase_local_density_summary(*, gro_path: Path, species: Sequence, counts: Se
             "occupied_thickness_nm": occupied_thickness_nm,
             "occupied_density_g_cm3": occupied_density,
             "center_window_nm": 0.0,
+            "center_bulk_like_window_nm": [0.0, 0.0],
             "center_bulk_like_density_g_cm3": 0.0,
             "wrapped_across_z_boundary": wrapped,
         }
@@ -222,6 +225,7 @@ def phase_local_density_summary(*, gro_path: Path, species: Sequence, counts: Se
         "occupied_thickness_nm": occupied_thickness_nm,
         "occupied_density_g_cm3": occupied_density,
         "center_window_nm": center_window_nm,
+        "center_bulk_like_window_nm": [center_lo, center_hi],
         "center_bulk_like_density_g_cm3": center_density,
         "wrapped_across_z_boundary": wrapped,
     }

@@ -24,12 +24,19 @@ Package root exports include:
 - `yp.assign_forcefield`
 - `yp.load_from_moldb`
 - `yp.parameterize_smiles`
+- `yp.prepare_graphite_substrate`
+- `yp.calibrate_polymer_bulk_phase`
+- `yp.calibrate_electrolyte_bulk_phase`
+- `yp.build_graphite_polymer_interphase`
+- `yp.build_polymer_electrolyte_interphase`
+- `yp.release_graphite_polymer_electrolyte_stack`
 - `yp.build_graphite_polymer_electrolyte_sandwich`
 - `yp.build_graphite_peo_electrolyte_sandwich`
 - `yp.build_graphite_cmcna_electrolyte_sandwich`
 - `yp.resolve_prepared_system`
 - `yp.run_tg_scan_gmx`
 - `yp.run_elongation_gmx`
+- `yp.AnalyzeResult`
 - `yp.print_mechanics_result_summary`
 - `yp.InterfaceBuilder`
 - `yp.InterfaceProtocol`
@@ -49,6 +56,12 @@ yp.list_forcefields() -> tuple[str, ...]
 yp.list_charge_methods() -> tuple[str, ...]
 yp.mol_from_smiles(smiles: str, *, coord: bool = True, name: str | None = None)
 yp.build_graphite(**kwargs)
+yp.prepare_graphite_substrate(**kwargs)
+yp.calibrate_polymer_bulk_phase(**kwargs)
+yp.calibrate_electrolyte_bulk_phase(**kwargs)
+yp.build_graphite_polymer_interphase(**kwargs)
+yp.build_polymer_electrolyte_interphase(**kwargs)
+yp.release_graphite_polymer_electrolyte_stack(**kwargs)
 yp.build_graphite_polymer_electrolyte_sandwich(**kwargs)
 yp.build_graphite_peo_electrolyte_sandwich(**kwargs)
 yp.build_graphite_cmcna_electrolyte_sandwich(**kwargs)
@@ -114,6 +127,7 @@ analy = production.analyze()
 rdf = analy.rdf(center_mol=li_mol)
 msd = analy.msd()
 sigma = analy.sigma(msd=msd, temp_k=300.0)
+migration = analy.migration(center_mol=li_mol)
 ```
 
 Recommended public methods:
@@ -145,6 +159,26 @@ AnalyzeResult.sigma(
     drift: str = "auto",
     eh_mode: str = "auto",
 )
+
+AnalyzeResult.migration(
+    center_mol,
+    *,
+    polymer_mols=None,
+    solvent_mols=None,
+    anion_mols=None,
+    cation_mols=None,
+    stride: int | str = "auto",
+    rdf_stride: int = 10,
+    lag_ps: str | float | int = "auto",
+    state_basis: str = "dual",
+    residence: bool = True,
+    markov: bool = True,
+    expert_mode: bool = False,
+    out_dir: str | Path | None = None,
+)
+
+AnalyzeResult.migration_markov(center_mol, **kwargs)
+AnalyzeResult.migration_residence(center_mol, **kwargs)
 ```
 
 Transport semantics:
@@ -163,6 +197,21 @@ Transport semantics:
 - charged-polymer self terms are retained as
   `polymer_charged_group_self_ne_contribution_S_m` and component diagnostics;
   they are not labeled as total polymer ionic conductivity.
+- `migration()` is the preferred high-level migration workflow for:
+  - pure electrolytes,
+  - polymer-electrolyte composites,
+  - solid polymer electrolytes.
+- `migration()` writes default outputs under `06_analysis/migration/` including
+  residence summaries, role/site Markov summaries, transition matrices,
+  predicted event counts, and static SVG plots.
+- `migration()` uses a dual-state basis by default:
+  - role-level Markov states: `polymer / solvent / anion / none`
+  - site-level Markov states: specific donor anchors plus role-scoped `OTHER`
+    buckets when states become too sparse.
+- `migration_markov()` exposes the role/site transition summaries directly, while
+  `migration_residence()` exposes just the residence layer.
+- `AnalyzeResult.from_work_dir(...)` is available for post-hoc analysis of an
+  already completed YadonPy work directory.
 
 Supported canonical force-field names:
 
@@ -758,13 +807,20 @@ default_carbonate_lipf6_electrolyte_spec(**kwargs) -> ElectrolyteSlabSpec
 ### Main builders
 
 ```python
+prepare_graphite_substrate(**kwargs)
+calibrate_polymer_bulk_phase(**kwargs)
+calibrate_electrolyte_bulk_phase(**kwargs)
+build_graphite_polymer_interphase(**kwargs)
+build_polymer_electrolyte_interphase(**kwargs)
+release_graphite_polymer_electrolyte_stack(**kwargs)
 build_graphite_polymer_electrolyte_sandwich(**kwargs)
 build_graphite_peo_electrolyte_sandwich(**kwargs)
 build_graphite_cmcna_electrolyte_sandwich(**kwargs)
 ```
 
-Use the PEO entry point for compact smoke tests and the generic or CMC-Na entry points
-when you want explicit control over polymer composition and charged groups.
+Use the staged functions when you want Example-02-style explicit scripts and
+clean restart points. Keep the convenience builders for short scripts or
+backward-compatible helper flows.
 
 ## 10. Internal Modules
 

@@ -7,15 +7,20 @@ import pytest
 from rdkit import Chem
 from rdkit import Geometry as Geom
 
+import yadonpy.interface.protocol as protocol_mod
+import yadonpy.interface.sandwich as sandwich_mod
 from yadonpy.core.graphite import stack_cell_blocks
 from yadonpy.core.molspec import MolSpec
 from yadonpy.interface import (
+    GraphitePreparationResult,
+    StackReleaseResult,
     build_graphite_cmcna_example_case,
     build_graphite_peo_example_case,
     format_sandwich_result_summary,
 )
 from yadonpy.interface.sandwich import (
     ElectrolyteSlabSpec,
+    GraphitePolymerElectrolyteSandwichResult,
     GraphiteSubstrateSpec,
     MoleculeSpec,
     PolymerSlabSpec,
@@ -37,6 +42,7 @@ from yadonpy.interface.sandwich import (
     _expand_graphite_to_meet_required_xy,
     _molecule_atom_blocks,
     _needs_confined_rescue,
+    _normalize_confined_block_for_stack,
     _maybe_expand_graphite_for_phase_footprint,
     _polymer_chain_effective_charge,
     _preflight_graphite_footprint_from_phase_targets,
@@ -48,10 +54,14 @@ from yadonpy.interface.sandwich import (
     _phase_confined_relaxation_stages,
     _rebox_block_for_phase_confinement,
     _run_amorphous_cell_with_density_backoff,
+    _run_confined_phase_relaxation,
     _sandwich_relaxation_stages,
     _stack_master_xy_nm,
+    build_graphite_polymer_interphase,
     build_graphite_cmcna_glucose6_periodic_case,
     build_graphite_polymer_electrolyte_sandwich,
+    print_interface_result_summary,
+    prepare_graphite_substrate,
 )
 from yadonpy.io.gromacs_system import SystemExportResult
 
@@ -324,8 +334,8 @@ def test_compact_packed_cell_z_by_molecule_centers_preserves_order_and_target_bo
         target_box_nm=(2.0, 2.0, 3.0),
     )
     z = [float(sandwich.GetConformer(0).GetAtomPosition(i).z) for i in range(sandwich.GetNumAtoms())]
-    assert sandwich.cell.zhi == 45.0
-    assert 0.0 <= min(z) < max(z) <= 45.0
+    assert sandwich.cell.zhi == pytest.approx(84.0)
+    assert 0.0 <= min(z) < max(z) <= 84.0 + 1.0e-6
     assert z[0] < z[1]
     assert note is not None
     assert "pre-relaxation" in note
@@ -350,6 +360,152 @@ def test_rebox_block_for_phase_confinement_centers_slab_and_adds_vacuum():
     assert 12.0 < float(pos.z) < 27.0
     assert summary["target_xy_nm"] == [2.0, 2.0]
     assert "vacuum" in note
+
+
+def test_run_confined_phase_relaxation_keeps_round00_when_rescue_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    source_block = _dummy_mol("PEO", z_ang=6.0, cell_box_ang=(20.0, 20.0, 40.0))
+    species = [_dummy_mol("PEO_monomer")]
+    top = tmp_path / "system.top"
+    gro = tmp_path / "system.gro"
+    ndx = tmp_path / "system.ndx"
+    top.write_text("; top\n", encoding="utf-8")
+    gro.write_text("dummy\n0\n2.0 2.0 4.0\n", encoding="utf-8")
+    ndx.write_text("[ System ]\n1\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        sandwich_mod,
+        "_rebox_block_for_phase_confinement",
+        lambda **kwargs: (
+            kwargs["block"],
+            {
+                "occupied_thickness_nm": 1.8,
+                "occupied_density_g_cm3": 0.92,
+                "center_bulk_like_density_g_cm3": 0.90,
+            },
+            "fake rebox",
+        ),
+    )
+    monkeypatch.setattr(
+        sandwich_mod,
+        "_compress_phase_block_z_to_target_thickness",
+        lambda **kwargs: (
+            kwargs["block"],
+            {"z_compression_applied": True, "z_compression_scale": 0.90},
+        ),
+    )
+    monkeypatch.setattr(sandwich_mod, "register_cell_species_metadata", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        sandwich_mod,
+        "export_system_from_cell_meta",
+        lambda **_kwargs: SimpleNamespace(system_ndx=ndx, system_top=top, system_gro=gro),
+    )
+    monkeypatch.setattr(sandwich_mod, "_ensure_system_group_in_ndx", lambda *_a, **_k: {"System": [1]})
+    monkeypatch.setattr(protocol_mod, "_resolve_route_b_wall_atomtype", lambda *_a, **_k: ("c3", ["c3"]))
+    monkeypatch.setattr(
+        sandwich_mod,
+        "_phase_confined_relaxation_stages",
+        lambda **_kwargs: [
+            SimpleNamespace(name="01_em"),
+            SimpleNamespace(name="02_pre_nvt"),
+            SimpleNamespace(name="03_density_relax"),
+        ],
+    )
+    monkeypatch.setattr(
+        sandwich_mod,
+        "_load_block_from_top_gro",
+        lambda **kwargs: kwargs.get("fallback_cell"),
+    )
+    monkeypatch.setattr(
+        sandwich_mod,
+        "_phase_local_density_summary",
+        lambda **_kwargs: {
+            "occupied_thickness_nm": 1.8,
+            "occupied_density_g_cm3": 0.92,
+            "center_bulk_like_density_g_cm3": 0.90,
+        },
+    )
+    monkeypatch.setattr(sandwich_mod, "_needs_confined_rescue", lambda **_kwargs: True)
+
+    class _FakeJob:
+        def __init__(self, *, out_dir, stages, **_kwargs):
+            self.out_dir = Path(out_dir)
+            self.stages = stages
+
+        def run(self, restart=False):
+            if "02_rescue_relax" in str(self.out_dir):
+                raise RuntimeError("rescue failed in fake test")
+            stage_dir = self.out_dir / self.stages[-1].name
+            stage_dir.mkdir(parents=True, exist_ok=True)
+            (stage_dir / "md.gro").write_text("dummy\n0\n2.0 2.0 4.0\n", encoding="utf-8")
+
+    monkeypatch.setattr(sandwich_mod, "EquilibrationJob", _FakeJob)
+
+    result = _run_confined_phase_relaxation(
+        label="polymer",
+        source_block=source_block,
+        species=species,
+        counts=[1],
+        charge_scale=[1.0],
+        target_xy_nm=(2.0, 2.0),
+        target_density_g_cm3=1.0,
+        target_thickness_nm=2.0,
+        ff_name="gaff2_mod",
+        relax=SandwichRelaxationSpec(),
+        work_dir=tmp_path / "confined",
+    )
+
+    assert result.summary["selected_round"] == "round_00"
+    assert result.summary["rescue_attempted"] is True
+    assert result.summary["rescue_applied"] is False
+    assert result.summary["rescue_failed"] is True
+    assert "rescue failed in fake test" in str(result.summary["rescue_error"])
+
+
+def test_normalize_confined_block_for_stack_trusts_periodic_xy(monkeypatch: pytest.MonkeyPatch):
+    block = _dummy_mol("PEO")
+    species = [_dummy_mol("PEO_monomer")]
+    seen: dict[str, object] = {}
+
+    def _fake_rebox(**kwargs):
+        seen.update(kwargs)
+        return kwargs["block"], {"ok": True}, "note"
+
+    monkeypatch.setattr(sandwich_mod, "_rebox_block_for_phase_confinement", _fake_rebox)
+
+    out = _normalize_confined_block_for_stack(
+        block=block,
+        target_xy_nm=(2.0, 3.0),
+        occupied_thickness_nm=4.5,
+        species=species,
+        counts=[1],
+    )
+
+    assert out is block
+    assert seen["trust_periodic_xy"] is True
+    assert seen["vacuum_padding_ang"] == pytest.approx(0.0)
+
+
+def test_phase_local_density_summary_exports_center_bulk_like_window_nm(tmp_path: Path):
+    gro_path = tmp_path / "phase.gro"
+    gro_path.write_text(
+        "\n".join(
+            [
+                "phase",
+                "2",
+                f"{1:5d}{'RES':<5}{'A1':>5}{1:5d}{0.000:8.3f}{0.000:8.3f}{0.200:8.3f}",
+                f"{1:5d}{'RES':<5}{'A2':>5}{2:5d}{0.000:8.3f}{0.000:8.3f}{0.800:8.3f}",
+                "1.000 1.000 2.000",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    mol = _dummy_mol("phase_atom")
+    summary = _phase_local_density_summary(gro_path=gro_path, species=[mol], counts=[2])
+    assert summary["center_window_nm"] > 0.0
+    assert isinstance(summary["center_bulk_like_window_nm"], list)
+    assert len(summary["center_bulk_like_window_nm"]) == 2
+    assert summary["center_bulk_like_window_nm"][1] > summary["center_bulk_like_window_nm"][0]
 
 
 def test_rebox_block_for_phase_confinement_wraps_molecule_centers_into_target_xy():
@@ -1133,11 +1289,11 @@ def test_build_pack_density_ladder_uses_phase_specific_backoff_policy():
         target_density_g_cm3=1.20,
         requested_density_g_cm3=0.86,
     )
-    assert polymer_policy.max_attempts == 4
-    assert polymer_policy.backoff_factor == pytest.approx(0.88)
-    assert polymer_policy.floor_density_g_cm3 == pytest.approx(0.40)
+    assert polymer_policy.max_attempts == 5
+    assert polymer_policy.backoff_factor == pytest.approx(0.86)
+    assert polymer_policy.floor_density_g_cm3 == pytest.approx(0.32)
     assert polymer_ladder[0] == pytest.approx(0.68 / 1.25)
-    assert polymer_ladder[-1] >= 0.40
+    assert polymer_ladder[-1] >= 0.32
     assert electrolyte_policy.max_attempts == 3
     assert electrolyte_ladder[0] == pytest.approx(0.86)
     assert electrolyte_ladder[1] == pytest.approx(0.86 * 0.90)
@@ -1151,11 +1307,11 @@ def test_build_pack_density_ladder_uses_more_permissive_policy_for_charged_polym
         charged=True,
     )
     assert polymer_policy.charged is True
-    assert polymer_policy.max_attempts == 5
-    assert polymer_policy.backoff_factor == pytest.approx(0.86)
-    assert polymer_policy.floor_density_g_cm3 == pytest.approx(0.30)
+    assert polymer_policy.max_attempts == 6
+    assert polymer_policy.backoff_factor == pytest.approx(0.82)
+    assert polymer_policy.floor_density_g_cm3 == pytest.approx(0.22)
     assert polymer_ladder[0] == pytest.approx(0.56 / 1.30)
-    assert polymer_ladder[-1] >= 0.30
+    assert polymer_ladder[-1] >= 0.22
 
 
 def test_run_amorphous_cell_with_density_backoff_retries_and_writes_summary(tmp_path: Path):
@@ -1185,7 +1341,7 @@ def test_run_amorphous_cell_with_density_backoff_retries_and_writes_summary(tmp_
 
     assert result.selected_attempt_index == 1
     assert result.selected_density_g_cm3 == pytest.approx(calls[1])
-    assert calls[1] == pytest.approx(calls[0] * 0.88)
+    assert calls[1] == pytest.approx(calls[0] * 0.86)
     assert result.summary_path.exists()
     assert result.summary["attempts"][0]["success"] is False
     assert result.summary["attempts"][1]["success"] is True
@@ -1296,6 +1452,144 @@ def test_build_graphite_cmcna_example_case_chooses_full_defaults(tmp_path: Path,
     assert captured["polymer"].dp == 60
     assert captured["electrolyte"].slab_z_nm == pytest.approx(5.2)
     assert captured["relax"].stacked_exchange_ps == pytest.approx(120.0)
+
+
+def test_prepare_graphite_substrate_returns_stage_result_with_summary(tmp_path: Path, monkeypatch):
+    import yadonpy.interface.sandwich as sandwich
+
+    fake_graphite_result = SimpleNamespace(
+        box_nm=(2.0, 3.0, 1.5),
+        layer_mol=_dummy_mol("GRAPH"),
+        layer_count=4,
+        cell=_dummy_mol("GRAPH_CELL"),
+    )
+
+    monkeypatch.setattr(sandwich, "build_graphite", lambda **kwargs: fake_graphite_result)
+    monkeypatch.setattr(
+        sandwich,
+        "_preflight_graphite_footprint_from_phase_targets",
+        lambda **kwargs: (kwargs["graphite"], fake_graphite_result, [{"stage": "preflight"}]),
+    )
+
+    result = prepare_graphite_substrate(
+        work_dir=tmp_path,
+        ff=object(),
+        ion_ff=object(),
+        graphite=GraphiteSubstrateSpec(),
+        polymer=PolymerSlabSpec(),
+        electrolyte=ElectrolyteSlabSpec(),
+    )
+
+    assert isinstance(result, GraphitePreparationResult)
+    assert result.summary_path.exists()
+    assert result.master_xy_nm == pytest.approx((2.0, 3.0))
+    assert result.footprint_negotiations[0]["stage"] == "preflight"
+
+
+def test_build_graphite_polymer_electrolyte_sandwich_orchestrates_stage_apis(tmp_path: Path, monkeypatch):
+    import yadonpy.interface.sandwich as sandwich
+
+    calls: list[str] = []
+    graphite_stage = GraphitePreparationResult(
+        work_dir=tmp_path,
+        summary_path=tmp_path / "01_graphite.json",
+        graphite_spec=GraphiteSubstrateSpec(),
+        graphite=SimpleNamespace(box_nm=(2.0, 2.0, 1.0), layer_mol=_dummy_mol("GRAPH"), layer_count=2, cell=_dummy_mol("CELL")),
+        master_xy_nm=(2.0, 2.0),
+        box_nm=(2.0, 2.0, 1.0),
+    )
+    bulk_stage = SimpleNamespace()
+    interphase_stage = SimpleNamespace()
+    final_result = GraphitePolymerElectrolyteSandwichResult(
+        graphite=graphite_stage.graphite,
+        polymer_phase=SandwichPhaseReport("polymer", (2.0, 2.0, 3.0), 1.1, ("PEO",), (2,)),
+        electrolyte_phase=SandwichPhaseReport("electrolyte", (2.0, 2.0, 4.0), 1.2, ("EC",), (4,)),
+        stack_export=SimpleNamespace(),
+        relaxed_gro=tmp_path / "final.gro",
+        manifest_path=tmp_path / "manifest.json",
+    )
+
+    def _record(name, value):
+        def _inner(**kwargs):
+            calls.append(name)
+            return value
+        return _inner
+
+    monkeypatch.setattr(sandwich, "prepare_graphite_substrate", _record("graphite", graphite_stage))
+    monkeypatch.setattr(sandwich, "calibrate_polymer_bulk_phase", _record("polymer_bulk", bulk_stage))
+    monkeypatch.setattr(sandwich, "calibrate_electrolyte_bulk_phase", _record("electrolyte_bulk", bulk_stage))
+    monkeypatch.setattr(sandwich, "build_graphite_polymer_interphase", _record("polymer_interphase", interphase_stage))
+    monkeypatch.setattr(sandwich, "build_polymer_electrolyte_interphase", _record("electrolyte_interphase", interphase_stage))
+    monkeypatch.setattr(
+        sandwich,
+        "release_graphite_polymer_electrolyte_stack",
+        _record(
+            "release",
+            StackReleaseResult(
+                work_dir=tmp_path,
+                manifest_path=tmp_path / "manifest.json",
+                relaxed_gro=tmp_path / "final.gro",
+                graphite=graphite_stage.graphite,
+                polymer_phase=final_result.polymer_phase,
+                electrolyte_phase=final_result.electrolyte_phase,
+                sandwich_result=final_result,
+            ),
+        ),
+    )
+
+    result = build_graphite_polymer_electrolyte_sandwich(
+        work_dir=tmp_path,
+        ff=object(),
+        ion_ff=object(),
+        graphite=GraphiteSubstrateSpec(),
+        polymer=PolymerSlabSpec(),
+        electrolyte=ElectrolyteSlabSpec(),
+        route="production",
+    )
+
+    assert result is final_result
+    assert calls == [
+        "graphite",
+        "polymer_bulk",
+        "electrolyte_bulk",
+        "polymer_interphase",
+        "electrolyte_interphase",
+        "release",
+    ]
+
+
+def test_print_interface_result_summary_accepts_stack_release_result(tmp_path: Path, monkeypatch):
+    import yadonpy.interface.sandwich_examples as sandwich_examples
+
+    captured: dict[str, object] = {}
+
+    def _fake_print(result, *, profile=None):
+        captured["result"] = result
+        captured["profile"] = profile
+
+    monkeypatch.setattr(sandwich_examples, "print_sandwich_result_summary", _fake_print)
+    base_result = GraphitePolymerElectrolyteSandwichResult(
+        graphite=SimpleNamespace(),
+        polymer_phase=SandwichPhaseReport("polymer", (2.0, 2.0, 3.0), 1.1, ("PEO",), (2,)),
+        electrolyte_phase=SandwichPhaseReport("electrolyte", (2.0, 2.0, 4.0), 1.2, ("EC",), (4,)),
+        stack_export=SimpleNamespace(),
+        relaxed_gro=tmp_path / "final.gro",
+        manifest_path=tmp_path / "manifest.json",
+    )
+    wrapper = StackReleaseResult(
+        work_dir=tmp_path,
+        manifest_path=base_result.manifest_path,
+        relaxed_gro=base_result.relaxed_gro,
+        graphite=base_result.graphite,
+        polymer_phase=base_result.polymer_phase,
+        electrolyte_phase=base_result.electrolyte_phase,
+        sandwich_result=base_result,
+    )
+
+    print_interface_result_summary(wrapper, profile="smoke")
+
+    assert captured["result"] is base_result
+    assert captured["profile"] == "smoke"
 
 
 def test_format_sandwich_result_summary_emits_linear_example02_style_lines(tmp_path: Path):
@@ -1540,7 +1834,7 @@ def test_build_graphite_polymer_electrolyte_sandwich_orchestrates_bulk_then_slab
     assert '"polymer_bulk_pack"' in manifest
     assert '"electrolyte_bulk_pack"' in manifest
     assert '"ndx_groups"' in manifest
-    assert (tmp_path / "sandwich" / "05_sandwich" / "sandwich_progress.json").exists()
+    assert (tmp_path / "sandwich" / "06_full_stack_release" / "interface_progress.json").exists()
     assert result.stack_checks["is_expected_order"] is True
 
 
@@ -1707,7 +2001,12 @@ def test_build_graphite_polymer_electrolyte_sandwich_uses_preflight_graphite_neg
     assert electrolyte_ref_boxes == [pytest.approx((4.0, 4.0, 4.0))]
     assert len(walled_calls) == 2
     manifest = result.manifest_path.read_text(encoding="utf-8")
-    progress = (tmp_path / "sandwich_expand" / "05_sandwich" / "sandwich_progress.json").read_text(encoding="utf-8")
+    progress = (
+        tmp_path
+        / "sandwich_expand"
+        / "06_full_stack_release"
+        / "interface_progress.json"
+    ).read_text(encoding="utf-8")
     assert '"phase_preparation_mode": "bulk_calibrate_walled_phase"' in manifest
     assert '"graphite_footprint_negotiations"' in progress
     assert '"latest_graphite_footprint_negotiation"' in progress

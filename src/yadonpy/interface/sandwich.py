@@ -52,13 +52,18 @@ from .sandwich_packing import (
     run_amorphous_cell_with_density_backoff as _run_amorphous_cell_with_density_backoff,
 )
 from .sandwich_specs import (
+    BulkCalibrationResult,
     ElectrolyteSlabSpec,
+    GraphitePreparationResult,
     GraphitePolymerElectrolyteSandwichResult,
     GraphiteSubstrateSpec,
+    InterfaceTransportResult,
+    InterphaseBuildResult,
     MoleculeSpec,
     PolymerSlabSpec,
     SandwichPhaseReport,
     SandwichRelaxationSpec,
+    StackReleaseResult,
     default_carbonate_lipf6_electrolyte_spec,
     default_cmcna_polymer_spec,
     default_peo_electrolyte_spec,
@@ -128,6 +133,699 @@ def build_graphite_cmcna_glucose6_periodic_case(
         relax=relax,
         restart=restart,
     )
+
+
+def prepare_graphite_substrate(
+    *,
+    work_dir,
+    ff,
+    graphite: GraphiteSubstrateSpec,
+    polymer: PolymerSlabSpec | None = None,
+    electrolyte: ElectrolyteSlabSpec | None = None,
+    ion_ff=None,
+    relax: SandwichRelaxationSpec = SandwichRelaxationSpec(),
+    route: str = "screening",
+    restart: bool | None = None,
+) -> GraphitePreparationResult:
+    wd = Path(workdir(work_dir, restart=restart))
+    graphite_dir = wd / "01_graphite"
+    graphite_dir.mkdir(parents=True, exist_ok=True)
+    chain_dir = wd / "02_polymer_bulk_calibration" / "00_chain"
+    chain_dir.mkdir(parents=True, exist_ok=True)
+
+    resolved_graphite = graphite
+    graphite_result = build_graphite(
+        nx=int(graphite.nx),
+        ny=int(graphite.ny),
+        n_layers=int(graphite.n_layers),
+        orientation=graphite.orientation,
+        edge_cap=graphite.edge_cap,
+        ff=ff,
+        name=graphite.name,
+        top_padding_ang=float(graphite.top_padding_ang),
+    )
+    negotiations: list[dict[str, object]] = []
+    if polymer is not None and electrolyte is not None:
+        if ion_ff is None:
+            raise ValueError("ion_ff is required when preparing graphite with polymer/electrolyte preflight negotiation")
+        resolved_graphite, graphite_result, negotiations = _preflight_graphite_footprint_from_phase_targets(
+            graphite=graphite,
+            graphite_result=graphite_result,
+            ff=ff,
+            ion_ff=ion_ff,
+            polymer=polymer,
+            electrolyte=electrolyte,
+            relax=relax,
+            chain_dir=chain_dir,
+        )
+
+    master_xy_nm = _stack_master_xy_nm(
+        graphite=resolved_graphite,
+        graphite_box_nm=tuple(float(x) for x in graphite_result.box_nm),
+    )
+    summary = {
+        "route": str(route),
+        "graphite_spec": asdict(resolved_graphite),
+        "graphite_box_nm": [float(x) for x in graphite_result.box_nm],
+        "master_xy_nm": [float(master_xy_nm[0]), float(master_xy_nm[1])],
+        "graphite_footprint_negotiations": negotiations,
+    }
+    summary_path = graphite_dir / "graphite_preparation_summary.json"
+    summary_path.write_text(json.dumps(summary, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    return GraphitePreparationResult(
+        work_dir=wd,
+        summary_path=summary_path,
+        graphite_spec=resolved_graphite,
+        graphite=graphite_result,
+        master_xy_nm=(float(master_xy_nm[0]), float(master_xy_nm[1])),
+        box_nm=tuple(float(x) for x in graphite_result.box_nm),
+        route=str(route),
+        footprint_negotiations=tuple(negotiations),
+        context={
+            "root_work_dir": str(wd),
+            "chain_dir": str(chain_dir),
+        },
+    )
+
+
+def calibrate_polymer_bulk_phase(
+    *,
+    work_dir,
+    ff,
+    ion_ff,
+    graphite: GraphitePreparationResult,
+    polymer: PolymerSlabSpec,
+    relax: SandwichRelaxationSpec = SandwichRelaxationSpec(),
+    restart: bool | None = None,
+) -> BulkCalibrationResult:
+    wd = Path(work_dir)
+    phase_dir = wd / "02_polymer_bulk_calibration"
+    chain_dir = Path(str(graphite.context.get("chain_dir", phase_dir / "00_chain")))
+    chain_dir.mkdir(parents=True, exist_ok=True)
+    raw = _run_polymer_bulk_calibration(
+        ff=ff,
+        ion_ff=ion_ff,
+        graphite_box_nm=tuple(float(x) for x in graphite.box_nm),
+        polymer=polymer,
+        relax=relax,
+        chain_dir=chain_dir,
+        base_phase_dir=phase_dir,
+        restart=restart,
+    )
+    calibration = raw["calibration"]
+    phase_build = raw["phase_build"]
+    species_names = tuple(
+        str(get_name(mol, default=f"{polymer.name}_{idx + 1}"))
+        for idx, mol in enumerate(phase_build["species"])
+    )
+    return BulkCalibrationResult(
+        label="polymer",
+        work_dir=phase_dir,
+        summary_path=raw["summary_path"],
+        phase_preparation_mode=str(calibration.phase_preparation_mode),
+        target_xy_nm=tuple(float(x) for x in calibration.master_xy_nm),
+        bulk_reference_box_nm=tuple(float(x) for x in calibration.bulk_reference_box_nm),
+        target_z_nm=float(calibration.target_z_nm),
+        target_density_g_cm3=float(calibration.target_density_g_cm3),
+        selected_bulk_pack_density_g_cm3=float(calibration.selected_bulk_pack_density_g_cm3),
+        charged_phase=bool(calibration.charged_phase),
+        species_names=species_names,
+        counts=tuple(int(x) for x in phase_build["counts"]),
+        notes=tuple(str(x) for x in calibration.notes),
+        context={
+            "root_work_dir": str(wd),
+            "raw": raw,
+        },
+    )
+
+
+def calibrate_electrolyte_bulk_phase(
+    *,
+    work_dir,
+    ff,
+    ion_ff,
+    graphite: GraphitePreparationResult,
+    electrolyte: ElectrolyteSlabSpec,
+    relax: SandwichRelaxationSpec = SandwichRelaxationSpec(),
+    restart: bool | None = None,
+) -> BulkCalibrationResult:
+    wd = Path(work_dir)
+    phase_dir = wd / "03_electrolyte_bulk_calibration"
+    raw = _run_electrolyte_bulk_calibration(
+        ff=ff,
+        ion_ff=ion_ff,
+        graphite_box_nm=tuple(float(x) for x in graphite.box_nm),
+        electrolyte=electrolyte,
+        relax=relax,
+        base_phase_dir=phase_dir,
+        restart=restart,
+    )
+    calibration = raw["calibration"]
+    inputs = raw["inputs"]
+    species_names = tuple(
+        str(get_name(mol, default=f"electrolyte_{idx + 1}"))
+        for idx, mol in enumerate(inputs["mols"])
+    )
+    return BulkCalibrationResult(
+        label="electrolyte",
+        work_dir=phase_dir,
+        summary_path=raw["summary_path"],
+        phase_preparation_mode=str(calibration.phase_preparation_mode),
+        target_xy_nm=tuple(float(x) for x in calibration.master_xy_nm),
+        bulk_reference_box_nm=tuple(float(x) for x in calibration.bulk_reference_box_nm),
+        target_z_nm=float(calibration.target_z_nm),
+        target_density_g_cm3=float(calibration.target_density_g_cm3),
+        selected_bulk_pack_density_g_cm3=float(calibration.selected_bulk_pack_density_g_cm3),
+        charged_phase=bool(calibration.charged_phase),
+        species_names=species_names,
+        counts=tuple(int(x) for x in inputs["prep"].direct_plan.target_counts),
+        notes=tuple(str(x) for x in calibration.notes),
+        context={
+            "root_work_dir": str(wd),
+            "raw": raw,
+        },
+    )
+
+
+def build_graphite_polymer_interphase(
+    *,
+    work_dir,
+    ff,
+    ion_ff=None,
+    graphite: GraphitePreparationResult,
+    polymer: PolymerSlabSpec,
+    polymer_bulk: BulkCalibrationResult,
+    relax: SandwichRelaxationSpec = SandwichRelaxationSpec(),
+    route: str = "production",
+    restart: bool | None = None,
+) -> InterphaseBuildResult:
+    wd = Path(work_dir)
+    stage_dir = wd / "04_graphite_polymer_interphase"
+    raw = dict(polymer_bulk.context.get("raw") or {})
+    if not raw:
+        raise ValueError("polymer_bulk is missing internal calibration context")
+    phase_build = raw["phase_build"]
+    legacy_note: str | None = None
+    walled_build_summary = None
+    walled_build_summary_path = None
+    phase_preparation_mode = str(polymer_bulk.phase_preparation_mode)
+    selected_counts = list(phase_build["counts"])
+
+    try:
+        confined, walled_build_summary, walled_build_summary_path = _run_final_xy_walled_phase_build(
+            label="polymer",
+            species=list(phase_build["species"]),
+            counts=list(selected_counts),
+            charge_scale=list(phase_build["charge_scale"]),
+            target_xy_nm=(float(graphite.master_xy_nm[0]), float(graphite.master_xy_nm[1])),
+            target_density_g_cm3=float(polymer.target_density_g_cm3),
+            bulk_calibration=raw["summary"],
+            ff_name=str(ff.name),
+            relax=relax,
+            work_dir=stage_dir,
+            retry=int(polymer.pack_retry),
+            retry_step=int(polymer.pack_retry_step),
+            threshold=float(polymer.pack_threshold_ang),
+            dec_rate=float(polymer.pack_dec_rate),
+            charged_phase=bool(phase_build.get("charged_phase", False)),
+            restart=restart,
+        )
+    except Exception:
+        if str(route).strip().lower() == "screening":
+            raise
+        phase_preparation_mode = "legacy_cut_slab"
+        chain_dir = Path(str(graphite.context.get("chain_dir", wd / "02_polymer_bulk_calibration" / "00_chain")))
+        legacy_round = _run_polymer_phase_round(
+            ff=ff,
+            ion_ff=ion_ff,
+            graphite_box_nm=tuple(float(x) for x in graphite.box_nm),
+            polymer=polymer,
+            relax=relax,
+            chain_dir=chain_dir,
+            base_phase_dir=stage_dir / "00_legacy_round",
+            restart=restart,
+        )
+        selected_counts = list(legacy_round["selected_counts"])
+        confined = _run_confined_phase_relaxation(
+            label="polymer",
+            prepared_slab=legacy_round["prepared_slab"],
+            species=list(phase_build["species"]),
+            counts=list(selected_counts),
+            charge_scale=list(phase_build["charge_scale"]),
+            target_xy_nm=(float(graphite.master_xy_nm[0]), float(graphite.master_xy_nm[1])),
+            target_density_g_cm3=float(polymer.target_density_g_cm3),
+            target_thickness_nm=float(polymer.slab_z_nm),
+            ff_name=str(ff.name),
+            relax=relax,
+            work_dir=stage_dir / "01_confined",
+            restart=restart,
+            summary_extra={
+                "phase_preparation_mode": phase_preparation_mode,
+                "route": str(route),
+            },
+        )
+        legacy_note = str(legacy_round["slab_note"])
+
+    notes = [
+        f"route={str(route)}",
+        f"bulk_calibration_summary={polymer_bulk.summary_path}",
+    ]
+    if walled_build_summary_path is not None:
+        notes.append(f"walled_phase_build_summary={walled_build_summary_path}")
+    if legacy_note is not None:
+        notes.append(str(legacy_note))
+    return InterphaseBuildResult(
+        label="polymer",
+        work_dir=stage_dir,
+        summary_path=confined.summary_path,
+        report=confined.report,
+        top_path=Path(getattr(confined, "top_path", stage_dir / "system.top")),
+        gro_path=Path(getattr(confined, "gro_path", stage_dir / "system.gro")),
+        phase_preparation_mode=str(confined.summary.get("phase_preparation_mode", phase_preparation_mode)),
+        occupied_thickness_nm=float(confined.summary.get("occupied_thickness_nm", polymer.slab_z_nm)),
+        route=str(route),
+        notes=tuple(notes),
+        context={
+            "phase_build": phase_build,
+            "species": list(phase_build["species"]),
+            "selected_counts": list(selected_counts),
+            "charge_scale": list(phase_build["charge_scale"]),
+            "walled_build_summary": walled_build_summary,
+            "walled_build_summary_path": (None if walled_build_summary_path is None else str(walled_build_summary_path)),
+            "legacy_note": legacy_note,
+            "phase_preparation_mode": str(confined.summary.get("phase_preparation_mode", phase_preparation_mode)),
+            "bulk_calibration_result": polymer_bulk,
+            "confined": confined,
+        },
+    )
+
+
+def build_graphite_cmc_interphase(**kwargs) -> InterphaseBuildResult:
+    return build_graphite_polymer_interphase(**kwargs)
+
+
+def build_polymer_electrolyte_interphase(
+    *,
+    work_dir,
+    ff,
+    ion_ff=None,
+    graphite: GraphitePreparationResult,
+    electrolyte: ElectrolyteSlabSpec,
+    electrolyte_bulk: BulkCalibrationResult,
+    relax: SandwichRelaxationSpec = SandwichRelaxationSpec(),
+    route: str = "production",
+    restart: bool | None = None,
+) -> InterphaseBuildResult:
+    wd = Path(work_dir)
+    stage_dir = wd / "05_polymer_electrolyte_interphase"
+    raw = dict(electrolyte_bulk.context.get("raw") or {})
+    if not raw:
+        raise ValueError("electrolyte_bulk is missing internal calibration context")
+    inputs = raw["inputs"]
+    legacy_note: str | None = None
+    walled_build_summary = None
+    walled_build_summary_path = None
+    phase_preparation_mode = str(electrolyte_bulk.phase_preparation_mode)
+    selected_counts = list(inputs["prep"].direct_plan.target_counts)
+
+    try:
+        confined, walled_build_summary, walled_build_summary_path = _run_final_xy_walled_phase_build(
+            label="electrolyte",
+            species=list(inputs["mols"]),
+            counts=list(selected_counts),
+            charge_scale=list(inputs["charge_scale"]),
+            target_xy_nm=(float(graphite.master_xy_nm[0]), float(graphite.master_xy_nm[1])),
+            target_density_g_cm3=float(electrolyte.target_density_g_cm3),
+            bulk_calibration=raw["summary"],
+            ff_name=str(ff.name),
+            relax=relax,
+            work_dir=stage_dir,
+            retry=int(electrolyte.pack_retry),
+            retry_step=int(electrolyte.pack_retry_step),
+            threshold=float(electrolyte.pack_threshold_ang),
+            dec_rate=float(electrolyte.pack_dec_rate),
+            charged_phase=False,
+            restart=restart,
+        )
+    except Exception:
+        if str(route).strip().lower() == "screening":
+            raise
+        phase_preparation_mode = "legacy_cut_slab"
+        legacy_round = _run_electrolyte_phase_round(
+            ff=ff,
+            ion_ff=ion_ff,
+            graphite_box_nm=tuple(float(x) for x in graphite.box_nm),
+            electrolyte=electrolyte,
+            relax=relax,
+            base_phase_dir=stage_dir / "00_legacy_round",
+            restart=restart,
+        )
+        selected_counts = list(legacy_round["selected_counts"])
+        confined = _run_confined_phase_relaxation(
+            label="electrolyte",
+            prepared_slab=legacy_round["prepared_slab"],
+            species=list(inputs["mols"]),
+            counts=list(selected_counts),
+            charge_scale=list(inputs["charge_scale"]),
+            target_xy_nm=(float(graphite.master_xy_nm[0]), float(graphite.master_xy_nm[1])),
+            target_density_g_cm3=float(electrolyte.target_density_g_cm3),
+            target_thickness_nm=float(electrolyte.slab_z_nm),
+            ff_name=str(ff.name),
+            relax=relax,
+            work_dir=stage_dir / "01_confined",
+            restart=restart,
+            summary_extra={
+                "phase_preparation_mode": phase_preparation_mode,
+                "route": str(route),
+            },
+        )
+        legacy_note = str(legacy_round["slab_note"])
+
+    notes = [
+        f"route={str(route)}",
+        f"bulk_calibration_summary={electrolyte_bulk.summary_path}",
+    ]
+    if walled_build_summary_path is not None:
+        notes.append(f"walled_phase_build_summary={walled_build_summary_path}")
+    if legacy_note is not None:
+        notes.append(str(legacy_note))
+    return InterphaseBuildResult(
+        label="electrolyte",
+        work_dir=stage_dir,
+        summary_path=confined.summary_path,
+        report=confined.report,
+        top_path=Path(getattr(confined, "top_path", stage_dir / "system.top")),
+        gro_path=Path(getattr(confined, "gro_path", stage_dir / "system.gro")),
+        phase_preparation_mode=str(confined.summary.get("phase_preparation_mode", phase_preparation_mode)),
+        occupied_thickness_nm=float(confined.summary.get("occupied_thickness_nm", electrolyte.slab_z_nm)),
+        route=str(route),
+        notes=tuple(notes),
+        context={
+            "inputs": inputs,
+            "species": list(inputs["mols"]),
+            "selected_counts": list(selected_counts),
+            "charge_scale": list(inputs["charge_scale"]),
+            "walled_build_summary": walled_build_summary,
+            "walled_build_summary_path": (None if walled_build_summary_path is None else str(walled_build_summary_path)),
+            "legacy_note": legacy_note,
+            "phase_preparation_mode": str(confined.summary.get("phase_preparation_mode", phase_preparation_mode)),
+            "bulk_calibration_result": electrolyte_bulk,
+            "confined": confined,
+        },
+    )
+
+
+def build_cmc_electrolyte_interphase(**kwargs) -> InterphaseBuildResult:
+    return build_polymer_electrolyte_interphase(**kwargs)
+
+
+def release_graphite_polymer_electrolyte_stack(
+    *,
+    work_dir,
+    ff,
+    graphite: GraphitePreparationResult,
+    polymer_interphase: InterphaseBuildResult,
+    electrolyte_interphase: InterphaseBuildResult,
+    relax: SandwichRelaxationSpec = SandwichRelaxationSpec(),
+    route: str = "screening",
+    restart: bool | None = None,
+) -> StackReleaseResult:
+    wd = Path(work_dir)
+    release_dir = wd / "06_full_stack_release"
+    stack_dir = release_dir / "00_stack"
+    relax_dir = release_dir / "01_relax"
+    stack_dir.mkdir(parents=True, exist_ok=True)
+    relax_dir.mkdir(parents=True, exist_ok=True)
+    progress_path = release_dir / "interface_progress.json"
+
+    polymer_ctx = dict(polymer_interphase.context)
+    electrolyte_ctx = dict(electrolyte_interphase.context)
+    polymer_phase_build = polymer_ctx["phase_build"]
+    polymer_selected_counts = list(polymer_ctx["selected_counts"])
+    electrolyte_inputs = electrolyte_ctx["inputs"]
+    electrolyte_selected_counts = list(electrolyte_ctx["selected_counts"])
+    polymer_confined = polymer_ctx["confined"]
+    electrolyte_confined = electrolyte_ctx["confined"]
+
+    stack_master_xy_nm = _stack_master_xy_nm(
+        graphite=graphite.graphite_spec,
+        graphite_box_nm=tuple(float(x) for x in graphite.box_nm),
+    )
+    polymer_stack_block = _normalize_confined_block_for_stack(
+        block=polymer_confined.relaxed_block,
+        target_xy_nm=stack_master_xy_nm,
+        occupied_thickness_nm=float(polymer_interphase.occupied_thickness_nm),
+        species=list(polymer_ctx["species"]),
+        counts=list(polymer_selected_counts),
+    )
+    electrolyte_stack_block = _normalize_confined_block_for_stack(
+        block=electrolyte_confined.relaxed_block,
+        target_xy_nm=stack_master_xy_nm,
+        occupied_thickness_nm=float(electrolyte_interphase.occupied_thickness_nm),
+        species=list(electrolyte_ctx["species"]),
+        counts=list(electrolyte_selected_counts),
+    )
+    graphite_polymer_gap_ang, polymer_electrolyte_gap_ang = _adaptive_stack_gaps_ang(
+        relax=relax,
+        polymer_summary=polymer_confined.summary,
+        polymer_target_density_g_cm3=float(polymer_interphase.report.target_density_g_cm3 or 0.0),
+        electrolyte_summary=electrolyte_confined.summary,
+        electrolyte_target_density_g_cm3=float(electrolyte_interphase.report.target_density_g_cm3 or 0.0),
+    )
+    stacked = stack_cell_blocks(
+        [graphite.graphite.cell, polymer_stack_block, electrolyte_stack_block],
+        z_gaps_ang=[float(graphite_polymer_gap_ang), float(polymer_electrolyte_gap_ang)],
+        top_padding_ang=float(relax.top_padding_ang),
+        fixed_xy_ang=(float(stack_master_xy_nm[0]) * 10.0, float(stack_master_xy_nm[1]) * 10.0),
+    )
+    stacked_mols = [graphite.graphite.layer_mol]
+    stacked_counts = [int(graphite.graphite.layer_count)]
+    stacked_charge_scale = [1.0]
+    for mol, count, scale in zip(polymer_ctx["species"], polymer_selected_counts, polymer_ctx["charge_scale"]):
+        if int(count) <= 0:
+            continue
+        stacked_mols.append(mol)
+        stacked_counts.append(int(count))
+        stacked_charge_scale.append(float(scale))
+    for mol, count, scale in zip(electrolyte_ctx["species"], electrolyte_selected_counts, electrolyte_ctx["charge_scale"]):
+        if int(count) <= 0:
+            continue
+        stacked_mols.append(mol)
+        stacked_counts.append(int(count))
+        stacked_charge_scale.append(float(scale))
+    register_cell_species_metadata(
+        stacked.cell,
+        stacked_mols,
+        stacked_counts,
+        charge_scale=stacked_charge_scale,
+        pack_mode="graphite_polymer_electrolyte_sandwich",
+    )
+    export = export_system_from_cell_meta(
+        cell_mol=stacked.cell,
+        out_dir=stack_dir,
+        ff_name=str(ff.name),
+        charge_method="RESP",
+        write_system_mol2=False,
+    )
+
+    graphite_group_name = str(get_name(graphite.graphite.layer_mol, default=graphite.graphite_spec.name))
+    polymer_group_name = str(
+        get_name(
+            polymer_phase_build["chain"],
+            default=polymer_interphase.report.label,
+        )
+    )
+    electrolyte_group_names = [str(name) for name in electrolyte_interphase.report.species_names]
+    ndx_groups = _augment_sandwich_ndx(
+        ndx_path=export.system_ndx,
+        graphite_name=graphite_group_name,
+        polymer_name=polymer_group_name,
+        electrolyte_names=electrolyte_group_names,
+    )
+    relaxed_gro = _run_stacked_relaxation(
+        export=export,
+        work_dir=relax_dir,
+        relax=relax,
+        freeze_group="GRAPHITE",
+        restart=restart,
+    )
+    stack_checks = _build_stack_checks(gro_path=relaxed_gro, ndx_groups=ndx_groups)
+    acceptance = _build_sandwich_acceptance(
+        polymer_summary=polymer_confined.summary,
+        electrolyte_summary=electrolyte_confined.summary,
+        stack_checks=stack_checks,
+    )
+
+    polymer_bulk = polymer_ctx["bulk_calibration_result"]
+    electrolyte_bulk = electrolyte_ctx["bulk_calibration_result"]
+    manifest_path = release_dir / "interface_manifest.json"
+    notes = (
+        f"route={str(route)}",
+        f"graphite_preparation_summary={graphite.summary_path}",
+        f"polymer_bulk_calibration_summary={polymer_bulk.summary_path}",
+        f"electrolyte_bulk_calibration_summary={electrolyte_bulk.summary_path}",
+        f"graphite_polymer_interphase_summary={polymer_interphase.summary_path}",
+        f"polymer_electrolyte_interphase_summary={electrolyte_interphase.summary_path}",
+        f"stack master footprint={float(stack_master_xy_nm[0]):.4f} x {float(stack_master_xy_nm[1]):.4f} nm",
+        f"adaptive stack gaps: graphite/polymer={float(graphite_polymer_gap_ang) / 10.0:.3f} nm, polymer/electrolyte={float(polymer_electrolyte_gap_ang) / 10.0:.3f} nm",
+        *tuple(polymer_interphase.notes),
+        *tuple(electrolyte_interphase.notes),
+    )
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "route": str(route),
+                "phase_preparation_mode": str(polymer_ctx.get("phase_preparation_mode", "bulk_calibrate_walled_phase")),
+                "graphite_preparation_summary": str(graphite.summary_path),
+                "graphite_spec": asdict(graphite.graphite_spec),
+                "graphite_box_nm": [float(x) for x in graphite.box_nm],
+                "graphite_footprint_negotiations": [dict(x) for x in graphite.footprint_negotiations],
+                "polymer_bulk_calibration": dict(polymer_bulk.context.get("raw", {}).get("summary", {})),
+                "electrolyte_bulk_calibration": dict(electrolyte_bulk.context.get("raw", {}).get("summary", {})),
+                "polymer_bulk_pack": dict(polymer_bulk.context.get("raw", {}).get("pack", {}).summary)
+                if hasattr(polymer_bulk.context.get("raw", {}).get("pack", {}), "summary")
+                else {},
+                "electrolyte_bulk_pack": dict(electrolyte_bulk.context.get("raw", {}).get("pack", {}).summary)
+                if hasattr(electrolyte_bulk.context.get("raw", {}).get("pack", {}), "summary")
+                else {},
+                "polymer_bulk_calibration_summary": str(polymer_bulk.summary_path),
+                "electrolyte_bulk_calibration_summary": str(electrolyte_bulk.summary_path),
+                "polymer_phase": asdict(polymer_interphase.report),
+                "electrolyte_phase": asdict(electrolyte_interphase.report),
+                "polymer_phase_confined": dict(polymer_confined.summary),
+                "electrolyte_phase_confined": dict(electrolyte_confined.summary),
+                "polymer_phase_confined_summary": str(polymer_interphase.summary_path),
+                "electrolyte_phase_confined_summary": str(electrolyte_interphase.summary_path),
+                "polymer_walled_phase_build_summary": polymer_ctx.get("walled_build_summary_path"),
+                "electrolyte_walled_phase_build_summary": electrolyte_ctx.get("walled_build_summary_path"),
+                "stack_master_xy_nm": [float(stack_master_xy_nm[0]), float(stack_master_xy_nm[1])],
+                "stack_gap_ang": {
+                    "graphite_to_polymer": float(graphite_polymer_gap_ang),
+                    "polymer_to_electrolyte": float(polymer_electrolyte_gap_ang),
+                },
+                "stack_box_nm": [float(x) for x in stacked.box_nm],
+                "stack_export_dir": str(stack_dir),
+                "relaxed_gro": str(relaxed_gro),
+                "ndx_groups": {name: len(idxs) for name, idxs in ndx_groups.items()},
+                "stack_checks": stack_checks,
+                "acceptance": acceptance,
+                "notes": list(notes),
+            },
+            indent=2,
+            ensure_ascii=False,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    _write_sandwich_progress(
+        progress_path,
+        {
+            "stage": "completed",
+            "route": str(route),
+            "phase_preparation_mode": str(polymer_ctx.get("phase_preparation_mode", "bulk_calibrate_walled_phase")),
+            "graphite_preparation_summary": str(graphite.summary_path),
+            "graphite_footprint_negotiations": [dict(x) for x in graphite.footprint_negotiations],
+            "latest_graphite_footprint_negotiation": (
+                dict(graphite.footprint_negotiations[-1]) if graphite.footprint_negotiations else None
+            ),
+            "polymer_bulk_calibration_summary": str(polymer_bulk.summary_path),
+            "electrolyte_bulk_calibration_summary": str(electrolyte_bulk.summary_path),
+            "polymer_phase_confined_summary": str(polymer_interphase.summary_path),
+            "electrolyte_phase_confined_summary": str(electrolyte_interphase.summary_path),
+            "manifest_path": str(manifest_path),
+            "relaxed_gro": str(relaxed_gro),
+            "stack_checks": stack_checks,
+            "acceptance": acceptance,
+        },
+    )
+
+    sandwich_result = GraphitePolymerElectrolyteSandwichResult(
+        graphite=graphite.graphite,
+        polymer_phase=polymer_interphase.report,
+        electrolyte_phase=electrolyte_interphase.report,
+        stack_export=export,
+        relaxed_gro=relaxed_gro,
+        manifest_path=manifest_path,
+        stack_checks=stack_checks,
+        acceptance=acceptance,
+        notes=notes,
+    )
+    return StackReleaseResult(
+        work_dir=release_dir,
+        manifest_path=manifest_path,
+        relaxed_gro=relaxed_gro,
+        graphite=graphite.graphite,
+        polymer_phase=polymer_interphase.report,
+        electrolyte_phase=electrolyte_interphase.report,
+        stack_checks=stack_checks,
+        acceptance=acceptance,
+        route=str(route),
+        notes=notes,
+        sandwich_result=sandwich_result,
+    )
+
+
+def release_graphite_cmc_electrolyte_stack(**kwargs) -> StackReleaseResult:
+    return release_graphite_polymer_electrolyte_stack(**kwargs)
+
+
+def analyze_interface_transport(
+    *,
+    work_dir,
+    center_mol,
+    temp_k: float,
+    run_migration: bool = False,
+    out_dir: str | Path | None = None,
+    restart: bool | None = None,
+    rdf_kwargs: dict[str, object] | None = None,
+    msd_kwargs: dict[str, object] | None = None,
+    sigma_kwargs: dict[str, object] | None = None,
+    migration_kwargs: dict[str, object] | None = None,
+) -> InterfaceTransportResult:
+    from ..sim.analyzer import AnalyzeResult
+
+    del restart
+    root = Path(work_dir)
+    analysis_dir = Path(out_dir) if out_dir is not None else root / "07_transport_analysis"
+    analysis_dir.mkdir(parents=True, exist_ok=True)
+    analy = AnalyzeResult.from_work_dir(root)
+    rdf = analy.rdf(center_mol=center_mol, **({} if rdf_kwargs is None else dict(rdf_kwargs)))
+    msd = analy.msd(**({} if msd_kwargs is None else dict(msd_kwargs)))
+    sigma_opts = {"eh_mode": "gmx_current_only", **({} if sigma_kwargs is None else dict(sigma_kwargs))}
+    sigma = analy.sigma(msd=msd, temp_k=float(temp_k), **sigma_opts)
+    migration = None
+    if bool(run_migration):
+        migration = analy.migration(
+            center_mol=center_mol,
+            out_dir=analysis_dir / "migration",
+            **({} if migration_kwargs is None else dict(migration_kwargs)),
+        )
+    summary = {
+        "center_mol": getattr(center_mol, "name", str(center_mol)),
+        "temp_k": float(temp_k),
+        "rdf_path": rdf.get("summary_path"),
+        "msd_path": msd.get("summary_path"),
+        "sigma_path": sigma.get("summary_path"),
+        "migration_path": (None if migration is None else migration.get("summary_path")),
+    }
+    summary_path = analysis_dir / "interface_transport_summary.json"
+    summary_path.write_text(json.dumps(summary, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    return InterfaceTransportResult(
+        work_dir=root,
+        analysis_dir=analysis_dir,
+        summary_path=summary_path,
+        rdf=rdf,
+        msd=msd,
+        sigma=sigma,
+        migration=migration,
+    )
+
+
+def print_interface_result_summary(result, *, profile: str | None = None) -> None:
+    from .sandwich_examples import print_sandwich_result_summary
+
+    target = result.sandwich_result if isinstance(result, StackReleaseResult) and result.sandwich_result is not None else result
+    print_sandwich_result_summary(target, profile=profile)
 
 
 def _estimate_chain_count(*, chain_mw: float, target_density_g_cm3: float, box_nm: tuple[float, float, float], minimum: int) -> int:
@@ -1753,9 +2451,18 @@ def _compact_packed_cell_z_by_molecule_centers(
     target_z_ang = float(target_box_nm[2]) * 10.0
     fragment_spans = [float(np.max(coords[start:stop, 2]) - np.min(coords[start:stop, 2])) for start, stop in blocks]
     max_fragment_span = max(fragment_spans) if fragment_spans else 0.0
-    prefit_z_ang = max(target_z_ang * 1.5, target_z_ang + max_fragment_span * 0.8)
+    # Be conservative here. The direct final-XY polymer build already places
+    # molecules in an elongated box to avoid catastrophic pack overlaps; if we
+    # collapse that box too aggressively before EM we can re-introduce the very
+    # overlaps we were trying to avoid. Let confined NPT do most of the
+    # densification work instead.
+    prefit_z_ang = max(
+        target_z_ang * 2.4,
+        target_z_ang + max_fragment_span * 1.2,
+        old_z_len * 0.70,
+    )
     prefit_z_ang = min(old_z_len, prefit_z_ang)
-    if target_z_ang <= 0.0 or old_z_len <= prefit_z_ang * 1.10:
+    if target_z_ang <= 0.0 or old_z_len <= prefit_z_ang * 1.03:
         return cell, None
 
     old_center = 0.5 * (old_zlo + old_zhi)
@@ -2055,6 +2762,8 @@ def _rebox_block_for_phase_confinement(
 
 
 def _window_size_nm(window: object) -> float:
+    if isinstance(window, (int, float)):
+        return max(0.0, float(window))
     if not isinstance(window, (list, tuple)) or len(window) != 2:
         return 0.0
     try:
@@ -2070,7 +2779,7 @@ def _phase_surface_shell_nm(summary: dict[str, object]) -> float:
         occupied = float(summary.get("occupied_thickness_nm", 0.0))
     except Exception:
         occupied = 0.0
-    core = _window_size_nm(summary.get("center_bulk_like_window_nm"))
+    core = _window_size_nm(summary.get("center_bulk_like_window_nm", summary.get("center_window_nm")))
     if occupied <= 0.0:
         return 0.0
     if core <= 0.0 or core > occupied:
@@ -2265,6 +2974,11 @@ def _normalize_confined_block_for_stack(
         vacuum_padding_ang=0.0,
         species=species,
         counts=counts,
+        # These blocks already come from fixed-XY confined relaxations. Trust
+        # the periodic imaging semantics established there instead of treating
+        # read-back wrapped coordinates as evidence that the slab genuinely
+        # exceeds the graphite footprint.
+        trust_periodic_xy=True,
     )
     return normalized
 
@@ -2603,41 +3317,55 @@ def _run_confined_phase_relaxation(
         )
     }
     rescue_applied = False
+    rescue_attempted = False
+    rescue_failed = False
+    rescue_error: str | None = None
     if _needs_confined_rescue(
         summary=selected_summary,
         target_density_g_cm3=float(target_density_g_cm3),
         target_thickness_nm=float(target_thickness_nm),
     ):
+        rescue_attempted = True
         rescue_relax = replace(
             relax,
             stacked_pre_nvt_ps=max(float(relax.stacked_pre_nvt_ps) + 6.0, float(relax.stacked_pre_nvt_ps) * 1.4),
             stacked_z_relax_ps=max(float(relax.stacked_z_relax_ps) + 20.0, float(relax.stacked_z_relax_ps) * 1.5),
         )
-        rescue_block, rescue_summary, rescue_top_path, rescue_gro = _run_confined_round(
-            round_label="round_01_rescue",
-            source_block=selected_block,
-            round_relax=rescue_relax,
-            vacuum_padding_ang=max(10.0, 0.85 * float(relax.top_padding_ang)),
-            compress_to_target=True,
-            export_dir=work_dir / "02_rescue_export",
-            relax_dir=work_dir / "02_rescue_relax",
-            trust_periodic_xy=bool(trust_periodic_xy),
-        )
-        round_scores["round_01_rescue"] = _confined_summary_score(
-            summary=rescue_summary,
-            target_density_g_cm3=float(target_density_g_cm3),
-            target_thickness_nm=float(target_thickness_nm),
-        )
-        if round_scores["round_01_rescue"] <= round_scores["round_00"]:
-            selected_block = rescue_block
-            selected_summary = rescue_summary
-            selected_top_path = rescue_top_path
-            selected_gro = rescue_gro
-            rescue_applied = True
+        try:
+            rescue_block, rescue_summary, rescue_top_path, rescue_gro = _run_confined_round(
+                round_label="round_01_rescue",
+                source_block=selected_block,
+                round_relax=rescue_relax,
+                vacuum_padding_ang=max(10.0, 0.85 * float(relax.top_padding_ang)),
+                compress_to_target=True,
+                export_dir=work_dir / "02_rescue_export",
+                relax_dir=work_dir / "02_rescue_relax",
+                trust_periodic_xy=bool(trust_periodic_xy),
+            )
+        except Exception as exc:
+            # Keep the already successful round_00 result if the rescue attempt
+            # itself is the unstable step.
+            rescue_failed = True
+            rescue_error = str(exc)
+        else:
+            round_scores["round_01_rescue"] = _confined_summary_score(
+                summary=rescue_summary,
+                target_density_g_cm3=float(target_density_g_cm3),
+                target_thickness_nm=float(target_thickness_nm),
+            )
+            if round_scores["round_01_rescue"] <= round_scores["round_00"]:
+                selected_block = rescue_block
+                selected_summary = rescue_summary
+                selected_top_path = rescue_top_path
+                selected_gro = rescue_gro
+                rescue_applied = True
 
     summary = {
         **selected_summary,
         "rescue_applied": bool(rescue_applied),
+        "rescue_attempted": bool(rescue_attempted),
+        "rescue_failed": bool(rescue_failed),
+        "rescue_error": rescue_error,
         "round_scores": {str(k): float(v) for k, v in round_scores.items()},
         "selected_round": str(selected_summary.get("round_label", "round_00")),
         "source_note": (None if source_note is None else str(source_note)),
@@ -2768,452 +3496,75 @@ def build_graphite_polymer_electrolyte_sandwich(
     polymer: PolymerSlabSpec,
     electrolyte: ElectrolyteSlabSpec,
     relax: SandwichRelaxationSpec = SandwichRelaxationSpec(),
+    route: str = "screening",
     restart: bool | None = None,
 ) -> GraphitePolymerElectrolyteSandwichResult:
     if len(electrolyte.solvents) != len(electrolyte.solvent_mass_ratio):
         raise ValueError("electrolyte.solvents and electrolyte.solvent_mass_ratio must have the same length")
-
-    wd = workdir(work_dir, restart=restart)
-    graphite_dir = Path(wd) / "01_graphite"
-    polymer_chain_dir = Path(wd) / "02_polymer_chain"
-    polymer_build_dir = Path(wd) / "03_polymer_slab" / "00_build"
-    polymer_eq_dir = Path(wd) / "03_polymer_slab"
-    electrolyte_build_dir = Path(wd) / "04_electrolyte_slab" / "00_build"
-    electrolyte_eq_dir = Path(wd) / "04_electrolyte_slab"
-    stack_dir = Path(wd) / "05_sandwich"
-    relax_dir = Path(wd) / "06_relax"
-    stack_dir.mkdir(parents=True, exist_ok=True)
-    relax_dir.mkdir(parents=True, exist_ok=True)
-    graphite_dir.mkdir(parents=True, exist_ok=True)
-    polymer_chain_dir.mkdir(parents=True, exist_ok=True)
-    progress_path = stack_dir / "sandwich_progress.json"
-
-    graphite_result = build_graphite(
-        nx=int(graphite.nx),
-        ny=int(graphite.ny),
-        n_layers=int(graphite.n_layers),
-        orientation=graphite.orientation,
-        edge_cap=graphite.edge_cap,
-        ff=ff,
-        name=graphite.name,
-        top_padding_ang=float(graphite.top_padding_ang),
-    )
-    graphite, graphite_result, preflight_graphite_negotiations = _preflight_graphite_footprint_from_phase_targets(
-        graphite=graphite,
-        graphite_result=graphite_result,
+    graphite_stage = prepare_graphite_substrate(
+        work_dir=work_dir,
         ff=ff,
         ion_ff=ion_ff,
+        graphite=graphite,
         polymer=polymer,
         electrolyte=electrolyte,
         relax=relax,
-        chain_dir=polymer_chain_dir,
+        route=route,
+        restart=restart,
     )
-    _write_sandwich_progress(
-        progress_path,
-        {
-            "stage": "graphite_built",
-            "graphite_box_nm": [float(x) for x in graphite_result.box_nm],
-            "graphite_spec": asdict(graphite),
-            "phase_preparation_rounds": 0,
-            "phase_preparation_mode": "bulk_calibrate_walled_phase",
-            "graphite_footprint_negotiations": preflight_graphite_negotiations,
-        },
-    )
-
-    graphite_negotiations: list[dict[str, object]] = list(preflight_graphite_negotiations)
-    graphite_negotiation = graphite_negotiations[-1] if graphite_negotiations else None
-    preparation_round_count = 1
-    phase_preparation_mode = "bulk_calibrate_walled_phase"
-
-    polymer_calibration = _run_polymer_bulk_calibration(
+    polymer_bulk = calibrate_polymer_bulk_phase(
+        work_dir=graphite_stage.work_dir,
         ff=ff,
         ion_ff=ion_ff,
-        graphite_box_nm=tuple(float(x) for x in graphite_result.box_nm),
+        graphite=graphite_stage,
         polymer=polymer,
         relax=relax,
-        chain_dir=polymer_chain_dir,
-        base_phase_dir=_phase_round_dir(polymer_eq_dir, 0),
         restart=restart,
     )
-    _write_sandwich_progress(
-        progress_path,
-        {
-            "stage": "polymer_bulk_calibration_completed",
-            "phase_preparation_rounds": int(preparation_round_count),
-            "phase_preparation_mode": phase_preparation_mode,
-            "graphite_box_nm": [float(x) for x in graphite_result.box_nm],
-            "graphite_spec": asdict(graphite),
-            "graphite_footprint_negotiations": graphite_negotiations,
-            "latest_graphite_footprint_negotiation": graphite_negotiation,
-            "polymer_bulk_calibration_summary": str(polymer_calibration["summary_path"]),
-            "polymer_bulk_pack_summary": str(polymer_calibration["pack"].summary_path),
-            "electrolyte_bulk_calibration_summary": None,
-        },
-    )
-    electrolyte_calibration = _run_electrolyte_bulk_calibration(
+    electrolyte_bulk = calibrate_electrolyte_bulk_phase(
+        work_dir=graphite_stage.work_dir,
         ff=ff,
         ion_ff=ion_ff,
-        graphite_box_nm=tuple(float(x) for x in graphite_result.box_nm),
+        graphite=graphite_stage,
         electrolyte=electrolyte,
         relax=relax,
-        base_phase_dir=_phase_round_dir(electrolyte_eq_dir, 0),
         restart=restart,
     )
-
-    _write_sandwich_progress(
-        progress_path,
-        {
-            "stage": "bulk_calibration_completed",
-            "phase_preparation_rounds": int(preparation_round_count),
-            "phase_preparation_mode": phase_preparation_mode,
-            "graphite_box_nm": [float(x) for x in graphite_result.box_nm],
-            "graphite_spec": asdict(graphite),
-            "graphite_footprint_negotiations": graphite_negotiations,
-            "latest_graphite_footprint_negotiation": graphite_negotiation,
-            "polymer_bulk_calibration_summary": str(polymer_calibration["summary_path"]),
-            "electrolyte_bulk_calibration_summary": str(electrolyte_calibration["summary_path"]),
-            "polymer_bulk_pack_summary": str(polymer_calibration["pack"].summary_path),
-            "electrolyte_bulk_pack_summary": str(electrolyte_calibration["pack"].summary_path),
-        },
-    )
-
-    polymer_phase_build = polymer_calibration["phase_build"]
-    polymer_chain = polymer_phase_build["chain"]
-    polymer_dp = int(polymer_phase_build["dp"])
-    chain_count = int(polymer_phase_build["chain_count"])
-    polymer_pack = polymer_calibration["pack"]
-    polymer_build_density = float(polymer_pack.selected_density_g_cm3)
-    polymer_selected_counts = list(polymer_phase_build["counts"])
-
-    electrolyte_inputs = electrolyte_calibration["inputs"]
-    electrolyte_mols = list(electrolyte_inputs["mols"])
-    electrolyte_charge_scale = list(electrolyte_inputs["charge_scale"])
-    electrolyte_pack = electrolyte_calibration["pack"]
-    electrolyte_build_density = float(electrolyte_pack.selected_density_g_cm3)
-    electrolyte_selected_counts = list(electrolyte_inputs["prep"].direct_plan.target_counts)
-
-    legacy_polymer_note = None
-    legacy_electrolyte_note = None
-    polymer_walled_build_summary: dict[str, object] | None = None
-    electrolyte_walled_build_summary: dict[str, object] | None = None
-    polymer_walled_build_summary_path: Path | None = None
-    electrolyte_walled_build_summary_path: Path | None = None
-
-    try:
-        _write_sandwich_progress(
-            progress_path,
-            {
-                "stage": "walled_phase_build_start",
-                "phase_preparation_rounds": int(preparation_round_count),
-                "phase_preparation_mode": phase_preparation_mode,
-                "graphite_box_nm": [float(x) for x in graphite_result.box_nm],
-                "graphite_spec": asdict(graphite),
-                "graphite_footprint_negotiations": graphite_negotiations,
-                "latest_graphite_footprint_negotiation": graphite_negotiation,
-                "polymer_bulk_calibration_summary": str(polymer_calibration["summary_path"]),
-                "electrolyte_bulk_calibration_summary": str(electrolyte_calibration["summary_path"]),
-                "polymer_bulk_pack_summary": str(polymer_calibration["pack"].summary_path),
-                "electrolyte_bulk_pack_summary": str(electrolyte_calibration["pack"].summary_path),
-            },
-        )
-        polymer_confined, polymer_walled_build_summary, polymer_walled_build_summary_path = _run_final_xy_walled_phase_build(
-            label="polymer",
-            species=list(polymer_phase_build["species"]),
-            counts=list(polymer_selected_counts),
-            charge_scale=list(polymer_phase_build["charge_scale"]),
-            target_xy_nm=(float(graphite_result.box_nm[0]), float(graphite_result.box_nm[1])),
-            target_density_g_cm3=float(polymer.target_density_g_cm3),
-            bulk_calibration=polymer_calibration["summary"],
-            ff_name=str(ff.name),
-            relax=relax,
-            work_dir=polymer_eq_dir / "06_walled_phase",
-            retry=int(polymer.pack_retry),
-            retry_step=int(polymer.pack_retry_step),
-            threshold=float(polymer.pack_threshold_ang),
-            dec_rate=float(polymer.pack_dec_rate),
-            charged_phase=bool(polymer_phase_build.get("charged_phase", False)),
-            restart=restart,
-        )
-        electrolyte_confined, electrolyte_walled_build_summary, electrolyte_walled_build_summary_path = _run_final_xy_walled_phase_build(
-            label="electrolyte",
-            species=list(electrolyte_mols),
-            counts=list(electrolyte_selected_counts),
-            charge_scale=list(electrolyte_charge_scale),
-            target_xy_nm=(float(graphite_result.box_nm[0]), float(graphite_result.box_nm[1])),
-            target_density_g_cm3=float(electrolyte.target_density_g_cm3),
-            bulk_calibration=electrolyte_calibration["summary"],
-            ff_name=str(ff.name),
-            relax=relax,
-            work_dir=electrolyte_eq_dir / "06_walled_phase",
-            retry=int(electrolyte.pack_retry),
-            retry_step=int(electrolyte.pack_retry_step),
-            threshold=float(electrolyte.pack_threshold_ang),
-            dec_rate=float(electrolyte.pack_dec_rate),
-            charged_phase=False,
-            restart=restart,
-        )
-    except Exception as exc:
-        phase_preparation_mode = "legacy_cut_slab"
-        utils.radon_print(
-            f"[WARN] bulk_calibrate_walled_phase failed; falling back to legacy prepared-slab path ({exc!r})",
-            level=2,
-        )
-        polymer_round = _run_polymer_phase_round(
-            ff=ff,
-            ion_ff=ion_ff,
-            graphite_box_nm=tuple(float(x) for x in graphite_result.box_nm),
-            polymer=polymer,
-            relax=relax,
-            chain_dir=polymer_chain_dir,
-            base_phase_dir=_phase_round_dir(polymer_eq_dir, 0),
-            restart=restart,
-        )
-        electrolyte_round = _run_electrolyte_phase_round(
-            ff=ff,
-            ion_ff=ion_ff,
-            graphite_box_nm=tuple(float(x) for x in graphite_result.box_nm),
-            electrolyte=electrolyte,
-            relax=relax,
-            base_phase_dir=_phase_round_dir(electrolyte_eq_dir, 0),
-            restart=restart,
-        )
-        polymer_selected_counts = list(polymer_round["selected_counts"])
-        electrolyte_selected_counts = list(electrolyte_round["selected_counts"])
-        polymer_confined = _run_confined_phase_relaxation(
-            label="polymer",
-            prepared_slab=polymer_round["prepared_slab"],
-            species=list(polymer_phase_build["species"]),
-            counts=list(polymer_selected_counts),
-            charge_scale=list(polymer_phase_build["charge_scale"]),
-            target_xy_nm=(float(graphite_result.box_nm[0]), float(graphite_result.box_nm[1])),
-            target_density_g_cm3=float(polymer.target_density_g_cm3),
-            target_thickness_nm=float(polymer.slab_z_nm),
-            ff_name=str(ff.name),
-            relax=relax,
-            work_dir=polymer_eq_dir / "06_confined_slab",
-            restart=restart,
-            summary_extra={"phase_preparation_mode": phase_preparation_mode},
-        )
-        electrolyte_confined = _run_confined_phase_relaxation(
-            label="electrolyte",
-            prepared_slab=electrolyte_round["prepared_slab"],
-            species=list(electrolyte_mols),
-            counts=list(electrolyte_selected_counts),
-            charge_scale=list(electrolyte_charge_scale),
-            target_xy_nm=(float(graphite_result.box_nm[0]), float(graphite_result.box_nm[1])),
-            target_density_g_cm3=float(electrolyte.target_density_g_cm3),
-            target_thickness_nm=float(electrolyte.slab_z_nm),
-            ff_name=str(ff.name),
-            relax=relax,
-            work_dir=electrolyte_eq_dir / "06_confined_slab",
-            restart=restart,
-            summary_extra={"phase_preparation_mode": phase_preparation_mode},
-        )
-        legacy_polymer_note = str(polymer_round["slab_note"])
-        legacy_electrolyte_note = str(electrolyte_round["slab_note"])
-
-    polymer_report = polymer_confined.report
-    polymer_relaxed_block = polymer_confined.relaxed_block
-    electrolyte_report = electrolyte_confined.report
-    electrolyte_relaxed_block = electrolyte_confined.relaxed_block
-
-    stack_master_xy_nm = _stack_master_xy_nm(
-        graphite=graphite,
-        graphite_box_nm=(float(graphite_result.box_nm[0]), float(graphite_result.box_nm[1]), float(graphite_result.box_nm[2])),
-    )
-    polymer_stack_block = _normalize_confined_block_for_stack(
-        block=polymer_relaxed_block,
-        target_xy_nm=stack_master_xy_nm,
-        occupied_thickness_nm=float(polymer_confined.summary.get("occupied_thickness_nm", polymer.slab_z_nm)),
-        species=list(polymer_phase_build["species"]),
-        counts=list(polymer_selected_counts),
-    )
-    electrolyte_stack_block = _normalize_confined_block_for_stack(
-        block=electrolyte_relaxed_block,
-        target_xy_nm=stack_master_xy_nm,
-        occupied_thickness_nm=float(electrolyte_confined.summary.get("occupied_thickness_nm", electrolyte.slab_z_nm)),
-        species=list(electrolyte_mols),
-        counts=list(electrolyte_selected_counts),
-    )
-    graphite_polymer_gap_ang, polymer_electrolyte_gap_ang = _adaptive_stack_gaps_ang(
+    polymer_interphase = build_graphite_polymer_interphase(
+        work_dir=graphite_stage.work_dir,
+        ff=ff,
+        ion_ff=ion_ff,
+        graphite=graphite_stage,
+        polymer=polymer,
+        polymer_bulk=polymer_bulk,
         relax=relax,
-        polymer_summary=polymer_confined.summary,
-        polymer_target_density_g_cm3=float(polymer.target_density_g_cm3),
-        electrolyte_summary=electrolyte_confined.summary,
-        electrolyte_target_density_g_cm3=float(electrolyte.target_density_g_cm3),
-    )
-    stacked = stack_cell_blocks(
-        [graphite_result.cell, polymer_stack_block, electrolyte_stack_block],
-        z_gaps_ang=[float(graphite_polymer_gap_ang), float(polymer_electrolyte_gap_ang)],
-        top_padding_ang=float(relax.top_padding_ang),
-        fixed_xy_ang=(float(stack_master_xy_nm[0]) * 10.0, float(stack_master_xy_nm[1]) * 10.0),
-    )
-    stacked_mols = [graphite_result.layer_mol]
-    stacked_counts = [int(graphite_result.layer_count)]
-    stacked_charge_scale = [1.0]
-    for mol, count, scale in zip(polymer_phase_build["species"], polymer_selected_counts, polymer_phase_build["charge_scale"]):
-        if int(count) <= 0:
-            continue
-        stacked_mols.append(mol)
-        stacked_counts.append(int(count))
-        stacked_charge_scale.append(float(scale))
-    for mol, count, scale in zip(electrolyte_mols, electrolyte_selected_counts, electrolyte_charge_scale):
-        if int(count) <= 0:
-            continue
-        stacked_mols.append(mol)
-        stacked_counts.append(int(count))
-        stacked_charge_scale.append(float(scale))
-    register_cell_species_metadata(
-        stacked.cell,
-        stacked_mols,
-        stacked_counts,
-        charge_scale=stacked_charge_scale,
-        pack_mode="graphite_polymer_electrolyte_sandwich",
-    )
-    export = export_system_from_cell_meta(
-        cell_mol=stacked.cell,
-        out_dir=stack_dir,
-        ff_name=str(ff.name),
-        charge_method="RESP",
-        write_system_mol2=False,
-    )
-
-    graphite_group_name = str(get_name(graphite_result.layer_mol, default=graphite.name))
-    polymer_group_name = str(get_name(polymer_chain, default=polymer.name))
-    electrolyte_group_names = [str(get_name(mol, default=f"EL{idx + 1}")) for idx, mol in enumerate(electrolyte_mols)]
-    ndx_groups = _augment_sandwich_ndx(
-        ndx_path=export.system_ndx,
-        graphite_name=graphite_group_name,
-        polymer_name=polymer_group_name,
-        electrolyte_names=electrolyte_group_names,
-    )
-    relaxed_gro = _run_stacked_relaxation(
-        export=export,
-        work_dir=relax_dir,
-        relax=relax,
-        freeze_group="GRAPHITE",
+        route=route,
         restart=restart,
     )
-    stack_checks = _build_stack_checks(gro_path=relaxed_gro, ndx_groups=ndx_groups)
-    acceptance = _build_sandwich_acceptance(
-        polymer_summary=polymer_confined.summary,
-        electrolyte_summary=electrolyte_confined.summary,
-        stack_checks=stack_checks,
+    electrolyte_interphase = build_polymer_electrolyte_interphase(
+        work_dir=graphite_stage.work_dir,
+        ff=ff,
+        ion_ff=ion_ff,
+        graphite=graphite_stage,
+        electrolyte=electrolyte,
+        electrolyte_bulk=electrolyte_bulk,
+        relax=relax,
+        route=route,
+        restart=restart,
     )
-
-    manifest_path = stack_dir / "sandwich_manifest.json"
-    notes = (
-        "polymer and electrolyte were first equilibrated as standalone bulk calibration phases, then rebuilt directly on the graphite master footprint before wall-backed soft-phase relaxation",
-        "the default path now uses bulk calibration plus direct final-XY walled soft phases, so the final sandwich stack only needs z translation instead of relying on cut-slab periodic healing",
-        "graphite stays frozen during the stacked relaxation so the liquid and polymer phases can relax density mainly along the surface normal",
-        f"phase_preparation_mode={phase_preparation_mode}",
-        f"phase preparation rounds={int(preparation_round_count)}",
-        "graphite master footprint is negotiated once from phase mass, target density, and target thickness before soft-phase construction",
-        f"polymer chain target atoms={int(polymer.chain_target_atoms)} -> built DP={int(polymer_dp)} and chain_count={int(chain_count)}",
-        f"polymer bulk initial pack density={float(polymer_build_density):.4f} g/cm^3 -> target equilibrium density={float(polymer.target_density_g_cm3):.4f} g/cm^3",
-        f"electrolyte bulk initial pack density={float(electrolyte_build_density):.4f} g/cm^3 -> target equilibrium density={float(electrolyte.target_density_g_cm3):.4f} g/cm^3",
-        f"polymer bulk calibration summary={polymer_calibration['summary_path']}",
-        f"electrolyte bulk calibration summary={electrolyte_calibration['summary_path']}",
-        f"polymer bulk pack backoff summary={polymer_pack.summary_path}",
-        f"electrolyte bulk pack backoff summary={electrolyte_pack.summary_path}",
-        f"stack master footprint={float(stack_master_xy_nm[0]):.4f} x {float(stack_master_xy_nm[1]):.4f} nm",
-        f"adaptive stack gaps: graphite/polymer={float(graphite_polymer_gap_ang) / 10.0:.3f} nm, polymer/electrolyte={float(polymer_electrolyte_gap_ang) / 10.0:.3f} nm",
-        *tuple(str(x) for x in polymer_phase_build["notes"]),
-        *(() if legacy_polymer_note is None else (str(legacy_polymer_note),)),
-        *(() if legacy_electrolyte_note is None else (str(legacy_electrolyte_note),)),
-        *(() if polymer_walled_build_summary_path is None else (f"polymer walled-phase build summary={polymer_walled_build_summary_path}",)),
-        *(() if electrolyte_walled_build_summary_path is None else (f"electrolyte walled-phase build summary={electrolyte_walled_build_summary_path}",)),
-        f"polymer confined summary={polymer_confined.summary_path}",
-        f"electrolyte confined summary={electrolyte_confined.summary_path}",
+    stack_result = release_graphite_polymer_electrolyte_stack(
+        work_dir=graphite_stage.work_dir,
+        ff=ff,
+        graphite=graphite_stage,
+        polymer_interphase=polymer_interphase,
+        electrolyte_interphase=electrolyte_interphase,
+        relax=relax,
+        route=route,
+        restart=restart,
     )
-    manifest_path.write_text(
-        json.dumps(
-            {
-                "graphite": asdict(graphite),
-                "polymer": asdict(polymer),
-                "electrolyte": asdict(electrolyte),
-                "relax": asdict(relax),
-                "graphite_box_nm": [float(x) for x in graphite_result.box_nm],
-                "phase_preparation_rounds": int(preparation_round_count),
-                "phase_preparation_mode": phase_preparation_mode,
-                "graphite_footprint_negotiation": graphite_negotiation,
-                "graphite_footprint_negotiations": graphite_negotiations,
-                "polymer_bulk_calibration": polymer_calibration["summary"],
-                "electrolyte_bulk_calibration": electrolyte_calibration["summary"],
-                "polymer_bulk_calibration_summary": str(polymer_calibration["summary_path"]),
-                "electrolyte_bulk_calibration_summary": str(electrolyte_calibration["summary_path"]),
-                "polymer_phase": asdict(polymer_report),
-                "electrolyte_phase": asdict(electrolyte_report),
-                "polymer_bulk_pack": polymer_pack.summary,
-                "electrolyte_bulk_pack": electrolyte_pack.summary,
-                "polymer_bulk_pack_summary": str(polymer_pack.summary_path),
-                "electrolyte_bulk_pack_summary": str(electrolyte_pack.summary_path),
-                "polymer_walled_phase_build": polymer_walled_build_summary,
-                "electrolyte_walled_phase_build": electrolyte_walled_build_summary,
-                "polymer_walled_phase_build_summary": (None if polymer_walled_build_summary_path is None else str(polymer_walled_build_summary_path)),
-                "electrolyte_walled_phase_build_summary": (None if electrolyte_walled_build_summary_path is None else str(electrolyte_walled_build_summary_path)),
-                "polymer_phase_confined": polymer_confined.summary,
-                "electrolyte_phase_confined": electrolyte_confined.summary,
-                "polymer_phase_confined_summary": str(polymer_confined.summary_path),
-                "electrolyte_phase_confined_summary": str(electrolyte_confined.summary_path),
-                "stack_master_xy_nm": [float(stack_master_xy_nm[0]), float(stack_master_xy_nm[1])],
-                "stack_gap_ang": {
-                    "graphite_to_polymer": float(graphite_polymer_gap_ang),
-                    "polymer_to_electrolyte": float(polymer_electrolyte_gap_ang),
-                },
-                "stack_box_nm": [float(x) for x in stacked.box_nm],
-                "stack_export_dir": str(stack_dir),
-                "relaxed_gro": str(relaxed_gro),
-                "ndx_groups": {name: len(idxs) for name, idxs in ndx_groups.items()},
-                "stack_checks": stack_checks,
-                "acceptance": acceptance,
-                "notes": list(notes),
-            },
-            indent=2,
-            ensure_ascii=False,
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-    progress_path.write_text(
-        json.dumps(
-            {
-                "stage": "completed",
-                "phase_preparation_rounds": int(preparation_round_count),
-                "phase_preparation_mode": phase_preparation_mode,
-                "graphite_footprint_negotiations": graphite_negotiations,
-                "latest_graphite_footprint_negotiation": graphite_negotiation,
-                "polymer_bulk_calibration_summary": str(polymer_calibration["summary_path"]),
-                "electrolyte_bulk_calibration_summary": str(electrolyte_calibration["summary_path"]),
-                "polymer_bulk_pack_summary": str(polymer_pack.summary_path),
-                "electrolyte_bulk_pack_summary": str(electrolyte_pack.summary_path),
-                "polymer_walled_phase_build_summary": (None if polymer_walled_build_summary_path is None else str(polymer_walled_build_summary_path)),
-                "electrolyte_walled_phase_build_summary": (None if electrolyte_walled_build_summary_path is None else str(electrolyte_walled_build_summary_path)),
-                "polymer_phase_confined_summary": str(polymer_confined.summary_path),
-                "electrolyte_phase_confined_summary": str(electrolyte_confined.summary_path),
-                "manifest_path": str(manifest_path),
-                "relaxed_gro": str(relaxed_gro),
-                "stack_checks": stack_checks,
-                "acceptance": acceptance,
-            },
-            indent=2,
-            ensure_ascii=False,
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-
-    return GraphitePolymerElectrolyteSandwichResult(
-        graphite=graphite_result,
-        polymer_phase=polymer_report,
-        electrolyte_phase=electrolyte_report,
-        stack_export=export,
-        relaxed_gro=relaxed_gro,
-        manifest_path=manifest_path,
-        stack_checks=stack_checks,
-        acceptance=acceptance,
-        notes=notes,
-    )
+    if stack_result.sandwich_result is None:
+        raise RuntimeError("release_graphite_polymer_electrolyte_stack did not populate sandwich_result")
+    return stack_result.sandwich_result
 
 
 def build_graphite_peo_electrolyte_sandwich(
@@ -3225,6 +3576,7 @@ def build_graphite_peo_electrolyte_sandwich(
     polymer: PolymerSlabSpec = PolymerSlabSpec(),
     electrolyte: ElectrolyteSlabSpec = ElectrolyteSlabSpec(),
     relax: SandwichRelaxationSpec = SandwichRelaxationSpec(),
+    route: str = "screening",
     restart: bool | None = None,
 ) -> GraphitePolymerElectrolyteSandwichResult:
     return build_graphite_polymer_electrolyte_sandwich(
@@ -3235,6 +3587,7 @@ def build_graphite_peo_electrolyte_sandwich(
         polymer=polymer,
         electrolyte=electrolyte,
         relax=relax,
+        route=route,
         restart=restart,
     )
 
@@ -3248,6 +3601,7 @@ def build_graphite_cmcna_electrolyte_sandwich(
     polymer: PolymerSlabSpec | None = None,
     electrolyte: ElectrolyteSlabSpec | None = None,
     relax: SandwichRelaxationSpec = SandwichRelaxationSpec(),
+    route: str = "screening",
     restart: bool | None = None,
 ) -> GraphitePolymerElectrolyteSandwichResult:
     return build_graphite_polymer_electrolyte_sandwich(
@@ -3258,24 +3612,41 @@ def build_graphite_cmcna_electrolyte_sandwich(
         polymer=(polymer if polymer is not None else default_cmcna_polymer_spec()),
         electrolyte=(electrolyte if electrolyte is not None else default_carbonate_lipf6_electrolyte_spec()),
         relax=relax,
+        route=route,
         restart=restart,
     )
 
 
 __all__ = [
+    "BulkCalibrationResult",
     "ElectrolyteSlabSpec",
+    "GraphitePreparationResult",
     "GraphitePolymerElectrolyteSandwichResult",
     "GraphiteSubstrateSpec",
+    "InterfaceTransportResult",
+    "InterphaseBuildResult",
     "MoleculeSpec",
     "PolymerSlabSpec",
     "SandwichPhaseReport",
     "SandwichRelaxationSpec",
+    "StackReleaseResult",
+    "analyze_interface_transport",
+    "build_cmc_electrolyte_interphase",
+    "build_graphite_cmc_interphase",
     "build_graphite_cmcna_glucose6_periodic_case",
     "build_graphite_cmcna_electrolyte_sandwich",
+    "build_graphite_polymer_interphase",
     "build_graphite_peo_electrolyte_sandwich",
+    "build_polymer_electrolyte_interphase",
     "build_graphite_polymer_electrolyte_sandwich",
+    "calibrate_electrolyte_bulk_phase",
+    "calibrate_polymer_bulk_phase",
     "default_carbonate_lipf6_electrolyte_spec",
     "default_cmcna_polymer_spec",
     "default_peo_electrolyte_spec",
     "default_peo_polymer_spec",
+    "prepare_graphite_substrate",
+    "print_interface_result_summary",
+    "release_graphite_cmc_electrolyte_stack",
+    "release_graphite_polymer_electrolyte_stack",
 ]

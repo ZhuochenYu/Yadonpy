@@ -1,0 +1,48 @@
+{
+  "workspace": {
+    "mode": "snapshot_clone",
+    "path": "autofix_workspace",
+    "base_branch": "main"
+  },
+  "remote": {
+    "host": "yadonpy-gpu",
+    "repo_root": "/home/zcyu/Yadonpy_EX08_AUTOFIX",
+    "run_root": "/home/zcyu/remote_runs/example08_autofix",
+    "conda_prefix": "/home/zcyu/anaconda3/bin/conda run -n yadonpy_test",
+    "password_env_var": "YADONPY_REMOTE_PASSWORD"
+  },
+  "matrix": {
+    "hours_per_round": 0.25,
+    "timeout_min": 180,
+    "max_iterations_per_round": 1
+  },
+  "diff_limits": {
+    "max_changed_files": 6,
+    "max_changed_lines": 260
+  },
+  "push": {
+    "enabled": true,
+    "remote": "origin",
+    "branch": "main",
+    "require_env_var": "YADONPY_AUTOFIX_ALLOW_MAIN_PUSH"
+  },
+  "stop": {
+    "stagnant_rounds": 3,
+    "repeated_failure_rounds": 2
+  },
+  "total_hours": 10.0,
+  "max_rounds": 0,
+  "recipe_enabled": {
+    "tighten_or_relax_confined_selection": true,
+    "fix_stack_gap_estimation": true,
+    "reduce_release_gap_or_padding": true,
+    "adjust_rescue_acceptance_preserve_best_round": true,
+    "trust_periodic_xy_semantics": true,
+    "refine_wrap_density_scoring_or_candidate_ranking": true,
+    "adjust_screening_route_fail_fast": true,
+    "repair_harness_import_sync_runtime_wiring": true
+  },
+  "test_commands": [
+    "conda run -n yadonpy python -m pytest tests/test_sandwich_phase_build.py tests/test_sandwich_workflow.py tests/test_release_sanity.py tests/test_api.py -q"
+  ]
+}

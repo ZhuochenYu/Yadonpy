@@ -87,6 +87,7 @@ def test_list_charge_methods_exposes_scaled_charge_tokens():
 
 def test_top_level_api_exports_mechanics_helpers():
     assert hasattr(yadonpy, 'doctor')
+    assert hasattr(yadonpy, 'AnalyzeResult')
     assert hasattr(api, 'resolve_prepared_system')
     assert hasattr(api, 'run_tg_scan_gmx')
     assert hasattr(api, 'run_elongation_gmx')
@@ -100,11 +101,26 @@ def test_top_level_api_exports_mechanics_helpers():
     assert hasattr(yadonpy, 'resolve_prepared_system')
     assert hasattr(yadonpy, 'run_tg_scan_gmx')
     assert hasattr(yadonpy, 'run_elongation_gmx')
+    assert 'AnalyzeResult' in yadonpy.__all__
     assert 'doctor' in yadonpy.__all__
+    assert hasattr(api, 'prepare_graphite_substrate')
+    assert hasattr(api, 'calibrate_polymer_bulk_phase')
+    assert hasattr(api, 'calibrate_electrolyte_bulk_phase')
+    assert hasattr(api, 'build_graphite_polymer_interphase')
+    assert hasattr(api, 'build_polymer_electrolyte_interphase')
+    assert hasattr(api, 'release_graphite_polymer_electrolyte_stack')
+    assert hasattr(api, 'print_interface_result_summary')
+    assert hasattr(yadonpy, 'GraphiteSubstrateSpec')
+    assert hasattr(yadonpy, 'PolymerSlabSpec')
+    assert hasattr(yadonpy, 'ElectrolyteSlabSpec')
+    assert hasattr(yadonpy, 'SandwichRelaxationSpec')
 
 
 def test_analyzer_does_not_expose_transport_bundle_api():
     assert not hasattr(AnalyzeResult, 'transport')
+    assert hasattr(AnalyzeResult, 'migration')
+    assert hasattr(AnalyzeResult, 'migration_markov')
+    assert hasattr(AnalyzeResult, 'migration_residence')
 
 
 def test_parameterize_smiles_raises_when_charge_assignment_fails_by_default(monkeypatch, tmp_path):

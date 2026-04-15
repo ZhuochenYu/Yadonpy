@@ -219,43 +219,69 @@ def test_example05_cmcna_periodic_case_is_moldb_only_for_core_species():
     example_text = (
         root / 'examples' / '08_graphite_polymer_electrolyte_sandwich' / '05_cmcna_glucose6_periodic_case.py'
     ).read_text(encoding='utf-8')
-    helper_text = (root / 'src' / 'yadonpy' / 'interface' / 'sandwich_examples.py').read_text(encoding='utf-8')
 
-    assert 'build_graphite_cmcna_glucose6_periodic_case' in example_text
-    assert 'name="glucose_6"' in helper_text
-    assert 'name="EC"' in helper_text
-    assert 'name="EMC"' in helper_text
-    assert 'name="DEC"' in helper_text
-    assert 'name="PF6"' in helper_text
-    assert helper_text.count('prefer_db=True') >= 5
-    assert helper_text.count('require_ready=True') >= 5
+    assert 'name="glucose_6"' in example_text
+    assert 'name="EC"' in example_text
+    assert 'name="EMC"' in example_text
+    assert 'name="DEC"' in example_text
+    assert 'name="PF6"' in example_text
+    assert example_text.count('prefer_db=True') >= 5
+    assert example_text.count('require_ready=True') >= 5
+    assert 'yp.build_graphite_cmc_interphase(' in example_text
+    assert 'yp.build_cmc_electrolyte_interphase(' in example_text
 
 
-def test_example08_scripts_use_example_case_helpers_and_shared_summary_printer():
+def test_example08_scripts_use_stage_apis_and_interface_summary_printer():
     root = Path(__file__).resolve().parents[1]
     expected = {
-        'examples/08_graphite_polymer_electrolyte_sandwich/01_peo_smoke.py': 'build_graphite_peo_example_case',
-        'examples/08_graphite_polymer_electrolyte_sandwich/02_peo_carbonate_full.py': 'build_graphite_peo_example_case',
-        'examples/08_graphite_polymer_electrolyte_sandwich/03_cmcna_smoke.py': 'build_graphite_cmcna_example_case',
-        'examples/08_graphite_polymer_electrolyte_sandwich/04_cmcna_full.py': 'build_graphite_cmcna_example_case',
-        'examples/08_graphite_polymer_electrolyte_sandwich/05_cmcna_glucose6_periodic_case.py': 'build_graphite_cmcna_glucose6_periodic_case',
+        'examples/08_graphite_polymer_electrolyte_sandwich/01_peo_smoke.py': (
+            'yp.build_graphite_polymer_interphase(',
+            'yp.build_polymer_electrolyte_interphase(',
+            'yp.release_graphite_polymer_electrolyte_stack(',
+        ),
+        'examples/08_graphite_polymer_electrolyte_sandwich/02_peo_carbonate_full.py': (
+            'yp.build_graphite_polymer_interphase(',
+            'yp.build_polymer_electrolyte_interphase(',
+            'yp.release_graphite_polymer_electrolyte_stack(',
+        ),
+        'examples/08_graphite_polymer_electrolyte_sandwich/03_cmcna_smoke.py': (
+            'yp.build_graphite_cmc_interphase(',
+            'yp.build_cmc_electrolyte_interphase(',
+            'yp.release_graphite_cmc_electrolyte_stack(',
+        ),
+        'examples/08_graphite_polymer_electrolyte_sandwich/04_cmcna_full.py': (
+            'yp.build_graphite_cmc_interphase(',
+            'yp.build_cmc_electrolyte_interphase(',
+            'yp.release_graphite_cmc_electrolyte_stack(',
+        ),
+        'examples/08_graphite_polymer_electrolyte_sandwich/05_cmcna_glucose6_periodic_case.py': (
+            'yp.build_graphite_cmc_interphase(',
+            'yp.build_cmc_electrolyte_interphase(',
+            'yp.release_graphite_cmc_electrolyte_stack(',
+        ),
     }
 
-    for rel, helper_name in expected.items():
+    for rel, required_calls in expected.items():
         text = (root / rel).read_text(encoding='utf-8')
         assert 'import yadonpy as yp' in text
         assert 'yp.set_run_options(' in text
         assert 'yp.doctor(' in text
         assert 'yp.get_ff("gaff2_mod")' in text
         assert 'yp.get_ff("merz")' in text
-        assert 'yp.print_sandwich_result_summary(' in text
-        assert helper_name in text
+        assert 'yp.prepare_graphite_substrate(' in text
+        assert 'yp.calibrate_polymer_bulk_phase(' in text
+        assert 'yp.calibrate_electrolyte_bulk_phase(' in text
+        assert 'yp.print_interface_result_summary(' in text
+        for call in required_calls:
+            assert call in text
         assert 'from yadonpy.interface import ' not in text
         assert 'from yadonpy.ff import ' not in text
         assert 'from yadonpy.runtime import ' not in text
-        assert 'default_peo_polymer_spec(' not in text
-        assert 'default_cmcna_polymer_spec(' not in text
-        assert 'SandwichRelaxationSpec(' not in text
+        assert 'build_graphite_peo_example_case' not in text
+        assert 'build_graphite_cmcna_example_case' not in text
+        assert 'build_graphite_cmcna_glucose6_periodic_case' not in text
+        assert 'GraphiteSubstrateSpec(' in text
+        assert 'SandwichRelaxationSpec(' in text
 
 
 def test_example07_includes_bundled_moldb_audit_script():

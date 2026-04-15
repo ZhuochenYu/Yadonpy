@@ -219,3 +219,36 @@ def test_system_dir_can_be_resolved_from_parent_work_root(tmp_path: Path):
     )
 
     assert analyzer._system_dir() == system_dir
+
+
+def test_analyze_result_from_work_dir_discovers_latest_artifacts(tmp_path: Path):
+    work_root = tmp_path / 'benchmark' / 'work_dir'
+    stage_dir = work_root / '05_prod'
+    system_dir = work_root / '02_system'
+    stage_dir.mkdir(parents=True, exist_ok=True)
+    system_dir.mkdir(parents=True, exist_ok=True)
+
+    (system_dir / 'system.top').write_text('; top\n', encoding='utf-8')
+    (system_dir / 'system.ndx').write_text('[ System ]\n1 2 3\n', encoding='utf-8')
+
+    older = work_root / 'older'
+    older.mkdir(parents=True, exist_ok=True)
+    for name in ('md.tpr', 'md.xtc', 'md.edr'):
+        (older / name).write_text('old\n', encoding='utf-8')
+
+    latest_tpr = stage_dir / 'prod.tpr'
+    latest_xtc = stage_dir / 'prod.xtc'
+    latest_edr = stage_dir / 'prod.edr'
+    latest_trr = stage_dir / 'prod.trr'
+    for path in (latest_tpr, latest_xtc, latest_edr, latest_trr):
+        path.write_text('new\n', encoding='utf-8')
+
+    analyzer = AnalyzeResult.from_work_dir(stage_dir)
+
+    assert analyzer.work_dir == stage_dir.resolve()
+    assert analyzer.top == system_dir / 'system.top'
+    assert analyzer.ndx == system_dir / 'system.ndx'
+    assert analyzer.tpr == latest_tpr
+    assert analyzer.xtc == latest_xtc
+    assert analyzer.edr == latest_edr
+    assert analyzer.trr == latest_trr

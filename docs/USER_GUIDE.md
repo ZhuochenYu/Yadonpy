@@ -165,6 +165,7 @@ analy = production.analyze()
 rdf = analy.rdf(center_mol=li_mol)
 msd = analy.msd()
 sigma = analy.sigma(msd=msd, temp_k=300.0)
+migration = analy.migration(center_mol=li_mol)
 ```
 
 This keeps the defaults physically aligned:
@@ -187,10 +188,18 @@ Practical interpretation:
 - Charged-polymer results are kept as
   `polymer_charged_group_self_ne_contribution_S_m`; they are not equivalent to
   a rigorously separated polymer ionic conductivity.
+- Migration analysis is now a first-class `AnalyzeResult` method instead of a
+  standalone monolithic script. The default path reports:
+  - coordination roles,
+  - residence times for polymer / solvent / anion donors,
+  - role-level and site-level Markov models,
+  - transition-matrix-based event flux predictions,
+  - migration summary plots under `06_analysis/migration/`.
 
 ## 6. Build Graphite-Polymer-Electrolyte Sandwich Systems
 
-YadonPy now exposes a high-level sandwich builder that packages the recommended logic:
+YadonPy now exposes both a convenience sandwich builder and a staged sandwich API.
+For Example-02-style scripts, the staged path is the recommended one:
 
 - equilibrate each phase independently,
 - treat those bulk runs as calibration for density, chain count, solvent counts, and packing backoff,
@@ -203,17 +212,19 @@ PEO-based smoke-scale example:
 
 ```python
 import yadonpy as yp
-from yadonpy.interface import (
-    SandwichRelaxationSpec,
-    default_carbonate_lipf6_electrolyte_spec,
-    default_peo_polymer_spec,
-)
+graphite = yp.GraphiteSubstrateSpec(nx=4, ny=4, n_layers=2)
+polymer = yp.default_peo_polymer_spec(dp=20)
+electrolyte = yp.default_carbonate_lipf6_electrolyte_spec()
+relax = yp.SandwichRelaxationSpec(omp=8, gpu=1, psi4_omp=8)
 
-result = yp.build_graphite_peo_electrolyte_sandwich(
+graphite_stage = yp.prepare_graphite_substrate(
     work_dir="./work_peo_sandwich",
-    polymer=default_peo_polymer_spec(dp=20),
-    electrolyte=default_carbonate_lipf6_electrolyte_spec(),
-    relax=SandwichRelaxationSpec(omp=8, gpu=1, psi4_omp=8),
+    ff=yp.get_ff("gaff2_mod"),
+    ion_ff=yp.get_ff("merz"),
+    graphite=graphite,
+    polymer=polymer,
+    electrolyte=electrolyte,
+    relax=relax,
 )
 ```
 

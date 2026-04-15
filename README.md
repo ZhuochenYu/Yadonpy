@@ -82,19 +82,22 @@ pf6 = yp.load_from_moldb(
 
 ```python
 import yadonpy as yp
-from yadonpy.interface import (
-    SandwichRelaxationSpec,
-    default_carbonate_lipf6_electrolyte_spec,
-    default_peo_polymer_spec,
-)
 
-result = yp.build_graphite_peo_electrolyte_sandwich(
+graphite = yp.GraphiteSubstrateSpec(nx=4, ny=4, n_layers=2)
+polymer = yp.default_peo_polymer_spec(dp=20)
+electrolyte = yp.default_carbonate_lipf6_electrolyte_spec()
+relax = yp.SandwichRelaxationSpec(omp=8, gpu=1, psi4_omp=8)
+
+graphite_stage = yp.prepare_graphite_substrate(
     work_dir="./work_sandwich",
-    polymer=default_peo_polymer_spec(dp=20),
-    electrolyte=default_carbonate_lipf6_electrolyte_spec(),
-    relax=SandwichRelaxationSpec(omp=8, gpu=1, psi4_omp=8),
+    ff=yp.get_ff("gaff2_mod"),
+    ion_ff=yp.get_ff("merz"),
+    graphite=graphite,
+    polymer=polymer,
+    electrolyte=electrolyte,
+    relax=relax,
 )
-print(result.relaxed_gro)
+# ... calibrate phases, build interphases, then release the final stack
 ```
 
 ## Workflow Areas
@@ -131,6 +134,7 @@ analy = production.analyze()
 rdf = analy.rdf(center_mol=li_mol)
 msd = analy.msd()
 sigma = analy.sigma(msd=msd, temp_k=300.0)
+migration = analy.migration(center_mol=li_mol)
 ```
 
 This keeps the defaults physically aligned:
@@ -140,6 +144,9 @@ This keeps the defaults physically aligned:
 - `sigma_ne_upper_bound_S_m` is reported explicitly as an upper bound;
 - `sigma_eh_total_S_m` is the preferred total conductivity when a stable EH fit exists;
 - `haven_ratio` is written whenever both values are available.
+- `migration()` now defaults to a dual Markov model:
+  - role states: `polymer / solvent / anion / none`
+  - site states: specific donor anchors with sparse states lumped into `OTHER`
 
 ### Interface systems
 
