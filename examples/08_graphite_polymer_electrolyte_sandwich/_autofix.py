@@ -837,13 +837,15 @@ def _run_remote_round(*, config: AutofixConfig, remote_round_dir: str) -> dict[s
 
 
 def _sync_remote_round_to_local(*, config: AutofixConfig, remote_round_dir: str, local_matrix_dir: Path) -> dict[str, object]:
-    local_matrix_dir.parent.mkdir(parents=True, exist_ok=True)
-    return _rsync_path(
-        f"{config.remote.host}:{remote_round_dir}/",
-        f"{local_matrix_dir}/",
-        delete=True,
-        password_env_var=config.remote.password_env_var,
+    local_matrix_dir.mkdir(parents=True, exist_ok=True)
+    src = f"{config.remote.host}:{remote_round_dir}/"
+    dst = f"{local_matrix_dir}/"
+    cmd = (
+        "rsync -az --delete "
+        "--include='*/' --include='*.json' --include='*.jsonl' --include='*.log' "
+        f"--exclude='*' {src} {dst}"
     )
+    return _run_interactive_command(cmd, timeout=7200, password_env_var=config.remote.password_env_var)
 
 
 def _write_stop_files(*, base_dir: Path, stop_reason: dict[str, object], last_good_round: dict[str, object] | None) -> None:
