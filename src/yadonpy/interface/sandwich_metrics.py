@@ -269,10 +269,10 @@ def confined_summary_score(*, summary: dict[str, object], target_density_g_cm3: 
 
     score = abs(center_density - float(target_density_g_cm3)) / density_ref
     score += abs(occupied_thickness - float(target_thickness_nm)) / max(float(target_thickness_nm), 1.0e-6)
-    if occupied_density < 0.80 * float(target_density_g_cm3):
-        score += 0.50
+    if occupied_density < 0.90 * float(target_density_g_cm3):
+        score += 0.90
     if bool(summary.get("wrapped_across_z_boundary", False)):
-        score += 1.00
+        score += 1.75
     return float(score)
 
 
@@ -284,9 +284,9 @@ def needs_confined_rescue(*, summary: dict[str, object], target_density_g_cm3: f
     occupied_thickness = float(summary.get("occupied_thickness_nm", target_thickness_nm))
     if bool(summary.get("wrapped_across_z_boundary", False)):
         return True
-    if occupied_thickness > 1.08 * float(target_thickness_nm):
+    if occupied_thickness > 1.04 * float(target_thickness_nm):
         return True
-    return center_density < 0.85 * float(target_density_g_cm3)
+    return center_density < 0.90 * float(target_density_g_cm3)
 
 
 def confined_phase_report(
