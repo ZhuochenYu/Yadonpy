@@ -82,6 +82,7 @@ def _case_env(case: CaseSpec, *, phase: str, work_dir: Path) -> dict[str, str]:
     env["YADONPY_WORK_DIR"] = str(work_dir)
     env["YADONPY_RESTART"] = "1" if phase == "restart" else "0"
     env["YADONPY_ROUTE"] = str(case.route)
+    env["YADONPY_MATRIX_FAST"] = "1"
     env["YADONPY_GPU"] = "1"
     env["YADONPY_GPU_ID"] = str(case.gpu_id)
     env["YADONPY_OMP"] = str(case.omp)
@@ -142,6 +143,7 @@ def write_matrix_metadata(
         "base_dir": str(base_dir),
         "timeout_s": int(timeout_s),
         "phases": list(phases),
+        "matrix_fast_env": "YADONPY_MATRIX_FAST=1",
         "cases": [asdict(case) for case in cases],
     }
     (base_dir / "run_metadata.json").write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")

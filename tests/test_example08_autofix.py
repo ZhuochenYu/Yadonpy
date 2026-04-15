@@ -177,6 +177,7 @@ def test_matrix_dry_run_records_selected_phases(tmp_path: Path):
     metadata = json.loads((tmp_path / "run_metadata.json").read_text(encoding="utf-8"))
     assert rc == 0
     assert metadata["phases"] == ["fresh"]
+    assert metadata["matrix_fast_env"] == "YADONPY_MATRIX_FAST=1"
 
 
 def test_autofix_config_defaults_to_fresh_only():
