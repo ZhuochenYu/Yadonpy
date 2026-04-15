@@ -126,6 +126,32 @@ def test_select_recipe_returns_unclassified_when_attempted_exhausted(tmp_path: P
     assert decision["recipe"] == "unclassified_failure"
 
 
+def test_select_recipe_skips_already_applied_confined_selection_for_gap(tmp_path: Path):
+    repo_root = tmp_path / "repo"
+    (repo_root / "src/yadonpy/interface").mkdir(parents=True, exist_ok=True)
+    (repo_root / "src/yadonpy/interface/sandwich_metrics.py").write_text(
+        "center_bulk_like_window_nm\nscore += 1.75\n",
+        encoding="utf-8",
+    )
+    (repo_root / "src/yadonpy/interface/sandwich.py").write_text(
+        "    graphite_polymer_gap_nm = (float(relax.graphite_to_polymer_gap_ang) / 10.0) + 0.35 * polymer_shell_nm\n"
+        "    polymer_electrolyte_gap_nm = (float(relax.polymer_to_electrolyte_gap_ang) / 10.0) + 0.35 * (\n",
+        encoding="utf-8",
+    )
+    signature = {
+        "primary_failure_class": "acceptance_failure",
+        "stack_gap_ang_stats": {"polymer_to_electrolyte_mean": 32.0},
+        "cases": [{"wrapped": {"polymer": True, "electrolyte": True}}],
+    }
+    decision = autofix.select_recipe(
+        signature=signature,
+        repo_root=repo_root,
+        config=autofix.AutofixConfig(),
+        attempted=set(),
+    )
+    assert decision["recipe"] == "reduce_release_gap_or_padding"
+
+
 def test_push_safety_requires_explicit_main_unlock(tmp_path: Path, monkeypatch):
     repo_root = tmp_path / "repo"
     (repo_root / "src/yadonpy/interface").mkdir(parents=True, exist_ok=True)

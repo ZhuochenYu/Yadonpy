@@ -569,8 +569,10 @@ def _has_missing_stack_gap_fix(signature: dict[str, object], repo_root: Path) ->
     return not _file_contains(repo_root, "src/yadonpy/interface/sandwich_metrics.py", "center_bulk_like_window_nm")
 
 
-def _needs_confined_selection_tightening(signature: dict[str, object], _repo_root: Path) -> bool:
+def _needs_confined_selection_tightening(signature: dict[str, object], repo_root: Path) -> bool:
     if str(signature.get("primary_failure_class")) != "acceptance_failure":
+        return False
+    if _file_contains(repo_root, "src/yadonpy/interface/sandwich_metrics.py", "score += 1.75"):
         return False
     wrapped_cases = sum(1 for case in signature.get("cases", []) if any(case.get("wrapped", {}).values()))
     return wrapped_cases >= 2
@@ -1030,31 +1032,49 @@ def run_autofix_loop(
             )
             return 0
 
-        decision = select_recipe(
-            signature=baseline_signature,
-            repo_root=workspace_root,
-            config=config,
-            attempted=attempted_for_baseline,
-        )
-        _write_json(round_dir / "decision.json", decision)
-        if not decision["selected"]:
-            _write_stop_files(
-                base_dir=base_dir,
-                stop_reason={"reason": "unclassified_failure", "round": round_idx, "stopped_at": _timestamp()},
-                last_good_round=last_good_round,
+        decision_attempts: list[dict[str, object]] = []
+        mutation_attempts: list[dict[str, object]] = []
+        decision: dict[str, object] | None = None
+        mutation: dict[str, object] | None = None
+        while True:
+            candidate = select_recipe(
+                signature=baseline_signature,
+                repo_root=workspace_root,
+                config=config,
+                attempted=attempted_for_baseline,
             )
-            return 0
+            decision_attempts.append(candidate)
+            if not candidate["selected"]:
+                _write_json(round_dir / "decision_attempts.json", {"attempts": decision_attempts, "mutations": mutation_attempts})
+                _write_json(round_dir / "decision.json", candidate)
+                _write_stop_files(
+                    base_dir=base_dir,
+                    stop_reason={"reason": "unclassified_failure", "round": round_idx, "stopped_at": _timestamp()},
+                    last_good_round=last_good_round,
+                )
+                return 0
+            attempted_for_baseline.add(str(candidate["recipe"]))
+            candidate_mutation = apply_recipe(recipe_name=str(candidate["recipe"]), repo_root=workspace_root)
+            mutation_attempts.append({"recipe": candidate["recipe"], **candidate_mutation})
+            if candidate_mutation["status"] == "noop":
+                continue
+            if candidate_mutation["status"] != "applied":
+                _write_json(round_dir / "decision_attempts.json", {"attempts": decision_attempts, "mutations": mutation_attempts})
+                _write_json(round_dir / "decision.json", candidate)
+                _write_json(round_dir / "mutation.json", candidate_mutation)
+                _write_stop_files(
+                    base_dir=base_dir,
+                    stop_reason={"reason": "mutation_failed", "recipe": candidate["recipe"], "round": round_idx, "stopped_at": _timestamp()},
+                    last_good_round=last_good_round,
+                )
+                return 0
+            decision = candidate
+            mutation = candidate_mutation
+            break
 
-        attempted_for_baseline.add(str(decision["recipe"]))
-        mutation = apply_recipe(recipe_name=str(decision["recipe"]), repo_root=workspace_root)
+        _write_json(round_dir / "decision_attempts.json", {"attempts": decision_attempts, "mutations": mutation_attempts})
+        _write_json(round_dir / "decision.json", decision)
         _write_json(round_dir / "mutation.json", mutation)
-        if mutation["status"] not in {"applied", "noop"} or mutation["status"] == "noop":
-            _write_stop_files(
-                base_dir=base_dir,
-                stop_reason={"reason": "mutation_failed_or_noop", "recipe": decision["recipe"], "round": round_idx, "stopped_at": _timestamp()},
-                last_good_round=last_good_round,
-            )
-            return 0
 
         verify = run_verifier(repo_root=workspace_root, recipe_name=str(decision["recipe"]), config=config)
         _write_json(round_dir / "verify.json", verify)
