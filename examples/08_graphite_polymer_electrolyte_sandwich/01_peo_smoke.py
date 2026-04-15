@@ -9,6 +9,7 @@ from _env import env_bool, env_int, env_path
 
 restart = env_bool("YADONPY_RESTART", True)
 route = os.environ.get("YADONPY_ROUTE", "screening").strip().lower()
+matrix_fast = env_bool("YADONPY_MATRIX_FAST", False)
 yp.set_run_options(restart=restart)
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -21,29 +22,29 @@ if __name__ == "__main__":
     ion_ff = yp.get_ff("merz")
 
     graphite = yp.GraphiteSubstrateSpec(
-        nx=4,
-        ny=4,
+        nx=(3 if matrix_fast else 4),
+        ny=(3 if matrix_fast else 4),
         n_layers=2,
         edge_cap="H",
         name="GRAPH",
     )
     polymer = yp.default_peo_polymer_spec(
         name="PEO",
-        chain_target_atoms=220,
-        min_chain_count=4,
+        chain_target_atoms=(120 if matrix_fast else 220),
+        min_chain_count=(3 if matrix_fast else 4),
         target_density_g_cm3=1.08,
-        slab_z_nm=3.2,
-        initial_pack_z_scale=1.18,
-        pack_retry=30,
-        pack_retry_step=2000,
+        slab_z_nm=(2.7 if matrix_fast else 3.2),
+        initial_pack_z_scale=(1.45 if matrix_fast else 1.18),
+        pack_retry=(22 if matrix_fast else 30),
+        pack_retry_step=(800 if matrix_fast else 2000),
     )
     electrolyte = yp.default_carbonate_lipf6_electrolyte_spec(
-        slab_z_nm=3.8,
+        slab_z_nm=(3.0 if matrix_fast else 3.8),
         min_salt_pairs=2,
         target_density_g_cm3=1.28,
-        initial_pack_density_g_cm3=0.82,
-        pack_retry=30,
-        pack_retry_step=1800,
+        initial_pack_density_g_cm3=(0.72 if matrix_fast else 0.82),
+        pack_retry=(22 if matrix_fast else 30),
+        pack_retry_step=(800 if matrix_fast else 1800),
     )
     relax = yp.SandwichRelaxationSpec(
         omp=env_int("YADONPY_OMP", 16),
@@ -57,12 +58,12 @@ if __name__ == "__main__":
             "eq21_tmax": 600.0,
             "eq21_pmax": 10000.0,
             "eq21_pre_nvt_ps": 2.0,
-            "sim_time": 0.04,
-            "eq21_npt_time_scale": 0.20,
+            "sim_time": (0.02 if matrix_fast else 0.04),
+            "eq21_npt_time_scale": (0.10 if matrix_fast else 0.20),
         },
-        stacked_pre_nvt_ps=10.0,
-        stacked_z_relax_ps=40.0,
-        stacked_exchange_ps=60.0,
+        stacked_pre_nvt_ps=(4.0 if matrix_fast else 10.0),
+        stacked_z_relax_ps=(8.0 if matrix_fast else 40.0),
+        stacked_exchange_ps=(12.0 if matrix_fast else 60.0),
     )
 
     graphite_stage = yp.prepare_graphite_substrate(
