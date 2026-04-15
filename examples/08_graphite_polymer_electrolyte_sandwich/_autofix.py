@@ -823,6 +823,7 @@ def _sync_workspace_to_remote(*, workspace_root: Path, remote: RemoteConfig) -> 
 
 def _run_remote_round(*, config: AutofixConfig, remote_round_dir: str) -> dict[str, object]:
     remote_cmd = (
+        f"rm -rf {shlex.quote(remote_round_dir)} && "
         f"mkdir -p {shlex.quote(remote_round_dir)} && "
         f"cd {shlex.quote(config.remote.repo_root)} && "
         f"{config.remote.conda_prefix} python examples/08_graphite_polymer_electrolyte_sandwich/run_iteration_matrix.py "
