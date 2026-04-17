@@ -210,6 +210,7 @@ def write_molecule_artifacts(
         # We correct charges *only* for the unscaled cached artifacts.
         try:
             from ..core.chem_utils import correct_total_charge
+            from ..core.polyelectrolyte import get_polyelectrolyte_summary, uses_localized_charge_groups
 
             target_q = total_charge
             # IMPORTANT:
@@ -244,11 +245,28 @@ def write_molecule_artifacts(
                     except Exception:
                         formal_q = float(current_q)
 
+                    localized_charge_groups = False
+                    try:
+                        localized_charge_groups = bool(
+                            uses_localized_charge_groups(get_polyelectrolyte_summary(mol))
+                        )
+                    except Exception:
+                        localized_charge_groups = False
+
+                    # Localized polyelectrolytes (e.g. CMC-like carboxylates)
+                    # rely on formal charged-group counts being authoritative for
+                    # later grouped scaling during system export. If the current
+                    # per-atom charge sum has drifted away from that integer total,
+                    # preserve the formal charge here instead of freezing the bad
+                    # current total into the cached ITP.
+                    if localized_charge_groups:
+                        target_q = float(formal_q)
+                        meta["charge_target_policy"] = "formal_charge_for_localized_polyelectrolyte"
                     # Small RESP / round-trip drift on ordinary neutral or ionic
                     # molecules should still be cleaned up to the intended formal
                     # charge. But if the formal charge strongly disagrees with the
                     # existing charge set, keep the current charge sum instead.
-                    if abs(float(current_q) - float(formal_q)) <= 0.25:
+                    elif abs(float(current_q) - float(formal_q)) <= 0.25:
                         target_q = float(formal_q)
                     else:
                         target_q = float(current_q)

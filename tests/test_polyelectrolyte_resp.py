@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 
+import pytest
 from rdkit import Chem
 
 from yadonpy.core.polyelectrolyte import (
@@ -15,6 +16,7 @@ from yadonpy.io.gromacs_system import (
     _rewrite_gro_resname,
     _rewrite_itp_moltype_and_resname,
     _scale_itp_charge_groups,
+    _retarget_itp_total_charge_uniformly,
 )
 
 
@@ -101,6 +103,23 @@ def test_scale_charged_groups_inplace_scales_only_target_group():
     assert report["groups"]
     unchanged = mol.GetAtomWithIdx(0).GetDoubleProp("AtomicCharge")
     assert abs(unchanged - 0.1) < 1.0e-12
+
+
+def test_retarget_itp_total_charge_uniformly_repairs_bad_cached_total():
+    itp = """[ moleculetype ]
+POL 3
+
+[ atoms ]
+1 C 1 RES C1 1 -0.60 12.011
+2 O 1 RES O1 1 -0.60 15.999
+3 O 1 RES O2 1 -0.60 15.999
+4 C 1 RES C2 1 -0.60 12.011
+"""
+    corrected, report = _retarget_itp_total_charge_uniformly(itp, -1.0)
+    assert report is not None
+    assert report["original_q"] == pytest.approx(-2.4, abs=1.0e-8)
+    assert report["target_q"] == pytest.approx(-1.0, abs=1.0e-8)
+    assert sum(float(line.split()[6]) for line in corrected.splitlines() if line.strip() and line.strip()[0].isdigit()) == pytest.approx(-1.0, abs=1.0e-6)
 
 
 def test_localized_charge_group_semantics_distinguish_carboxylate_from_tfsi():

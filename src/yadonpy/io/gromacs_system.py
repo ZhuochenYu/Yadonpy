@@ -832,6 +832,60 @@ def _itp_total_charge(itp_text: str) -> float:
     return float(total)
 
 
+def _retarget_itp_total_charge_uniformly(itp_text: str, target_q: float, *, tol: float = 1.0e-3) -> tuple[str, dict[str, Any] | None]:
+    lines = itp_text.splitlines()
+    in_atoms = False
+    atom_rows: list[dict[str, Any]] = []
+    current_q = 0.0
+    for idx, raw in enumerate(lines):
+        stripped = raw.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            sec = stripped.strip("[]").strip().lower()
+            in_atoms = (sec == "atoms")
+            continue
+        if not in_atoms or stripped == "" or stripped.startswith(";"):
+            continue
+        body = raw.split(";", 1)[0]
+        cols = body.split()
+        if len(cols) < 7:
+            continue
+        try:
+            charge = float(cols[6])
+        except Exception:
+            continue
+        atom_rows.append({"line_index": idx, "cols": cols, "charge": charge})
+        current_q += charge
+
+    if not atom_rows:
+        return itp_text, None
+
+    delta = float(target_q) - float(current_q)
+    if abs(delta) <= float(tol):
+        return itp_text, None
+
+    per_atom = delta / float(len(atom_rows))
+    for info in atom_rows:
+        new_q = float(info["charge"]) + float(per_atom)
+        info["cols"][6] = f"{new_q:.8f}"
+
+    for info in atom_rows:
+        raw = lines[info["line_index"]]
+        comment = ""
+        if ";" in raw:
+            _, tail = raw.split(";", 1)
+            comment = " ;" + tail
+        lines[info["line_index"]] = "\t".join(info["cols"]) + comment
+
+    report = {
+        "target_q": float(target_q),
+        "original_q": float(current_q),
+        "delta": float(delta),
+        "per_atom_delta": float(per_atom),
+        "n_atoms": int(len(atom_rows)),
+    }
+    return ("\n".join(lines) + ("\n" if itp_text.endswith("\n") else "")), report
+
+
 def _nudge_itp_first_atom_charge(itp_text: str, delta_q: float) -> str:
     if abs(float(delta_q)) <= 1.0e-12:
         return itp_text
@@ -1748,11 +1802,25 @@ def export_system_from_cell_meta(
             sp,
             effective_polyelectrolyte_mode=bool(effective_polyelectrolyte_mode),
         )
+        pre_scale_correction = None
+        if use_group_scaling:
+            try:
+                formal_charge = float(sp.get("formal_charge", 0.0))
+                current_itp_charge = _itp_total_charge(itp_text)
+                if abs(float(current_itp_charge) - float(formal_charge)) > 0.25:
+                    itp_text, pre_scale_correction = _retarget_itp_total_charge_uniformly(
+                        itp_text,
+                        float(formal_charge),
+                    )
+            except Exception:
+                pre_scale_correction = None
         if use_group_scaling:
             itp_text, scale_report = _scale_itp_charge_groups(itp_text, charge_groups, scale=float(scale))
         else:
             itp_text = _scale_itp_charges(itp_text, scale=float(scale))
             scale_report = {"scale": float(scale), "groups": [], "fallback": ("whole_molecule_scale" if effective_polyelectrolyte_mode else None)}
+        if pre_scale_correction is not None:
+            scale_report["pre_scale_correction"] = dict(pre_scale_correction)
 
         # Rewrite moltype + residue name to match `mol_name_fs`.
         # (Important when cached entries use hashed IDs.)

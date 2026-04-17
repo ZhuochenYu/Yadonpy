@@ -13,6 +13,7 @@ from yadonpy.ff.gaff2_mod import GAFF2_mod
 from yadonpy.ff.merz import MERZ
 from yadonpy.interface.charge_audit import format_cell_charge_audit
 from yadonpy.io.artifacts import write_molecule_artifacts
+import yadonpy.io.artifacts as artifacts_mod
 from yadonpy.io.molecule_cache import ensure_cached_artifacts
 from yadonpy.io.gromacs_molecule import _format_gro_atom_line as format_single_gro_atom_line
 from yadonpy.io.gromacs_system import _format_gro_atom_line as format_system_gro_atom_line
@@ -147,6 +148,52 @@ def test_write_molecule_artifacts_uses_best_available_charge_property(tmp_path: 
     meta = json.loads((out / "meta.json").read_text(encoding="utf-8"))
     assert meta["charge_abs_sum"] > 0.0
     assert meta["charge_signature"]
+
+
+def test_write_molecule_artifacts_retargets_localized_polyelectrolyte_total_charge(tmp_path: Path, monkeypatch):
+    mol = Chem.MolFromSmiles("CC(=O)[O-]")
+    assert mol is not None
+    mol = Chem.AddHs(mol)
+    AllChem.EmbedMolecule(mol, randomSeed=11)
+    AllChem.UFFOptimizeMolecule(mol)
+    annotate_polyelectrolyte_metadata(mol)
+
+    for atom in mol.GetAtoms():
+        atom.SetDoubleProp("AtomicCharge", -0.30)
+        atom.SetDoubleProp("RESP", -0.30)
+
+    captured: dict[str, float] = {}
+
+    def _fake_topology_writer(mol_obj, out_dir: Path, *, mol_name: str):
+        total_q = 0.0
+        for atom in mol_obj.GetAtoms():
+            total_q += float(atom.GetDoubleProp("AtomicCharge")) if atom.HasProp("AtomicCharge") else 0.0
+        captured["total_q"] = float(total_q)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / f"{mol_name}.itp").write_text("[ moleculetype ]\nTEST 3\n", encoding="utf-8")
+        (out_dir / f"{mol_name}.gro").write_text("TEST\n0\n   1.0   1.0   1.0\n", encoding="utf-8")
+        (out_dir / f"{mol_name}.top").write_text("", encoding="utf-8")
+        return out_dir / f"{mol_name}.gro", out_dir / f"{mol_name}.itp", out_dir / f"{mol_name}.top"
+
+    monkeypatch.setattr(artifacts_mod, "_ensure_bonded_terms_for_export", lambda mol_obj, ff_name: None)
+    monkeypatch.setattr(artifacts_mod, "_reapply_bonded_patch_to_mol", lambda mol_obj: None)
+    import yadonpy.io.gromacs_molecule as gmx_mol_mod
+    monkeypatch.setattr(gmx_mol_mod, "write_gromacs_single_molecule_topology", _fake_topology_writer)
+
+    out = tmp_path / "art_pe"
+    write_molecule_artifacts(
+        mol,
+        out,
+        smiles="CC(=O)[O-]",
+        ff_name="gaff2_mod",
+        charge_method="RESP",
+        mol_name="AcO",
+        write_mol2=False,
+    )
+
+    assert captured["total_q"] == pytest.approx(-1.0, abs=1.0e-6)
+    meta = json.loads((out / "meta.json").read_text(encoding="utf-8"))
+    assert meta["charge_target_policy"] == "formal_charge_for_localized_polyelectrolyte"
 
 
 def test_gro_atom_line_wraps_overflow_indices_without_shifting_coordinates():
