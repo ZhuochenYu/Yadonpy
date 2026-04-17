@@ -1152,6 +1152,52 @@ def test_build_polymer_chain_forwards_polyelectrolyte_mode_to_db_lookup(monkeypa
     assert ff.mol_calls[0][1]["polyelectrolyte_mode"] is True
 
 
+def test_build_polymer_chain_forwards_polyelectrolyte_mode_to_final_chain_assignment(monkeypatch):
+    import yadonpy.interface.sandwich as sandwich
+
+    class _DummyFF:
+        def __init__(self):
+            self.mol_calls = []
+            self.ff_assign_calls = []
+
+        def mol(self, smiles, **kwargs):
+            self.mol_calls.append((smiles, dict(kwargs)))
+            return _dummy_mol(kwargs.get("name") or "monomer")
+
+        def ff_assign(self, mol, **kwargs):
+            self.ff_assign_calls.append(dict(kwargs))
+            return mol
+
+    ff = _DummyFF()
+    terminal = _dummy_mol("terminal")
+    original_mol_from_smiles = sandwich.utils.mol_from_smiles
+    monkeypatch.setattr(
+        sandwich.utils,
+        "mol_from_smiles",
+        lambda smiles, name=None, **kwargs: terminal if smiles == "[H][*]" else original_mol_from_smiles(smiles, name=name, **kwargs),
+    )
+    monkeypatch.setattr(sandwich.qm, "assign_charges", lambda *args, **kwargs: True)
+    monkeypatch.setattr(sandwich.poly, "polymerize_rw", lambda monomer, dp, **kwargs: _dummy_mol("polymer"))
+    monkeypatch.setattr(sandwich.poly, "terminate_rw", lambda chain, terminal, **kwargs: _dummy_mol("terminated"))
+
+    polymer = sandwich.default_cmcna_polymer_spec(
+        monomers=(sandwich.default_cmcna_polymer_spec().monomers[2],),
+        monomer_ratio=(1.0,),
+        dp=4,
+    )
+    chain, dp = sandwich._build_polymer_chain(
+        ff=ff,
+        polymer=polymer,
+        relax=SandwichRelaxationSpec(psi4_omp=1, psi4_memory_mb=1000),
+        chain_dir=Path("/tmp/polyelectrolyte_forward_chain_assign"),
+    )
+
+    assert dp == 4
+    assert chain is not None
+    assert ff.ff_assign_calls
+    assert ff.ff_assign_calls[-1]["polyelectrolyte_mode"] is True
+
+
 def test_default_cmcna_and_carbonate_specs_require_ready_db_records():
     import yadonpy.interface.sandwich as sandwich
 

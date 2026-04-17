@@ -73,11 +73,62 @@ def _artifact_digest(artifact_dir: Path, moltype: str) -> dict[str, Any]:
 
 def _requires_charge_groups(species_payload: Mapping[str, Any]) -> bool:
     summary = species_payload.get("polyelectrolyte_summary")
-    if isinstance(summary, Mapping) and uses_localized_charge_groups(dict(summary)):
-        return True
+    if isinstance(summary, Mapping):
+        return bool(uses_localized_charge_groups(dict(summary)))
     if bool(species_payload.get("polyelectrolyte_mode")):
         return True
     return False
+
+
+def _enrich_species_polyelectrolyte_payload(
+    payload: dict[str, Any],
+    *,
+    smiles: str,
+    mol_name: str,
+    mol=None,
+) -> dict[str, Any]:
+    summary = payload.get("polyelectrolyte_summary")
+    charge_groups = payload.get("charge_groups")
+    needs_probe = (
+        mol is not None
+        or bool(payload.get("polyelectrolyte_mode"))
+        or not isinstance(summary, Mapping)
+        or not isinstance(charge_groups, list)
+        or (isinstance(summary, Mapping) and not bool(summary))
+    )
+    if not needs_probe:
+        return payload
+
+    probe = mol
+    if probe is None:
+        try:
+            probe = _parse_smiles_for_metadata(smiles)
+        except Exception:
+            probe = None
+    if probe is None:
+        return payload
+
+    try:
+        regen_groups = get_charge_groups(probe)
+        regen_constraints = get_resp_constraints(probe)
+        regen_summary = get_polyelectrolyte_summary(probe)
+        localized = bool(uses_localized_charge_groups(regen_summary))
+    except Exception:
+        return payload
+
+    if isinstance(regen_groups, list):
+        payload["charge_groups"] = regen_groups
+    if isinstance(regen_constraints, Mapping):
+        payload["resp_constraints"] = dict(regen_constraints)
+    if isinstance(regen_summary, Mapping):
+        payload["polyelectrolyte_summary"] = dict(regen_summary)
+    payload["polyelectrolyte_mode"] = bool(localized)
+
+    try:
+        payload["residue_map"] = build_residue_map(probe, mol_name=mol_name)
+    except Exception:
+        pass
+    return payload
 
 
 def _ensure_charge_group_ready(species_payload: Mapping[str, Any], *, effective_polyelectrolyte_mode: bool) -> None:
@@ -1319,7 +1370,12 @@ def export_system_from_cell_meta(
                 payload["residue_map"] = build_residue_map(mol, mol_name=moltype)
             except Exception:
                 pass
-        return payload
+        return _enrich_species_polyelectrolyte_payload(
+            payload,
+            smiles=smiles,
+            mol_name=moltype,
+            mol=mol,
+        )
 
     # Resolve/create per-species artifacts
     for i, sp in enumerate(species_in):

@@ -31,7 +31,7 @@ from rdkit import Geometry as Geom
 from rdkit import RDLogger
 from . import calc, const, utils
 from .molspec import MolSpec, as_rdkit_mol, molecular_weight
-from .polyelectrolyte import annotate_polyelectrolyte_metadata, build_residue_map, get_charge_groups, get_polyelectrolyte_summary, get_resp_constraints
+from .polyelectrolyte import annotate_polyelectrolyte_metadata, build_residue_map, get_charge_groups, get_polyelectrolyte_summary, get_resp_constraints, uses_localized_charge_groups
 from .resources import core_data_path
 from ..ff.gaff2_mod import GAFF2_mod
 from ..runtime import resolve_restart
@@ -3938,6 +3938,12 @@ def amorphous_cell(
                 _resp_constraints = None
                 _polyelectrolyte_summary = None
                 _residue_map = None
+            _effective_polyelectrolyte_mode = False
+            try:
+                if isinstance(_polyelectrolyte_summary, dict):
+                    _effective_polyelectrolyte_mode = bool(uses_localized_charge_groups(_polyelectrolyte_summary))
+            except Exception:
+                _effective_polyelectrolyte_mode = False
             meta.append({
                 'smiles': smi,
                 'n': int(_count),
@@ -3955,7 +3961,7 @@ def amorphous_cell(
                 'resp_constraints': _resp_constraints,
                 'polyelectrolyte_summary': _polyelectrolyte_summary,
                 'residue_map': _residue_map,
-                'polyelectrolyte_mode': bool(polyelectrolyte_mode),
+                'polyelectrolyte_mode': bool(_effective_polyelectrolyte_mode),
             })
         payload = {
             'schema_version': AMORPHOUS_CELL_SCHEMA_VERSION,

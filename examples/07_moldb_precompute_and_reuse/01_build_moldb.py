@@ -11,7 +11,7 @@ from typing import Any
 import yadonpy as yp
 from yadonpy.core import workdir
 from yadonpy.core.data_dir import ensure_initialized
-from yadonpy.core.polyelectrolyte import detect_charged_groups
+from yadonpy.core.polyelectrolyte import detect_charged_groups, uses_localized_charge_groups
 from yadonpy.diagnostics import doctor
 from yadonpy.moldb import MolDB
 from yadonpy.runtime import set_run_options
@@ -59,6 +59,7 @@ def _read_species_csv(path: Path) -> list[SpeciesSpec]:
             if not name or not smiles or smiles in seen:
                 continue
             seen.add(smiles)
+            requested_polyelectrolyte_mode = _csv_bool(raw.get("polyelectrolyte_mode"), default=False)
             items.append(
                 SpeciesSpec(
                     name=name,
@@ -67,10 +68,21 @@ def _read_species_csv(path: Path) -> list[SpeciesSpec]:
                     source=str(raw.get("source") or "example07").strip(),
                     charge=str(raw.get("charge") or "RESP").strip().upper(),
                     bonded=(str(raw.get("bonded") or "").strip() or None),
-                    polyelectrolyte_mode=_csv_bool(raw.get("polyelectrolyte_mode"), default=False),
+                    polyelectrolyte_mode=_resolve_polyelectrolyte_mode(smiles, requested=requested_polyelectrolyte_mode),
                 )
             )
     return items
+
+
+def _resolve_polyelectrolyte_mode(smiles: str, *, requested: bool = False) -> bool:
+    if bool(requested):
+        return True
+    try:
+        mol = yp.mol_from_smiles(smiles, coord=False)
+        summary = detect_charged_groups(mol, detection="auto")
+        return bool(uses_localized_charge_groups(summary))
+    except Exception:
+        return False
 
 
 def _bonded_mode(spec: SpeciesSpec) -> str:

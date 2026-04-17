@@ -99,13 +99,31 @@ def _polyelectrolyte_variant_meta_from_mol(
     summary = _json_prop(mol, "_yadonpy_polyelectrolyte_summary_json")
     charge_groups = _json_prop(mol, "_yadonpy_charge_groups_json")
     constraints = _json_prop(mol, "_yadonpy_resp_constraints_json")
-    inferred_mode = bool(uses_localized_charge_groups(summary))
-    mode = bool(polyelectrolyte_mode) if polyelectrolyte_mode is not None else inferred_mode
     detection = str(polyelectrolyte_detection).strip() if polyelectrolyte_detection is not None else None
     if not detection and isinstance(summary, dict):
         raw_detection = summary.get("detection")
         if raw_detection is not None:
             detection = str(raw_detection).strip() or None
+    if (
+        bool(polyelectrolyte_mode)
+        and (
+            not isinstance(summary, dict)
+            or not isinstance(charge_groups, list)
+            or not isinstance(constraints, dict)
+            or not uses_localized_charge_groups(summary)
+        )
+    ):
+        try:
+            regenerated = annotate_polyelectrolyte_metadata(mol, detection=detection or "auto")
+            regen_summary = regenerated.get("summary")
+            if isinstance(regen_summary, dict) and uses_localized_charge_groups(regen_summary):
+                summary = regen_summary
+                charge_groups = regen_summary.get("groups") or []
+                constraints = regenerated.get("constraints") or {}
+        except Exception:
+            pass
+    inferred_mode = bool(uses_localized_charge_groups(summary))
+    mode = bool(inferred_mode)
     meta: Dict[str, Any] = {
         "polyelectrolyte_mode": bool(mode),
         "polyelectrolyte_detection": detection or "auto",
@@ -527,15 +545,16 @@ def _restore_polyelectrolyte_variant(mol: Chem.Mol, meta: dict[str, Any] | None)
         if needs_regen:
             detection = str(meta.get("polyelectrolyte_detection") or "auto").strip() or "auto"
             regenerated = annotate_polyelectrolyte_metadata(mol, detection=detection)
-            charge_groups = regenerated.get("charge_groups")
-            resp_constraints = regenerated.get("resp_constraints")
             summary = regenerated.get("summary")
+            charge_groups = summary.get("groups") if isinstance(summary, dict) else None
+            resp_constraints = regenerated.get("constraints")
             if isinstance(charge_groups, list):
                 mol.SetProp("_yadonpy_charge_groups_json", json.dumps(charge_groups, ensure_ascii=False))
             if isinstance(resp_constraints, dict):
                 mol.SetProp("_yadonpy_resp_constraints_json", json.dumps(resp_constraints, ensure_ascii=False))
             if isinstance(summary, dict):
                 mol.SetProp("_yadonpy_polyelectrolyte_summary_json", json.dumps(summary, ensure_ascii=False))
+                mol.SetProp("_YADONPY_POLYELECTROLYTE_MODE", "1" if uses_localized_charge_groups(summary) else "0")
     except Exception:
         pass
 
@@ -836,6 +855,29 @@ class MolDB:
 
         mol = self.attach_charges(mol, key, charge=charge, basis_set=basis_set, method=method, vid=selected_vid)
         _restore_polyelectrolyte_variant(mol, selected_meta)
+        if bool(polyelectrolyte_mode):
+            try:
+                summary = _json_prop(mol, "_yadonpy_polyelectrolyte_summary_json")
+                groups = _json_prop(mol, "_yadonpy_charge_groups_json")
+                if not (isinstance(summary, dict) and uses_localized_charge_groups(summary) and isinstance(groups, list) and groups):
+                    detection = (
+                        str(polyelectrolyte_detection).strip()
+                        if polyelectrolyte_detection is not None
+                        else str((selected_meta or {}).get("polyelectrolyte_detection") or "auto").strip() or "auto"
+                    )
+                    regenerated = annotate_polyelectrolyte_metadata(mol, detection=detection)
+                    regen_summary = regenerated.get("summary")
+                    regen_constraints = regenerated.get("constraints")
+                    regen_groups = regen_summary.get("groups") if isinstance(regen_summary, dict) else None
+                    if isinstance(regen_summary, dict) and uses_localized_charge_groups(regen_summary):
+                        if isinstance(regen_groups, list):
+                            mol.SetProp("_yadonpy_charge_groups_json", json.dumps(regen_groups, ensure_ascii=False))
+                        if isinstance(regen_constraints, dict):
+                            mol.SetProp("_yadonpy_resp_constraints_json", json.dumps(regen_constraints, ensure_ascii=False))
+                        mol.SetProp("_yadonpy_polyelectrolyte_summary_json", json.dumps(regen_summary, ensure_ascii=False))
+                        mol.SetProp("_YADONPY_POLYELECTROLYTE_MODE", "1")
+            except Exception:
+                pass
         self._restore_bonded_variant(mol, key=key, vid=selected_vid, rec=rec)
         mol.SetProp('_YADONPY_KEY', key)
         mol.SetProp('_YADONPY_CANONICAL', rec.canonical)

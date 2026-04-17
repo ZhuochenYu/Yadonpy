@@ -85,6 +85,24 @@ def test_example07_catalog_exposes_charge_and_bonded_columns_without_forcefield_
     assert "ff_name" not in fieldnames
 
 
+def test_example07_catalog_auto_promotes_localized_carboxylate_species_even_if_csv_flag_is_false(tmp_path):
+    mod = _load_example07_module()
+    csv_path = tmp_path / "species.csv"
+    csv_path.write_text(
+        (
+            "name,smiles,kind,source,charge,bonded,polyelectrolyte_mode\n"
+            "legacy_glucose_6,*OC1OC(COCC(=O)[O-])C(*)C(O)C1O,psmiles,test,RESP,,false\n"
+            "legacy_tfsi,FC(F)(F)S(=O)(=O)[N-]S(=O)(=O)C(F)(F)F,smiles,test,RESP,,false\n"
+        ),
+        encoding="utf-8",
+    )
+
+    items = {item.name: item for item in mod._read_species_csv(csv_path)}
+
+    assert items["legacy_glucose_6"].polyelectrolyte_mode is True
+    assert items["legacy_tfsi"].polyelectrolyte_mode is False
+
+
 def test_example07_removes_legacy_text_table_inputs():
     root = Path(__file__).resolve().parents[1]
     example_dir = root / "examples" / "07_moldb_precompute_and_reuse"

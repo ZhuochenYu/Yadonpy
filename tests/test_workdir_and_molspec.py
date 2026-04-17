@@ -947,34 +947,95 @@ def test_export_system_resolves_mixed_forcefield_species_from_cell_metadata(tmp_
     assert (out.molecules_dir / 'lithium' / 'lithium.itp').exists()
 
 
-def test_export_system_fails_closed_for_polyelectrolyte_scaling_without_charge_groups(tmp_path: Path):
-    ff = GAFF2_mod()
-    polymer = ff.mol('*CC[O-]', require_ready=False, prefer_db=False, name='poly_anion')
-    assert ff.ff_assign(polymer, report=False)
-    ac = poly.amorphous_cell(
-        [polymer],
-        [1],
-        density=0.05,
-        retry=1,
-        retry_step=20,
-        polyelectrolyte_mode=True,
-    )
-    meta = json.loads(ac.GetProp('_yadonpy_cell_meta'))
-    meta['polyelectrolyte_mode'] = True
-    meta['species'][0]['polyelectrolyte_mode'] = True
-    meta['species'][0]['charge_groups'] = None
-    meta['species'][0]['resp_constraints'] = None
-    meta['species'][0]['polyelectrolyte_summary'] = {'is_polyelectrolyte': True}
-    ac.SetProp('_yadonpy_cell_meta', json.dumps(meta, ensure_ascii=False))
+def test_export_system_recovers_localized_charge_groups_from_smiles_when_cached_metadata_are_incomplete(tmp_path: Path):
+    acetate_charges = [0.10, 0.20, -0.60, -0.70]
+    acetate_smiles = "CC(=O)[O-]"
+    source_root = tmp_path / "source_molecules"
+    _write_minimal_species_artifacts(source_root, mol_name="Acetate", charges=acetate_charges)
 
-    with pytest.raises(RuntimeError, match='requires charge_groups'):
+    cell = Chem.Mol()
+    setattr(cell, "cell", utils.Cell(4.0, 0.0, 4.0, 0.0, 4.0, 0.0))
+    meta = {
+        "density_g_cm3": 1.0,
+        "polyelectrolyte_mode": True,
+        "species": [
+            {
+                "smiles": acetate_smiles,
+                "n": 2,
+                "natoms": len(acetate_charges),
+                "name": "Acetate",
+                "charge_scale": 0.8,
+                "charge_groups": None,
+                "resp_constraints": None,
+                "polyelectrolyte_summary": None,
+                "polyelectrolyte_mode": True,
+            }
+        ],
+    }
+    cell.SetProp("_yadonpy_cell_meta", json.dumps(meta, ensure_ascii=False))
+
+    out = export_system_from_cell_meta(
+        cell_mol=cell,
+        out_dir=tmp_path / "scaled_recovered_groups",
+        ff_name="gaff2_mod",
+        charge_method="RESP",
+        source_molecules_dir=source_root,
+        write_system_mol2=False,
+    )
+
+    exported = _parse_itp_atom_charges(out.molecules_dir / "Acetate" / "Acetate.itp")
+    assert exported[0] == pytest.approx(acetate_charges[0], abs=1.0e-8)
+    assert sum(exported[1:]) == pytest.approx(-0.8, abs=1.0e-8)
+
+    report = json.loads((out.system_top.parent / "charge_scaling_report.json").read_text(encoding="utf-8"))
+    species_report = report["species"][0]
+    assert species_report["used_group_scaling"] is True
+    assert species_report["report"]["groups"][0]["target_total_charge"] == pytest.approx(-0.8, abs=1.0e-8)
+
+
+def test_export_system_fails_closed_for_polyelectrolyte_scaling_without_charge_groups_when_smiles_cannot_be_recovered(tmp_path: Path):
+    source_root = tmp_path / "source_molecules"
+    _write_minimal_species_artifacts(source_root, mol_name="OpaquePE", charges=[-0.4, -0.6, 0.0])
+
+    cell = Chem.Mol()
+    setattr(cell, "cell", utils.Cell(4.0, 0.0, 4.0, 0.0, 4.0, 0.0))
+    meta = {
+        "density_g_cm3": 1.0,
+        "polyelectrolyte_mode": True,
+        "species": [
+            {
+                "smiles": "not-a-valid-smiles",
+                "n": 1,
+                "natoms": 3,
+                "name": "OpaquePE",
+                "charge_scale": 0.8,
+                "charge_groups": None,
+                "resp_constraints": None,
+                "polyelectrolyte_summary": {
+                    "is_polyelectrolyte": False,
+                    "groups": [
+                        {
+                            "group_id": "group_1",
+                            "label": "carboxylate",
+                            "atom_indices": [0, 1],
+                            "formal_charge": -1,
+                            "source": "template",
+                        }
+                    ],
+                },
+                "polyelectrolyte_mode": True,
+            }
+        ],
+    }
+    cell.SetProp("_yadonpy_cell_meta", json.dumps(meta, ensure_ascii=False))
+
+    with pytest.raises(RuntimeError, match="requires charge_groups"):
         export_system_from_cell_meta(
-            cell_mol=ac,
-            out_dir=tmp_path / 'scaled_missing_groups',
-            ff_name=ff.name,
-            charge_method='RESP',
-            charge_scale=0.8,
-            polyelectrolyte_mode=True,
+            cell_mol=cell,
+            out_dir=tmp_path / "scaled_missing_groups",
+            ff_name="gaff2_mod",
+            charge_method="RESP",
+            source_molecules_dir=source_root,
             write_system_mol2=False,
         )
 

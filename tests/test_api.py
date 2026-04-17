@@ -339,3 +339,37 @@ def test_moldb_load_regenerates_localized_charge_groups_for_stale_polyelectrolyt
     assert groups
     assert constraints.get('mode') == 'grouped'
     assert summary.get('groups')
+
+
+def test_moldb_load_upgrades_legacy_false_variant_when_localized_groups_are_requested(tmp_path: Path):
+    db = moldb.MolDB(db_dir=tmp_path / "moldb")
+    smiles = "*OC1OC(CO)C(*)C(O)C1OCC(=O)[O-]"
+    mol = api.mol_from_smiles(smiles, coord=True, name="glucose_6")
+    for atom in mol.GetAtoms():
+        atom.SetDoubleProp("AtomicCharge", float(atom.GetFormalCharge()) * 0.1)
+
+    rec = db.update_from_mol(
+        mol,
+        smiles_or_psmiles=smiles,
+        name="glucose_6",
+        charge="RESP",
+        polyelectrolyte_mode=False,
+    )
+    only_meta = next(iter(rec.variants.values()))
+    assert bool(only_meta.get("polyelectrolyte_mode", False)) is False
+
+    loaded, _ = db.load_mol(
+        smiles,
+        require_ready=True,
+        charge="RESP",
+        polyelectrolyte_mode=True,
+    )
+
+    groups = json.loads(loaded.GetProp("_yadonpy_charge_groups_json"))
+    constraints = json.loads(loaded.GetProp("_yadonpy_resp_constraints_json"))
+    summary = json.loads(loaded.GetProp("_yadonpy_polyelectrolyte_summary_json"))
+
+    assert groups
+    assert constraints.get("mode") == "grouped"
+    assert summary.get("groups")
+    assert loaded.GetProp("_YADONPY_POLYELECTROLYTE_MODE") == "1"

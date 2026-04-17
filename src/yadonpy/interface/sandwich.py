@@ -975,7 +975,11 @@ def _build_polymer_chain(*, ff, polymer: PolymerSlabSpec, relax: SandwichRelaxat
             work_dir=rw_dir,
         )
     chain = poly.terminate_rw(chain, terminal, name=polymer.name, work_dir=term_dir)
-    chain = ff.ff_assign(chain, report=False)
+    chain_pe_mode = any(
+        bool(spec.polyelectrolyte_mode if spec.polyelectrolyte_mode is not None else _is_polyelectrolyte_spec(spec))
+        for spec in monomer_specs
+    )
+    chain = ff.ff_assign(chain, report=False, polyelectrolyte_mode=chain_pe_mode)
     if not chain:
         raise RuntimeError(f"Cannot assign force field parameters for polymer chain {polymer.name}.")
     return chain, dp
