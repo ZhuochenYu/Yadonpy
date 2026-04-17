@@ -16,6 +16,174 @@ from typing import Any, Dict, Optional
 from ..core import chem_utils as core_utils
 
 
+def _stable_signature(payload: Any) -> str:
+    raw = json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha1(raw).hexdigest()[:16]
+
+
+def _atom_order_signature(mol) -> str:
+    atoms: list[dict[str, Any]] = []
+    for atom in mol.GetAtoms():
+        info = atom.GetPDBResidueInfo()
+        atoms.append(
+            {
+                "idx": int(atom.GetIdx()),
+                "atomic_num": int(atom.GetAtomicNum()),
+                "formal_charge": int(atom.GetFormalCharge()),
+                "isotope": int(atom.GetIsotope()),
+                "radicals": int(atom.GetNumRadicalElectrons()),
+                "aromatic": bool(atom.GetIsAromatic()),
+                "ff_type": (str(atom.GetProp("ff_type")) if atom.HasProp("ff_type") else ""),
+                "residue_number": (int(info.GetResidueNumber()) if info is not None else None),
+                "residue_name": (str(info.GetResidueName()).strip() if info is not None else ""),
+                "atom_name": (str(info.GetName()).strip() if info is not None else ""),
+            }
+        )
+    bonds = [
+        {
+            "begin": int(bond.GetBeginAtomIdx()),
+            "end": int(bond.GetEndAtomIdx()),
+            "order": float(bond.GetBondTypeAsDouble()),
+            "aromatic": bool(bond.GetIsAromatic()),
+        }
+        for bond in mol.GetBonds()
+    ]
+    return _stable_signature({"atoms": atoms, "bonds": bonds})
+
+
+def _charge_group_signature(groups: Any) -> str | None:
+    if not isinstance(groups, list) or not groups:
+        return None
+
+    normalized: list[dict[str, Any]] = []
+    for group in groups:
+        if not isinstance(group, dict):
+            continue
+        atom_indices = tuple(int(i) for i in group.get("atom_indices", []) if i is not None)
+        if not atom_indices:
+            continue
+        normalized.append(
+            {
+                "atom_indices": list(atom_indices),
+                "formal_charge": int(group.get("formal_charge", 0)),
+                "label": str(group.get("label") or ""),
+                "source": str(group.get("source") or ""),
+            }
+        )
+    if not normalized:
+        return None
+    normalized.sort(
+        key=lambda item: (
+            tuple(item["atom_indices"]),
+            item["formal_charge"],
+            item["label"],
+            item["source"],
+        )
+    )
+    return _stable_signature(normalized)
+
+
+def _residue_signature(residue_map: Any) -> str | None:
+    if not isinstance(residue_map, dict):
+        return None
+    residues_raw = residue_map.get("residues")
+    atoms_raw = residue_map.get("atoms")
+    if not isinstance(residues_raw, list) or not isinstance(atoms_raw, list):
+        return None
+
+    residues = []
+    for residue in residues_raw:
+        if not isinstance(residue, dict):
+            continue
+        residues.append(
+            {
+                "residue_number": int(residue.get("residue_number", 0)),
+                "residue_name": str(residue.get("residue_name") or ""),
+                "atom_indices": [int(i) for i in residue.get("atom_indices", []) if i is not None],
+            }
+        )
+
+    atoms = []
+    for atom in atoms_raw:
+        if not isinstance(atom, dict):
+            continue
+        atoms.append(
+            {
+                "atom_index": int(atom.get("atom_index", 0)),
+                "residue_number": int(atom.get("residue_number", 0)),
+                "residue_name": str(atom.get("residue_name") or ""),
+                "atom_name": str(atom.get("atom_name") or ""),
+            }
+        )
+
+    if not residues and not atoms:
+        return None
+    return _stable_signature({"residues": residues, "atoms": atoms})
+
+
+def _molecule_compatibility_context(mol, *, mol_name: str | None = None) -> Dict[str, Any]:
+    context: Dict[str, Any] = {}
+
+    try:
+        context["atom_order_signature"] = _atom_order_signature(mol)
+    except Exception:
+        pass
+
+    residue_map = None
+    try:
+        from ..core.polyelectrolyte import build_residue_map
+
+        residue_map = build_residue_map(mol, mol_name=mol_name)
+    except Exception:
+        residue_map = None
+
+    if residue_map is not None:
+        try:
+            context["_residue_count"] = len(list(residue_map.get("residues") or []))
+        except Exception:
+            context["_residue_count"] = 0
+        residue_sig = _residue_signature(residue_map)
+        if residue_sig:
+            context["residue_signature"] = residue_sig
+    else:
+        context["_residue_count"] = 0
+
+    try:
+        from ..core.polyelectrolyte import (
+            get_charge_groups,
+            get_polyelectrolyte_summary,
+            uses_localized_charge_groups,
+        )
+
+        groups = get_charge_groups(mol)
+        group_sig = _charge_group_signature(groups)
+        if group_sig:
+            context["charge_group_signature"] = group_sig
+        summary = get_polyelectrolyte_summary(mol)
+        context["_localized_charge_groups"] = bool(uses_localized_charge_groups(summary))
+    except Exception:
+        context["_localized_charge_groups"] = False
+
+    return context
+
+
+def _artifact_meta_compatibility_fields(mol, *, mol_name: str | None = None) -> Dict[str, str]:
+    context = _molecule_compatibility_context(mol, mol_name=mol_name)
+    meta: Dict[str, str] = {}
+    for key in ("atom_order_signature", "charge_group_signature", "residue_signature"):
+        value = context.get(key)
+        if value:
+            meta[key] = str(value)
+    return meta
+
+
+def _prefers_order_sensitive_artifact_cache(mol, *, mol_name: str | None = None) -> bool:
+    context = _molecule_compatibility_context(mol, mol_name=mol_name)
+    if not context.get("charge_group_signature"):
+        return False
+    return bool(context.get("_localized_charge_groups")) or int(context.get("_residue_count", 0)) > 1
+
+
 def _bonded_meta_from_mol(mol) -> Dict[str, Any]:
     """Collect bonded-override metadata that should survive caching."""
     meta: Dict[str, Any] = {}
@@ -183,6 +351,7 @@ def write_molecule_artifacts(
         "charge_signature": str(ch_sig),
     }
     meta.update(_bonded_meta_from_mol(mol))
+    meta.update(_artifact_meta_compatibility_fields(mol, mol_name=mol_name))
     (out_dir / "meta.json").write_text(json.dumps(meta, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
     # Tag the molecule with its artifact directory for downstream workflows (best effort)

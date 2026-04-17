@@ -12,7 +12,11 @@ try:
 except Exception:  # pragma: no cover
     Chem = None  # type: ignore
 
-from .artifacts import write_molecule_artifacts
+from .artifacts import (
+    _molecule_compatibility_context,
+    _prefers_order_sensitive_artifact_cache,
+    write_molecule_artifacts,
+)
 from ..core.naming import is_bad_default_name
 
 
@@ -95,6 +99,15 @@ def _fingerprint_mol(mol, ff_name: str) -> str:
       3) hash of (natoms, bonds, ff_type list)
     """
     bonded_sig = _mol_bonded_signature(mol)
+    if _prefers_order_sensitive_artifact_cache(mol):
+        compat = _molecule_compatibility_context(mol)
+        atom_sig = str(compat.get("atom_order_signature") or "")
+        group_sig = str(compat.get("charge_group_signature") or "")
+        residue_sig = str(compat.get("residue_signature") or "")
+        if atom_sig and group_sig:
+            key = f"{ff_name}|bonded|{bonded_sig}|ordered|{atom_sig}|groups|{group_sig}|residues|{residue_sig}"
+            return hashlib.sha1(key.encode("utf-8")).hexdigest()[:16]
+
     smiles = _mol_smiles_hint(mol)
     if smiles:
         key = f"{ff_name}|bonded|{bonded_sig}|smiles|{smiles}"
@@ -267,6 +280,20 @@ def ensure_cached_artifacts(
             meta_nat = None
         if nat is not None and meta_nat is not None and nat != meta_nat:
             valid_cache = False
+
+        compat = _molecule_compatibility_context(mol, mol_name=mol_name)
+        if _prefers_order_sensitive_artifact_cache(mol, mol_name=mol_name):
+            for key in ("atom_order_signature", "charge_group_signature"):
+                current_sig = str(compat.get(key) or "").strip()
+                cached_sig = str(meta.get(key) or "").strip()
+                if not current_sig or not cached_sig or current_sig != cached_sig:
+                    valid_cache = False
+                    break
+            if valid_cache:
+                current_residue_sig = str(compat.get("residue_signature") or "").strip()
+                cached_residue_sig = str(meta.get("residue_signature") or "").strip()
+                if current_residue_sig and (not cached_residue_sig or current_residue_sig != cached_residue_sig):
+                    valid_cache = False
 
         # Charge mismatch / all-zero charge detection.
         mol_abs, mol_sig = _mol_charge_abs_and_sig(mol)

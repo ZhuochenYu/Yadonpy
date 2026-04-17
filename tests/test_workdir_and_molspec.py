@@ -8,19 +8,25 @@ from rdkit import Geometry as Geom
 from rdkit.Chem import AllChem, Descriptors
 
 from yadonpy.core import as_rdkit_mol, molecular_weight, workdir, utils, poly
-from yadonpy.core.polyelectrolyte import annotate_polyelectrolyte_metadata, get_charge_groups
+from yadonpy.core.polyelectrolyte import (
+    annotate_polyelectrolyte_metadata,
+    build_residue_map,
+    get_charge_groups,
+    get_polyelectrolyte_summary,
+)
 from yadonpy.ff.gaff2_mod import GAFF2_mod
 from yadonpy.ff.merz import MERZ
 from yadonpy.interface.charge_audit import format_cell_charge_audit
-from yadonpy.io.artifacts import write_molecule_artifacts
+from yadonpy.io.artifacts import _artifact_meta_compatibility_fields, write_molecule_artifacts
 import yadonpy.io.artifacts as artifacts_mod
-from yadonpy.io.molecule_cache import ensure_cached_artifacts
+from yadonpy.io.molecule_cache import _fingerprint_mol, ensure_cached_artifacts
 from yadonpy.io.gromacs_molecule import _format_gro_atom_line as format_single_gro_atom_line
 from yadonpy.io.gromacs_system import _format_gro_atom_line as format_system_gro_atom_line
 from yadonpy.io.gromacs_system import _load_gro_species_templates
 from yadonpy.io.gromacs_system import canonicalize_smiles
 from yadonpy.io.gromacs_system import _species_signature_from_smiles
 from yadonpy.io.gromacs_system import export_system_from_cell_meta
+import yadonpy.io.gromacs_system as gromacs_system_mod
 from yadonpy.io.mol2 import read_mol2_with_charges, write_mol2_from_rdkit
 from yadonpy.core.data_dir import ensure_initialized
 from yadonpy.workflow.resume import file_signature as resume_file_signature
@@ -83,6 +89,88 @@ def _write_minimal_species_artifacts(base_dir: Path, *, mol_name: str, charges: 
     return mol_dir
 
 
+def _make_poly_like_localized_mol(smiles: str = "*OCC(=O)[O-]"):
+    mol = Chem.MolFromSmiles(smiles)
+    assert mol is not None
+    mol.SetProp("_yadonpy_smiles", smiles)
+    mol.SetIntProp("num_units", 4)
+    if mol.GetNumConformers() == 0:
+        conf = Chem.Conformer(mol.GetNumAtoms())
+        for idx in range(mol.GetNumAtoms()):
+            conf.SetAtomPosition(idx, Geom.Point3D(0.1 * idx, 0.0, 0.0))
+        mol.AddConformer(conf, assignId=True)
+    annotate_polyelectrolyte_metadata(mol)
+
+    groups = get_charge_groups(mol)
+    grouped = {int(idx) for grp in groups for idx in grp.get("atom_indices", [])}
+    for atom in mol.GetAtoms():
+        if atom.GetAtomicNum() == 8:
+            atom.SetProp("ff_type", "oh")
+        elif atom.GetAtomicNum() == 6:
+            atom.SetProp("ff_type", "c3")
+        else:
+            atom.SetProp("ff_type", "du")
+        atom.SetDoubleProp("AtomicCharge", 0.0)
+        atom.SetDoubleProp("RESP", 0.0)
+
+    for grp in groups:
+        atom_indices = [int(i) for i in grp.get("atom_indices", [])]
+        assert atom_indices
+        per_atom = float(grp.get("formal_charge", 0)) / float(len(atom_indices))
+        for idx in atom_indices:
+            mol.GetAtomWithIdx(idx).SetDoubleProp("AtomicCharge", per_atom)
+            mol.GetAtomWithIdx(idx).SetDoubleProp("RESP", per_atom)
+
+    for idx in range(mol.GetNumAtoms()):
+        if idx not in grouped:
+            mol.GetAtomWithIdx(idx).SetDoubleProp("AtomicCharge", 0.0)
+            mol.GetAtomWithIdx(idx).SetDoubleProp("RESP", 0.0)
+
+    return mol
+
+
+def _set_stale_polyelectrolyte_metadata(mol, atom_indices: list[int]):
+    bad_group = {
+        "group_id": "group_1",
+        "label": "stale_group",
+        "atom_indices": [int(i) for i in atom_indices],
+        "formal_charge": -1,
+        "source": "stale",
+    }
+    molecule_formal_charge = int(sum(int(atom.GetFormalCharge()) for atom in mol.GetAtoms()))
+    neutral_remainder = [
+        idx for idx in range(mol.GetNumAtoms()) if idx not in {int(i) for i in atom_indices}
+    ]
+    summary = {
+        "is_polymer": True,
+        "is_polyelectrolyte": True,
+        "detection": "auto",
+        "fallback": None,
+        "groups": [bad_group],
+        "neutral_remainder": neutral_remainder,
+        "equivalence_groups": [],
+        "molecule_formal_charge": molecule_formal_charge,
+    }
+    constraints = {
+        "mode": "grouped",
+        "charged_group_constraints": [
+            {
+                "group_id": bad_group["group_id"],
+                "atom_indices": list(bad_group["atom_indices"]),
+                "target_charge": -1,
+                "source": "stale",
+            }
+        ],
+        "neutral_remainder_charge": int(molecule_formal_charge + 1),
+        "neutral_remainder_indices": neutral_remainder,
+        "equivalence_groups": [],
+        "fallback": None,
+    }
+    mol.SetProp("_yadonpy_charge_groups_json", json.dumps([bad_group], ensure_ascii=False))
+    mol.SetProp("_yadonpy_resp_constraints_json", json.dumps(constraints, ensure_ascii=False))
+    mol.SetProp("_yadonpy_polyelectrolyte_summary_json", json.dumps(summary, ensure_ascii=False))
+
+
 def test_workdir_is_pathlike_and_non_destructive(tmp_path: Path):
     root = tmp_path / 'work'
     root.mkdir(parents=True)
@@ -123,6 +211,48 @@ def test_polymerize_rw_refreshes_polyelectrolyte_metadata_for_full_chain(tmp_pat
         for idx in grp["atom_indices"]:
             total += float(chain.GetAtomWithIdx(int(idx)).GetDoubleProp("AtomicCharge"))
         assert total == pytest.approx(-1.0, abs=1.0e-8)
+
+
+def test_localized_polymer_cache_fingerprint_tracks_atom_order_even_with_same_smiles_hint():
+    mol_a = _make_poly_like_localized_mol()
+    reverse_order = list(reversed(range(mol_a.GetNumAtoms())))
+    mol_b = Chem.RenumberAtoms(mol_a, reverse_order)
+    mol_b.SetProp("_yadonpy_smiles", mol_a.GetProp("_yadonpy_smiles"))
+    mol_b.SetIntProp("num_units", 4)
+    annotate_polyelectrolyte_metadata(mol_b)
+
+    assert _fingerprint_mol(mol_a, "gaff2_mod") != _fingerprint_mol(mol_b, "gaff2_mod")
+
+
+def test_rw_load_refreshes_stale_polyelectrolyte_metadata_from_cached_state(tmp_path: Path):
+    mol = _make_poly_like_localized_mol()
+    expected_groups = get_charge_groups(mol)
+    assert expected_groups
+    assert expected_groups[0]["atom_indices"] != [0, 1, 2]
+
+    _set_stale_polyelectrolyte_metadata(mol, [0, 1, 2])
+    payload = {"probe": "refresh_stale_charge_groups"}
+    poly._rw_save(tmp_path / "rw_cache_refresh", "terminate_rw", payload, mol)
+
+    restored = poly._rw_load(tmp_path / "rw_cache_refresh", "terminate_rw", payload)
+
+    assert restored is not None
+    assert get_charge_groups(restored) == expected_groups
+
+
+def test_gaff_ff_assign_refreshes_stale_polyelectrolyte_metadata_when_requested():
+    mol = utils.mol_from_smiles("CC(=O)[O-]")
+    expected_groups = get_charge_groups(mol)
+    assert expected_groups
+    assert expected_groups[0]["atom_indices"] != [0, 1, 2]
+
+    _set_stale_polyelectrolyte_metadata(mol, [0, 1, 2])
+    ff = GAFF2_mod()
+
+    assigned = ff.ff_assign(mol, charge=None, polyelectrolyte_mode=True, report=False)
+
+    assert assigned is not False
+    assert get_charge_groups(assigned) == expected_groups
 
 
 def test_write_molecule_artifacts_uses_best_available_charge_property(tmp_path: Path):
@@ -194,6 +324,52 @@ def test_write_molecule_artifacts_retargets_localized_polyelectrolyte_total_char
     assert captured["total_q"] == pytest.approx(-1.0, abs=1.0e-6)
     meta = json.loads((out / "meta.json").read_text(encoding="utf-8"))
     assert meta["charge_target_policy"] == "formal_charge_for_localized_polyelectrolyte"
+
+
+def test_write_molecule_artifacts_records_order_sensitive_compatibility_signatures(tmp_path: Path, monkeypatch):
+    mol = _make_poly_like_localized_mol()
+
+    monkeypatch.setattr(artifacts_mod, "_ensure_bonded_terms_for_export", lambda mol_obj, ff_name: None)
+    monkeypatch.setattr(artifacts_mod, "_reapply_bonded_patch_to_mol", lambda mol_obj: None)
+
+    def _fake_topology_writer(mol_obj, out_dir: Path, *, mol_name: str):
+        out_dir.mkdir(parents=True, exist_ok=True)
+        charges = [float(atom.GetDoubleProp("AtomicCharge")) for atom in mol_obj.GetAtoms()]
+        itp_lines = [
+            "[ moleculetype ]",
+            f"{mol_name} 3",
+            "",
+            "[ atoms ]",
+            "; nr  type  resnr  residue  atom  cgnr  charge  mass",
+        ]
+        for idx, charge in enumerate(charges, start=1):
+            itp_lines.append(
+                f"{idx:5d}  XX  1  {mol_name[:5]:<5}  A{idx:<3d}  {idx:5d}  {charge: .6f}  12.011"
+            )
+        (out_dir / f"{mol_name}.itp").write_text("\n".join(itp_lines) + "\n", encoding="utf-8")
+        (out_dir / f"{mol_name}.gro").write_text(f"{mol_name}\n{len(charges):5d}\n   4.00000   4.00000   4.00000\n", encoding="utf-8")
+        (out_dir / f"{mol_name}.top").write_text("", encoding="utf-8")
+        return out_dir / f"{mol_name}.gro", out_dir / f"{mol_name}.itp", out_dir / f"{mol_name}.top"
+
+    import yadonpy.io.gromacs_molecule as gmx_mol_mod
+
+    monkeypatch.setattr(gmx_mol_mod, "write_gromacs_single_molecule_topology", _fake_topology_writer)
+
+    out = tmp_path / "art_cache_sig"
+    write_molecule_artifacts(
+        mol,
+        out,
+        smiles=mol.GetProp("_yadonpy_smiles"),
+        ff_name="gaff2_mod",
+        charge_method="RESP",
+        mol_name="PolyPE",
+        write_mol2=False,
+    )
+
+    meta = json.loads((out / "meta.json").read_text(encoding="utf-8"))
+    assert meta["atom_order_signature"]
+    assert meta["charge_group_signature"]
+    assert meta["residue_signature"]
 
 
 def test_gro_atom_line_wraps_overflow_indices_without_shifting_coordinates():
@@ -1257,6 +1433,240 @@ def test_export_system_applies_group_scaling_to_localized_small_molecule_anion(t
     species_report = report["species"][0]
     assert species_report["used_group_scaling"] is True
     assert species_report["report"]["groups"][0]["target_total_charge"] == pytest.approx(-0.8, abs=1.0e-8)
+
+
+def test_export_system_rebuilds_mismatched_cached_polymer_artifact_before_group_scaling(tmp_path: Path, monkeypatch):
+    current = _make_poly_like_localized_mol()
+    old = Chem.RenumberAtoms(current, list(reversed(range(current.GetNumAtoms()))))
+    old.SetProp("_yadonpy_smiles", current.GetProp("_yadonpy_smiles"))
+    old.SetIntProp("num_units", 4)
+    annotate_polyelectrolyte_metadata(old)
+
+    old_charges = [0.65, -0.10, 0.25, -0.80, 0.15, -0.15][: old.GetNumAtoms()]
+    old_dir = _write_minimal_species_artifacts(tmp_path / "cached_polymer", mol_name="PolyPE", charges=old_charges)
+    (old_dir / "meta.json").write_text(
+        json.dumps(
+            {
+                "n_atoms": int(old.GetNumAtoms()),
+                **_artifact_meta_compatibility_fields(old, mol_name="PolyPE"),
+            },
+            indent=2,
+            ensure_ascii=False,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    current_charges = [float(atom.GetDoubleProp("AtomicCharge")) for atom in current.GetAtoms()]
+    current_groups = get_charge_groups(current)
+    group_atoms = {int(idx) for grp in current_groups for idx in grp.get("atom_indices", [])}
+    expected = list(current_charges)
+    for grp in current_groups:
+        indices = [int(i) for i in grp.get("atom_indices", [])]
+        factor = 0.7
+        for idx in indices:
+            expected[idx] *= factor
+
+    calls = {"count": 0}
+
+    def _fake_write_molecule_artifacts(
+        mol_obj,
+        out_dir: Path,
+        *,
+        mol_name: str,
+        **kwargs,
+    ):
+        calls["count"] += 1
+        out_dir.mkdir(parents=True, exist_ok=True)
+        charges = []
+        for atom in mol_obj.GetAtoms():
+            charges.append(float(atom.GetDoubleProp("AtomicCharge")) if atom.HasProp("AtomicCharge") else 0.0)
+
+        itp_lines = [
+            "[ moleculetype ]",
+            f"{mol_name} 3",
+            "",
+            "[ atoms ]",
+            "; nr  type  resnr  residue  atom  cgnr  charge  mass",
+        ]
+        for idx, charge in enumerate(charges, start=1):
+            itp_lines.append(
+                f"{idx:5d}  XX  1  {mol_name[:5]:<5}  A{idx:<3d}  {idx:5d}  {charge: .6f}  12.011"
+            )
+        (out_dir / f"{mol_name}.itp").write_text("\n".join(itp_lines) + "\n", encoding="utf-8")
+
+        gro_lines = [mol_name, f"{len(charges):5d}"]
+        for idx in range(1, len(charges) + 1):
+            gro_lines.append(
+                format_system_gro_atom_line(
+                    resnr=1,
+                    resname=mol_name[:5],
+                    atomname=f"A{idx}",
+                    atomnr=idx,
+                    x=0.01 * idx,
+                    y=0.0,
+                    z=0.0,
+                )
+            )
+        gro_lines.append("   4.00000   4.00000   4.00000")
+        (out_dir / f"{mol_name}.gro").write_text("\n".join(gro_lines) + "\n", encoding="utf-8")
+        (out_dir / f"{mol_name}.top").write_text(
+            f'#include "{mol_name}.itp"\n\n[ system ]\n{mol_name}\n\n[ molecules ]\n{mol_name} 1\n',
+            encoding="utf-8",
+        )
+        return out_dir
+
+    monkeypatch.setattr(gromacs_system_mod, "write_molecule_artifacts", _fake_write_molecule_artifacts)
+    monkeypatch.setattr(gromacs_system_mod, "_ensure_bonded_terms_from_types", lambda mol_obj, ff_name: None)
+
+    cell = Chem.Mol(current)
+    setattr(cell, "cell", utils.Cell(4.0, 0.0, 4.0, 0.0, 4.0, 0.0))
+    cell.SetProp(
+        "_yadonpy_cell_meta",
+        json.dumps(
+            {
+                "density_g_cm3": 1.0,
+                "polyelectrolyte_mode": True,
+                "species": [
+                    {
+                        "smiles": current.GetProp("_yadonpy_smiles"),
+                        "n": 1,
+                        "natoms": int(current.GetNumAtoms()),
+                        "name": "PolyPE",
+                        "charge_scale": 0.7,
+                        "charge_groups": current_groups,
+                        "resp_constraints": None,
+                        "polyelectrolyte_summary": get_polyelectrolyte_summary(current),
+                        "residue_map": build_residue_map(current, mol_name="PolyPE"),
+                        "polyelectrolyte_mode": True,
+                        "cached_artifact_dir": str(old_dir),
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+    )
+
+    out = export_system_from_cell_meta(
+        cell_mol=cell,
+        out_dir=tmp_path / "polymer_rebuilt",
+        ff_name="gaff2_mod",
+        charge_method="RESP",
+        write_system_mol2=False,
+    )
+
+    exported = _parse_itp_atom_charges(out.molecules_dir / "PolyPE" / "PolyPE.itp")
+    assert calls["count"] == 1
+    assert len(exported) == len(expected)
+    for actual, target in zip(exported, expected):
+        assert actual == pytest.approx(target, abs=1.0e-6)
+    assert sum(exported[idx] for idx in group_atoms) == pytest.approx(-0.7, abs=1.0e-6)
+    assert max(abs(q) for q in exported) < 5.0
+
+
+def test_export_system_rebuilds_polymer_cache_when_legacy_meta_lacks_order_signatures(tmp_path: Path, monkeypatch):
+    current = _make_poly_like_localized_mol()
+    legacy_dir = _write_minimal_species_artifacts(
+        tmp_path / "legacy_polymer",
+        mol_name="PolyPE",
+        charges=[0.80, -0.10, 0.20, -0.70, -0.10, -0.10][: current.GetNumAtoms()],
+    )
+    (legacy_dir / "meta.json").write_text(json.dumps({"n_atoms": int(current.GetNumAtoms())}, indent=2) + "\n", encoding="utf-8")
+
+    calls = {"count": 0}
+
+    def _fake_write_molecule_artifacts(mol_obj, out_dir: Path, *, mol_name: str, **kwargs):
+        calls["count"] += 1
+        out_dir.mkdir(parents=True, exist_ok=True)
+        charges = [float(atom.GetDoubleProp("AtomicCharge")) for atom in mol_obj.GetAtoms()]
+        _write_minimal_species_artifacts(out_dir.parent, mol_name=mol_name, charges=charges)
+        return out_dir
+
+    monkeypatch.setattr(gromacs_system_mod, "write_molecule_artifacts", _fake_write_molecule_artifacts)
+    monkeypatch.setattr(gromacs_system_mod, "_ensure_bonded_terms_from_types", lambda mol_obj, ff_name: None)
+
+    cell = Chem.Mol(current)
+    setattr(cell, "cell", utils.Cell(4.0, 0.0, 4.0, 0.0, 4.0, 0.0))
+    cell.SetProp(
+        "_yadonpy_cell_meta",
+        json.dumps(
+            {
+                "density_g_cm3": 1.0,
+                "polyelectrolyte_mode": True,
+                "species": [
+                    {
+                        "smiles": current.GetProp("_yadonpy_smiles"),
+                        "n": 1,
+                        "natoms": int(current.GetNumAtoms()),
+                        "name": "PolyPE",
+                        "charge_scale": 0.7,
+                        "charge_groups": get_charge_groups(current),
+                        "polyelectrolyte_summary": get_polyelectrolyte_summary(current),
+                        "residue_map": build_residue_map(current, mol_name="PolyPE"),
+                        "polyelectrolyte_mode": True,
+                        "cached_artifact_dir": str(legacy_dir),
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+    )
+
+    out = export_system_from_cell_meta(
+        cell_mol=cell,
+        out_dir=tmp_path / "polymer_legacy_rebuilt",
+        ff_name="gaff2_mod",
+        charge_method="RESP",
+        write_system_mol2=False,
+    )
+
+    assert calls["count"] == 1
+    exported = _parse_itp_atom_charges(out.molecules_dir / "PolyPE" / "PolyPE.itp")
+    assert max(abs(q) for q in exported) < 5.0
+
+
+def test_export_system_keeps_small_molecule_cached_copy_path_without_new_signatures(tmp_path: Path, monkeypatch):
+    cached_dir = _write_minimal_species_artifacts(tmp_path / "cached_small", mol_name="EC", charges=[0.10, -0.20, 0.10])
+
+    def _should_not_write(*args, **kwargs):
+        raise AssertionError("small-molecule cached artifact should have been reused")
+
+    monkeypatch.setattr(gromacs_system_mod, "write_molecule_artifacts", _should_not_write)
+
+    cell = Chem.MolFromSmiles("CCO")
+    assert cell is not None
+    setattr(cell, "cell", utils.Cell(4.0, 0.0, 4.0, 0.0, 4.0, 0.0))
+    cell.SetProp(
+        "_yadonpy_cell_meta",
+        json.dumps(
+            {
+                "density_g_cm3": 1.0,
+                "species": [
+                    {
+                        "smiles": "CCO",
+                        "n": 1,
+                        "natoms": 3,
+                        "name": "EC",
+                        "charge_scale": 1.0,
+                        "polyelectrolyte_mode": False,
+                        "cached_artifact_dir": str(cached_dir),
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+    )
+
+    out = export_system_from_cell_meta(
+        cell_mol=cell,
+        out_dir=tmp_path / "small_cache_hit",
+        ff_name="gaff2_mod",
+        charge_method="RESP",
+        write_system_mol2=False,
+    )
+
+    exported = _parse_itp_atom_charges(out.molecules_dir / "EC" / "EC.itp")
+    assert exported == pytest.approx([0.10, -0.20, 0.10], abs=1.0e-8)
 
 
 def test_export_system_normalizes_embedded_parameter_blocks_with_compact_moleculetype_headers(tmp_path: Path):

@@ -21,6 +21,7 @@ import json
 from itertools import permutations
 from rdkit import Chem
 from ..core import calc, utils
+from ..core.polyelectrolyte import annotate_polyelectrolyte_metadata
 from ..core.resources import ff_data_path
 from . import ff_class
 from .report import print_ff_assignment_report
@@ -350,6 +351,31 @@ class GAFF():
             except Exception as e:
                 # If the user explicitly requested bonded params, fail loudly.
                 raise RuntimeError(f"bonded={bonded!r} requested but failed: {e}") from e
+
+        if result:
+            try:
+                refresh_detection = str(charge_kwargs.get("polyelectrolyte_detection", "auto") or "auto")
+                refresh_requested = bool(charge_kwargs.get("polyelectrolyte_mode", False))
+                has_polyelectrolyte_props = False
+                if hasattr(mol, "HasProp"):
+                    for key in (
+                        "_yadonpy_charge_groups_json",
+                        "_yadonpy_resp_constraints_json",
+                        "_yadonpy_polyelectrolyte_summary_json",
+                    ):
+                        if mol.HasProp(key):
+                            has_polyelectrolyte_props = True
+                            break
+                molecule_formal_charge = int(sum(int(atom.GetFormalCharge()) for atom in mol.GetAtoms()))
+                smiles_hint = ""
+                try:
+                    smiles_hint = Chem.MolToSmiles(mol, isomericSmiles=True)
+                except Exception:
+                    smiles_hint = ""
+                if refresh_requested or has_polyelectrolyte_props or molecule_formal_charge != 0 or "*" in smiles_hint:
+                    annotate_polyelectrolyte_metadata(mol, detection=refresh_detection)
+            except Exception:
+                pass
 
         if _spec_mode:
             return mol if result else False
