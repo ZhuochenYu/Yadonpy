@@ -161,8 +161,106 @@ def _uses_charge_group_scaling(species_payload: Mapping[str, Any], *, effective_
     groups = species_payload.get("charge_groups")
     return bool(isinstance(groups, list) and groups)
 
+
+def _read_artifact_meta(src_dir: Path | None) -> dict[str, Any]:
+    if src_dir is None:
+        return {}
+    try:
+        meta_path = Path(src_dir).expanduser().resolve() / "meta.json"
+    except Exception:
+        return {}
+    if not meta_path.is_file():
+        return {}
+    try:
+        raw = json.loads(meta_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def _species_compatibility_context(species_payload: Mapping[str, Any]) -> dict[str, Any]:
+    context: dict[str, Any] = {}
+
+    groups = species_payload.get("charge_groups")
+    group_sig = _charge_group_signature(groups)
+    if group_sig:
+        context["charge_group_signature"] = group_sig
+
+    residue_map = species_payload.get("residue_map")
+    residue_sig = _residue_signature(residue_map)
+    if residue_sig:
+        context["residue_signature"] = residue_sig
+    if isinstance(residue_map, Mapping):
+        try:
+            context["_residue_count"] = len(list(residue_map.get("residues") or []))
+        except Exception:
+            context["_residue_count"] = 0
+    else:
+        context["_residue_count"] = 0
+
+    return context
+
+
+def _cached_artifact_compatible(
+    src_dir: Path | None,
+    *,
+    species_payload: Mapping[str, Any],
+    kind: str,
+    rep_mol=None,
+    mol_name: str | None = None,
+) -> bool:
+    meta = _read_artifact_meta(src_dir)
+    if not meta:
+        return not bool(_requires_charge_groups(species_payload) and str(kind) == "polymer")
+
+    try:
+        expected_natoms = int(species_payload.get("natoms") or 0)
+    except Exception:
+        expected_natoms = 0
+    if expected_natoms > 0:
+        try:
+            cached_natoms = int(meta.get("n_atoms"))
+        except Exception:
+            return False
+        if cached_natoms != expected_natoms:
+            return False
+
+    strict_missing_signatures = bool(_requires_charge_groups(species_payload) and str(kind) == "polymer")
+    current = _species_compatibility_context(species_payload)
+
+    current_group_sig = str(current.get("charge_group_signature") or "").strip()
+    cached_group_sig = str(meta.get("charge_group_signature") or "").strip()
+    if current_group_sig:
+        if not cached_group_sig:
+            if strict_missing_signatures:
+                return False
+        elif cached_group_sig != current_group_sig:
+            return False
+
+    current_residue_sig = str(current.get("residue_signature") or "").strip()
+    cached_residue_sig = str(meta.get("residue_signature") or "").strip()
+    if current_residue_sig and cached_residue_sig and current_residue_sig != cached_residue_sig:
+        return False
+
+    rep_ctx = _molecule_compatibility_context(rep_mol, mol_name=mol_name) if rep_mol is not None else {}
+    current_atom_sig = str(rep_ctx.get("atom_order_signature") or "").strip()
+    cached_atom_sig = str(meta.get("atom_order_signature") or "").strip()
+    if current_atom_sig:
+        if not cached_atom_sig:
+            if strict_missing_signatures:
+                return False
+        elif cached_atom_sig != current_atom_sig:
+            return False
+
+    return True
+
 from ..api import get_ff
-from .artifacts import write_molecule_artifacts
+from .artifacts import (
+    _charge_group_signature,
+    _molecule_compatibility_context,
+    _residue_signature,
+    write_molecule_artifacts,
+)
 
 
 @dataclass
@@ -807,6 +905,10 @@ def _scale_itp_charge_groups(itp_text: str, groups: list[dict[str, Any]], scale:
         if ";" in raw:
             _, tail = raw.split(";", 1)
             comment = " ;" + tail
+        try:
+            info["cols"][6] = f"{float(info['cols'][6]):.8f}"
+        except Exception:
+            pass
         lines[info["line_index"]] = "\t".join(info["cols"]) + comment
     return ("\n".join(lines) + ("\n" if itp_text.endswith("\n") else "")), report
 
@@ -1449,6 +1551,19 @@ def export_system_from_cell_meta(
         mol_id = str(sp.get('name') or sp.get('resname') or f"M{i+1}")
         mol_name = str(sp.get('name') or sp.get('resname') or mol_id)
         mol_name_fs = _fs_safe_mol_name(mol_name)
+        rep_mol = None
+        need_cache_validation = bool(_requires_charge_groups(sp) or kind == "polymer")
+        if need_cache_validation:
+            frag_list = _ensure_frag_mols()
+            if frag_list is not None and frag_start + n <= len(frag_list):
+                cand = frag_list[frag_start]
+                ok = True
+                for j in range(n):
+                    if frag_list[frag_start + j].GetNumAtoms() != cand.GetNumAtoms():
+                        ok = False
+                        break
+                if ok and (natoms_meta <= 0 or cand.GetNumAtoms() == natoms_meta):
+                    rep_mol = cand
 
         def _copy_from_src_dir(src_dir: Path | None) -> bool:
             if src_dir is None:
@@ -1458,6 +1573,14 @@ def export_system_from_cell_meta(
             except Exception:
                 return False
             if not src_dir.exists():
+                return False
+            if not _cached_artifact_compatible(
+                src_dir,
+                species_payload=sp,
+                kind=kind,
+                rep_mol=rep_mol,
+                mol_name=mol_name_fs,
+            ):
                 return False
 
             src_itp = next(iter(src_dir.glob("*.itp")), None)
@@ -1542,18 +1665,18 @@ def export_system_from_cell_meta(
 
         # Representative fragment molecule from the cell (if available), to preserve atom ordering
         # and reuse pre-typed FF information.
-        rep_mol = None
-        frag_list = _ensure_frag_mols()
-        if frag_list is not None:
-            if frag_start + n <= len(frag_list):
-                cand = frag_list[frag_start]
-                ok = True
-                for j in range(n):
-                    if frag_list[frag_start + j].GetNumAtoms() != cand.GetNumAtoms():
-                        ok = False
-                        break
-                if ok and (natoms_meta <= 0 or cand.GetNumAtoms() == natoms_meta):
-                    rep_mol = cand
+        if rep_mol is None:
+            frag_list = _ensure_frag_mols()
+            if frag_list is not None:
+                if frag_start + n <= len(frag_list):
+                    cand = frag_list[frag_start]
+                    ok = True
+                    for j in range(n):
+                        if frag_list[frag_start + j].GetNumAtoms() != cand.GetNumAtoms():
+                            ok = False
+                            break
+                    if ok and (natoms_meta <= 0 or cand.GetNumAtoms() == natoms_meta):
+                        rep_mol = cand
 
         rep_has_ff = False
         if rep_mol is not None:

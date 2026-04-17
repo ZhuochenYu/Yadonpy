@@ -1041,7 +1041,12 @@ def _rw_load(work_dir, kind: str, payload: dict):
     sdf = root / f'{key}.sdf'
     if sdf.exists():
         mol = _rw_load_sdf(sdf, kind)
-        return _cache_restore_mol_state(mol, _rw_load_state(work_dir, kind, payload))
+        mol = _cache_restore_mol_state(mol, _rw_load_state(work_dir, kind, payload))
+        try:
+            mol = _rw_finalize_bonded_terms(mol)
+        except Exception:
+            pass
+        return mol
     compat = _rw_find_compatible_sdf(root, kind, payload)
     if compat is None:
         return None
@@ -1054,7 +1059,12 @@ def _rw_load(work_dir, kind: str, payload: dict):
             state = json.loads(state_path.read_text(encoding='utf-8'))
         except Exception:
             state = None
-    return _cache_restore_mol_state(mol, state)
+    mol = _cache_restore_mol_state(mol, state)
+    try:
+        mol = _rw_finalize_bonded_terms(mol)
+    except Exception:
+        pass
+    return mol
 
 
 def _rw_save(work_dir, kind: str, payload: dict, mol):
@@ -3289,6 +3299,7 @@ def terminate_rw(poly, mol1, mol2=None, confId=0, dist_min=1.0, retry=100, rollb
         )
 
     set_terminal_idx(poly_c)
+    poly_c = _rw_finalize_bonded_terms(poly_c)
     dt2 = datetime.datetime.now()
     utils.radon_print('Normal termination of poly.terminate_rw. Elapsed time = %s' % str(dt2-dt1), level=1)
 
