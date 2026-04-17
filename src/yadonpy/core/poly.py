@@ -1407,36 +1407,53 @@ def _rw_finalize_bonded_terms(mol):
     has_new_bond = _has_marked_new_bond(mol)
     has_angles = bool(getattr(mol, 'angles', {}) or {})
     has_dihedrals = bool(getattr(mol, 'dihedrals', {}) or {})
-    if not has_new_bond and has_angles and (mol.GetNumAtoms() < 4 or has_dihedrals):
-        return mol
-    if not hasattr(mol, 'HasProp') or not mol.HasProp('ff_name'):
-        return mol
-    ff_name = str(mol.GetProp('ff_name')).strip()
-    if not ff_name:
-        return mol
+    skip_bonded_refresh = bool(not has_new_bond and has_angles and (mol.GetNumAtoms() < 4 or has_dihedrals))
+    ff_name = None
     try:
-        from ..api import get_ff
+        if hasattr(mol, 'HasProp') and mol.HasProp('ff_name'):
+            ff_name = str(mol.GetProp('ff_name')).strip() or None
+    except Exception:
+        ff_name = None
+    if (not skip_bonded_refresh) and ff_name:
+        try:
+            from ..api import get_ff
 
-        ff_obj = get_ff(ff_name)
-        if has_new_bond:
-            if mol.GetNumAtoms() >= 1 and hasattr(ff_obj, 'assign_ptypes'):
-                ff_obj.assign_ptypes(mol)
-            if mol.GetNumAtoms() >= 2 and hasattr(ff_obj, 'assign_btypes'):
-                ff_obj.assign_btypes(mol)
-            if mol.GetNumAtoms() >= 3 and hasattr(ff_obj, 'assign_atypes'):
-                ff_obj.assign_atypes(mol)
-            if mol.GetNumAtoms() >= 4 and hasattr(ff_obj, 'assign_dtypes'):
-                ff_obj.assign_dtypes(mol)
-            if hasattr(ff_obj, 'assign_itypes'):
-                ff_obj.assign_itypes(mol)
-            _clear_new_bond_marks(mol)
-            return mol
-        if mol.GetNumAtoms() >= 3 and not has_angles and hasattr(ff_obj, 'assign_atypes'):
-            ff_obj.assign_atypes(mol)
-        if mol.GetNumAtoms() >= 4 and not has_dihedrals and hasattr(ff_obj, 'assign_dtypes'):
-            ff_obj.assign_dtypes(mol)
-        if hasattr(ff_obj, 'assign_itypes'):
-            ff_obj.assign_itypes(mol)
+            ff_obj = get_ff(ff_name)
+            if has_new_bond:
+                if mol.GetNumAtoms() >= 1 and hasattr(ff_obj, 'assign_ptypes'):
+                    ff_obj.assign_ptypes(mol)
+                if mol.GetNumAtoms() >= 2 and hasattr(ff_obj, 'assign_btypes'):
+                    ff_obj.assign_btypes(mol)
+                if mol.GetNumAtoms() >= 3 and hasattr(ff_obj, 'assign_atypes'):
+                    ff_obj.assign_atypes(mol)
+                if mol.GetNumAtoms() >= 4 and hasattr(ff_obj, 'assign_dtypes'):
+                    ff_obj.assign_dtypes(mol)
+                if hasattr(ff_obj, 'assign_itypes'):
+                    ff_obj.assign_itypes(mol)
+                _clear_new_bond_marks(mol)
+            else:
+                if mol.GetNumAtoms() >= 3 and not has_angles and hasattr(ff_obj, 'assign_atypes'):
+                    ff_obj.assign_atypes(mol)
+                if mol.GetNumAtoms() >= 4 and not has_dihedrals and hasattr(ff_obj, 'assign_dtypes'):
+                    ff_obj.assign_dtypes(mol)
+                if hasattr(ff_obj, 'assign_itypes'):
+                    ff_obj.assign_itypes(mol)
+        except Exception:
+            pass
+    try:
+        has_polyelectrolyte_props = False
+        if hasattr(mol, 'HasProp'):
+            for key in (
+                "_yadonpy_charge_groups_json",
+                "_yadonpy_resp_constraints_json",
+                "_yadonpy_polyelectrolyte_summary_json",
+            ):
+                if mol.HasProp(key):
+                    has_polyelectrolyte_props = True
+                    break
+        molecule_formal_charge = int(sum(int(atom.GetFormalCharge()) for atom in mol.GetAtoms()))
+        if has_polyelectrolyte_props or ("*" in Chem.MolToSmiles(mol, isomericSmiles=True)) or molecule_formal_charge != 0:
+            annotate_polyelectrolyte_metadata(mol, detection="auto")
     except Exception:
         pass
     return mol

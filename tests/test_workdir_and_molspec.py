@@ -8,6 +8,7 @@ from rdkit import Geometry as Geom
 from rdkit.Chem import AllChem, Descriptors
 
 from yadonpy.core import as_rdkit_mol, molecular_weight, workdir, utils, poly
+from yadonpy.core.polyelectrolyte import annotate_polyelectrolyte_metadata, get_charge_groups
 from yadonpy.ff.gaff2_mod import GAFF2_mod
 from yadonpy.ff.merz import MERZ
 from yadonpy.interface.charge_audit import format_cell_charge_audit
@@ -93,6 +94,34 @@ def test_workdir_is_pathlike_and_non_destructive(tmp_path: Path):
     assert (wd / 'keep.txt').exists()
     assert marker.read_text(encoding='utf-8') == 'sentinel'
     assert wd.metadata_path.exists()
+
+
+def test_polymerize_rw_refreshes_polyelectrolyte_metadata_for_full_chain(tmp_path: Path):
+    monomer = utils.mol_from_smiles("*CC(C(=O)[O-])*", name="poly_anion")
+    summary = annotate_polyelectrolyte_metadata(monomer)["summary"]
+    groups = list(summary.get("groups") or [])
+    assert len(groups) == 1
+
+    for atom in monomer.GetAtoms():
+        atom.SetDoubleProp("AtomicCharge", 0.0)
+        atom.SetDoubleProp("RESP", 0.0)
+    for grp in groups:
+        atom_indices = [int(i) for i in grp.get("atom_indices", [])]
+        assert atom_indices
+        per_atom = -1.0 / float(len(atom_indices))
+        for idx in atom_indices:
+            monomer.GetAtomWithIdx(idx).SetDoubleProp("AtomicCharge", per_atom)
+            monomer.GetAtomWithIdx(idx).SetDoubleProp("RESP", per_atom)
+
+    chain = poly.polymerize_rw(monomer, 4, work_dir=tmp_path / "rw_refresh")
+
+    refreshed_groups = get_charge_groups(chain)
+    assert len(refreshed_groups) == 4
+    for grp in refreshed_groups:
+        total = 0.0
+        for idx in grp["atom_indices"]:
+            total += float(chain.GetAtomWithIdx(int(idx)).GetDoubleProp("AtomicCharge"))
+        assert total == pytest.approx(-1.0, abs=1.0e-8)
 
 
 def test_write_molecule_artifacts_uses_best_available_charge_property(tmp_path: Path):
