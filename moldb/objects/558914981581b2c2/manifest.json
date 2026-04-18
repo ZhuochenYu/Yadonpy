@@ -33,6 +33,144 @@
       "is_polymer": false,
       "charge_group_count": 0,
       "source_kind": "psmiles"
+    },
+    "4da716fabbcf": {
+      "variant_id": "4da716fabbcf",
+      "charge": "RESP",
+      "basis_set": "Default",
+      "method": "Default",
+      "ready": true,
+      "polyelectrolyte_mode": true,
+      "polyelectrolyte_detection": "auto",
+      "constraint_signature": "89917e8dfe30",
+      "charge_groups": [
+        {
+          "group_id": "group_1",
+          "label": "carboxylate",
+          "atom_indices": [
+            8,
+            9,
+            10
+          ],
+          "formal_charge": -1,
+          "source": "template"
+        }
+      ],
+      "resp_constraints": {
+        "mode": "grouped",
+        "charged_group_constraints": [
+          {
+            "group_id": "group_1",
+            "atom_indices": [
+              8,
+              9,
+              10
+            ],
+            "target_charge": -1,
+            "source": "template"
+          }
+        ],
+        "neutral_remainder_charge": 0,
+        "neutral_remainder_indices": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27
+        ],
+        "equivalence_groups": [
+          [
+            19,
+            20
+          ],
+          [
+            21,
+            22
+          ]
+        ],
+        "fallback": null
+      },
+      "polyelectrolyte_summary": {
+        "is_polymer": false,
+        "is_polyelectrolyte": false,
+        "detection": "auto",
+        "fallback": null,
+        "groups": [
+          {
+            "group_id": "group_1",
+            "label": "carboxylate",
+            "atom_indices": [
+              8,
+              9,
+              10
+            ],
+            "formal_charge": -1,
+            "source": "template"
+          }
+        ],
+        "neutral_remainder": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27
+        ],
+        "equivalence_groups": [
+          [
+            19,
+            20
+          ],
+          [
+            21,
+            22
+          ]
+        ],
+        "molecule_formal_charge": -1
+      },
+      "is_polyelectrolyte": false,
+      "is_polymer": false,
+      "charge_group_count": 1,
+      "source_kind": "psmiles"
     }
   }
 }
