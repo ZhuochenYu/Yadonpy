@@ -1245,6 +1245,64 @@ def test_export_system_recovers_localized_charge_groups_from_smiles_when_cached_
     assert species_report["report"]["groups"][0]["target_total_charge"] == pytest.approx(-0.8, abs=1.0e-8)
 
 
+def test_export_system_preserves_precomputed_polymer_charge_groups_during_fast_path_scaling(tmp_path: Path):
+    poly_mol = _make_poly_like_localized_mol()
+    poly_name = "PolyPE"
+    poly_smiles = poly_mol.GetProp("_yadonpy_smiles")
+    charges = [float(atom.GetDoubleProp("AtomicCharge")) for atom in poly_mol.GetAtoms()]
+    source_root = tmp_path / "source_molecules"
+    _write_minimal_species_artifacts(source_root, mol_name=poly_name, charges=charges)
+
+    expected_groups = get_charge_groups(poly_mol)
+    expected_indices = [list(group["atom_indices"]) for group in expected_groups]
+    assert expected_indices
+    assert expected_indices[0] != [0, 1, 2]
+
+    cell = Chem.Mol()
+    setattr(cell, "cell", utils.Cell(4.0, 0.0, 4.0, 0.0, 4.0, 0.0))
+    cell.SetProp(
+        "_yadonpy_cell_meta",
+        json.dumps(
+            {
+                "density_g_cm3": 1.0,
+                "polyelectrolyte_mode": True,
+                "species": [
+                    {
+                        "smiles": poly_smiles,
+                        "n": 1,
+                        "natoms": poly_mol.GetNumAtoms(),
+                        "name": poly_name,
+                        "charge_scale": 0.7,
+                        "charge_groups": expected_groups,
+                        "resp_constraints": None,
+                        "polyelectrolyte_summary": get_polyelectrolyte_summary(poly_mol),
+                        "residue_map": build_residue_map(poly_mol, mol_name=poly_name),
+                        "polyelectrolyte_mode": True,
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+    )
+
+    out = export_system_from_cell_meta(
+        cell_mol=cell,
+        out_dir=tmp_path / "scaled_preserve_groups",
+        ff_name="gaff2_mod",
+        charge_method="RESP",
+        source_molecules_dir=source_root,
+        write_system_mol2=False,
+    )
+
+    report = json.loads((out.system_top.parent / "charge_scaling_report.json").read_text(encoding="utf-8"))
+    species_report = report["species"][0]
+    actual_indices = [list(group["atom_indices"]) for group in species_report["report"]["groups"]]
+    assert actual_indices == expected_indices
+
+    exported = _parse_itp_atom_charges(out.molecules_dir / poly_name / f"{poly_name}.itp")
+    assert max(abs(q) for q in exported) < 5.0
+
+
 def test_export_system_fails_closed_for_polyelectrolyte_scaling_without_charge_groups_when_smiles_cannot_be_recovered(tmp_path: Path):
     source_root = tmp_path / "source_molecules"
     _write_minimal_species_artifacts(source_root, mol_name="OpaquePE", charges=[-0.4, -0.6, 0.0])

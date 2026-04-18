@@ -89,12 +89,12 @@ def _enrich_species_polyelectrolyte_payload(
 ) -> dict[str, Any]:
     summary = payload.get("polyelectrolyte_summary")
     charge_groups = payload.get("charge_groups")
+    has_summary = isinstance(summary, Mapping) and bool(summary)
+    has_groups = isinstance(charge_groups, list) and bool(charge_groups)
     needs_probe = (
         mol is not None
-        or bool(payload.get("polyelectrolyte_mode"))
-        or not isinstance(summary, Mapping)
-        or not isinstance(charge_groups, list)
-        or (isinstance(summary, Mapping) and not bool(summary))
+        or not has_summary
+        or not has_groups
     )
     if not needs_probe:
         return payload
