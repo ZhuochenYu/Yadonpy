@@ -8,6 +8,7 @@ knowledge, this project does not raise copyright issues.
 
 from __future__ import annotations
 
+import concurrent.futures as confu
 import json
 import time
 from dataclasses import dataclass
@@ -125,6 +126,7 @@ class AnalyzeResult:
     ndx: Path
     trr: Optional[Path] = None
     frac_last: float = 0.5
+    omp: int = 1
 
     def __post_init__(self) -> None:
         """Best-effort resolution of analysis artifacts.
@@ -366,6 +368,112 @@ class AnalyzeResult:
 
     def _step_warn(self, title: str, *, detail: Optional[str] = None) -> None:
         self._analysis_log(self._compose_step_message("WARN", title, detail=detail), level=2)
+
+    def _default_analysis_workers(self) -> int:
+        try:
+            return max(1, int(self.omp))
+        except Exception:
+            return 1
+
+    def _resolve_analysis_workers(self, workers: Optional[int], *, total_tasks: int) -> int:
+        if workers is None:
+            resolved = self._default_analysis_workers()
+        else:
+            try:
+                resolved = int(workers)
+            except Exception:
+                resolved = self._default_analysis_workers()
+        resolved = max(1, int(resolved))
+        if int(total_tasks) > 0:
+            resolved = min(int(resolved), int(total_tasks))
+        return max(1, int(resolved))
+
+    @staticmethod
+    def _rdf_shell_detail(shell: dict[str, Any]) -> Optional[str]:
+        detail = None
+        if shell.get("r_shell_nm") is not None:
+            detail = f"r_shell={float(shell['r_shell_nm']):.3f} nm"
+            if shell.get("formal_cn_shell") is not None:
+                detail += f" | CN={float(shell['formal_cn_shell']):.3f}"
+        return detail
+
+    def _compute_site_rdf_records(
+        self,
+        *,
+        site_groups: Sequence[dict[str, Any]],
+        center_group: str,
+        center_indices: Sequence[int],
+        gro_path: Path,
+        xtc_path: Path,
+        bin_nm: float,
+        r_max_nm: float,
+        region_mode: str,
+        workers: int,
+    ) -> list[dict[str, Any]]:
+        jobs: list[dict[str, Any]] = []
+        total = int(len(site_groups))
+        for idx, site in enumerate(site_groups, start=1):
+            site_id = str(site.get("site_id") or f"site_{idx}")
+            jobs.append(
+                {
+                    "idx": int(idx),
+                    "site": dict(site),
+                    "site_id": site_id,
+                    "title": self._progress_title("RDF/CN", idx, total),
+                }
+            )
+
+        if int(workers) <= 1 or len(jobs) <= 1:
+            out: list[dict[str, Any]] = []
+            for job in jobs:
+                t0 = self._step_begin(job["title"], detail=f"{center_group} -> {job['site_id']}")
+                rdf_data = compute_site_rdf(
+                    gro_path=gro_path,
+                    xtc_path=xtc_path,
+                    center_indices_0=center_indices,
+                    target_indices_0=job["site"].get("atom_indices", []),
+                    bin_nm=float(bin_nm),
+                    r_max_nm=float(r_max_nm),
+                    region=region_mode,
+                )
+                shell = dict(rdf_data.get("shell") or {})
+                self._step_done(job["title"], t0, detail=self._rdf_shell_detail(shell))
+                out.append({"idx": job["idx"], "site": job["site"], "site_id": job["site_id"], "rdf_data": rdf_data})
+            return out
+
+        completed: dict[int, dict[str, Any]] = {}
+        with confu.ThreadPoolExecutor(max_workers=int(workers), thread_name_prefix="yadonpy-rdf") as executor:
+            future_map: dict[confu.Future[dict[str, Any]], tuple[dict[str, Any], float]] = {}
+            for job in jobs:
+                t0 = self._step_begin(
+                    job["title"],
+                    detail=f"{center_group} -> {job['site_id']} | queued on {int(workers)} workers",
+                )
+                future = executor.submit(
+                    compute_site_rdf,
+                    gro_path=gro_path,
+                    xtc_path=xtc_path,
+                    center_indices_0=center_indices,
+                    target_indices_0=job["site"].get("atom_indices", []),
+                    bin_nm=float(bin_nm),
+                    r_max_nm=float(r_max_nm),
+                    region=region_mode,
+                )
+                future_map[future] = (job, t0)
+
+            for future in confu.as_completed(future_map):
+                job, t0 = future_map[future]
+                rdf_data = future.result()
+                shell = dict(rdf_data.get("shell") or {})
+                self._step_done(job["title"], t0, detail=self._rdf_shell_detail(shell))
+                completed[int(job["idx"])] = {
+                    "idx": job["idx"],
+                    "site": job["site"],
+                    "site_id": job["site_id"],
+                    "rdf_data": rdf_data,
+                }
+
+        return [completed[idx] for idx in sorted(completed)]
 
     def _load_summary(self) -> Dict[str, Any]:
         summary_path = self._analysis_dir() / "summary.json"
@@ -1345,6 +1453,7 @@ class AnalyzeResult:
         strict_center: bool = True,
         shell_policy: str = "confidence",
         region: str = "auto",
+        workers: Optional[int] = None,
     ) -> Dict[str, Any]:
         """Compute RDF/CN with site-level analysis by default."""
         if mol_or_mols is None and center_mol is None:
@@ -1411,21 +1520,26 @@ class AnalyzeResult:
         cn_series: Dict[str, tuple[np.ndarray, np.ndarray]] = {}
         site_groups = list(site_map.get("site_groups", []) or [])
         self._item("rdf_targets", len(site_groups))
+        rdf_workers = self._resolve_analysis_workers(workers, total_tasks=len(site_groups))
+        self._item("rdf_workers", rdf_workers)
         xtc_for_rdf = self._analysis_xtc_path()
 
-        for idx, site in enumerate(site_groups, start=1):
-            site_id = str(site.get("site_id") or f"site_{idx}")
-            title = self._progress_title("RDF/CN", idx, len(site_groups))
-            t0 = self._step_begin(title, detail=f"{center_group} -> {site_id}")
-            rdf_data = compute_site_rdf(
-                gro_path=system_dir / "system.gro",
-                xtc_path=xtc_for_rdf,
-                center_indices_0=center_indices,
-                target_indices_0=site.get("atom_indices", []),
-                bin_nm=float(bin_nm),
-                r_max_nm=float(r_max_nm),
-                region=region_mode,
-            )
+        rdf_records = self._compute_site_rdf_records(
+            site_groups=site_groups,
+            center_group=center_group,
+            center_indices=center_indices,
+            gro_path=system_dir / "system.gro",
+            xtc_path=xtc_for_rdf,
+            bin_nm=float(bin_nm),
+            r_max_nm=float(r_max_nm),
+            region_mode=region_mode,
+            workers=rdf_workers,
+        )
+
+        for record in rdf_records:
+            site = dict(record.get("site") or {})
+            site_id = str(record.get("site_id") or site.get("site_id") or "site")
+            rdf_data = dict(record.get("rdf_data") or {})
             rdf_csv = self._write_series_csv(
                 out_csv=analysis_dir / f"rdf_{site_id.replace(':', '_')}.csv",
                 x_name="r_nm",
@@ -1471,12 +1585,6 @@ class AnalyzeResult:
             }
             rdf_series[site_id] = (np.asarray(rdf_data["r_nm"], dtype=float), np.asarray(rdf_data["g_r"], dtype=float))
             cn_series[site_id] = (np.asarray(rdf_data["r_nm"], dtype=float), np.asarray(rdf_data["cn_curve"], dtype=float))
-            detail = None
-            if shell.get("r_shell_nm") is not None:
-                detail = f"r_shell={float(shell['r_shell_nm']):.3f} nm"
-                if shell.get("formal_cn_shell") is not None:
-                    detail += f" | CN={float(shell['formal_cn_shell']):.3f}"
-            self._step_done(title, t0, detail=detail)
 
         overlay = plot_rdf_cn_series_summary(
             rdf_series=rdf_series,

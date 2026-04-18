@@ -381,6 +381,113 @@ def test_rdf_accepts_center_only_call_style(tmp_path: Path, monkeypatch):
     assert "_overlay" in out
 
 
+def test_rdf_defaults_site_workers_to_analyzer_omp(tmp_path: Path, monkeypatch):
+    work_dir = tmp_path
+    system_dir = work_dir / "02_system"
+    system_dir.mkdir(parents=True, exist_ok=True)
+
+    analyzer = AnalyzeResult(
+        work_dir=work_dir,
+        tpr=work_dir / "md.tpr",
+        xtc=work_dir / "md.xtc",
+        edr=work_dir / "md.edr",
+        top=work_dir / "system.top",
+        ndx=work_dir / "system.ndx",
+        omp=6,
+    )
+
+    monkeypatch.setattr(analyzer, "_transport_rdf_region", lambda region="auto": "global")
+    monkeypatch.setattr(analyzer, "_strict_center_moltypes", lambda center_input, strict_center=True: ["Li"])
+    monkeypatch.setattr(
+        __import__("yadonpy.sim.analyzer", fromlist=["parse_system_top"]),
+        "parse_system_top",
+        lambda top: object(),
+    )
+    monkeypatch.setattr(analyzer, "_system_dir", lambda: system_dir)
+    monkeypatch.setattr(analyzer, "_analysis_xtc_path", lambda: work_dir / "md.xtc")
+    monkeypatch.setattr(
+        __import__("yadonpy.sim.analyzer", fromlist=["build_species_catalog"]),
+        "build_species_catalog",
+        lambda topo, system_dir: {"Li": {"instances": [{"atom_indices_0": [0]}]}},
+    )
+    monkeypatch.setattr(
+        __import__("yadonpy.sim.analyzer", fromlist=["build_site_map"]),
+        "build_site_map",
+        lambda topo, system_dir, include_h=False, selected_moltypes=None: {
+            "site_groups": [
+                {
+                    "site_id": "EC:carbonyl_oxygen",
+                    "moltype": "EC",
+                    "site_label": "carbonyl_oxygen",
+                    "count": 4,
+                    "coordination_priority": 0,
+                    "coordination_relevance": "primary",
+                    "coordination_note": "",
+                    "atom_indices": [1, 2],
+                },
+                {
+                    "site_id": "PF6:fluorine",
+                    "moltype": "PF6",
+                    "site_label": "fluorine",
+                    "count": 6,
+                    "coordination_priority": 1,
+                    "coordination_relevance": "secondary",
+                    "coordination_note": "",
+                    "atom_indices": [3, 4],
+                },
+            ]
+        },
+    )
+
+    calls: dict[str, object] = {}
+
+    def _fake_compute_records(
+        self,
+        *,
+        site_groups,
+        center_group,
+        center_indices,
+        gro_path,
+        xtc_path,
+        bin_nm,
+        r_max_nm,
+        region_mode,
+        workers,
+    ):
+        calls["workers"] = workers
+        out = []
+        for idx, site in enumerate(site_groups, start=1):
+            out.append(
+                {
+                    "idx": idx,
+                    "site": dict(site),
+                    "site_id": str(site["site_id"]),
+                    "rdf_data": {
+                        "r_nm": np.asarray([0.10, 0.20, 0.30], dtype=float),
+                        "g_r": np.asarray([0.0, 2.0, 0.8], dtype=float),
+                        "cn_curve": np.asarray([0.0, 1.2, 1.8], dtype=float),
+                        "rho_target_nm3": 5.0,
+                        "shell": {
+                            "r_peak_nm": 0.20,
+                            "g_peak": 2.0,
+                            "r_shell_nm": 0.30,
+                            "cn_shell": 1.8,
+                            "confidence": "high",
+                        },
+                    },
+                }
+            )
+        return out
+
+    monkeypatch.setattr(AnalyzeResult, "_compute_site_rdf_records", _fake_compute_records)
+
+    out = analyzer.rdf(center_mol=Chem.MolFromSmiles("[Li+]"))
+
+    assert calls["workers"] == 2
+    assert "EC:carbonyl_oxygen" in out
+    assert "PF6:fluorine" in out
+
+
 def test_sigma_falls_back_to_position_helfand_when_gmx_current_fails(tmp_path: Path, monkeypatch):
     work_dir = tmp_path
     system_dir = work_dir / "02_system"

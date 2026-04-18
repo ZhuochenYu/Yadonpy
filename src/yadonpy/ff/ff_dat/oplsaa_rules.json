@@ -5659,5 +5659,50 @@
     "charge": 0.03,
     "desc": "Hydrogen alpha to epoxide oxygen",
     "priority": 10390
+  },
+  {
+    "element": "S",
+    "btype": "SY",
+    "opls": "opls_474",
+    "smarts": "[S]1(=[O])(=[O])[O][C]=[C][O]1",
+    "charge": 1.48,
+    "desc": "1,3,2-Dioxathiol-2,2-dioxide sulfur (DTD)",
+    "priority": 10400
+  },
+  {
+    "element": "O",
+    "btype": "OY",
+    "opls": "opls_494",
+    "smarts": "[O]=[S]1(=[O])[O][C]=[C][O]1",
+    "charge": -0.687,
+    "desc": "1,3,2-Dioxathiol-2,2-dioxide sulfone oxygen (DTD)",
+    "priority": 10410
+  },
+  {
+    "element": "O",
+    "btype": "OS",
+    "opls": "opls_180",
+    "smarts": "[O]1[S](=[O])(=[O])[O][C]=[C]1",
+    "charge": -0.4,
+    "desc": "1,3,2-Dioxathiol-2,2-dioxide ring oxygen (DTD)",
+    "priority": 10420
+  },
+  {
+    "element": "C",
+    "btype": "CM",
+    "opls": "opls_517",
+    "smarts": "[C;H1]1=[C;H1][O][S](=[O])(=[O])[O]1",
+    "charge": -0.03,
+    "desc": "1,3,2-Dioxathiol-2,2-dioxide vinyl carbon (DTD)",
+    "priority": 10430
+  },
+  {
+    "element": "H",
+    "btype": "HC",
+    "opls": "opls_140",
+    "smarts": "[#1][C;H1]1=[C;H1][O][S](=[O])(=[O])[O]1",
+    "charge": 0.03,
+    "desc": "1,3,2-Dioxathiol-2,2-dioxide vinyl hydrogen (DTD)",
+    "priority": 10440
   }
 ]

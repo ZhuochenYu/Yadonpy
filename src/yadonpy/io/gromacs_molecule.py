@@ -357,17 +357,20 @@ def write_gromacs_single_molecule_topology(
                 ns = list(ff.n)  # type: ignore
                 ds = list(ff.d0)  # type: ignore
                 # If any of these are non-iterable scalars, list(...) will raise.
-                if len(ks) == 0:
-                    raise TypeError
+                if len(ks) == 0 or len(ns) == 0 or len(ds) == 0:
+                    continue
                 for kk, nn, dd in zip(ks, ns, ds):
                     dihedrals_lines.append(
                         f"{i:5d} {j:5d} {kidx:5d} {l:5d}  1  {float(dd): .1f}  {float(kk): .4f}  {int(nn)}\n"
                     )
             except Exception:
                 # Scalar fallback
-                dihedrals_lines.append(
-                    f"{i:5d} {j:5d} {kidx:5d} {l:5d}  1  {float(getattr(ff,'d0')): .1f}  {float(getattr(ff,'k')): .4f}  {int(getattr(ff,'n'))}\n"
-                )
+                try:
+                    dihedrals_lines.append(
+                        f"{i:5d} {j:5d} {kidx:5d} {l:5d}  1  {float(getattr(ff,'d0')): .1f}  {float(getattr(ff,'k')): .4f}  {int(getattr(ff,'n'))}\n"
+                    )
+                except Exception:
+                    continue
         else:
             continue
 

@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 from rdkit import Chem
 
@@ -173,6 +174,74 @@ def test_oplsaa2024_assigns_silane_co2_and_updated_ions():
     li = Chem.MolFromSmiles("[Li+]")
     assert ff.assign_ptypes(li, charge="opls")
     assert li.GetAtomWithIdx(0).GetProp("ff_type") == "opls_1106"
+
+
+def test_oplsaa_assigns_pf6_with_builtin_ion_types():
+    ff = OPLSAA()
+    pf6 = Chem.MolFromSmiles("F[P-](F)(F)(F)(F)F")
+
+    assert ff.assign_ptypes(pf6, charge="opls")
+    atom_types = [atom.GetProp("ff_type") for atom in pf6.GetAtoms()]
+    atom_charges = [atom.GetDoubleProp("AtomicCharge") for atom in pf6.GetAtoms()]
+    assert atom_types.count("opls_786") == 6
+    assert atom_types.count("opls_785") == 1
+    assert abs(sum(atom_charges) + 1.0) < 1.0e-8
+
+
+def test_oplsaa_assigns_acyclic_carbonates_with_fallback_bonded_terms():
+    ff = OPLSAA()
+
+    for smiles in ("CCOC(=O)OC", "CCOC(=O)OCC"):
+        mol = Chem.AddHs(Chem.MolFromSmiles(smiles))
+        assigned = ff.ff_assign(mol, charge="opls", report=False)
+        assert assigned is not False
+        assert assigned.angles
+        assert assigned.dihedrals
+
+
+def test_oplsaa_assigns_resp_backed_cmc_carboxylate_monomers_from_repo_moldb():
+    ff = OPLSAA()
+    repo_db_dir = Path(__file__).resolve().parents[1] / "moldb"
+
+    for smiles in (
+        "*OC1OC(CO)C(*)C(O)C1OCC(=O)[O-]",
+        "*OC1OC(CO)C(*)C(OCC(=O)[O-])C1O",
+        "*OC1OC(COCC(=O)[O-])C(*)C(O)C1O",
+    ):
+        mol = ff.mol_rdkit(
+            smiles,
+            db_dir=repo_db_dir,
+            charge="RESP",
+            require_ready=True,
+            prefer_db=True,
+            polyelectrolyte_mode=True,
+            polyelectrolyte_detection="auto",
+        )
+        before = [atom.GetDoubleProp("AtomicCharge") for atom in mol.GetAtoms()]
+
+        assigned = ff.ff_assign(mol, charge=None, report=False)
+
+        assert assigned is not False
+        after = [atom.GetDoubleProp("AtomicCharge") for atom in assigned.GetAtoms()]
+        assert len(assigned.angles) > 0
+        assert len(assigned.dihedrals) > 0
+        assert before == after
+
+
+def test_oplsaa_assigns_dtd_cyclic_sulfate_with_targeted_rules():
+    ff = OPLSAA()
+    dtd = Chem.AddHs(Chem.MolFromSmiles("O=S1(=O)OC=CO1"))
+
+    assigned = ff.ff_assign(dtd, charge="opls", report=False)
+
+    assert assigned is not False
+    btypes = [atom.GetProp("ff_btype") for atom in assigned.GetAtoms()]
+    assert btypes.count("SY") == 1
+    assert btypes.count("OY") == 2
+    assert btypes.count("OS") == 2
+    assert btypes.count("CM") == 2
+    assert len(assigned.angles) > 0
+    assert len(assigned.dihedrals) > 0
 
 
 def test_render_ff_assignment_report_summarizes_charged_side_groups():

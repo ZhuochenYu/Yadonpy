@@ -1271,6 +1271,7 @@ class EQ21step:
             edr=edr,
             top=exp.system_top,
             ndx=exp.system_ndx,
+            omp=int(getattr(getattr(self._job, "resources", None), "ntomp", 1) or 1),
         )
 
 

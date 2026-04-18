@@ -451,7 +451,10 @@ class OPLSAA(GAFF):
         chosen = {}  # atom_idx -> rule dict
 
         for rule, q in compiled:
-            matches = mol.GetSubstructMatches(q, uniquify=True)
+            # ``uniquify=False`` is intentional here: symmetric ions / neutral
+            # molecules such as CO2, PF6-, and cyclic sulfates otherwise expose
+            # only one representative match, leaving equivalent atoms untyped.
+            matches = mol.GetSubstructMatches(q, uniquify=False)
             if not matches:
                 continue
             for m in matches:
@@ -563,30 +566,71 @@ class OPLSAA(GAFF):
         self._logged_special_overrides.add(label)
         utils.radon_print(message, level=1)
 
+    @staticmethod
+    def _lookup_special_base_tokens(tokens, mapping):
+        key = tuple(tokens)
+        if key in mapping:
+            return mapping[key]
+
+        rkey = tuple(reversed(key))
+        if rkey in mapping:
+            return tuple(reversed(mapping[rkey]))
+
+        return None
+
     def _special_angle_param(self, tokens):
         # Cyclic carbonates (EC/PC) in the classic OPLS bonded tables are known
         # to miss the OS-C-OS angle even though the dedicated nonbonded types
         # exist (opls_771-779).  We keep the OPLS force constant from the nearest
         # available carbonyl-carbon angle (O,C,OS) and use the published EC/PC
         # equilibrium angle 110.6 degrees for the missing OS-C-OS term.
-        if tuple(tokens) != ('OS', 'C', 'OS'):
+        if tuple(tokens) == ('OS', 'C', 'OS'):
+            base, _ = self._find_param(self.param.at, ('O', 'C', 'OS'))
+            if base is None:
+                return None
+
+            self._log_special_override(
+                'angle:OS,C,OS',
+                'Applying cyclic-carbonate OPLS-AA fallback for missing angle OS,C,OS '
+                '(theta0=110.6 deg; force constant copied from O,C,OS).'
+            )
+            return self._clone_param(
+                base,
+                tag='OS,C,OS',
+                name='OS,C,OS',
+                rname='OS,C,OS',
+                theta0=110.6,
+            )
+
+        fallback_map = {
+            # Acyclic carbonate esters (EMC/DEC)
+            ('OS', 'C_2', 'OS'): ('O_2', 'C_2', 'OS'),
+            # Carboxymethyl-glucose sidechain linkage
+            ('OS', 'CT', 'CO'): ('CO', 'CT', 'OH'),
+            # 1,3,2-dioxathiol-2,2-dioxide (DTD) / cyclic sulfate family
+            ('OY', 'SY', 'OS'): ('OY', 'SY', 'CT'),
+            ('OS', 'SY', 'OS'): ('OS', 'P~', 'OS'),
+            ('SY', 'OS', 'CM'): ('CT', 'OS', 'CM'),
+        }
+        base_tokens = self._lookup_special_base_tokens(tokens, fallback_map)
+        if base_tokens is None:
             return None
 
-        base, _ = self._find_param(self.param.at, ('O', 'C', 'OS'))
+        base, _ = self._find_param(self.param.at, base_tokens)
         if base is None:
             return None
 
+        pretty = ','.join(tokens)
         self._log_special_override(
-            'angle:OS,C,OS',
-            'Applying cyclic-carbonate OPLS-AA fallback for missing angle OS,C,OS '
-            '(theta0=110.6 deg; force constant copied from O,C,OS).'
+            f'angle:{pretty}',
+            'Applying OPLS-AA fallback for missing angle '
+            f'{pretty} (copied from {",".join(base_tokens)}).'
         )
         return self._clone_param(
             base,
-            tag='OS,C,OS',
-            name='OS,C,OS',
-            rname='OS,C,OS',
-            theta0=110.6,
+            tag=pretty,
+            name=pretty,
+            rname=','.join(reversed(tokens)),
         )
 
     def _special_dihedral_param(self, tokens):
@@ -596,8 +640,29 @@ class OPLSAA(GAFF):
         fallback_map = {
             ('CT', 'OS', 'C', 'OS'): ('CT', 'OS', 'C', 'O'),
             ('OS', 'C', 'OS', 'CT'): ('O', 'C', 'OS', 'CT'),
+            # Acyclic carbonate esters (EMC/DEC)
+            ('CT', 'OS', 'C_2', 'OS'): ('CT', 'OS', 'C_2', 'O_2'),
+            # Carboxymethyl-glucose sidechains
+            ('HO', 'OH', 'CO', 'CT'): ('HO', 'OH', 'CO', 'OS'),
+            ('HO', 'OH', 'CO', 'HC'): ('HO', 'OH', 'CO', 'OS'),
+            ('CO', 'CT', 'OS', 'CT'): ('CT', 'OS', 'CO', 'CT'),
+            ('OS', 'CT', 'C_3', 'O2'): ('CT', 'CT', 'C_3', 'O2'),
+            ('HC', 'CT', 'C_3', 'O2'): ('CT', 'CT', 'C_3', 'O2'),
+            ('OS', 'CT', 'CO', 'OH'): ('CT', 'CT', 'CO', 'OH'),
+            ('OS', 'CT', 'CO', 'OS'): ('CT', 'CT', 'CO', 'OS'),
+            ('OS', 'CT', 'CO', 'HC'): ('CT', 'CT', 'CO', 'HC'),
+            ('OH', 'CT', 'CO', 'OH'): ('CT', 'CT', 'CO', 'OH'),
+            ('OH', 'CT', 'CO', 'OS'): ('CT', 'CT', 'CO', 'OS'),
+            ('OH', 'CT', 'CO', 'HC'): ('CT', 'CT', 'CO', 'HC'),
+            ('HC', 'CT', 'CO', 'OH'): ('HC', 'CT', 'CO', 'OS'),
+            ('HC', 'CT', 'CO', 'HC'): ('HC', 'CT', 'CO', 'OS'),
+            # 1,3,2-dioxathiol-2,2-dioxide (DTD) / cyclic sulfate family
+            ('OY', 'SY', 'OS', 'CM'): ('O~', 'P~', 'OS', 'CA'),
+            ('OS', 'SY', 'OS', 'CM'): ('CT', 'P~', 'OS', 'CT'),
+            ('SY', 'OS', 'CM', 'CM'): ('CT', 'OS', 'CM', 'CT'),
+            ('SY', 'OS', 'CM', 'HC'): ('CT', 'OS', 'CM', 'HC'),
         }
-        base_tokens = fallback_map.get(tuple(tokens))
+        base_tokens = self._lookup_special_base_tokens(tokens, fallback_map)
         if base_tokens is None:
             return None
 
