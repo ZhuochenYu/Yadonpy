@@ -119,6 +119,14 @@ def _get_compiled_rules():
     return _COMPILED
 
 
+@lru_cache(maxsize=None)
+def _get_rule_by_opls(opls_type: str):
+    for rule in _load_rule_records():
+        if str(rule.opls) == str(opls_type):
+            return rule
+    return None
+
+
 def _iter_unique_params(mapping):
     """Yield unique force-field parameter objects from name->object mappings."""
     seen = set()
@@ -294,6 +302,315 @@ class OPLSAA(GAFF):
             return 'opls'
         return token
 
+    @staticmethod
+    def _normalize_bonded_override(bonded):
+        if bonded is None:
+            return None
+        token = str(bonded).strip().lower()
+        if not token:
+            return None
+        if token in ("ms", "mseminario", "seminario"):
+            return "mseminario"
+        if token in ("drih", "drih-like", "dri"):
+            return "drih"
+        return token
+
+    @staticmethod
+    def _has_marked_new_bond(mol) -> bool:
+        if mol is None or not hasattr(mol, "GetBonds"):
+            return False
+        for bond in mol.GetBonds():
+            try:
+                if bond.HasProp("new_bond") and bond.GetBoolProp("new_bond"):
+                    return True
+            except Exception:
+                continue
+        return False
+
+    @staticmethod
+    def _new_bond_endpoints(mol) -> list[tuple[int, int]]:
+        pairs: list[tuple[int, int]] = []
+        if mol is None or not hasattr(mol, "GetBonds"):
+            return pairs
+        for bond in mol.GetBonds():
+            try:
+                if bond.HasProp("new_bond") and bond.GetBoolProp("new_bond"):
+                    pairs.append((int(bond.GetBeginAtomIdx()), int(bond.GetEndAtomIdx())))
+            except Exception:
+                continue
+        return pairs
+
+    @staticmethod
+    def _collect_graph_neighborhood(mol, seeds, *, radius: int) -> set[int]:
+        visited = {int(idx) for idx in seeds}
+        frontier = set(visited)
+        for _ in range(max(int(radius), 0)):
+            next_frontier: set[int] = set()
+            for idx in frontier:
+                atom = mol.GetAtomWithIdx(int(idx))
+                for nb in atom.GetNeighbors():
+                    nb_idx = int(nb.GetIdx())
+                    if nb_idx in visited:
+                        continue
+                    visited.add(nb_idx)
+                    next_frontier.add(nb_idx)
+            frontier = next_frontier
+            if not frontier:
+                break
+        return visited
+
+    @staticmethod
+    def _has_complete_existing_atom_types(mol) -> bool:
+        try:
+            atoms = list(mol.GetAtoms())
+        except Exception:
+            return False
+        if not atoms:
+            return False
+        return all(atom.HasProp("ff_type") and atom.HasProp("ff_btype") for atom in atoms)
+
+    @staticmethod
+    def _has_existing_bonded_assignment(mol) -> bool:
+        try:
+            bonds = list(mol.GetBonds())
+        except Exception:
+            return False
+        if bonds and not all(bond.HasProp("ff_type") for bond in bonds):
+            return False
+        if mol.GetNumAtoms() >= 3 and not isinstance(getattr(mol, "angles", None), dict):
+            return False
+        if mol.GetNumAtoms() >= 4 and not isinstance(getattr(mol, "dihedrals", None), dict):
+            return False
+        return True
+
+    @staticmethod
+    def _has_reusable_existing_assignment(mol, *, ff_name: str) -> bool:
+        if mol is None or not hasattr(mol, "HasProp"):
+            return False
+        try:
+            current_ff = str(mol.GetProp("ff_name")).strip().lower()
+        except Exception:
+            return False
+        if current_ff != str(ff_name).strip().lower():
+            return False
+        return OPLSAA._has_complete_existing_atom_types(mol) and OPLSAA._has_existing_bonded_assignment(mol)
+
+    def _assign_opls_charges_from_existing_types(self, mol) -> bool:
+        for atom in mol.GetAtoms():
+            try:
+                ff_type = atom.GetProp("ff_type")
+            except Exception:
+                return False
+            rule = _get_rule_by_opls(ff_type)
+            if rule is None or rule.charge is None:
+                continue
+            atom.SetDoubleProp("AtomicCharge", float(rule.charge))
+        return True
+
+    @staticmethod
+    def _has_precomputed_bonded_fragment(mol) -> bool:
+        if mol is None or not hasattr(mol, "HasProp"):
+            return False
+        for key in (
+            "_yadonpy_bonded_itp",
+            "_yadonpy_bonded_json",
+            "_yadonpy_mseminario_itp",
+            "_yadonpy_mseminario_json",
+        ):
+            try:
+                if mol.HasProp(key) and str(mol.GetProp(key)).strip():
+                    return True
+            except Exception:
+                continue
+        if getattr(mol, "angles", None) or getattr(mol, "dihedrals", None):
+            return True
+        return False
+
+    def _assign_ptypes_subset(self, mol, atom_indices, charge=None):
+        if self._has_implicit_h(mol):
+            utils.radon_print(
+                'OPLS-AA SMARTS typing requires explicit hydrogens (Chem.AddHs). '
+                'Found implicit H on at least one heavy atom. Aborting typing.',
+                level=3
+            )
+            return False, set()
+
+        targets = {int(idx) for idx in atom_indices}
+        if not targets:
+            return True, set()
+
+        compiled = _get_compiled_rules()
+        chosen = {}
+        for rule, q in compiled:
+            matches = mol.GetSubstructMatches(q, uniquify=False)
+            if not matches:
+                continue
+            for match in matches:
+                if not match:
+                    continue
+                idx = int(match[0])
+                if idx not in targets:
+                    continue
+                atom = mol.GetAtomWithIdx(idx)
+                if atom.GetSymbol() != rule.element:
+                    continue
+                chosen[idx] = rule
+
+        changed_atoms: set[int] = set()
+        ok = True
+        for idx in sorted(targets):
+            atom = mol.GetAtomWithIdx(idx)
+            rule = chosen.get(idx)
+            if rule is None:
+                if atom.HasProp("ff_type") and atom.HasProp("ff_btype"):
+                    continue
+                utils.radon_print(
+                    f'OPLS-AA typing failed: atom {idx} ({atom.GetSymbol()}) did not match any SMARTS rule.',
+                    level=2,
+                )
+                ok = False
+                continue
+
+            prev_ff_type = atom.GetProp("ff_type") if atom.HasProp("ff_type") else None
+            prev_btype = atom.GetProp("ff_btype") if atom.HasProp("ff_btype") else None
+            atom.SetProp("ff_btype", rule.btype)
+            if rule.opls not in self.param.pt:
+                utils.radon_print(f'OPLS-AA typing failed: nonbonded type {rule.opls} not found in oplsaa.json', level=3)
+                return False, set()
+            self.set_ptype(atom, rule.opls)
+            try:
+                atom.SetProp("ff_desc", str(rule.desc))
+            except Exception:
+                pass
+            if charge == "opls":
+                q = 0.0 if rule.charge is None else float(rule.charge)
+                atom.SetDoubleProp("AtomicCharge", q)
+
+            if prev_ff_type != rule.opls or prev_btype != rule.btype:
+                changed_atoms.add(idx)
+
+        return ok, changed_atoms
+
+    @staticmethod
+    def _bond_needs_local_refresh(bond, affected_atoms: set[int]) -> bool:
+        try:
+            if bond.HasProp("new_bond") and bond.GetBoolProp("new_bond"):
+                return True
+        except Exception:
+            pass
+        return int(bond.GetBeginAtomIdx()) in affected_atoms or int(bond.GetEndAtomIdx()) in affected_atoms
+
+    def _refresh_local_bonded_terms(self, mol, *, affected_atoms: set[int]) -> bool:
+        result = True
+
+        for bond in mol.GetBonds():
+            if not self._bond_needs_local_refresh(bond, affected_atoms):
+                continue
+            a1 = bond.GetBeginAtom()
+            a2 = bond.GetEndAtom()
+            if not a1.HasProp("ff_btype") or not a2.HasProp("ff_btype"):
+                utils.radon_print("ff_btype missing on atoms. Did you run assign_ptypes first?", level=3)
+                return False
+            tokens = (a1.GetProp("ff_btype"), a2.GetProp("ff_btype"))
+            param = self._lookup_bond_param(tokens)
+            if param is None:
+                utils.radon_print(f'Cannot assign bond parameters for {tokens[0]},{tokens[1]}', level=2)
+                result = False
+                continue
+            self.set_btype(bond, param)
+
+        existing_angles = {}
+        for key, angle in (getattr(mol, "angles", {}) or {}).items():
+            if {int(angle.a), int(angle.b), int(angle.c)} & affected_atoms:
+                continue
+            existing_angles[key] = angle
+        setattr(mol, "angles", existing_angles)
+
+        for center in mol.GetAtoms():
+            neighbors = list(center.GetNeighbors())
+            if len(neighbors) < 2:
+                continue
+            for a_idx in range(len(neighbors)):
+                for c_idx in range(a_idx + 1, len(neighbors)):
+                    left = neighbors[a_idx]
+                    right = neighbors[c_idx]
+                    indices = {int(left.GetIdx()), int(center.GetIdx()), int(right.GetIdx())}
+                    if not indices & affected_atoms:
+                        continue
+                    tokens = (
+                        left.GetProp("ff_btype"),
+                        center.GetProp("ff_btype"),
+                        right.GetProp("ff_btype"),
+                    )
+                    param = self._lookup_angle_param(tokens)
+                    if param is None:
+                        utils.radon_print(
+                            f'Cannot assign angle parameters for {tokens[0]},{tokens[1]},{tokens[2]}',
+                            level=2,
+                        )
+                        result = False
+                        continue
+                    self.set_atype(mol, left.GetIdx(), center.GetIdx(), right.GetIdx(), param)
+
+        existing_dihedrals = {}
+        for key, dih in (getattr(mol, "dihedrals", {}) or {}).items():
+            if {int(dih.a), int(dih.b), int(dih.c), int(dih.d)} & affected_atoms:
+                continue
+            existing_dihedrals[key] = dih
+        setattr(mol, "dihedrals", existing_dihedrals)
+
+        for bond in mol.GetBonds():
+            j = bond.GetBeginAtom()
+            k = bond.GetEndAtom()
+            jn = [atom for atom in j.GetNeighbors() if atom.GetIdx() != k.GetIdx()]
+            kn = [atom for atom in k.GetNeighbors() if atom.GetIdx() != j.GetIdx()]
+            if not jn or not kn:
+                continue
+            for i in jn:
+                for l in kn:
+                    indices = {int(i.GetIdx()), int(j.GetIdx()), int(k.GetIdx()), int(l.GetIdx())}
+                    if not indices & affected_atoms:
+                        continue
+                    tokens = (
+                        i.GetProp("ff_btype"),
+                        j.GetProp("ff_btype"),
+                        k.GetProp("ff_btype"),
+                        l.GetProp("ff_btype"),
+                    )
+                    param = self._lookup_dihedral_param(tokens)
+                    if param is None:
+                        utils.radon_print(
+                            f'Cannot assign dihedral parameters for {tokens[0]},{tokens[1]},{tokens[2]},{tokens[3]}',
+                            level=2,
+                        )
+                        result = False
+                        continue
+                    self.set_dtype(mol, i.GetIdx(), j.GetIdx(), k.GetIdx(), l.GetIdx(), param)
+
+        self.assign_itypes(mol)
+        return result
+
+    def refresh_polymer_junction_terms(self, mol, charge=None, *, radius: int = 2):
+        new_bonds = self._new_bond_endpoints(mol)
+        if not new_bonds:
+            return True
+        if not self._has_complete_existing_atom_types(mol):
+            return False
+
+        endpoints = {idx for pair in new_bonds for idx in pair}
+        workset = self._collect_graph_neighborhood(mol, endpoints, radius=radius)
+        ok, changed_atoms = self._assign_ptypes_subset(mol, workset, charge=charge)
+        if not ok:
+            return False
+
+        affected_atoms = set(endpoints) | set(changed_atoms)
+        utils.radon_print(
+            f'Applying OPLS-AA local polymer junction refresh for {len(new_bonds)} new bond(s) '
+            f'and {len(affected_atoms)} affected atom(s).',
+            level=1,
+        )
+        return self._refresh_local_bonded_terms(mol, affected_atoms=affected_atoms)
+
     def _resolve_spec(self, mol):
         """Resolve a MolSpec handle into an RDKit Mol, matching GAFF behavior."""
         try:
@@ -355,6 +672,28 @@ class OPLSAA(GAFF):
             naming.ensure_name(mol, name=current_name, depth=2, prefer_var=(current_name is None))
         except Exception:
             pass
+        bonded_override = self._normalize_bonded_override(charge_kwargs.get("bonded"))
+        preserve_prebuilt_bonded = bool(
+            bonded_override in ("drih", "mseminario") and self._has_precomputed_bonded_fragment(mol)
+        )
+        if bonded_override not in (None, "drih", "mseminario"):
+            raise RuntimeError(
+                f"bonded={charge_kwargs.get('bonded')!r} requested but unsupported for OPLS-AA "
+                "(supported: 'DRIH', 'mseminario')."
+            )
+        if bonded_override in ("drih", "mseminario"):
+            try:
+                mol.SetProp("_yadonpy_bonded_override", "1")
+                mol.SetProp("_yadonpy_bonded_explicit", "1")
+                mol.SetProp("_yadonpy_bonded_requested", str(bonded_override))
+                mol.SetProp("_yadonpy_bonded_signature", str(bonded_override))
+                if preserve_prebuilt_bonded:
+                    mol.SetProp(
+                        "_yadonpy_bonded_method",
+                        "DRIH" if bonded_override == "drih" else "mseminario",
+                    )
+            except Exception:
+                pass
         effective_charge = self._normalize_charge_mode(charge)
         fallback_to_opls = False
         if effective_charge is None and not self._has_complete_atomic_charges(mol):
@@ -374,15 +713,38 @@ class OPLSAA(GAFF):
                 level=1,
             )
 
+        if self._has_reusable_existing_assignment(mol, ff_name=self.name):
+            has_new_bond = self._has_marked_new_bond(mol)
+            if has_new_bond:
+                result = self.refresh_polymer_junction_terms(mol, charge=effective_charge)
+            elif effective_charge == "opls":
+                result = self._assign_opls_charges_from_existing_types(mol)
+            else:
+                result = True
+            if result and report:
+                print_ff_assignment_report(mol, ff_obj=self)
+            if result:
+                try:
+                    naming.auto_export_assigned_mol(mol, depth=2)
+                except Exception:
+                    pass
+            return mol if result else False
+
         result = self.assign_ptypes(mol, charge=effective_charge)
-        if result:
+        if result and not preserve_prebuilt_bonded:
             result = self.assign_btypes(mol)
-        if result:
+        if result and not preserve_prebuilt_bonded:
             result = self.assign_atypes(mol)
-        if result:
+        if result and not preserve_prebuilt_bonded:
             result = self.assign_dtypes(mol)
-        if result:
+        if result and not preserve_prebuilt_bonded:
             result = self.assign_itypes(mol)
+        if result and preserve_prebuilt_bonded:
+            utils.radon_print(
+                'Preserving precomputed bonded fragment during OPLS-AA reassignment; '
+                'only nonbonded types/charges were refreshed.',
+                level=1,
+            )
 
         # If charge is not 'opls', use YadonPy's generic charge assignment.
         if result and effective_charge is not None and effective_charge != 'opls':
@@ -394,13 +756,13 @@ class OPLSAA(GAFF):
             Chem.rdmolops.SetAromaticity(mol, model=Chem.rdmolops.AromaticityModel.AROMATICITY_MDL)
 
             result = self.assign_ptypes(mol, charge=effective_charge)
-            if result:
+            if result and not preserve_prebuilt_bonded:
                 result = self.assign_btypes(mol)
-            if result:
+            if result and not preserve_prebuilt_bonded:
                 result = self.assign_atypes(mol)
-            if result:
+            if result and not preserve_prebuilt_bonded:
                 result = self.assign_dtypes(mol)
-            if result:
+            if result and not preserve_prebuilt_bonded:
                 result = self.assign_itypes(mol)
             if result and effective_charge is not None and effective_charge != 'opls':
                 result = calc.assign_charges(mol, charge=effective_charge, **charge_kwargs)
@@ -466,6 +828,8 @@ class OPLSAA(GAFF):
                     continue
                 chosen[idx] = rule
 
+        self._apply_special_inorganic_type_fallbacks(mol, chosen)
+
         # Check coverage
         ok = True
         for a in mol.GetAtoms():
@@ -506,6 +870,34 @@ class OPLSAA(GAFF):
                 a.SetDoubleProp('AtomicCharge', float(q))
 
         return True
+
+    @staticmethod
+    def _apply_special_inorganic_type_fallbacks(mol, chosen):
+        """Small structural fallbacks for legacy / lossy inorganic-ion graphs."""
+        try:
+            if mol is None or int(mol.GetNumAtoms()) != 7:
+                return
+            phosphorus = [atom for atom in mol.GetAtoms() if atom.GetSymbol() == "P"]
+            fluorine = [atom for atom in mol.GetAtoms() if atom.GetSymbol() == "F"]
+            if len(phosphorus) != 1 or len(fluorine) != 6:
+                return
+            center = phosphorus[0]
+            neighbors = list(center.GetNeighbors())
+            if int(center.GetDegree()) != 6 or len(neighbors) != 6:
+                return
+            if any(nb.GetSymbol() != "F" for nb in neighbors):
+                return
+
+            p_rule = _get_rule_by_opls("opls_785")
+            f_rule = _get_rule_by_opls("opls_786")
+            if p_rule is None or f_rule is None:
+                return
+
+            chosen[center.GetIdx()] = p_rule
+            for atom in fluorine:
+                chosen[atom.GetIdx()] = f_rule
+        except Exception:
+            return
 
     # ----------------------------
     # Bonded assignments (use ff_btype)
@@ -607,6 +999,7 @@ class OPLSAA(GAFF):
             ('OS', 'C_2', 'OS'): ('O_2', 'C_2', 'OS'),
             # Carboxymethyl-glucose sidechain linkage
             ('OS', 'CT', 'CO'): ('CO', 'CT', 'OH'),
+            ('CO', 'OH', 'CT'): ('CT', 'OH', 'CO'),
             # 1,3,2-dioxathiol-2,2-dioxide (DTD) / cyclic sulfate family
             ('OY', 'SY', 'OS'): ('OY', 'SY', 'CT'),
             ('OS', 'SY', 'OS'): ('OS', 'P~', 'OS'),
@@ -654,6 +1047,11 @@ class OPLSAA(GAFF):
             ('OH', 'CT', 'CO', 'OH'): ('CT', 'CT', 'CO', 'OH'),
             ('OH', 'CT', 'CO', 'OS'): ('CT', 'CT', 'CO', 'OS'),
             ('OH', 'CT', 'CO', 'HC'): ('CT', 'CT', 'CO', 'HC'),
+            ('CT', 'OH', 'CO', 'OS'): ('HO', 'OH', 'CO', 'OS'),
+            ('CT', 'OH', 'CO', 'CT'): ('HO', 'OH', 'CO', 'CT'),
+            ('CT', 'OH', 'CO', 'HC'): ('HO', 'OH', 'CO', 'HC'),
+            ('CT', 'CT', 'OH', 'CO'): ('HO', 'OH', 'CO', 'CT'),
+            ('HC', 'CT', 'OH', 'CO'): ('HO', 'OH', 'CO', 'HC'),
             ('HC', 'CT', 'CO', 'OH'): ('HC', 'CT', 'CO', 'OS'),
             ('HC', 'CT', 'CO', 'HC'): ('HC', 'CT', 'CO', 'OS'),
             # 1,3,2-dioxathiol-2,2-dioxide (DTD) / cyclic sulfate family

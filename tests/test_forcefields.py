@@ -3,6 +3,8 @@ from pathlib import Path
 
 from rdkit import Chem
 
+from yadonpy.core import poly
+from yadonpy.moldb import MolDB
 from yadonpy.ff.report import render_ff_assignment_report
 from yadonpy.ff.gaff2_mod import GAFF2_mod
 from yadonpy.ff.oplsaa import OPLSAA, validate_oplsaa_rule_table
@@ -188,6 +190,56 @@ def test_oplsaa_assigns_pf6_with_builtin_ion_types():
     assert abs(sum(atom_charges) + 1.0) < 1.0e-8
 
 
+def test_moldb_roundtrip_restores_pf6_anion_graph_semantics():
+    repo_db_dir = Path(__file__).resolve().parents[1] / "moldb"
+    db = MolDB(repo_db_dir)
+
+    pf6, rec = db.load_mol("F[P-](F)(F)(F)(F)F", require_ready=True, charge="RESP")
+
+    assert rec.canonical == "F[P-](F)(F)(F)(F)F"
+    assert Chem.MolToSmiles(Chem.RemoveHs(pf6), isomericSmiles=True) == "F[P-](F)(F)(F)(F)F"
+    phosphorus = [atom for atom in pf6.GetAtoms() if atom.GetSymbol() == "P"]
+    assert len(phosphorus) == 1
+    assert phosphorus[0].GetFormalCharge() == -1
+
+
+def test_oplsaa_assigns_moldb_backed_pf6_with_preserved_drih_bonded_fragment():
+    ff = OPLSAA()
+    repo_db_dir = Path(__file__).resolve().parents[1] / "moldb"
+    pf6 = ff.mol_rdkit(
+        "F[P-](F)(F)(F)(F)F",
+        db_dir=repo_db_dir,
+        charge="RESP",
+        require_ready=True,
+        prefer_db=True,
+    )
+
+    assigned = ff.ff_assign(pf6, charge="opls", bonded="DRIH", report=False)
+
+    assert assigned is not False
+    atom_types = [atom.GetProp("ff_type") for atom in assigned.GetAtoms()]
+    atom_charges = [atom.GetDoubleProp("AtomicCharge") for atom in assigned.GetAtoms()]
+    assert atom_types.count("opls_786") == 6
+    assert atom_types.count("opls_785") == 1
+    assert abs(sum(atom_charges) + 1.0) < 1.0e-8
+    assert assigned.HasProp("_yadonpy_bonded_itp")
+    assert assigned.HasProp("_yadonpy_bonded_json")
+
+
+def test_oplsaa_pf6_structural_fallback_handles_legacy_positive_p_mol2_graph():
+    from rdkit.Chem import rdmolfiles
+
+    ff = OPLSAA()
+    mol2_path = Path(__file__).resolve().parents[1] / "moldb" / "objects" / "a262cd2921905bc6" / "best.mol2"
+    pf6 = rdmolfiles.MolFromMol2File(str(mol2_path), sanitize=False, removeHs=False)
+    assert pf6 is not None
+
+    assert ff.assign_ptypes(pf6, charge="opls")
+    atom_types = [atom.GetProp("ff_type") for atom in pf6.GetAtoms()]
+    assert atom_types.count("opls_786") == 6
+    assert atom_types.count("opls_785") == 1
+
+
 def test_oplsaa_assigns_acyclic_carbonates_with_fallback_bonded_terms():
     ff = OPLSAA()
 
@@ -242,6 +294,40 @@ def test_oplsaa_assigns_dtd_cyclic_sulfate_with_targeted_rules():
     assert btypes.count("CM") == 2
     assert len(assigned.angles) > 0
     assert len(assigned.dihedrals) > 0
+
+
+def test_oplsaa_polymer_junction_refresh_reuses_existing_monomer_assignment(capsys):
+    ff = OPLSAA()
+    monomer = ff.mol('*OCC*', require_ready=False, prefer_db=False)
+    monomer = ff.ff_assign(monomer, charge='opls', report=False)
+
+    assert monomer is not False
+    capsys.readouterr()
+
+    polymer = poly.random_copolymerize_rw(
+        [monomer],
+        3,
+        ratio=[1.0],
+        tacticity='atactic',
+        name='opls_poly_acetal',
+        retry=1,
+        retry_step=20,
+        retry_opt_step=0,
+    )
+
+    captured = capsys.readouterr()
+    assert polymer is not None
+    assert 'OPLS-AA typing failed' not in captured.out
+    assert all(atom.HasProp('ff_type') and atom.HasProp('ff_btype') for atom in polymer.GetAtoms())
+    assert polymer.angles
+    assert polymer.dihedrals
+
+    capsys.readouterr()
+    reassigned = ff.ff_assign(polymer, charge=None, report=False)
+    captured = capsys.readouterr()
+
+    assert reassigned is not False
+    assert 'OPLS-AA typing failed' not in captured.out
 
 
 def test_render_ff_assignment_report_summarizes_charged_side_groups():

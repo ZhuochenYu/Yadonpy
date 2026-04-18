@@ -362,7 +362,7 @@ def remove_atom(mol, idx, angle_fix=False):
     return mol
 
 
-def add_bond(mol, idx1, idx2, order=Chem.rdchem.BondType.SINGLE):
+def add_bond(mol, idx1, idx2, order=Chem.rdchem.BondType.SINGLE, preserve_topology=False):
     """
     utils.add_bond
 
@@ -377,19 +377,20 @@ def add_bond(mol, idx1, idx2, order=Chem.rdchem.BondType.SINGLE):
         RDkit Mol object
     """
 
-    # Copy the extended attributes
-    #angles_copy = mol.angles.copy() if hasattr(mol, 'angles') else {}
-    #dihedrals_copy = mol.dihedrals.copy() if hasattr(mol, 'dihedrals') else {}
-    #impropers_copy = mol.impropers.copy() if hasattr(mol, 'impropers') else {}
+    # Copy the extended attributes when the caller wants to preserve inherited
+    # bonded topology across a connection edit (used by polymer junction builds).
+    angles_copy = mol.angles.copy() if preserve_topology and hasattr(mol, 'angles') else {}
+    dihedrals_copy = mol.dihedrals.copy() if preserve_topology and hasattr(mol, 'dihedrals') else {}
+    impropers_copy = mol.impropers.copy() if preserve_topology and hasattr(mol, 'impropers') else {}
     cell_copy = mol.cell if hasattr(mol, 'cell') else None
 
     rwmol = Chem.RWMol(mol)
     rwmol.AddBond(idx1, idx2, order=order)
     mol = rwmol.GetMol()
 
-    setattr(mol, 'angles', {})
-    setattr(mol, 'dihedrals', {})
-    setattr(mol, 'impropers', {})
+    setattr(mol, 'angles', angles_copy)
+    setattr(mol, 'dihedrals', dihedrals_copy)
+    setattr(mol, 'impropers', impropers_copy)
     if cell_copy is not None: setattr(mol, 'cell', cell_copy)
 
     return mol

@@ -359,6 +359,181 @@ def _load_mol2_candidate(mol2_path: Path, *, smiles_hint: str | None = None) -> 
     return mol
 
 
+def _graph_match_copy_without_formal_semantics(mol: Chem.Mol) -> Chem.Mol:
+    """Return a copy suitable for graph isomorphism checks across lossy MOL2 round-trips.
+
+    MOL2 readers can scramble formal charges / chiral flags for hypervalent
+    inorganic ions (for example PF6- may come back as a formally positive
+    phosphorus center).  For topology matching we strip those fragile semantics
+    and keep only the underlying element/bond graph.
+    """
+    probe = Chem.RWMol(Chem.Mol(mol))
+    for atom in probe.GetAtoms():
+        try:
+            atom.SetFormalCharge(0)
+        except Exception:
+            pass
+        try:
+            atom.SetNumRadicalElectrons(0)
+        except Exception:
+            pass
+        try:
+            atom.SetChiralTag(Chem.rdchem.ChiralType.CHI_UNSPECIFIED)
+        except Exception:
+            pass
+        try:
+            atom.SetIsotope(0)
+        except Exception:
+            pass
+    for bond in probe.GetBonds():
+        try:
+            bond.SetStereo(Chem.rdchem.BondStereo.STEREONONE)
+        except Exception:
+            pass
+        try:
+            bond.SetBondDir(Chem.rdchem.BondDir.NONE)
+        except Exception:
+            pass
+    out = probe.GetMol()
+    try:
+        out.UpdatePropertyCache(strict=False)
+    except Exception:
+        pass
+    return out
+
+
+def _restore_canonical_graph_semantics(mol: Chem.Mol, *, canonical: str | None = None) -> Chem.Mol:
+    """Repair formal charges / bond semantics using the canonical MolDB graph.
+
+    The geometry and atom order from ``mol`` are preserved.  Only graph
+    semantics that are known to be lossy in MOL2 round-trips are refreshed from
+    the canonical SMILES reference.
+    """
+    if mol is None or not canonical:
+        return mol
+
+    try:
+        ref = Chem.MolFromSmiles(str(canonical))
+    except Exception:
+        ref = None
+    if ref is None:
+        try:
+            ref = Chem.MolFromSmiles(str(canonical), sanitize=False)
+        except Exception:
+            ref = None
+        if ref is not None:
+            try:
+                ref.UpdatePropertyCache(strict=False)
+            except Exception:
+                pass
+            try:
+                Chem.SanitizeMol(
+                    ref,
+                    sanitizeOps=Chem.SanitizeFlags.SANITIZE_ALL ^ Chem.SanitizeFlags.SANITIZE_PROPERTIES,
+                )
+            except Exception:
+                pass
+    if ref is None or int(ref.GetNumAtoms()) != int(mol.GetNumAtoms()):
+        return mol
+
+    try:
+        target_probe = _graph_match_copy_without_formal_semantics(mol)
+        ref_probe = _graph_match_copy_without_formal_semantics(ref)
+        match = target_probe.GetSubstructMatch(ref_probe)
+    except Exception:
+        match = ()
+    if not match or len(match) != ref.GetNumAtoms():
+        return mol
+
+    changed = False
+    for ref_idx, target_idx in enumerate(match):
+        ref_atom = ref.GetAtomWithIdx(int(ref_idx))
+        atom = mol.GetAtomWithIdx(int(target_idx))
+
+        try:
+            ref_fc = int(ref_atom.GetFormalCharge())
+            if int(atom.GetFormalCharge()) != ref_fc:
+                atom.SetFormalCharge(ref_fc)
+                changed = True
+        except Exception:
+            pass
+
+        try:
+            ref_rad = int(ref_atom.GetNumRadicalElectrons())
+            if int(atom.GetNumRadicalElectrons()) != ref_rad:
+                atom.SetNumRadicalElectrons(ref_rad)
+                changed = True
+        except Exception:
+            pass
+
+        try:
+            ref_tag = ref_atom.GetChiralTag()
+            if atom.GetChiralTag() != ref_tag:
+                atom.SetChiralTag(ref_tag)
+                changed = True
+        except Exception:
+            pass
+
+        try:
+            atom.SetNoImplicit(bool(ref_atom.GetNoImplicit()))
+        except Exception:
+            pass
+        try:
+            atom.SetNumExplicitHs(int(ref_atom.GetNumExplicitHs()))
+        except Exception:
+            pass
+        try:
+            atom.SetIsAromatic(bool(ref_atom.GetIsAromatic()))
+        except Exception:
+            pass
+
+    for ref_bond in ref.GetBonds():
+        begin_idx = int(match[ref_bond.GetBeginAtomIdx()])
+        end_idx = int(match[ref_bond.GetEndAtomIdx()])
+        bond = mol.GetBondBetweenAtoms(begin_idx, end_idx)
+        if bond is None:
+            continue
+        try:
+            ref_type = ref_bond.GetBondType()
+            if bond.GetBondType() != ref_type:
+                bond.SetBondType(ref_type)
+                changed = True
+        except Exception:
+            pass
+        try:
+            ref_aromatic = bool(ref_bond.GetIsAromatic())
+            if bool(bond.GetIsAromatic()) != ref_aromatic:
+                bond.SetIsAromatic(ref_aromatic)
+                changed = True
+        except Exception:
+            pass
+        try:
+            ref_stereo = ref_bond.GetStereo()
+            if bond.GetStereo() != ref_stereo:
+                bond.SetStereo(ref_stereo)
+                changed = True
+        except Exception:
+            pass
+        try:
+            bond.SetBondDir(ref_bond.GetBondDir())
+        except Exception:
+            pass
+
+    if changed:
+        try:
+            mol.UpdatePropertyCache(strict=False)
+        except Exception:
+            pass
+        try:
+            Chem.SanitizeMol(
+                mol,
+                sanitizeOps=Chem.SanitizeFlags.SANITIZE_ALL ^ Chem.SanitizeFlags.SANITIZE_PROPERTIES,
+            )
+        except Exception:
+            pass
+    return mol
+
+
 @dataclass
 class MolRecord:
     key: str
@@ -841,6 +1016,15 @@ class MolDB:
         if mol is None:
             failed_list = ", ".join(str(p) for p in failed_mol2) or str(preferred_mol2)
             raise RuntimeError(f"Failed to read mol2 from any candidate: {failed_list}")
+
+        # MOL2 can lose formal-charge semantics for hypervalent inorganic ions
+        # (PF6-, BF4-, ClO4- ...). Repair those semantics from the canonical
+        # graph while keeping the cached atom order, coordinates, and charges.
+        try:
+            if rec.kind == "smiles" and _prefer_unsanitized_mol2(rec.canonical):
+                mol = _restore_canonical_graph_semantics(mol, canonical=rec.canonical)
+        except Exception:
+            pass
 
         # Restore psmiles connector isotopes (MOL2 does not preserve isotopes)
         if rec.kind == "psmiles":

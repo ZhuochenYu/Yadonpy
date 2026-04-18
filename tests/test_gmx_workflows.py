@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from yadonpy.gmx.mdp_templates import MINIM_CG_MDP, MINIM_STEEP_MDP, MdpSpec, NVT_MDP, default_mdp_params
-from yadonpy.gmx.workflows.eq import EqStage, EquilibrationJob
+from yadonpy.gmx.workflows.eq import EqStage, EquilibrationJob, StageLincsRetryPolicy
 from yadonpy.interface import InterfaceProtocol
 
 
@@ -143,6 +143,52 @@ class FakeInvalidMinimRunner(FakeRunner):
             ) + '\n',
             encoding='utf-8',
         )
+
+
+class FakeLincsRetryRunner(FakeRunner):
+    def __init__(self, *, write_checkpoint_on_failure: bool = True):
+        super().__init__()
+        self.write_checkpoint_on_failure = write_checkpoint_on_failure
+        self.grompp_records = []
+        self.mdrun_records = []
+
+    def grompp(self, *, mdp: Path, out_tpr: Path, **kwargs) -> None:
+        self.grompp_calls += 1
+        self.grompp_records.append(
+            {
+                "out_tpr": Path(out_tpr),
+                "mdp_text": Path(mdp).read_text(encoding="utf-8"),
+                "kwargs": dict(kwargs),
+            }
+        )
+        Path(out_tpr).write_text('fake tpr\n', encoding='utf-8')
+
+    def mdrun(self, *, tpr: Path, deffnm: str, cwd: Path, cpi=None, append=True, **kwargs) -> None:
+        self.mdrun_calls += 1
+        cwd = Path(cwd)
+        self.mdrun_records.append(
+            {
+                "tpr": Path(tpr),
+                "deffnm": deffnm,
+                "cwd": cwd,
+                "cpi": None if cpi is None else Path(cpi),
+                "append": bool(append),
+                "kwargs": dict(kwargs),
+            }
+        )
+        if self.mdrun_calls == 1:
+            if self.write_checkpoint_on_failure:
+                (cwd / f'{deffnm}.cpt').write_text('fake cpt\n', encoding='utf-8')
+            (cwd / f'{deffnm}.log').write_text(
+                "Step 4000, time 8.000 (ps)\nFatal error: Too many LINCS warnings\n",
+                encoding='utf-8',
+            )
+            raise RuntimeError('Fatal error: Too many LINCS warnings')
+
+        (cwd / f'{deffnm}.gro').write_text('fake gro\n', encoding='utf-8')
+        (cwd / f'{deffnm}.cpt').write_text('fake cpt\n', encoding='utf-8')
+        (cwd / f'{deffnm}.edr').write_text('fake edr\n', encoding='utf-8')
+        (cwd / f'{deffnm}.log').write_text('resumed successfully\n', encoding='utf-8')
 
 
 def _write_diatomic_topology(root: Path) -> tuple[Path, Path]:
@@ -490,6 +536,91 @@ def test_equilibration_job_auto_shrinks_cutoffs_for_small_box(tmp_path, monkeypa
     assert summary['stages'][0]['auto_cutoff_adjustments'][0]['verlet_safety']['nstlist']['new'] == 10.0
     assert summary['stages'][0]['auto_cutoff_adjustments'][0]['verlet_safety']['verlet_buffer_tolerance']['new'] == 0.02
     assert any('Auto-shrinking nonbond cutoffs' in msg for msg in runner.logs)
+
+
+def test_equilibration_job_retries_production_stage_with_stronger_lincs_after_failure(tmp_path, monkeypatch):
+    import yadonpy.gmx.workflows.eq as eqmod
+
+    monkeypatch.setattr(eqmod, 'pbc_mol_fix_inplace', lambda *args, **kwargs: {'applied': False, 'error': None})
+    monkeypatch.setattr(eqmod, 'normalize_gro_molecules_inplace', lambda *args, **kwargs: {'applied': False, 'error': None})
+    monkeypatch.setattr(eqmod, 'write_mol2_from_top_gro_parmed', lambda **kwargs: None)
+
+    gro, top = _write_diatomic_topology(tmp_path)
+    params = default_mdp_params()
+    params.update(
+        {
+            'nsteps': 6000,
+            'dt': 0.002,
+            'ref_t': 300.0,
+            'gen_vel': 'yes',
+            'gen_temp': 300.0,
+            'gen_seed': -1,
+        }
+    )
+    stage = EqStage(
+        name='01_npt',
+        kind='md',
+        mdp=MdpSpec(NVT_MDP, params),
+        lincs_retry=StageLincsRetryPolicy(),
+    )
+    runner = FakeLincsRetryRunner()
+    job = EquilibrationJob(gro=gro, top=top, out_dir=tmp_path / 'eq_lincs_retry', stages=[stage], runner=runner)
+
+    summary_path = job.run(restart=False)
+
+    assert summary_path.exists()
+    assert runner.grompp_calls == 2
+    assert runner.mdrun_calls == 2
+    assert runner.mdrun_records[1]["tpr"].name == "md_lincs_retry.tpr"
+    assert runner.mdrun_records[1]["cpi"] == job.out_dir / "01_npt" / "md.cpt"
+    assert runner.mdrun_records[1]["append"] is True
+    retry_mdp = runner.grompp_records[-1]["mdp_text"]
+    assert "dt                       = 0.001" in retry_mdp
+    assert "nsteps                   = 4000" in retry_mdp
+    assert "lincs_iter               = 4" in retry_mdp
+    assert "lincs_order              = 12" in retry_mdp
+
+    summary = json.loads(summary_path.read_text(encoding='utf-8'))
+    fallback = summary["stages"][0]["lincs_fallback"]
+    assert fallback["triggered"] is True
+    assert fallback["failed_time_ps"] == pytest.approx(8.0)
+    assert fallback["remaining_time_ps"] == pytest.approx(4.0)
+    assert fallback["retry_nsteps"] == 4000
+    assert fallback["resumed_from_pending_state"] is False
+    assert not (job.out_dir / "01_npt" / "lincs_fallback_state.json").exists()
+    assert any("Production LINCS fallback triggered" in msg for msg in runner.logs)
+
+
+def test_equilibration_job_refuses_lincs_retry_without_checkpoint(tmp_path, monkeypatch):
+    import yadonpy.gmx.workflows.eq as eqmod
+
+    monkeypatch.setattr(eqmod, 'pbc_mol_fix_inplace', lambda *args, **kwargs: {'applied': False, 'error': None})
+    monkeypatch.setattr(eqmod, 'normalize_gro_molecules_inplace', lambda *args, **kwargs: {'applied': False, 'error': None})
+    monkeypatch.setattr(eqmod, 'write_mol2_from_top_gro_parmed', lambda **kwargs: None)
+
+    gro, top = _write_diatomic_topology(tmp_path)
+    params = default_mdp_params()
+    params.update(
+        {
+            'nsteps': 6000,
+            'dt': 0.002,
+            'ref_t': 300.0,
+            'gen_vel': 'yes',
+            'gen_temp': 300.0,
+            'gen_seed': -1,
+        }
+    )
+    stage = EqStage(
+        name='01_npt',
+        kind='md',
+        mdp=MdpSpec(NVT_MDP, params),
+        lincs_retry=StageLincsRetryPolicy(),
+    )
+    runner = FakeLincsRetryRunner(write_checkpoint_on_failure=False)
+    job = EquilibrationJob(gro=gro, top=top, out_dir=tmp_path / 'eq_lincs_retry_no_cpt', stages=[stage], runner=runner)
+
+    with pytest.raises(RuntimeError, match="no checkpoint"):
+        job.run(restart=False)
 
 
 def test_interface_protocol_enables_periodic_molecules_for_stage_handoffs():

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import math
+import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -57,6 +58,17 @@ class EqStage:
     name: str
     kind: str  # minim | nvt | npt | md
     mdp: MdpSpec
+    lincs_retry: "StageLincsRetryPolicy | None" = None
+
+
+@dataclass(frozen=True)
+class StageLincsRetryPolicy:
+    """One-shot production fallback after a LINCS / constraint failure."""
+
+    enabled: bool = True
+    retry_dt_ps: float = 0.001
+    retry_lincs_iter: int = 4
+    retry_lincs_order: int = 12
 
 
 class EquilibrationJob:
@@ -239,6 +251,29 @@ class EquilibrationJob:
             if line.startswith("potential energy") and "inf" in line:
                 return "potential energy became infinite"
         return None
+
+    @staticmethod
+    def _lincs_retry_state_path(stage_dir: Path) -> Path:
+        return Path(stage_dir) / "lincs_fallback_state.json"
+
+    @staticmethod
+    def _read_last_md_progress(log_path: Path) -> tuple[int | None, float | None]:
+        if not Path(log_path).exists():
+            return None, None
+        try:
+            lines = Path(log_path).read_text(encoding="utf-8", errors="replace").splitlines()
+        except Exception:
+            return None, None
+        pattern = re.compile(r"Step\s+(\d+),\s*time\s+([0-9.+\-Ee]+)\s+\(ps\)", re.IGNORECASE)
+        for raw in reversed(lines):
+            match = pattern.search(raw)
+            if not match:
+                continue
+            try:
+                return int(match.group(1)), float(match.group(2))
+            except Exception:
+                continue
+        return None, None
 
     def _section(self, title: str, detail: str | None = None) -> None:
         self._log('=' * 78)
@@ -497,11 +532,14 @@ class EquilibrationJob:
             t_stage = self._stage_begin(idx, total_stages, st, stage_dir)
             deffnm = "md"  # keep consistent within stage dir
             stage_summary_path = stage_dir / "summary.json"
+            retry_state_path = self._lincs_retry_state_path(stage_dir)
 
             out_gro = stage_dir / f"{deffnm}.gro"
             out_cpt = stage_dir / f"{deffnm}.cpt"
             out_tpr = stage_dir / f"{deffnm}.tpr"
+            stage_runtime_tpr = out_tpr
             stage_cutoff_events: list[dict[str, object]] = []
+            stage_lincs_fallback: dict[str, object] | None = None
 
             def _write_stage_mdp(*, mdp: MdpSpec, gro: Path, filename: str, label: str) -> Path:
                 prepared_mdp, cutoff_info = self._apply_box_safe_cutoffs(mdp, gro=gro)
@@ -569,6 +607,10 @@ class EquilibrationJob:
                     current_gro = out_gro
                     current_cpt = out_cpt if out_cpt.exists() else None
                     self._log(f"[SKIP] Existing stage output detected | gro={out_gro.name}")
+                    try:
+                        retry_state_path.unlink()
+                    except Exception:
+                        pass
                     _canonicalize_stage_gro(out_tpr=out_tpr, out_gro=out_gro, stage_dir=stage_dir)
                     # If summary exists, the postprocess was already done.
                     if stage_summary_path.exists():
@@ -577,9 +619,57 @@ class EquilibrationJob:
                     # Otherwise, fall through to regenerate the summary only (no rerun).
                     stage_has_outputs = True
 
-            # 2) Stage interrupted but checkpoint exists: continue without re-running grompp.
+            # 2) Pending production fallback exists: resume the safer retry run first.
+            if (not stage_has_outputs) and rst_flag and retry_state_path.exists() and out_cpt.exists() and (not out_gro.exists()):
+                retry_state = load_json(retry_state_path) or {}
+                retry_tpr_raw = retry_state.get("retry_tpr_path") or retry_state.get("retry_tpr")
+                if not retry_tpr_raw:
+                    raise RuntimeError(
+                        f"Pending LINCS fallback state exists for {st.name} but retry_tpr_path is missing in {retry_state_path}."
+                    )
+                retry_tpr = Path(str(retry_tpr_raw))
+                if not retry_tpr.exists():
+                    raise RuntimeError(
+                        f"Pending LINCS fallback state exists for {st.name} but retry TPR is missing: {retry_tpr}."
+                    )
+                self._log(f"[RUN] Resuming pending LINCS fallback | tpr={retry_tpr.name} | cpt={out_cpt.name}")
+                ntomp_sel, ntmpi_sel = _choose_threads(stage_use_gpu)
+                self.runner.mdrun(
+                    tpr=retry_tpr,
+                    deffnm=deffnm,
+                    cwd=stage_dir,
+                    ntomp=ntomp_sel,
+                    ntmpi=ntmpi_sel,
+                    use_gpu=stage_use_gpu,
+                    nb=("gpu" if st.kind in ("minim", "em") else None),
+                    gpu_id=self.resources.gpu_id,
+                    append=True,
+                    cpi=out_cpt,
+                )
+                current_gro = out_gro
+                current_cpt = out_cpt if out_cpt.exists() else None
+                stage_runtime_tpr = retry_tpr
+                stage_lincs_fallback = {
+                    "triggered": True,
+                    "reason": retry_state.get("reason") or "pending_lincs_fallback_resume",
+                    "failed_time_ps": retry_state.get("failed_time_ps"),
+                    "original_dt_ps": retry_state.get("original_dt_ps"),
+                    "original_nsteps": retry_state.get("original_nsteps"),
+                    "remaining_time_ps": retry_state.get("remaining_time_ps"),
+                    "retry_dt_ps": retry_state.get("retry_dt_ps"),
+                    "retry_nsteps": retry_state.get("retry_nsteps"),
+                    "retry_lincs_iter": retry_state.get("retry_lincs_iter"),
+                    "retry_lincs_order": retry_state.get("retry_lincs_order"),
+                    "retry_tpr": str(retry_tpr),
+                    "resumed_from_pending_state": True,
+                }
+                try:
+                    retry_state_path.unlink()
+                except Exception:
+                    pass
+            # 3) Stage interrupted but checkpoint exists: continue without re-running grompp.
             #    This is the standard GROMACS restart mode: mdrun -cpi md.cpt -append.
-            if (not stage_has_outputs) and rst_flag and out_tpr.exists() and out_cpt.exists() and (not out_gro.exists()):
+            elif (not stage_has_outputs) and rst_flag and out_tpr.exists() and out_cpt.exists() and (not out_gro.exists()):
                 self._log(f"[RUN] Resuming interrupted stage from checkpoint | cpt={out_cpt.name}")
                 ntomp_sel, ntmpi_sel = _choose_threads(stage_use_gpu)
                 self.runner.mdrun(
@@ -597,7 +687,7 @@ class EquilibrationJob:
                 current_gro = out_gro
                 current_cpt = out_cpt if out_cpt.exists() else None
             else:
-                # 3) Fresh stage run: if stale partial outputs exist, remove them to avoid
+                # 4) Fresh stage run: if stale partial outputs exist, remove them to avoid
                 #    confusing GROMACS (e.g., "-append" to an incompatible file set).
                 if (not stage_has_outputs) and rst_flag:
                     for p in stage_dir.glob(f"{deffnm}.*"):
@@ -747,7 +837,120 @@ class EquilibrationJob:
                         # fall back to a steep minimization with constraints in the same stage so
                         # the workflow can proceed.
                         msg = str(e)
-                        if st.kind in ("minim", "em") and _is_constraint_failure(msg):
+                        retry_policy = st.lincs_retry
+                        if (
+                            st.kind == "md"
+                            and retry_policy is not None
+                            and bool(retry_policy.enabled)
+                            and _is_constraint_failure(msg)
+                        ):
+                            if not out_cpt.exists():
+                                raise RuntimeError(
+                                    f"Production stage {st.name} hit a LINCS/constraint failure but no checkpoint "
+                                    f"was written at {out_cpt}. Refusing to retry from a coarse .gro restart."
+                                ) from e
+
+                            failed_step, failed_time_ps = self._read_last_md_progress(stage_dir / f"{deffnm}.log")
+                            if failed_time_ps is None:
+                                raise RuntimeError(
+                                    f"Production stage {st.name} hit a LINCS/constraint failure, but the last "
+                                    f"simulation time could not be parsed from {stage_dir / f'{deffnm}.log'}."
+                                ) from e
+
+                            original_dt_ps = float(st.mdp.params.get("dt", 0.002))
+                            original_nsteps = int(st.mdp.params.get("nsteps", 0))
+                            total_time_ps = float(original_dt_ps) * float(original_nsteps)
+                            remaining_time_ps = max(total_time_ps - float(failed_time_ps), 0.0)
+                            retry_dt_ps = float(retry_policy.retry_dt_ps)
+                            retry_nsteps = max(1, int(math.ceil(remaining_time_ps / retry_dt_ps)))
+                            retry_lincs_iter = max(int(st.mdp.params.get("lincs_iter", 2)), int(retry_policy.retry_lincs_iter))
+                            retry_lincs_order = max(int(st.mdp.params.get("lincs_order", 8)), int(retry_policy.retry_lincs_order))
+
+                            retry_params = {
+                                **st.mdp.params,
+                                "dt": retry_dt_ps,
+                                "nsteps": retry_nsteps,
+                                "lincs_iter": retry_lincs_iter,
+                                "lincs_order": retry_lincs_order,
+                                "continuation": "yes",
+                                "gen_vel": "no",
+                            }
+                            self._log(
+                                "[WARN] Production LINCS fallback triggered | "
+                                f"failed_time={failed_time_ps:.3f} ps | remaining={remaining_time_ps:.3f} ps | "
+                                f"retry_dt={retry_dt_ps:.4f} ps | retry_nsteps={retry_nsteps} | "
+                                f"lincs_iter={retry_lincs_iter} | lincs_order={retry_lincs_order}"
+                            )
+
+                            retry_mdp = _write_stage_mdp(
+                                mdp=MdpSpec(st.mdp.template, retry_params),
+                                gro=gro_for_main,
+                                filename=f"{st.kind}_lincs_retry.mdp",
+                                label="lincs_retry",
+                            )
+                            retry_tpr = stage_dir / f"{deffnm}_lincs_retry.tpr"
+                            self.runner.grompp(
+                                mdp=retry_mdp,
+                                gro=gro_for_main,
+                                top=self.top,
+                                ndx=self.ndx,
+                                out_tpr=retry_tpr,
+                                cpt=out_cpt,
+                                cwd=stage_dir,
+                            )
+                            atomic_write_json(
+                                retry_state_path,
+                                {
+                                    "status": "pending",
+                                    "reason": msg,
+                                    "failed_step": failed_step,
+                                    "failed_time_ps": failed_time_ps,
+                                    "original_dt_ps": original_dt_ps,
+                                    "original_nsteps": original_nsteps,
+                                    "remaining_time_ps": remaining_time_ps,
+                                    "retry_dt_ps": retry_dt_ps,
+                                    "retry_nsteps": retry_nsteps,
+                                    "retry_lincs_iter": retry_lincs_iter,
+                                    "retry_lincs_order": retry_lincs_order,
+                                    "retry_tpr_path": str(retry_tpr),
+                                },
+                            )
+                            self.runner.mdrun(
+                                tpr=retry_tpr,
+                                deffnm=deffnm,
+                                cwd=stage_dir,
+                                ntomp=ntomp_sel,
+                                ntmpi=ntmpi_sel,
+                                use_gpu=stage_use_gpu,
+                                nb=("gpu" if st.kind in ("minim", "em") else None),
+                                gpu_id=self.resources.gpu_id,
+                                append=True,
+                                cpi=out_cpt,
+                            )
+                            try:
+                                retry_state_path.unlink()
+                            except Exception:
+                                pass
+                            stage_runtime_tpr = retry_tpr
+                            stage_lincs_fallback = {
+                                "triggered": True,
+                                "reason": msg,
+                                "failed_time_ps": failed_time_ps,
+                                "original_dt_ps": original_dt_ps,
+                                "original_nsteps": original_nsteps,
+                                "remaining_time_ps": remaining_time_ps,
+                                "retry_dt_ps": retry_dt_ps,
+                                "retry_nsteps": retry_nsteps,
+                                "retry_lincs_iter": retry_lincs_iter,
+                                "retry_lincs_order": retry_lincs_order,
+                                "retry_tpr": str(retry_tpr),
+                                "resumed_from_pending_state": False,
+                            }
+                            self._log(
+                                "[DONE] Production LINCS fallback completed | "
+                                f"appended remaining {remaining_time_ps:.3f} ps with dt={retry_dt_ps:.4f} ps"
+                            )
+                        elif st.kind in ("minim", "em") and _is_constraint_failure(msg):
                             self._log("[WARN] Constraint-sensitive minimization failed. Falling back to steep (constraints=none).")
                             fb_mdp = _write_stage_mdp(
                                 mdp=MdpSpec(
@@ -809,13 +1012,13 @@ class EquilibrationJob:
             # We therefore rewrite BOTH the final stage structure and trajectory with:
             #   gmx trjconv -pbc mol
             # in-place (md.gro/md.xtc). Best-effort only.
-            canonical_gro = _canonicalize_stage_gro(out_tpr=out_tpr, out_gro=out_gro, stage_dir=stage_dir)
+            canonical_gro = _canonicalize_stage_gro(out_tpr=stage_runtime_tpr, out_gro=out_gro, stage_dir=stage_dir)
             pbc_gro = canonical_gro["pbc_gro"]
             whole_gro = canonical_gro["whole_gro"]
             pbc_xtc = {"applied": False, "error": None}
             out_xtc = stage_dir / f"{deffnm}.xtc"
             if out_xtc.exists():
-                pbc_xtc = pbc_mol_fix_inplace(self.runner, tpr=out_tpr, traj_or_gro=out_xtc, cwd=stage_dir)
+                pbc_xtc = pbc_mol_fix_inplace(self.runner, tpr=stage_runtime_tpr, traj_or_gro=out_xtc, cwd=stage_dir)
             # ----------------------
             # Optional MOL2 export (system-level) via ParmEd
             # ----------------------
@@ -854,6 +1057,7 @@ class EquilibrationJob:
                 },
                 "whole_molecule_gro": whole_gro,
                 "auto_cutoff_adjustments": stage_cutoff_events,
+                "lincs_fallback": stage_lincs_fallback,
             }
 
             edr = stage_dir / f"{deffnm}.edr"

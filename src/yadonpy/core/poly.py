@@ -1430,16 +1430,20 @@ def _rw_finalize_bonded_terms(mol):
 
             ff_obj = get_ff(ff_name)
             if has_new_bond:
-                if mol.GetNumAtoms() >= 1 and hasattr(ff_obj, 'assign_ptypes'):
-                    ff_obj.assign_ptypes(mol)
-                if mol.GetNumAtoms() >= 2 and hasattr(ff_obj, 'assign_btypes'):
-                    ff_obj.assign_btypes(mol)
-                if mol.GetNumAtoms() >= 3 and hasattr(ff_obj, 'assign_atypes'):
-                    ff_obj.assign_atypes(mol)
-                if mol.GetNumAtoms() >= 4 and hasattr(ff_obj, 'assign_dtypes'):
-                    ff_obj.assign_dtypes(mol)
-                if hasattr(ff_obj, 'assign_itypes'):
-                    ff_obj.assign_itypes(mol)
+                handled_locally = False
+                if str(ff_name).strip().lower() == 'oplsaa' and hasattr(ff_obj, 'refresh_polymer_junction_terms'):
+                    handled_locally = bool(ff_obj.refresh_polymer_junction_terms(mol))
+                if not handled_locally:
+                    if mol.GetNumAtoms() >= 1 and hasattr(ff_obj, 'assign_ptypes'):
+                        ff_obj.assign_ptypes(mol)
+                    if mol.GetNumAtoms() >= 2 and hasattr(ff_obj, 'assign_btypes'):
+                        ff_obj.assign_btypes(mol)
+                    if mol.GetNumAtoms() >= 3 and hasattr(ff_obj, 'assign_atypes'):
+                        ff_obj.assign_atypes(mol)
+                    if mol.GetNumAtoms() >= 4 and hasattr(ff_obj, 'assign_dtypes'):
+                        ff_obj.assign_dtypes(mol)
+                    if hasattr(ff_obj, 'assign_itypes'):
+                        ff_obj.assign_itypes(mol)
                 _clear_new_bond_marks(mol)
             else:
                 if mol.GetNumAtoms() >= 3 and not has_angles and hasattr(ff_obj, 'assign_atypes'):
@@ -1763,14 +1767,14 @@ def _materialize_connected_mols(mol1, mol2, trial, *, res_name_1='RU0', res_name
 
     del_idx1 = int(trial['del_idx1'])
     del_idx2 = int(trial['del_idx2']) + mol1_n - 1
-    mol = utils.remove_atom(mol, del_idx1)
-    mol = utils.remove_atom(mol, del_idx2)
+    mol = utils.remove_atom(mol, del_idx1, angle_fix=True)
+    mol = utils.remove_atom(mol, del_idx2, angle_fix=True)
 
     tail_ne_idx = int(trial['tail_ne_idx_new'])
     head_ne_idx = int(trial['head_ne_idx_new']) + mol1_n - 1
     if del_idx2 < head_ne_idx:
         head_ne_idx -= 1
-    mol = utils.add_bond(mol, tail_ne_idx, head_ne_idx, order=Chem.rdchem.BondType.SINGLE)
+    mol = utils.add_bond(mol, tail_ne_idx, head_ne_idx, order=Chem.rdchem.BondType.SINGLE, preserve_topology=True)
     new_bond = mol.GetBondBetweenAtoms(tail_ne_idx, head_ne_idx)
     new_bond.SetBoolProp('new_bond', True)
 
@@ -6087,9 +6091,9 @@ def make_cyclicpolymer(smiles, n=2, return_mol=False, removeHs=False, label=1):
     bd2type = mol.GetBondBetweenAtoms(tail_idx, tail_ne_idx).GetBondTypeAsDouble()
     
     # Delete linker atoms and bonds
-    mol = utils.remove_atom(mol, head_idx)
+    mol = utils.remove_atom(mol, head_idx, angle_fix=True)
     if tail_idx > head_idx: tail_idx -= 1
-    mol = utils.remove_atom(mol, tail_idx)
+    mol = utils.remove_atom(mol, tail_idx, angle_fix=True)
 
     # Add a new bond
     if mol.GetIntProp('head_ne_idx') > mol.GetIntProp('tail_idx'): head_ne_idx -= 1
@@ -6097,11 +6101,11 @@ def make_cyclicpolymer(smiles, n=2, return_mol=False, removeHs=False, label=1):
     if mol.GetIntProp('tail_ne_idx') > mol.GetIntProp('tail_idx'): tail_ne_idx -= 1
     if mol.GetIntProp('tail_ne_idx') > mol.GetIntProp('head_idx'): tail_ne_idx -= 1
     if bd1type == 2.0 or bd2type == 2.0:
-        mol = utils.add_bond(mol, tail_ne_idx, head_ne_idx, order=Chem.rdchem.BondType.DOUBLE)
+        mol = utils.add_bond(mol, tail_ne_idx, head_ne_idx, order=Chem.rdchem.BondType.DOUBLE, preserve_topology=True)
     elif bd1type == 3.0 or bd2type == 3.0:
-        mol = utils.add_bond(mol, tail_ne_idx, head_ne_idx, order=Chem.rdchem.BondType.TRIPLE)
+        mol = utils.add_bond(mol, tail_ne_idx, head_ne_idx, order=Chem.rdchem.BondType.TRIPLE, preserve_topology=True)
     else:
-        mol = utils.add_bond(mol, tail_ne_idx, head_ne_idx, order=Chem.rdchem.BondType.SINGLE)
+        mol = utils.add_bond(mol, tail_ne_idx, head_ne_idx, order=Chem.rdchem.BondType.SINGLE, preserve_topology=True)
 
     Chem.SanitizeMol(mol)
 
@@ -7205,15 +7209,15 @@ def connect_mols_dev(mol1, mol2, bond_length=1.5, dihedral=np.pi, random_rot=Fal
     # Delete linker atoms and bonds
     del_idx1 = mol1.GetIntProp('tail_idx')
     del_idx2 = mol2.GetIntProp('head_idx') + mol1_n - 1
-    mol = utils.remove_atom(mol, del_idx1)
-    mol = utils.remove_atom(mol, del_idx2)
+    mol = utils.remove_atom(mol, del_idx1, angle_fix=True)
+    mol = utils.remove_atom(mol, del_idx2, angle_fix=True)
 
     # Add a new bond
     tail_ne_idx = mol1.GetIntProp('tail_ne_idx')
     head_ne_idx = mol2.GetIntProp('head_ne_idx') + mol1_n - 1
     if del_idx1 < tail_ne_idx: tail_ne_idx -= 1
     if del_idx2 < head_ne_idx: head_ne_idx -= 1
-    mol = utils.add_bond(mol, tail_ne_idx, head_ne_idx, order=Chem.rdchem.BondType.SINGLE)
+    mol = utils.add_bond(mol, tail_ne_idx, head_ne_idx, order=Chem.rdchem.BondType.SINGLE, preserve_topology=True)
     new_bond = mol.GetBondBetweenAtoms(tail_ne_idx, head_ne_idx)
     new_bond.SetBoolProp('new_bond', True)
 
@@ -7222,8 +7226,8 @@ def connect_mols_dev(mol1, mol2, bond_length=1.5, dihedral=np.pi, random_rot=Fal
         del_ladder_idx2 = head_ladder_idx + mol1_n - 2
         if del_idx1 < del_ladder_idx1: del_ladder_idx1 -= 1
         if del_idx2 < del_ladder_idx2: del_ladder_idx2 -= 1
-        mol = utils.remove_atom(mol, del_ladder_idx1)
-        mol = utils.remove_atom(mol, del_ladder_idx2)
+        mol = utils.remove_atom(mol, del_ladder_idx1, angle_fix=True)
+        mol = utils.remove_atom(mol, del_ladder_idx2, angle_fix=True)
 
         tail_ladder_new_idx = tail_ne_ladder_idx
         head_ladder_new_idx = head_ne_ladder_idx + mol1_n - 2
@@ -7231,7 +7235,7 @@ def connect_mols_dev(mol1, mol2, bond_length=1.5, dihedral=np.pi, random_rot=Fal
         if del_idx2 < head_ladder_new_idx: head_ladder_new_idx -= 1
         if del_ladder_idx1 < tail_ladder_new_idx: tail_ladder_new_idx -= 1
         if del_ladder_idx2 < head_ladder_new_idx: head_ladder_new_idx -= 1
-        mol = utils.add_bond(mol, tail_ladder_new_idx, head_ladder_new_idx, order=Chem.rdchem.BondType.SINGLE)
+        mol = utils.add_bond(mol, tail_ladder_new_idx, head_ladder_new_idx, order=Chem.rdchem.BondType.SINGLE, preserve_topology=True)
         new_bond = mol.GetBondBetweenAtoms(tail_ladder_new_idx, head_ladder_new_idx)
         new_bond.SetBoolProp('new_bond', True)
 

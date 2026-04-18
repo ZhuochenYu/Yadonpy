@@ -823,7 +823,7 @@ def test_ensure_cached_artifacts_preserves_pf6_charge_sum_when_formal_charge_is_
     formal_q = sum(int(atom.GetFormalCharge()) for atom in pf6.GetAtoms())
 
     assert q_before == pytest.approx(-1.0, abs=1.0e-6)
-    assert formal_q == 1
+    assert formal_q == -1
 
     ensure_cached_artifacts(pf6, mol_name='PF6')
 

@@ -23,7 +23,7 @@ import numpy as np
 
 from ...core import utils
 from ...gmx.workflows._util import RunResources
-from ...gmx.workflows.eq import EqStage, EquilibrationJob
+from ...gmx.workflows.eq import EqStage, EquilibrationJob, StageLincsRetryPolicy
 from ...io.gromacs_system import SystemExportResult, export_system_from_cell_meta, validate_exported_system_dir
 from ...runtime import resolve_restart
 from ...workflow import ResumeManager, StepSpec
@@ -1454,6 +1454,7 @@ class NPT(EQ21step):
                 "01_npt",
                 "md",
                 MdpSpec(NPT_MDP, {**p, "nsteps": max(ns_to_steps(float(time)), 1000)}),
+                lincs_retry=StageLincsRetryPolicy(),
             )
         ]
 
@@ -1702,6 +1703,7 @@ class NVT(EQ21step):
                 "01_nvt",
                 "md",
                 MdpSpec(NVT_MDP, {**p, "nsteps": max(ns_to_steps(float(time)), 1000)}),
+                lincs_retry=StageLincsRetryPolicy(),
             )
         ]
 
