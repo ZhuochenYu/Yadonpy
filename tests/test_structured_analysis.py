@@ -17,6 +17,7 @@ from yadonpy.gmx.analysis.structured import (
     _compute_mobile_drift_series,
     build_ne_conductivity_from_msd,
     build_site_map,
+    compute_msd_series,
     detect_first_shell,
     resolve_moltypes_from_mols,
     select_diffusive_window,
@@ -57,6 +58,43 @@ def test_select_diffusive_window_rejects_plateau():
     assert fit["status"] == "subdiffusive_risk"
     assert fit["confidence"] == "low"
     assert fit["alpha_mean"] < 1.0
+
+
+def test_compute_msd_series_respects_begin_end_window(monkeypatch):
+    t_ps = np.arange(0.0, 10.0, dtype=float)
+    positions = np.zeros((10, 1, 3), dtype=float)
+    positions[:, 0, 0] = t_ps
+
+    def _fake_preprocess_group_positions(**kwargs):
+        return {
+            "t_ps": t_ps,
+            "positions_nm": positions,
+            "box_lengths_nm": np.ones((10, 3), dtype=float),
+            "preprocessing": {
+                "used_unwrapped_positions": True,
+                "drift_correction_mode": "off",
+                "drift_reference_group": None,
+                "geometry_mode": "3d",
+            },
+        }
+
+    monkeypatch.setattr(
+        "yadonpy.gmx.analysis.structured.preprocess_group_positions",
+        _fake_preprocess_group_positions,
+    )
+
+    out = compute_msd_series(
+        gro_path=Path("system.gro"),
+        xtc_path=Path("md.xtc"),
+        top_path=Path("system.top"),
+        system_dir=Path("02_system"),
+        group_specs=[],
+        begin_ps=3.0,
+        end_ps=7.0,
+    )
+
+    assert np.allclose(out["t_ps"], np.array([3.0, 4.0, 5.0, 6.0, 7.0]))
+    assert out["n_groups"] == 0
 
 
 def test_detect_first_shell_returns_confident_minimum():

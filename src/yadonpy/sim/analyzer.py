@@ -1745,6 +1745,8 @@ class AnalyzeResult:
                             geometry_mode=geometry_mode,
                             unwrap=unwrap,
                             drift=drift,
+                            begin_ps=begin_ps,
+                            end_ps=end_ps,
                         )
                 except Exception as e:
                     species_rec["metrics"][metric_name] = {"error": str(e), "group_kind": metric_entry.get("group_kind")}

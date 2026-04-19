@@ -1001,6 +1001,8 @@ def compute_msd_series(
     geometry_mode: str = "auto",
     unwrap: str = "auto",
     drift: str = "auto",
+    begin_ps: float | None = None,
+    end_ps: float | None = None,
 ) -> dict[str, Any]:
     prepared = preprocess_group_positions(
         gro_path=gro_path,
@@ -1016,6 +1018,15 @@ def compute_msd_series(
     t_ps = np.asarray(prepared["t_ps"], dtype=float)
     positions = np.asarray(prepared["positions_nm"], dtype=float)
     geometry = str((prepared.get("preprocessing") or {}).get("geometry_mode") or _normalize_geometry_mode(geometry_mode))
+    if t_ps.size and positions.size:
+        mask = np.ones(t_ps.shape, dtype=bool)
+        if begin_ps is not None:
+            mask &= t_ps >= float(begin_ps)
+        if end_ps is not None:
+            mask &= t_ps <= float(end_ps)
+        if not np.all(mask):
+            t_ps = t_ps[mask]
+            positions = positions[mask, :, :]
     if t_ps.size == 0 or positions.size == 0:
         return {
             "t_ps": np.zeros(0, dtype=float),
