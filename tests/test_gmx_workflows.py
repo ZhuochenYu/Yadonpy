@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from yadonpy.gmx.mdp_templates import MINIM_CG_MDP, MINIM_STEEP_MDP, MdpSpec, NVT_MDP, default_mdp_params
+from yadonpy.gmx.workflows._util import RunResources
 from yadonpy.gmx.workflows.eq import EqStage, EquilibrationJob, StageLincsRetryPolicy
 from yadonpy.interface import InterfaceProtocol
 
@@ -191,6 +192,21 @@ class FakeLincsRetryRunner(FakeRunner):
         (cwd / f'{deffnm}.log').write_text('resumed successfully\n', encoding='utf-8')
 
 
+class FakeConservativeGpuRunner(FakeRunner):
+    def __init__(self):
+        super().__init__()
+        self.mdrun_records = []
+
+    def mdrun(self, *, deffnm: str, cwd: Path, **kwargs) -> None:
+        self.mdrun_calls += 1
+        self.mdrun_records.append(dict(kwargs))
+        cwd = Path(cwd)
+        (cwd / f'{deffnm}.gro').write_text('fake gro\n', encoding='utf-8')
+        (cwd / f'{deffnm}.cpt').write_text('fake cpt\n', encoding='utf-8')
+        (cwd / f'{deffnm}.edr').write_text('fake edr\n', encoding='utf-8')
+        (cwd / f'{deffnm}.log').write_text('ok\n', encoding='utf-8')
+
+
 def _write_diatomic_topology(root: Path) -> tuple[Path, Path]:
     gro = root / 'input.gro'
     mol_dir = root / 'molecules'
@@ -290,6 +306,51 @@ def test_equilibration_job_smoke_run_and_restart_skip(tmp_path, monkeypatch):
     assert second_summary == summary_path
     assert runner.grompp_calls == 1
     assert runner.mdrun_calls == 1
+
+
+def test_equilibration_job_conservative_gpu_mode_passes_single_offload_override(tmp_path, monkeypatch):
+    import yadonpy.gmx.workflows.eq as eqmod
+
+    monkeypatch.setattr(eqmod, 'pbc_mol_fix_inplace', lambda *args, **kwargs: {'applied': False, 'error': None})
+    monkeypatch.setattr(eqmod, 'write_mol2_from_top_gro_parmed', lambda **kwargs: None)
+
+    gro = tmp_path / 'input.gro'
+    top = tmp_path / 'input.top'
+    gro.write_text('fake input gro\n', encoding='utf-8')
+    top.write_text('fake input top\n', encoding='utf-8')
+
+    params = default_mdp_params()
+    params.update(
+        {
+            'nsteps': 1000,
+            'dt': 0.001,
+            'ref_t': 300.0,
+            'gen_vel': 'no',
+        }
+    )
+    stage = EqStage(name='01_md', kind='md', mdp=MdpSpec(NVT_MDP, params))
+    runner = FakeConservativeGpuRunner()
+    job = EquilibrationJob(
+        gro=gro,
+        top=top,
+        out_dir=tmp_path / 'eq_job_conservative',
+        stages=[stage],
+        runner=runner,
+        resources=RunResources(ntmpi=1, ntomp=2, use_gpu=True, gpu_id='0', gpu_offload_mode='conservative'),
+    )
+
+    summary_path = job.run(restart=False)
+
+    assert summary_path.exists()
+    assert runner.mdrun_calls == 1
+    kwargs = runner.mdrun_records[0]
+    assert kwargs['use_gpu'] is True
+    assert kwargs['prefer_gpu_update'] is False
+    assert kwargs['nb'] == 'gpu'
+    assert kwargs['bonded'] == 'cpu'
+    assert kwargs['pme'] == 'gpu'
+    assert kwargs['pmefft'] == 'gpu'
+    assert kwargs['update'] == 'cpu'
 
 
 def test_equilibration_job_skips_stage_mol2_export_for_large_systems(tmp_path, monkeypatch):

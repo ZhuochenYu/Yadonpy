@@ -871,6 +871,9 @@ class EquilibrationJob:
                         cwd=stage_dir,
                     )
                     ntomp_sel, ntmpi_sel = _choose_threads(stage_use_gpu)
+                    stage_mdrun_kwargs = dict(stage_offload_kwargs)
+                    if st.kind in ("minim", "em") and "nb" not in stage_mdrun_kwargs:
+                        stage_mdrun_kwargs["nb"] = "gpu"
                     try:
                         self.runner.mdrun(
                             tpr=tpr,
@@ -879,12 +882,11 @@ class EquilibrationJob:
                             ntomp=ntomp_sel,
                             ntmpi=ntmpi_sel,
                             use_gpu=stage_use_gpu,
-                            nb=("gpu" if st.kind in ("minim", "em") else None),
                             prefer_gpu_update=stage_prefer_gpu_update,
                             gpu_id=self.resources.gpu_id,
                             append=True,
                             checkpoint_minutes=st.checkpoint_minutes,
-                            **stage_offload_kwargs,
+                            **stage_mdrun_kwargs,
                         )
                     except Exception as e:
                         # If CG fails due to constraint problems (common for rough packed systems),
@@ -976,13 +978,12 @@ class EquilibrationJob:
                                 ntomp=ntomp_sel,
                                 ntmpi=ntmpi_sel,
                                 use_gpu=stage_use_gpu,
-                                nb=("gpu" if st.kind in ("minim", "em") else None),
                                 prefer_gpu_update=stage_prefer_gpu_update,
                                 gpu_id=self.resources.gpu_id,
                                 append=True,
                                 cpi=out_cpt,
                                 checkpoint_minutes=st.checkpoint_minutes,
-                                **stage_offload_kwargs,
+                                **stage_mdrun_kwargs,
                             )
                             try:
                                 retry_state_path.unlink()
