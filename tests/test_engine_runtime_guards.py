@@ -163,6 +163,43 @@ def test_mdrun_honors_explicit_checkpoint_interval(monkeypatch, tmp_path: Path):
     assert cmd[cmd.index('-cpt') + 1] == '3.5'
 
 
+def test_mdrun_honors_explicit_offload_overrides(monkeypatch, tmp_path: Path):
+    runner = GromacsRunner(exec_=GromacsExec('gmx'), verbose=False)
+    calls: list[list[str]] = []
+
+    monkeypatch.setattr(runner, '_tool_has_option', lambda command, option=None, cwd=None: True)
+
+    def _fake_run_capture_tee(args, *, cwd=None, env=None, tail_chars=8000):
+        calls.append(list(args))
+        return 0, ""
+
+    monkeypatch.setattr(runner, '_run_capture_tee', _fake_run_capture_tee)
+
+    runner.mdrun(
+        tpr=tmp_path / 'md.tpr',
+        deffnm='md',
+        cwd=tmp_path,
+        ntomp=4,
+        ntmpi=1,
+        use_gpu=True,
+        nb='gpu',
+        bonded='cpu',
+        pme='gpu',
+        pmefft='gpu',
+        update='cpu',
+        prefer_gpu_update=True,
+        gpu_id='0',
+    )
+
+    assert len(calls) == 1
+    cmd = calls[0]
+    assert cmd[cmd.index('-nb') + 1] == 'gpu'
+    assert cmd[cmd.index('-bonded') + 1] == 'cpu'
+    assert cmd[cmd.index('-pme') + 1] == 'gpu'
+    assert cmd[cmd.index('-pmefft') + 1] == 'gpu'
+    assert cmd[cmd.index('-update') + 1] == 'cpu'
+
+
 def test_current_reuses_cached_nojump_trajectory(monkeypatch, tmp_path: Path):
     runner = GromacsRunner(exec_=GromacsExec('gmx'), verbose=False)
     tpr = tmp_path / 'md.tpr'

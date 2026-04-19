@@ -343,3 +343,4 @@ class RunResources:
     # keeping a stable gpu_id parameter in scripts.
     use_gpu: bool = True
     gpu_id: Optional[str] = None
+    gpu_offload_mode: str = "full"

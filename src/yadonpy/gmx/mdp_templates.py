@@ -76,8 +76,8 @@ periodic-molecules       = {periodic_molecules}
 
 {wall_mdp}
 
-constraints              = h-bonds
-constraint_algorithm     = lincs
+constraints              = {constraints}
+constraint_algorithm     = {constraint_algorithm}
 lincs_iter               = {lincs_iter}
 lincs_order              = {lincs_order}
 
@@ -115,8 +115,8 @@ periodic-molecules       = {periodic_molecules}
 
 {wall_mdp}
 
-constraints              = h-bonds
-constraint_algorithm     = lincs
+constraints              = {constraints}
+constraint_algorithm     = {constraint_algorithm}
 lincs_iter               = {lincs_iter}
 lincs_order              = {lincs_order}
 
@@ -157,8 +157,8 @@ periodic-molecules       = {periodic_molecules}
 
 {wall_mdp}
 
-constraints              = h-bonds
-constraint_algorithm     = lincs
+constraints              = {constraints}
+constraint_algorithm     = {constraint_algorithm}
 lincs_iter               = {lincs_iter}
 lincs_order              = {lincs_order}
 
@@ -210,8 +210,8 @@ periodic-molecules       = {periodic_molecules}
 
 {wall_mdp}
 
-constraints              = h-bonds
-constraint_algorithm     = lincs
+constraints              = {constraints}
+constraint_algorithm     = {constraint_algorithm}
 lincs_iter               = {lincs_iter}
 lincs_order              = {lincs_order}
 
@@ -454,6 +454,8 @@ def default_mdp_params() -> Dict[str, object]:
         "ewald_rtol": 1.0e-5,
         "dispcorr": "EnerPres",
         # constraints (robust default for polymer/ionic systems)
+        "constraints": "h-bonds",
+        "constraint_algorithm": "lincs",
         "lincs_iter": 2,
         "lincs_order": 8,
         # thermostat

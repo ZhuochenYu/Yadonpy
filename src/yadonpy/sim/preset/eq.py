@@ -22,6 +22,7 @@ from typing import Any, Optional, Sequence, Union
 import numpy as np
 
 from ...core import utils
+from ...gmx.mdp_templates import MdpSpec
 from ...gmx.workflows._util import RunResources
 from ...gmx.workflows.eq import EqStage, EquilibrationJob, StageLincsRetryPolicy
 from ...io.gromacs_system import SystemExportResult, export_system_from_cell_meta, validate_exported_system_dir
@@ -138,6 +139,147 @@ def _workflow_summary_matches(summary_path: Path, *, input_gro_sig: dict[str, An
     return True
 
 
+def _outputs_newer_than_inputs(
+    outputs: Sequence[Path],
+    *,
+    input_gro_sig: dict[str, Any],
+    input_top_sig: dict[str, Any],
+    input_ndx_sig: dict[str, Any] | None = None,
+) -> bool:
+    try:
+        output_paths = [Path(p) for p in outputs]
+        if not output_paths or not all(path.exists() for path in output_paths):
+            return False
+        oldest_output = min(path.stat().st_mtime for path in output_paths)
+    except Exception:
+        return False
+
+    input_paths: list[Path] = []
+    for sig in (input_gro_sig, input_top_sig, input_ndx_sig):
+        if not isinstance(sig, dict):
+            continue
+        raw = sig.get("path")
+        if not raw:
+            continue
+        try:
+            path = Path(str(raw))
+        except Exception:
+            continue
+        if not path.exists():
+            return False
+        input_paths.append(path)
+
+    if not input_paths:
+        return False
+
+    try:
+        newest_input = max(path.stat().st_mtime for path in input_paths)
+    except Exception:
+        return False
+    return oldest_output >= newest_input
+
+
+def _stage_done_tag_path(stage_dir: Path) -> Path:
+    return Path(stage_dir) / ".yadonpy_stage_done.json"
+
+
+def _workflow_provenance_matches(
+    payload: dict[str, Any],
+    *,
+    input_gro_sig: dict[str, Any],
+    input_top_sig: dict[str, Any],
+    input_ndx_sig: dict[str, Any] | None = None,
+) -> bool:
+    provenance = payload.get("workflow_provenance")
+    if not isinstance(provenance, dict):
+        provenance = payload.get("provenance")
+    if not isinstance(provenance, dict):
+        return False
+    if provenance.get("input_gro_sig") != input_gro_sig:
+        return False
+    if provenance.get("input_top_sig") != input_top_sig:
+        return False
+    if provenance.get("input_ndx_sig") != input_ndx_sig:
+        return False
+    return True
+
+
+def _workflow_marker_matches(
+    marker_path: Path,
+    *,
+    outputs: Sequence[Path],
+    input_gro_sig: dict[str, Any],
+    input_top_sig: dict[str, Any],
+    input_ndx_sig: dict[str, Any] | None = None,
+) -> bool:
+    if not marker_path.exists():
+        return False
+    try:
+        payload = json.loads(marker_path.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    if _workflow_provenance_matches(
+        payload,
+        input_gro_sig=input_gro_sig,
+        input_top_sig=input_top_sig,
+        input_ndx_sig=input_ndx_sig,
+    ):
+        return True
+    return _outputs_newer_than_inputs(
+        outputs,
+        input_gro_sig=input_gro_sig,
+        input_top_sig=input_top_sig,
+        input_ndx_sig=input_ndx_sig,
+    )
+
+
+def _latest_reusable_stage_progress(
+    run_dir: Path,
+    stage_names: Sequence[str],
+    *,
+    input_gro_sig: dict[str, Any],
+    input_top_sig: dict[str, Any],
+    input_ndx_sig: dict[str, Any] | None = None,
+) -> tuple[Optional[str], Optional[str]]:
+    latest_completed: Optional[str] = None
+    next_stage: Optional[str] = None
+    for idx, stage_name in enumerate(stage_names):
+        stage_dir = Path(run_dir) / str(stage_name)
+        stage_gro = stage_dir / "md.gro"
+        if not stage_gro.exists():
+            break
+        stage_outputs = tuple(
+            path
+            for path in (
+                stage_dir / "md.tpr",
+                stage_dir / "md.xtc",
+                stage_dir / "md.edr",
+                stage_dir / "md.gro",
+            )
+            if path.exists()
+        )
+        marker_ok = _workflow_marker_matches(
+            _stage_done_tag_path(stage_dir),
+            outputs=stage_outputs,
+            input_gro_sig=input_gro_sig,
+            input_top_sig=input_top_sig,
+            input_ndx_sig=input_ndx_sig,
+        )
+        if not marker_ok:
+            marker_ok = _workflow_marker_matches(
+                stage_dir / "summary.json",
+                outputs=stage_outputs,
+                input_gro_sig=input_gro_sig,
+                input_top_sig=input_top_sig,
+                input_ndx_sig=input_ndx_sig,
+            )
+        if not marker_ok:
+            break
+        latest_completed = str(stage_name)
+        next_stage = str(stage_names[idx + 1]) if idx + 1 < len(stage_names) else None
+    return latest_completed, next_stage
+
+
 def _recover_completed_workflow_step(
     resume: ResumeManager,
     spec: StepSpec,
@@ -147,6 +289,7 @@ def _recover_completed_workflow_step(
     input_top_sig: dict[str, Any],
     input_ndx_sig: dict[str, Any] | None = None,
     label: str,
+    fallback_markers: Sequence[Path] = (),
 ) -> bool:
     """Recover a finished workflow step when outputs exist but resume state is missing.
 
@@ -158,8 +301,33 @@ def _recover_completed_workflow_step(
         return False
     if not all(Path(p).exists() for p in spec.outputs):
         return False
-    if not _workflow_summary_matches(
+    if _workflow_summary_matches(
         summary_path,
+        input_gro_sig=input_gro_sig,
+        input_top_sig=input_top_sig,
+        input_ndx_sig=input_ndx_sig,
+    ):
+        _preset_log(
+            f"[RESTART] Recovered completed {label} from existing outputs; "
+            f"resume state status was {status}.",
+            level=1,
+        )
+        resume.mark_done(
+            spec,
+            meta={
+                "recovered_from_summary": True,
+                "previous_resume_status": status,
+            },
+        )
+        return True
+
+    marker_paths = [Path(p) for p in fallback_markers]
+    if not marker_paths:
+        return False
+    if not all(path.exists() for path in marker_paths):
+        return False
+    if not _outputs_newer_than_inputs(
+        spec.outputs,
         input_gro_sig=input_gro_sig,
         input_top_sig=input_top_sig,
         input_ndx_sig=input_ndx_sig,
@@ -167,15 +335,16 @@ def _recover_completed_workflow_step(
         return False
 
     _preset_log(
-        f"[RESTART] Recovered completed {label} from existing outputs; "
+        f"[RESTART] Recovered completed {label} from stage artifacts; "
         f"resume state status was {status}.",
         level=1,
     )
     resume.mark_done(
         spec,
         meta={
-            "recovered_from_summary": True,
+            "recovered_from_stage_artifacts": True,
             "previous_resume_status": status,
+            "fallback_markers": [str(path) for path in marker_paths],
         },
     )
     return True
@@ -207,6 +376,97 @@ def _parse_gpu_args(gpu: int, gpu_id: Optional[int]) -> tuple[bool, Optional[str
     return use_gpu, gid_s
 
 
+def _normalize_gpu_offload_mode(mode: object) -> str:
+    token = str(mode or "auto").strip().lower()
+    if token in {"auto", "adaptive"}:
+        return "auto"
+    if token in {"full", "default"}:
+        return "full"
+    if token in {"conservative", "safe"}:
+        return "conservative"
+    if token in {"cpu", "none"}:
+        return "cpu"
+    raise ValueError(f"Unsupported gpu_offload_mode={mode!r}")
+
+
+def _cell_meta_payload(ac) -> dict[str, Any]:
+    try:
+        if hasattr(ac, "HasProp") and ac.HasProp("_yadonpy_cell_meta"):
+            raw = json.loads(ac.GetProp("_yadonpy_cell_meta"))
+            if isinstance(raw, dict):
+                return raw
+    except Exception:
+        pass
+    return {}
+
+
+def _cell_meta_contains_polymer(ac) -> bool:
+    payload = _cell_meta_payload(ac)
+    species = list(payload.get("species") or [])
+    for sp in species:
+        if not isinstance(sp, dict):
+            continue
+        residue_map = sp.get("residue_map")
+        if isinstance(residue_map, dict):
+            try:
+                if len(list(residue_map.get("residues") or [])) > 1:
+                    return True
+            except Exception:
+                pass
+        try:
+            if bool(sp.get("polyelectrolyte_mode")) and int(sp.get("natoms") or 0) >= 40:
+                return True
+        except Exception:
+            pass
+    return False
+
+
+def _resolve_production_gpu_offload_mode(ac, requested_mode: object) -> str:
+    token = _normalize_gpu_offload_mode(requested_mode)
+    if token != "auto":
+        return token
+    return "conservative" if _cell_meta_contains_polymer(ac) else "full"
+
+
+def _resolve_production_bridge_ps(ac, bridge_ps: float | None) -> float:
+    if bridge_ps is not None:
+        return float(bridge_ps)
+    return 100.0 if _cell_meta_contains_polymer(ac) else 0.0
+
+
+def _resolve_nvt_density_control(ac, density_control: bool | None) -> bool:
+    if density_control is not None:
+        return bool(density_control)
+    return True
+
+
+def _normalize_constraints_mode(value: object) -> str:
+    if value is None:
+        return "none"
+    if not isinstance(value, str):
+        raise TypeError(f"constraints must be a string, got {type(value).__name__}")
+    token = value.strip().lower().replace("_", "-")
+    aliases = {
+        "none": "none",
+        "no": "none",
+        "off": "none",
+        "hbonds": "h-bonds",
+        "h-bonds": "h-bonds",
+        "allbonds": "all-bonds",
+        "all-bonds": "all-bonds",
+        "hangles": "h-angles",
+        "h-angles": "h-angles",
+    }
+    normalized = aliases.get(token, token)
+    if not normalized:
+        raise ValueError("constraints must not be empty")
+    return normalized
+
+
+def _constraints_use_lincs(mode: object) -> bool:
+    return _normalize_constraints_mode(mode) != "none"
+
+
 def _interval_ps_to_nsteps(dt_ps: float, interval_ps: Optional[float], *, disabled_value: int = 0) -> int:
     if interval_ps is None:
         return int(disabled_value)
@@ -231,6 +491,107 @@ def _apply_production_output_cadence(
     params["nstlog"] = _interval_ps_to_nsteps(dt_ps, float(log_ps) if log_ps is not None else float(energy_ps))
     params["nstxout_trr"] = _interval_ps_to_nsteps(dt_ps, trr_ps, disabled_value=0)
     params["nstvout"] = _interval_ps_to_nsteps(dt_ps, velocity_ps, disabled_value=0)
+
+
+def _prepare_production_mdp_params(
+    *,
+    base_params: dict[str, object],
+    dt_ps: float,
+    constraints: str,
+    lincs_iter: int | None,
+    lincs_order: int | None,
+    traj_ps: float,
+    energy_ps: float,
+    log_ps: Optional[float],
+    trr_ps: Optional[float],
+    velocity_ps: Optional[float],
+    mdp_overrides: Optional[dict[str, object]] = None,
+) -> tuple[dict[str, object], str]:
+    params = dict(base_params)
+    params["dt"] = float(dt_ps)
+    params["constraints"] = _normalize_constraints_mode(constraints)
+    if lincs_iter is not None:
+        params["lincs_iter"] = int(lincs_iter)
+    if lincs_order is not None:
+        params["lincs_order"] = int(lincs_order)
+
+    overrides = dict(mdp_overrides or {})
+    if overrides:
+        params.update(overrides)
+
+    params["dt"] = float(params["dt"])
+    constraints_mode = _normalize_constraints_mode(params.get("constraints", "none"))
+    params["constraints"] = constraints_mode
+    params["constraint_algorithm"] = "lincs" if _constraints_use_lincs(constraints_mode) else "none"
+
+    _apply_production_output_cadence(
+        params,
+        traj_ps=float(traj_ps),
+        energy_ps=float(energy_ps),
+        log_ps=log_ps,
+        trr_ps=trr_ps,
+        velocity_ps=velocity_ps,
+    )
+
+    for key in ("nstxout", "nstenergy", "nstlog", "nstxout_trr", "nstvout"):
+        if key in overrides:
+            params[key] = overrides[key]
+
+    return params, constraints_mode
+
+
+def _build_production_stages(
+    *,
+    stage_name: str,
+    template: str,
+    params: dict[str, object],
+    prod_ns: float,
+    checkpoint_min: float,
+    constraints_mode: str,
+    bridge_ps: float = 0.0,
+    bridge_dt_fs: float = 1.0,
+    bridge_lincs_iter: int = 4,
+    bridge_lincs_order: int = 12,
+) -> list[EqStage]:
+    dt_ps = float(params["dt"])
+    constraints_mode = _normalize_constraints_mode(constraints_mode)
+    constraints_active = _constraints_use_lincs(constraints_mode)
+    prod_steps = max(int((float(prod_ns) * 1000.0) / dt_ps), 1000)
+    stages: list[EqStage] = []
+    if float(bridge_ps) > 0.0:
+        bridge_dt_ps = max(float(bridge_dt_fs), 0.1) / 1000.0
+        bridge_steps = max(int(round(float(bridge_ps) / bridge_dt_ps)), 1)
+        bridge_params = {
+            **params,
+            "dt": bridge_dt_ps,
+            "nsteps": bridge_steps,
+            "continuation": "yes",
+            "gen_vel": "no",
+        }
+        if constraints_active:
+            bridge_params["lincs_iter"] = max(int(params.get("lincs_iter", 2)), int(bridge_lincs_iter))
+            bridge_params["lincs_order"] = max(int(params.get("lincs_order", 8)), int(bridge_lincs_order))
+        stages.append(
+            EqStage(
+                f"01_bridge_{stage_name}",
+                "md",
+                MdpSpec(template, bridge_params),
+                checkpoint_minutes=(float(checkpoint_min) if float(checkpoint_min) > 0.0 else None),
+            )
+        )
+        main_name = f"02_{stage_name}"
+    else:
+        main_name = f"01_{stage_name}"
+    stages.append(
+        EqStage(
+            main_name,
+            "md",
+            MdpSpec(template, {**params, "nsteps": prod_steps}),
+            lincs_retry=StageLincsRetryPolicy() if constraints_active else None,
+            checkpoint_minutes=(float(checkpoint_min) if float(checkpoint_min) > 0.0 else None),
+        )
+    )
+    return stages
 
 
 def _next_additional_round(work_dir: Path, *, restart: bool) -> tuple[int, Path]:
@@ -819,7 +1180,15 @@ def _apply_stage_mdp_overrides(stages: Sequence[EqStage], overrides: Optional[di
     patched: list[EqStage] = []
     for stage in stages:
         if stage.kind in target_kinds:
-            patched.append(EqStage(stage.name, stage.kind, MdpSpec(stage.mdp.template, {**stage.mdp.params, **dict(overrides)})))
+            patched.append(
+                EqStage(
+                    stage.name,
+                    stage.kind,
+                    MdpSpec(stage.mdp.template, {**stage.mdp.params, **dict(overrides)}),
+                    lincs_retry=stage.lincs_retry,
+                    checkpoint_minutes=stage.checkpoint_minutes,
+                )
+            )
         else:
             patched.append(stage)
     return patched
@@ -1302,6 +1671,7 @@ class EQ21step:
             input_top_sig=expected_top_sig,
             input_ndx_sig=expected_ndx_sig,
             label="EQ21 workflow",
+            fallback_markers=(final_dir / "summary.json",),
         )
         if self._resume.is_done(eq_spec) and not _workflow_summary_matches(
             run_dir / "summary.json",
@@ -1321,6 +1691,21 @@ class EQ21step:
                 prefixes=("equilibration_additional_",),
             )
         job_restart = self._job_restart_flag(eq_spec, bool(rst_flag))
+        if bool(rst_flag) and not job_restart:
+            latest_stage, next_stage = _latest_reusable_stage_progress(
+                run_dir,
+                [stage.name for stage in stages],
+                input_gro_sig=expected_gro_sig,
+                input_top_sig=expected_top_sig,
+                input_ndx_sig=expected_ndx_sig,
+            )
+            if latest_stage is not None:
+                detail = f"resuming from {next_stage}" if next_stage is not None else "all stages already present"
+                _preset_log(
+                    f"[RESTART] Reusing completed EQ21 substeps through {latest_stage}; {detail}.",
+                    level=1,
+                )
+                job_restart = True
         if not job_restart and run_dir.exists():
             shutil.rmtree(run_dir, ignore_errors=True)
         self._resume.run(eq_spec, lambda: job.run(restart=job_restart))
@@ -1452,6 +1837,7 @@ class Additional(EQ21step):
             input_top_sig=expected_top_sig,
             input_ndx_sig=expected_ndx_sig,
             label=f"additional equilibration round {round_idx:02d}",
+            fallback_markers=(final_dir / "summary.json",),
         )
         if self._resume.is_done(spec) and not _workflow_summary_matches(
             run_dir / "summary.json",
@@ -1471,6 +1857,21 @@ class Additional(EQ21step):
                 prefixes=("equilibration_additional_",),
             )
         job_restart = self._job_restart_flag(spec, bool(rst_flag))
+        if bool(rst_flag) and not job_restart:
+            latest_stage, next_stage = _latest_reusable_stage_progress(
+                run_dir,
+                [stage.name for stage in stages],
+                input_gro_sig=expected_gro_sig,
+                input_top_sig=expected_top_sig,
+                input_ndx_sig=expected_ndx_sig,
+            )
+            if latest_stage is not None:
+                detail = f"resuming from {next_stage}" if next_stage is not None else "all stages already present"
+                _preset_log(
+                    f"[RESTART] Reusing completed additional-equilibration substeps through {latest_stage}; {detail}.",
+                    level=1,
+                )
+                job_restart = True
         if not job_restart and run_dir.exists():
             shutil.rmtree(run_dir, ignore_errors=True)
         self._resume.run(spec, lambda: job.run(restart=job_restart))
@@ -1499,6 +1900,15 @@ class NPT(EQ21step):
         trr_ps: Optional[float] = None,
         velocity_ps: Optional[float] = None,
         checkpoint_min: float = 5.0,
+        dt_ps: float = 0.001,
+        constraints: str = "none",
+        lincs_iter: Optional[int] = None,
+        lincs_order: Optional[int] = None,
+        gpu_offload_mode: str = "auto",
+        bridge_ps: Optional[float] = None,
+        bridge_dt_fs: float = 1.0,
+        bridge_lincs_iter: int = 4,
+        bridge_lincs_order: int = 12,
         mdp_overrides: Optional[dict[str, object]] = None,
         restart: Optional[bool] = None,
     ):
@@ -1515,6 +1925,12 @@ class NPT(EQ21step):
         _preset_item("temperature_K", float(temp))
         _preset_item("pressure_bar", float(press))
         _preset_item("production_ns", float(time))
+        _preset_item("dt_ps", float(dt_ps))
+        _preset_item("constraints", _normalize_constraints_mode(constraints))
+        _preset_item("lincs_iter", int(lincs_iter) if lincs_iter is not None else None)
+        _preset_item("lincs_order", int(lincs_order) if lincs_order is not None else None)
+        resolved_gpu_offload_mode = _resolve_production_gpu_offload_mode(self.ac, gpu_offload_mode)
+        resolved_bridge_ps = _resolve_production_bridge_ps(self.ac, bridge_ps)
         _preset_item(
             "output_cadence",
             f"xtc={float(traj_ps):.3f} ps | energy={float(energy_ps):.3f} ps | "
@@ -1523,45 +1939,63 @@ class NPT(EQ21step):
             f"vel={'off' if velocity_ps is None else f'{float(velocity_ps):.3f} ps'} | "
             f"cpt={float(checkpoint_min):.2f} min"
         )
+        _preset_item("gpu_offload_mode", resolved_gpu_offload_mode)
+        _preset_item(
+            "bridge",
+            f"{float(resolved_bridge_ps):.1f} ps | dt={float(bridge_dt_fs):.3f} fs | "
+            f"lincs_iter={int(bridge_lincs_iter)} | lincs_order={int(bridge_lincs_order)}",
+        )
         if mdp_overrides:
             _preset_item("mdp_overrides", mdp_overrides)
         _preset_item("resources", f"mpi={int(mpi)} | omp={int(omp)} | gpu={int(gpu)} | gpu_id={gpu_id}")
         if not rst_flag and run_dir.exists():
             shutil.rmtree(run_dir, ignore_errors=True)
 
-        # Build a single-stage NPT MD using the same NPT MDP template as equilibration.
-        from ...gmx.mdp_templates import NPT_MDP, MdpSpec, default_mdp_params
-        from ...gmx.workflows.eq import EqStage
+        # Build a single-stage NPT MD using the caller-selected production regime.
+        from ...gmx.mdp_templates import NPT_MDP, NPT_NO_CONSTRAINTS_MDP, default_mdp_params
 
         p = default_mdp_params()
         p["ref_t"] = float(temp)
         p["ref_p"] = float(press)
-        _apply_production_output_cadence(
-            p,
+        p, constraints_mode = _prepare_production_mdp_params(
+            base_params=p,
+            dt_ps=float(dt_ps),
+            constraints=constraints,
+            lincs_iter=lincs_iter,
+            lincs_order=lincs_order,
             traj_ps=float(traj_ps),
             energy_ps=float(energy_ps),
             log_ps=log_ps,
             trr_ps=trr_ps,
             velocity_ps=velocity_ps,
+            mdp_overrides=mdp_overrides,
         )
-        if mdp_overrides:
-            p.update(dict(mdp_overrides))
+        template = NPT_NO_CONSTRAINTS_MDP if not _constraints_use_lincs(constraints_mode) else NPT_MDP
+        effective_dt_ps = float(p["dt"])
+        effective_lincs_iter = int(p["lincs_iter"]) if _constraints_use_lincs(constraints_mode) else None
+        effective_lincs_order = int(p["lincs_order"]) if _constraints_use_lincs(constraints_mode) else None
 
-        def ns_to_steps(ns: float) -> int:
-            return int((ns * 1000.0) / float(p["dt"]))
-
-        stages = [
-            EqStage(
-                "01_npt",
-                "md",
-                MdpSpec(NPT_MDP, {**p, "nsteps": max(ns_to_steps(float(time)), 1000)}),
-                lincs_retry=StageLincsRetryPolicy(),
-                checkpoint_minutes=(float(checkpoint_min) if float(checkpoint_min) > 0.0 else None),
-            )
-        ]
+        stages = _build_production_stages(
+            stage_name="npt",
+            template=template,
+            params=p,
+            prod_ns=float(time),
+            checkpoint_min=float(checkpoint_min),
+            constraints_mode=constraints_mode,
+            bridge_ps=float(resolved_bridge_ps),
+            bridge_dt_fs=float(bridge_dt_fs),
+            bridge_lincs_iter=int(bridge_lincs_iter),
+            bridge_lincs_order=int(bridge_lincs_order),
+        )
 
         use_gpu, gid = _parse_gpu_args(gpu, gpu_id)
-        res = RunResources(ntmpi=int(mpi), ntomp=int(omp), use_gpu=use_gpu, gpu_id=gid)
+        res = RunResources(
+            ntmpi=int(mpi),
+            ntomp=int(omp),
+            use_gpu=use_gpu,
+            gpu_id=gid,
+            gpu_offload_mode=resolved_gpu_offload_mode,
+        )
         job = EquilibrationJob(gro=start_gro, top=exp.system_top, provenance_ndx=exp.system_ndx, out_dir=run_dir, stages=stages, resources=res)
 
         final_dir = run_dir / stages[-1].name
@@ -1574,12 +2008,21 @@ class NPT(EQ21step):
                 "temp": float(temp),
                 "press": float(press),
                 "time": float(time),
+                "dt_ps": float(effective_dt_ps),
+                "constraints": constraints_mode,
+                "lincs_iter": int(effective_lincs_iter) if effective_lincs_iter is not None else None,
+                "lincs_order": int(effective_lincs_order) if effective_lincs_order is not None else None,
                 "traj_ps": float(traj_ps),
                 "energy_ps": float(energy_ps),
                 "log_ps": float(log_ps) if log_ps is not None else None,
                 "trr_ps": float(trr_ps) if trr_ps is not None else None,
                 "velocity_ps": float(velocity_ps) if velocity_ps is not None else None,
                 "checkpoint_min": float(checkpoint_min),
+                "gpu_offload_mode": resolved_gpu_offload_mode,
+                "bridge_ps": float(resolved_bridge_ps),
+                "bridge_dt_fs": float(bridge_dt_fs),
+                "bridge_lincs_iter": int(bridge_lincs_iter),
+                "bridge_lincs_order": int(bridge_lincs_order),
                 "mdp_overrides": json.dumps(mdp_overrides, sort_keys=True, default=str) if mdp_overrides else None,
                 "mpi": int(mpi),
                 "omp": int(omp),
@@ -1600,6 +2043,7 @@ class NPT(EQ21step):
             input_top_sig=expected_top_sig,
             input_ndx_sig=expected_ndx_sig,
             label="NPT production",
+            fallback_markers=(final_dir / "summary.json",),
         )
         if self._resume.is_done(spec) and not _workflow_summary_matches(
             run_dir / "summary.json",
@@ -1615,6 +2059,21 @@ class NPT(EQ21step):
         if self._resume.reuse_status(spec) != "done":
             _invalidate_downstream_resume_steps(self._resume, names=("nvt_production",))
         job_restart = self._job_restart_flag(spec, bool(rst_flag))
+        if bool(rst_flag) and not job_restart:
+            latest_stage, next_stage = _latest_reusable_stage_progress(
+                run_dir,
+                [stage.name for stage in stages],
+                input_gro_sig=expected_gro_sig,
+                input_top_sig=expected_top_sig,
+                input_ndx_sig=expected_ndx_sig,
+            )
+            if latest_stage is not None:
+                detail = f"resuming from {next_stage}" if next_stage is not None else "all stages already present"
+                _preset_log(
+                    f"[RESTART] Reusing completed NPT production substeps through {latest_stage}; {detail}.",
+                    level=1,
+                )
+                job_restart = True
         if not job_restart and run_dir.exists():
             shutil.rmtree(run_dir, ignore_errors=True)
         self._resume.run(spec, lambda: job.run(restart=job_restart))
@@ -1661,8 +2120,18 @@ class NVT(EQ21step):
         trr_ps: Optional[float] = None,
         velocity_ps: Optional[float] = None,
         checkpoint_min: float = 5.0,
+        dt_ps: float = 0.001,
+        constraints: str = "none",
+        lincs_iter: Optional[int] = None,
+        lincs_order: Optional[int] = None,
+        gpu_offload_mode: str = "auto",
+        bridge_ps: Optional[float] = None,
+        bridge_dt_fs: float = 1.0,
+        bridge_lincs_iter: int = 4,
+        bridge_lincs_order: int = 12,
+        mdp_overrides: Optional[dict[str, object]] = None,
         restart: Optional[bool] = None,
-        density_control: bool = True,
+        density_control: Optional[bool] = None,
         density_frac_last: float = 0.3,
     ):
         t_all = _preset_section("EQ21 equilibration preset", detail=f"restart={bool(resolve_restart(restart))} | work_dir={self.work_dir}")
@@ -1678,7 +2147,14 @@ class NVT(EQ21step):
         _preset_item("start_gro", start_gro)
         _preset_item("temperature_K", float(temp))
         _preset_item("production_ns", float(time))
-        _preset_item("density_control", bool(density_control))
+        _preset_item("dt_ps", float(dt_ps))
+        _preset_item("constraints", _normalize_constraints_mode(constraints))
+        _preset_item("lincs_iter", int(lincs_iter) if lincs_iter is not None else None)
+        _preset_item("lincs_order", int(lincs_order) if lincs_order is not None else None)
+        resolved_gpu_offload_mode = _resolve_production_gpu_offload_mode(self.ac, gpu_offload_mode)
+        resolved_bridge_ps = _resolve_production_bridge_ps(self.ac, bridge_ps)
+        resolved_density_control = _resolve_nvt_density_control(self.ac, density_control)
+        _preset_item("density_control", bool(resolved_density_control))
         _preset_item("density_frac_last", float(density_frac_last))
         _preset_item(
             "output_cadence",
@@ -1688,13 +2164,21 @@ class NVT(EQ21step):
             f"vel={'off' if velocity_ps is None else f'{float(velocity_ps):.3f} ps'} | "
             f"cpt={float(checkpoint_min):.2f} min"
         )
+        _preset_item("gpu_offload_mode", resolved_gpu_offload_mode)
+        _preset_item(
+            "bridge",
+            f"{float(resolved_bridge_ps):.1f} ps | dt={float(bridge_dt_fs):.3f} fs | "
+            f"lincs_iter={int(bridge_lincs_iter)} | lincs_order={int(bridge_lincs_order)}",
+        )
+        if mdp_overrides:
+            _preset_item("mdp_overrides", mdp_overrides)
         _preset_item("resources", f"mpi={int(mpi)} | omp={int(omp)} | gpu={int(gpu)} | gpu_id={gpu_id}")
         if not rst_flag and run_dir.exists():
             shutil.rmtree(run_dir, ignore_errors=True)
 
         # Density control (optional): scale the starting gro to an equilibrium-average density.
         scaled_gro = start_gro
-        if density_control:
+        if resolved_density_control:
             from ...gmx.engine import GromacsRunner
             from ...gmx.analysis.xvg import read_xvg
             from ...gmx.analysis.thermo import stats_from_xvg
@@ -1813,36 +2297,50 @@ class NVT(EQ21step):
                     except Exception:
                         pass
 
-        # Build a single-stage NVT MD.
-        from ...gmx.mdp_templates import NVT_MDP, MdpSpec, default_mdp_params
-        from ...gmx.workflows.eq import EqStage
+        # Build a single-stage NVT MD using the caller-selected production regime.
+        from ...gmx.mdp_templates import NVT_MDP, NVT_NO_CONSTRAINTS_MDP, default_mdp_params
 
         p = default_mdp_params()
         p["ref_t"] = float(temp)
-        _apply_production_output_cadence(
-            p,
+        p, constraints_mode = _prepare_production_mdp_params(
+            base_params=p,
+            dt_ps=float(dt_ps),
+            constraints=constraints,
+            lincs_iter=lincs_iter,
+            lincs_order=lincs_order,
             traj_ps=float(traj_ps),
             energy_ps=float(energy_ps),
             log_ps=log_ps,
             trr_ps=trr_ps,
             velocity_ps=velocity_ps,
+            mdp_overrides=mdp_overrides,
+        )
+        template = NVT_NO_CONSTRAINTS_MDP if not _constraints_use_lincs(constraints_mode) else NVT_MDP
+        effective_dt_ps = float(p["dt"])
+        effective_lincs_iter = int(p["lincs_iter"]) if _constraints_use_lincs(constraints_mode) else None
+        effective_lincs_order = int(p["lincs_order"]) if _constraints_use_lincs(constraints_mode) else None
+
+        stages = _build_production_stages(
+            stage_name="nvt",
+            template=template,
+            params=p,
+            prod_ns=float(time),
+            checkpoint_min=float(checkpoint_min),
+            constraints_mode=constraints_mode,
+            bridge_ps=float(resolved_bridge_ps),
+            bridge_dt_fs=float(bridge_dt_fs),
+            bridge_lincs_iter=int(bridge_lincs_iter),
+            bridge_lincs_order=int(bridge_lincs_order),
         )
 
-        def ns_to_steps(ns: float) -> int:
-            return int((ns * 1000.0) / float(p["dt"]))
-
-        stages = [
-            EqStage(
-                "01_nvt",
-                "md",
-                MdpSpec(NVT_MDP, {**p, "nsteps": max(ns_to_steps(float(time)), 1000)}),
-                lincs_retry=StageLincsRetryPolicy(),
-                checkpoint_minutes=(float(checkpoint_min) if float(checkpoint_min) > 0.0 else None),
-            )
-        ]
-
         use_gpu, gid = _parse_gpu_args(gpu, gpu_id)
-        res = RunResources(ntmpi=int(mpi), ntomp=int(omp), use_gpu=use_gpu, gpu_id=gid)
+        res = RunResources(
+            ntmpi=int(mpi),
+            ntomp=int(omp),
+            use_gpu=use_gpu,
+            gpu_id=gid,
+            gpu_offload_mode=resolved_gpu_offload_mode,
+        )
         job = EquilibrationJob(gro=scaled_gro, top=exp.system_top, provenance_ndx=exp.system_ndx, out_dir=run_dir, stages=stages, resources=res)
 
         final_dir = run_dir / stages[-1].name
@@ -1854,17 +2352,27 @@ class NVT(EQ21step):
                 "input_top_sig": file_signature(exp.system_top),
                 "temp": float(temp),
                 "time": float(time),
+                "dt_ps": float(effective_dt_ps),
+                "constraints": constraints_mode,
+                "lincs_iter": int(effective_lincs_iter) if effective_lincs_iter is not None else None,
+                "lincs_order": int(effective_lincs_order) if effective_lincs_order is not None else None,
                 "traj_ps": float(traj_ps),
                 "energy_ps": float(energy_ps),
                 "log_ps": float(log_ps) if log_ps is not None else None,
                 "trr_ps": float(trr_ps) if trr_ps is not None else None,
                 "velocity_ps": float(velocity_ps) if velocity_ps is not None else None,
                 "checkpoint_min": float(checkpoint_min),
+                "gpu_offload_mode": resolved_gpu_offload_mode,
+                "bridge_ps": float(resolved_bridge_ps),
+                "bridge_dt_fs": float(bridge_dt_fs),
+                "bridge_lincs_iter": int(bridge_lincs_iter),
+                "bridge_lincs_order": int(bridge_lincs_order),
+                "mdp_overrides": json.dumps(mdp_overrides, sort_keys=True, default=str) if mdp_overrides else None,
                 "mpi": int(mpi),
                 "omp": int(omp),
                 "gpu": int(gpu),
                 "gpu_id": int(gpu_id) if gpu_id is not None else None,
-                "density_control": bool(density_control),
+                "density_control": bool(resolved_density_control),
                 "density_frac_last": float(density_frac_last),
             },
             description="NVT production run (density fixed to equilibrium mean)",
@@ -1881,6 +2389,7 @@ class NVT(EQ21step):
             input_top_sig=expected_top_sig,
             input_ndx_sig=expected_ndx_sig,
             label="NVT production",
+            fallback_markers=(final_dir / "summary.json",),
         )
         if self._resume.is_done(spec) and not _workflow_summary_matches(
             run_dir / "summary.json",
@@ -1894,6 +2403,21 @@ class NVT(EQ21step):
             )
             self._resume.mark_failed(spec, error="stale NVT production summary", meta={"auto_rebuild": True})
         job_restart = self._job_restart_flag(spec, bool(rst_flag))
+        if bool(rst_flag) and not job_restart:
+            latest_stage, next_stage = _latest_reusable_stage_progress(
+                run_dir,
+                [stage.name for stage in stages],
+                input_gro_sig=expected_gro_sig,
+                input_top_sig=expected_top_sig,
+                input_ndx_sig=expected_ndx_sig,
+            )
+            if latest_stage is not None:
+                detail = f"resuming from {next_stage}" if next_stage is not None else "all stages already present"
+                _preset_log(
+                    f"[RESTART] Reusing completed NVT production substeps through {latest_stage}; {detail}.",
+                    level=1,
+                )
+                job_restart = True
         if not job_restart and run_dir.exists():
             shutil.rmtree(run_dir, ignore_errors=True)
         self._resume.run(spec, lambda: job.run(restart=job_restart))

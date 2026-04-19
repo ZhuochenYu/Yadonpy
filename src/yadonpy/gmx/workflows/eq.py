@@ -51,6 +51,21 @@ def _file_signature(path: Path | None) -> dict | None:
         return {"path": str(path), "missing": True}
 
 
+def _stage_done_tag_path(stage_dir: Path) -> Path:
+    return Path(stage_dir) / ".yadonpy_stage_done.json"
+
+
+def _normalize_gpu_offload_mode(mode: object) -> str:
+    token = str(mode or "full").strip().lower()
+    if token in {"full", "default"}:
+        return "full"
+    if token in {"conservative", "safe"}:
+        return "conservative"
+    if token in {"cpu", "none"}:
+        return "cpu"
+    raise ValueError(f"Unsupported gpu_offload_mode={mode!r}")
+
+
 @dataclass(frozen=True)
 class EqStage:
     """One stage in a multi-stage equilibration."""
@@ -420,10 +435,15 @@ class EquilibrationJob:
         self._item("topology", self._compact_path(self.top))
         if self.ndx is not None:
             self._item("index", self._compact_path(self.ndx))
-        self._item("resources", f"ntmpi={self.resources.ntmpi} | ntomp={self.resources.ntomp} | gpu={bool(self.resources.use_gpu)} | gpu_id={self.resources.gpu_id}")
+        self._item(
+            "resources",
+            f"ntmpi={self.resources.ntmpi} | ntomp={self.resources.ntomp} | "
+            f"gpu={bool(self.resources.use_gpu)} | gpu_id={self.resources.gpu_id} | "
+            f"gpu_offload_mode={_normalize_gpu_offload_mode(self.resources.gpu_offload_mode)}",
+        )
         summary_path = out / "summary.json"
         summary: dict = load_json(summary_path) or {"job": "EquilibrationJob", "out_dir": str(out), "stages": []}
-        summary["provenance"] = {
+        workflow_provenance = {
             "input_gro_sig": _file_signature(self.gro),
             "input_top_sig": _file_signature(self.top),
             "input_ndx_sig": _file_signature(self.provenance_ndx),
@@ -432,8 +452,11 @@ class EquilibrationJob:
                 "ntomp": self.resources.ntomp,
                 "gpu": bool(self.resources.use_gpu),
                 "gpu_id": self.resources.gpu_id,
+                "gpu_offload_mode": _normalize_gpu_offload_mode(self.resources.gpu_offload_mode),
             },
         }
+        summary["provenance"] = workflow_provenance
+        atomic_write_json(summary_path, summary)
 
         current_gro = self.gro
         current_cpt: Optional[Path] = None
@@ -533,6 +556,7 @@ class EquilibrationJob:
             t_stage = self._stage_begin(idx, total_stages, st, stage_dir)
             deffnm = "md"  # keep consistent within stage dir
             stage_summary_path = stage_dir / "summary.json"
+            stage_done_tag = _stage_done_tag_path(stage_dir)
             retry_state_path = self._lincs_retry_state_path(stage_dir)
 
             out_gro = stage_dir / f"{deffnm}.gro"
@@ -580,6 +604,19 @@ class EquilibrationJob:
             # (e.g., steepest descent minimization). In practice, "em" should
             # run on CPU only, while NVT/NPT/MD can use GPU offload.
             stage_use_gpu = bool(self.resources.use_gpu) and (st.kind not in ("minim", "em"))
+            gpu_offload_mode = _normalize_gpu_offload_mode(self.resources.gpu_offload_mode)
+            if gpu_offload_mode == "cpu":
+                stage_use_gpu = False
+            stage_prefer_gpu_update = bool(stage_use_gpu and gpu_offload_mode == "full")
+            stage_offload_kwargs = {}
+            if stage_use_gpu and gpu_offload_mode == "conservative":
+                stage_offload_kwargs = {
+                    "nb": "gpu",
+                    "bonded": "cpu",
+                    "pme": "gpu",
+                    "pmefft": "gpu",
+                    "update": "cpu",
+                }
 
             # ----------------------
             # Robust stage restart logic
@@ -615,6 +652,17 @@ class EquilibrationJob:
                     _canonicalize_stage_gro(out_tpr=out_tpr, out_gro=out_gro, stage_dir=stage_dir)
                     # If summary exists, the postprocess was already done.
                     if stage_summary_path.exists():
+                        if not stage_done_tag.exists():
+                            atomic_write_json(
+                                stage_done_tag,
+                                {
+                                    "stage_name": st.name,
+                                    "stage_kind": st.kind,
+                                    "dir": str(stage_dir),
+                                    "completed_via": "existing_stage_summary",
+                                    "workflow_provenance": workflow_provenance,
+                                },
+                            )
                         self._stage_done(idx, total_stages, st, t_stage, detail="reused existing outputs + summary")
                         continue
                     # Otherwise, fall through to regenerate the summary only (no rerun).
@@ -832,9 +880,11 @@ class EquilibrationJob:
                             ntmpi=ntmpi_sel,
                             use_gpu=stage_use_gpu,
                             nb=("gpu" if st.kind in ("minim", "em") else None),
+                            prefer_gpu_update=stage_prefer_gpu_update,
                             gpu_id=self.resources.gpu_id,
                             append=True,
                             checkpoint_minutes=st.checkpoint_minutes,
+                            **stage_offload_kwargs,
                         )
                     except Exception as e:
                         # If CG fails due to constraint problems (common for rough packed systems),
@@ -927,10 +977,12 @@ class EquilibrationJob:
                                 ntmpi=ntmpi_sel,
                                 use_gpu=stage_use_gpu,
                                 nb=("gpu" if st.kind in ("minim", "em") else None),
+                                prefer_gpu_update=stage_prefer_gpu_update,
                                 gpu_id=self.resources.gpu_id,
                                 append=True,
                                 cpi=out_cpt,
                                 checkpoint_minutes=st.checkpoint_minutes,
+                                **stage_offload_kwargs,
                             )
                             try:
                                 retry_state_path.unlink()
@@ -1052,6 +1104,7 @@ class EquilibrationJob:
                 "name": st.name,
                 "kind": st.kind,
                 "dir": str(stage_dir),
+                "workflow_provenance": workflow_provenance,
                 "gro": str(current_gro),
                 "edr": str(stage_dir / f"{deffnm}.edr") if (stage_dir / f"{deffnm}.edr").exists() else None,
                 "mol2": str(mol2_path) if mol2_path else None,
@@ -1122,7 +1175,18 @@ class EquilibrationJob:
                     stage_record["thermo_error"] = str(e)
 
             atomic_write_json(stage_summary_path, stage_record)
+            atomic_write_json(
+                stage_done_tag,
+                {
+                    "stage_name": st.name,
+                    "stage_kind": st.kind,
+                    "dir": str(stage_dir),
+                    "completed_at": time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime()),
+                    "workflow_provenance": workflow_provenance,
+                },
+            )
             summary["stages"].append(stage_record)
+            atomic_write_json(summary_path, summary)
             self._stage_done(idx, total_stages, st, t_stage, detail=f"output={out_gro.name}")
 
         atomic_write_json(summary_path, summary)

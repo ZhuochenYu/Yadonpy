@@ -295,6 +295,10 @@ class GromacsRunner:
         ntmpi: Optional[int] = None,
         use_gpu: bool = True,
         nb: Optional[str] = None,
+        bonded: Optional[str] = None,
+        pme: Optional[str] = None,
+        pmefft: Optional[str] = None,
+        update: Optional[str] = None,
         prefer_gpu_update: bool = True,
         gpu_id: Optional[str] = None,
         append: bool = True,
@@ -313,9 +317,11 @@ class GromacsRunner:
 
           -nb gpu -bonded gpu -pme gpu -pmefft gpu -update gpu -pin auto
 
-        The optional `nb` parameter can override *only* the nonbonded kernel
-        placement ("cpu" or "gpu"). This is useful for EM-like runs where you
-        want CPU for bonded/PME/update, but still prefer GPU nonbonded.
+        The optional offload override parameters (`nb`, `bonded`, `pme`,
+        `pmefft`, `update`) can selectively override the kernel placement
+        ("cpu" or "gpu"). This is useful for conservative production policies
+        where short-range nonbonded and PME remain on GPU, but bonded/update
+        are kept on CPU.
 
         Some systems (e.g., with interdispersed constraint groups + domain
         decomposition) cannot use GPU update. In that case, YadonPy will
@@ -386,15 +392,20 @@ class GromacsRunner:
                 "-pmefft": "gpu",
             }
 
-        # Allow a targeted override of *only* the nonbonded kernel placement.
-        # This is useful for "EM-like" runs where we want CPU for everything else,
-        # but still prefer GPU nonbonded.
-        if nb is not None:
-            nb_norm = str(nb).strip().lower()
-            if nb_norm in {"cpu", "gpu"}:
-                off["-nb"] = nb_norm
-            else:
-                raise ValueError(f"Invalid nb={nb!r}. Expected 'cpu' or 'gpu'.")
+        overrides = {
+            "-nb": nb,
+            "-bonded": bonded,
+            "-pme": pme,
+            "-pmefft": pmefft,
+            "-update": update,
+        }
+        for key, value in overrides.items():
+            if value is None:
+                continue
+            value_norm = str(value).strip().lower()
+            if value_norm not in {"cpu", "gpu"}:
+                raise ValueError(f"Invalid {key}={value!r}. Expected 'cpu' or 'gpu'.")
+            off[key] = value_norm
 
         for k, v in off.items():
             if self._tool_has_option("mdrun", k, cwd=cwd):

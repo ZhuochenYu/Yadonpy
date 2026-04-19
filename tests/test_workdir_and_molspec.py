@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -254,6 +255,17 @@ def test_gaff_ff_assign_refreshes_stale_polyelectrolyte_metadata_when_requested(
 
     assert assigned is not False
     assert get_charge_groups(assigned) == expected_groups
+
+
+def test_cmc_polyelectrolyte_template_prefers_linker_inclusive_group():
+    mol = utils.mol_from_smiles("*OC1OC(CO)C(*)C(O)C1OCC(=O)[O-]")
+    assert mol is not None
+
+    groups = annotate_polyelectrolyte_metadata(mol)["summary"]["groups"]
+
+    assert len(groups) == 1
+    assert groups[0]["label"] == "cmc_carboxylate"
+    assert len(groups[0]["atom_indices"]) == 5
 
 
 def test_write_molecule_artifacts_uses_best_available_charge_property(tmp_path: Path):
@@ -2065,6 +2077,235 @@ def test_eq21_recovers_completed_workflow_when_resume_record_is_missing(tmp_path
     assert recovered is True
     assert job._resume.is_done(spec) is True
     assert job._job_restart_flag(spec, True) is True
+
+
+def test_eq21_recovers_completed_workflow_from_stage_artifacts_when_top_summary_is_missing(tmp_path: Path):
+    import yadonpy.sim.preset.eq as eqmod
+
+    job = eqmod.EQ21step(ac=object(), work_dir=tmp_path / 'eq')
+
+    system_gro = tmp_path / 'eq' / '02_system' / 'system.gro'
+    system_top = tmp_path / 'eq' / '02_system' / 'system.top'
+    system_ndx = tmp_path / 'eq' / '02_system' / 'system.ndx'
+    system_gro.parent.mkdir(parents=True, exist_ok=True)
+    system_gro.write_text('gro\n', encoding='utf-8')
+    system_top.write_text('top\n', encoding='utf-8')
+    system_ndx.write_text('ndx\n', encoding='utf-8')
+
+    final_dir = tmp_path / 'eq' / '03_EQ21' / '03_EQ21' / 'step_21'
+    final_dir.mkdir(parents=True, exist_ok=True)
+    outputs = [
+        final_dir / 'md.tpr',
+        final_dir / 'md.xtc',
+        final_dir / 'md.edr',
+        final_dir / 'md.gro',
+    ]
+    for path in outputs:
+        path.write_text('mock\n', encoding='utf-8')
+
+    stage_summary = final_dir / 'summary.json'
+    stage_summary.write_text(json.dumps({'name': '03_EQ21/step_21'}) + '\n', encoding='utf-8')
+
+    input_gro_sig = resume_file_signature(system_gro)
+    input_top_sig = resume_file_signature(system_top)
+    input_ndx_sig = resume_file_signature(system_ndx)
+    spec = eqmod.StepSpec(
+        name='equilibration_eq21',
+        outputs=outputs,
+        inputs={
+            'input_gro_sig': input_gro_sig,
+            'input_top_sig': input_top_sig,
+            'input_ndx_sig': input_ndx_sig,
+        },
+    )
+
+    recovered = eqmod._recover_completed_workflow_step(
+        job._resume,
+        spec,
+        summary_path=tmp_path / 'eq' / '03_EQ21' / 'summary.json',
+        input_gro_sig=input_gro_sig,
+        input_top_sig=input_top_sig,
+        input_ndx_sig=input_ndx_sig,
+        label='EQ21 workflow',
+        fallback_markers=(stage_summary,),
+    )
+
+    assert recovered is True
+    assert job._resume.is_done(spec) is True
+
+
+def test_eq21_stage_artifact_recovery_refuses_stale_outputs_when_inputs_are_newer(tmp_path: Path):
+    import yadonpy.sim.preset.eq as eqmod
+
+    job = eqmod.EQ21step(ac=object(), work_dir=tmp_path / 'eq')
+
+    final_dir = tmp_path / 'eq' / '03_EQ21' / '03_EQ21' / 'step_21'
+    final_dir.mkdir(parents=True, exist_ok=True)
+    outputs = [
+        final_dir / 'md.tpr',
+        final_dir / 'md.xtc',
+        final_dir / 'md.edr',
+        final_dir / 'md.gro',
+    ]
+    for path in outputs:
+        path.write_text('mock\n', encoding='utf-8')
+    stage_summary = final_dir / 'summary.json'
+    stage_summary.write_text(json.dumps({'name': '03_EQ21/step_21'}) + '\n', encoding='utf-8')
+    for idx, path in enumerate(outputs + [stage_summary], start=1):
+        os.utime(path, (1000 + idx, 1000 + idx))
+
+    system_gro = tmp_path / 'eq' / '02_system' / 'system.gro'
+    system_top = tmp_path / 'eq' / '02_system' / 'system.top'
+    system_ndx = tmp_path / 'eq' / '02_system' / 'system.ndx'
+    system_gro.parent.mkdir(parents=True, exist_ok=True)
+    system_gro.write_text('gro-newer\n', encoding='utf-8')
+    system_top.write_text('top-newer\n', encoding='utf-8')
+    system_ndx.write_text('ndx-newer\n', encoding='utf-8')
+    for idx, path in enumerate((system_gro, system_top, system_ndx), start=1):
+        os.utime(path, (2000 + idx, 2000 + idx))
+
+    input_gro_sig = resume_file_signature(system_gro)
+    input_top_sig = resume_file_signature(system_top)
+    input_ndx_sig = resume_file_signature(system_ndx)
+    spec = eqmod.StepSpec(
+        name='equilibration_eq21',
+        outputs=outputs,
+        inputs={
+            'input_gro_sig': input_gro_sig,
+            'input_top_sig': input_top_sig,
+            'input_ndx_sig': input_ndx_sig,
+        },
+    )
+
+    recovered = eqmod._recover_completed_workflow_step(
+        job._resume,
+        spec,
+        summary_path=tmp_path / 'eq' / '03_EQ21' / 'summary.json',
+        input_gro_sig=input_gro_sig,
+        input_top_sig=input_top_sig,
+        input_ndx_sig=input_ndx_sig,
+        label='EQ21 workflow',
+        fallback_markers=(stage_summary,),
+    )
+
+    assert recovered is False
+    assert job._resume.is_done(spec) is False
+
+
+def test_latest_reusable_stage_progress_returns_next_eq21_step(tmp_path: Path):
+    import yadonpy.sim.preset.eq as eqmod
+
+    system_gro = tmp_path / 'eq' / '02_system' / 'system.gro'
+    system_top = tmp_path / 'eq' / '02_system' / 'system.top'
+    system_ndx = tmp_path / 'eq' / '02_system' / 'system.ndx'
+    system_gro.parent.mkdir(parents=True, exist_ok=True)
+    system_gro.write_text('gro\n', encoding='utf-8')
+    system_top.write_text('top\n', encoding='utf-8')
+    system_ndx.write_text('ndx\n', encoding='utf-8')
+
+    input_gro_sig = resume_file_signature(system_gro)
+    input_top_sig = resume_file_signature(system_top)
+    input_ndx_sig = resume_file_signature(system_ndx)
+
+    run_dir = tmp_path / 'eq' / '03_EQ21'
+    stage_names = [
+        '01_em',
+        '02_preNVT',
+        '03_EQ21/step_01',
+        '03_EQ21/step_02',
+        '03_EQ21/step_03',
+        '03_EQ21/step_04',
+        '03_EQ21/step_05',
+        '03_EQ21/step_06',
+        '03_EQ21/step_07',
+        '03_EQ21/step_08',
+    ]
+
+    for stage_name in stage_names[:-1]:
+        stage_dir = run_dir / stage_name
+        stage_dir.mkdir(parents=True, exist_ok=True)
+        for name in ('md.tpr', 'md.xtc', 'md.edr', 'md.gro'):
+            path = stage_dir / name
+            path.write_text(f'{stage_name}:{name}\n', encoding='utf-8')
+            os.utime(path, (3000, 3000))
+        (stage_dir / '.yadonpy_stage_done.json').write_text(
+            json.dumps(
+                {
+                    'stage_name': stage_name,
+                    'workflow_provenance': {
+                        'input_gro_sig': input_gro_sig,
+                        'input_top_sig': input_top_sig,
+                        'input_ndx_sig': input_ndx_sig,
+                    },
+                }
+            ) + '\n',
+            encoding='utf-8',
+        )
+
+    latest_stage, next_stage = eqmod._latest_reusable_stage_progress(
+        run_dir,
+        stage_names,
+        input_gro_sig=input_gro_sig,
+        input_top_sig=input_top_sig,
+        input_ndx_sig=input_ndx_sig,
+    )
+
+    assert latest_stage == '03_EQ21/step_07'
+    assert next_stage == '03_EQ21/step_08'
+
+
+def test_latest_reusable_stage_progress_rejects_stale_tags_after_input_change(tmp_path: Path):
+    import yadonpy.sim.preset.eq as eqmod
+
+    old_gro_sig = {'path': 'old.gro', 'size': 1, 'sha256': 'old-gro'}
+    old_top_sig = {'path': 'old.top', 'size': 2, 'sha256': 'old-top'}
+    old_ndx_sig = {'path': 'old.ndx', 'size': 3, 'sha256': 'old-ndx'}
+
+    system_gro = tmp_path / 'eq' / '02_system' / 'system.gro'
+    system_top = tmp_path / 'eq' / '02_system' / 'system.top'
+    system_ndx = tmp_path / 'eq' / '02_system' / 'system.ndx'
+    system_gro.parent.mkdir(parents=True, exist_ok=True)
+    system_gro.write_text('gro-new\n', encoding='utf-8')
+    system_top.write_text('top-new\n', encoding='utf-8')
+    system_ndx.write_text('ndx-new\n', encoding='utf-8')
+    for idx, path in enumerate((system_gro, system_top, system_ndx), start=1):
+        os.utime(path, (5000 + idx, 5000 + idx))
+
+    input_gro_sig = resume_file_signature(system_gro)
+    input_top_sig = resume_file_signature(system_top)
+    input_ndx_sig = resume_file_signature(system_ndx)
+
+    run_dir = tmp_path / 'eq' / '03_EQ21'
+    stage_dir = run_dir / '03_EQ21' / 'step_07'
+    stage_dir.mkdir(parents=True, exist_ok=True)
+    for name in ('md.tpr', 'md.xtc', 'md.edr', 'md.gro'):
+        path = stage_dir / name
+        path.write_text('old-stage\n', encoding='utf-8')
+        os.utime(path, (4000, 4000))
+    (stage_dir / '.yadonpy_stage_done.json').write_text(
+        json.dumps(
+            {
+                'stage_name': '03_EQ21/step_07',
+                'workflow_provenance': {
+                    'input_gro_sig': old_gro_sig,
+                    'input_top_sig': old_top_sig,
+                    'input_ndx_sig': old_ndx_sig,
+                },
+            }
+        ) + '\n',
+        encoding='utf-8',
+    )
+
+    latest_stage, next_stage = eqmod._latest_reusable_stage_progress(
+        run_dir,
+        ['03_EQ21/step_07', '03_EQ21/step_08'],
+        input_gro_sig=input_gro_sig,
+        input_top_sig=input_top_sig,
+        input_ndx_sig=input_ndx_sig,
+    )
+
+    assert latest_stage is None
+    assert next_stage is None
 
 
 def test_file_signature_is_stable_across_mtime_only_rewrites(tmp_path: Path):
