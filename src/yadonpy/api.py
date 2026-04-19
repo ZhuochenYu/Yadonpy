@@ -194,6 +194,13 @@ def audit_default_moldb_sync(**kwargs):
     return _audit_bundle(**kwargs)
 
 
+def audit_oplsaa_reference(**kwargs):
+    """Audit the current OPLS-AA implementation against GROMACS and Moltemplate references."""
+    from .ff.oplsaa_reference import audit_oplsaa_reference as _audit_oplsaa_reference
+
+    return _audit_oplsaa_reference(**kwargs)
+
+
 def build_graphite_peo_electrolyte_sandwich(**kwargs):
     """Thin wrapper around :func:`yadonpy.interface.sandwich.build_graphite_peo_electrolyte_sandwich`."""
     from .interface.sandwich import build_graphite_peo_electrolyte_sandwich as _build_sandwich
@@ -360,6 +367,7 @@ def parameterize_smiles(
 
 __all__ = [
     'audit_default_moldb_sync',
+    'audit_oplsaa_reference',
     'analyze_interface_transport',
     'assign_charges',
     'assign_forcefield',

@@ -134,6 +134,35 @@ def test_mdrun_cuda_internal_error_falls_back_to_cpu_kernels(monkeypatch, tmp_pa
     assert second_env.get('GMX_DISABLE_GPU_DETECTION') == '1'
 
 
+def test_mdrun_honors_explicit_checkpoint_interval(monkeypatch, tmp_path: Path):
+    runner = GromacsRunner(exec_=GromacsExec('gmx'), verbose=False)
+    calls: list[list[str]] = []
+
+    monkeypatch.setattr(runner, '_tool_has_option', lambda command, option=None, cwd=None: True)
+
+    def _fake_run_capture_tee(args, *, cwd=None, env=None, tail_chars=8000):
+        calls.append(list(args))
+        return 0, ""
+
+    monkeypatch.setattr(runner, '_run_capture_tee', _fake_run_capture_tee)
+
+    runner.mdrun(
+        tpr=tmp_path / 'md.tpr',
+        deffnm='md',
+        cwd=tmp_path,
+        ntomp=4,
+        ntmpi=1,
+        use_gpu=False,
+        checkpoint_minutes=3.5,
+    )
+
+    assert len(calls) == 1
+    cmd = calls[0]
+    assert cmd[cmd.index('-stepout') + 1] == '10000'
+    assert cmd[cmd.index('-g') + 1] == 'md.log'
+    assert cmd[cmd.index('-cpt') + 1] == '3.5'
+
+
 def test_current_reuses_cached_nojump_trajectory(monkeypatch, tmp_path: Path):
     runner = GromacsRunner(exec_=GromacsExec('gmx'), verbose=False)
     tpr = tmp_path / 'md.tpr'

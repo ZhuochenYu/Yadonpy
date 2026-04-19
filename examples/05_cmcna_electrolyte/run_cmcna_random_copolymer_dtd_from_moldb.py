@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""CMC random copolymer + DTD electrolyte example backed by MolDB monomers.
+"""CMC random copolymer electrolyte example with a MoldDB-backed additive.
 
 The anionic glucose monomers are expected to be RESP-ready in MolDB with
 ``polyelectrolyte_mode=True``. This keeps the expensive monomer QM step out of
@@ -10,6 +10,14 @@ Use ``YADONPY_BUILD_ONLY=1`` to stop after amorphous-cell construction.
 Use ``YADONPY_EXPORT_ONLY=1`` to stop after exporting ``02_system``.
 These modes are useful for checking topology / ITP generation on machines
 without GROMACS.
+
+Remote mixed-system debug ladder:
+- set a unique ``YADONPY_WORK_DIR`` for every run
+- start with ``YADONPY_EXPORT_ONLY=1``
+- then ``YADONPY_EQ21_STAGE_CAP=2`` for ``EM + preNVT``
+- then a short production run on GPU
+- repeat the short production run with ``YADONPY_GPU=0`` if the failure needs
+  to be classified as topology/physics vs runtime/environment
 """
 
 import json
@@ -52,6 +60,16 @@ def _env_optional_float(name: str) -> float | None:
     if not raw:
         return None
     return float(raw)
+
+
+def _env_int_list(name: str, expected_len: int) -> list[int] | None:
+    raw = str(os.environ.get(name, "")).strip()
+    if not raw:
+        return None
+    vals = [int(tok.strip()) for tok in raw.split(",") if str(tok).strip()]
+    if len(vals) != int(expected_len):
+        raise ValueError(f"{name} expects {expected_len} comma-separated integers, got {len(vals)}")
+    return vals
 
 
 def _env_text(name: str, default: str) -> str:
@@ -125,6 +143,7 @@ glucose_3_smiles = "*OC1OC(CO)C(*)C(OCC(=O)[O-])C1O"
 glucose_6_smiles = "*OC1OC(COCC(=O)[O-])C(*)C(O)C1O"
 
 DTD_smiles = "O=S1(=O)OC=CO1"
+VC_smiles = "O=c1occo1"
 
 feed_ratio = [12, 26, 27, 35]
 feed_prob = poly.ratio_to_prob(feed_ratio)
@@ -149,13 +168,22 @@ omp = _env_int("YADONPY_OMP", 14)
 gpu = _env_int("YADONPY_GPU", 1)
 gpu_id = _env_int("YADONPY_GPU_ID", 0)
 prod_ns = _env_float("YADONPY_PROD_NS", 20.0)
+prod_traj_ps = _env_float("YADONPY_PROD_TRAJ_PS", 2.0)
+prod_energy_ps = _env_float("YADONPY_PROD_ENERGY_PS", 2.0)
+prod_log_ps = _env_optional_float("YADONPY_PROD_LOG_PS")
+prod_trr_ps = _env_optional_float("YADONPY_PROD_TRR_PS")
+prod_velocity_ps = _env_optional_float("YADONPY_PROD_VELOCITY_PS")
+prod_checkpoint_min = _env_float("YADONPY_PROD_CPT_MIN", 5.0)
 msd_drift = _env_text("YADONPY_MSD_DRIFT", "off")
 msd_compare_drift_off = _env_flag(
     "YADONPY_COMPARE_DRIFT_OFF",
     default=(str(msd_drift).strip().lower() != "off" and not smoke_mode),
 )
+additive_name = _env_text("YADONPY_ADDITIVE", "DTD").strip().upper()
+counts_override = _env_int_list("YADONPY_COUNTS", 8)
 eq21_final_ns = _env_float("YADONPY_EQ21_FINAL_NS", 0.8)
 eq21_npt_time_scale = _env_float("YADONPY_EQ21_NPT_TIME_SCALE", 2.0)
+eq21_stage_cap = _env_int("YADONPY_EQ21_STAGE_CAP", 0)
 additional_ns = _env_float("YADONPY_ADDITIONAL_NS", 1.0)
 additional_rounds = _env_int("YADONPY_ADDITIONAL_MAX_ROUNDS", 4)
 
@@ -165,7 +193,25 @@ mem_mb = _env_int("YADONPY_PSI4_MEMORY_MB", 20000)
 BASE_DIR = Path(__file__).resolve().parent
 REPO_DB_DIR = BASE_DIR.parents[1] / "moldb"
 _work_dir_override = str(os.environ.get("YADONPY_WORK_DIR", "")).strip()
-work_dir = Path(_work_dir_override).expanduser() if _work_dir_override else (BASE_DIR / "work_dir_dtd_moldb")
+_shared_polymer_root_override = str(os.environ.get("YADONPY_SHARED_POLYMER_ROOT", "")).strip()
+_ADDITIVE_LIBRARY = {
+    "DTD": {"label": "DTD", "smiles": DTD_smiles, "default_count": 4, "smoke_count": 1},
+    "VC": {"label": "VC", "smiles": VC_smiles, "default_count": 4, "smoke_count": 1},
+}
+if additive_name not in _ADDITIVE_LIBRARY:
+    raise ValueError(f"Unsupported YADONPY_ADDITIVE={additive_name!r}; expected one of {sorted(_ADDITIVE_LIBRARY)}")
+ADDITIVE = dict(_ADDITIVE_LIBRARY[additive_name])
+transport_labels = [str(ADDITIVE["label"]), "EMC", "DEC", "EC"]
+work_dir = (
+    Path(_work_dir_override).expanduser()
+    if _work_dir_override
+    else (BASE_DIR / f"work_dir_{str(ADDITIVE['label']).lower()}_moldb")
+)
+shared_polymer_root = (
+    Path(_shared_polymer_root_override).expanduser()
+    if _shared_polymer_root_override
+    else None
+)
 
 
 def _formal_charge(mol) -> int:
@@ -208,6 +254,7 @@ def _rank_transport_species(msd_payload: dict, moltypes: list[str]) -> list[dict
 def _write_transport_diagnostics(
     analysis_dir: Path,
     *,
+    moltypes: list[str],
     primary_msd: dict,
     primary_label: str,
     secondary_msd: dict | None = None,
@@ -215,7 +262,6 @@ def _write_transport_diagnostics(
     begin_ps: float | None,
     end_ps: float | None,
 ) -> Path:
-    moltypes = ["DTD", "EMC", "DEC", "EC"]
     primary_rows = [_extract_species_metric(primary_msd, moltype) for moltype in moltypes]
     payload: dict[str, object] = {
         "primary": {
@@ -261,8 +307,8 @@ def _write_transport_diagnostics(
     return out
 
 
-def _print_transport_summary(*, msd_payload: dict, label: str) -> None:
-    ranking = _rank_transport_species(msd_payload, ["DTD", "EMC", "DEC", "EC"])
+def _print_transport_summary(*, msd_payload: dict, label: str, moltypes: list[str]) -> None:
+    ranking = _rank_transport_species(msd_payload, moltypes)
     if not ranking:
         print(f"[TRANSPORT] {label}: no diffusion coefficients available")
         return
@@ -276,32 +322,32 @@ def _print_transport_summary(*, msd_payload: dict, label: str) -> None:
         )
 
 
-def _warn_if_transport_is_fragile(primary_msd: dict, secondary_msd: dict | None = None) -> None:
-    dtd = _extract_species_metric(primary_msd, "DTD")
-    if not dtd:
+def _warn_if_transport_is_fragile(primary_msd: dict, *, additive_label: str, moltypes: list[str], secondary_msd: dict | None = None) -> None:
+    additive_row = _extract_species_metric(primary_msd, additive_label)
+    if not additive_row:
         return
-    if int(dtd.get("n_groups") or 0) <= 4:
+    if int(additive_row.get("n_groups") or 0) <= 4:
         print(
-            "[TRANSPORT][WARNING] DTD diffusion is being estimated from 4 or fewer molecular COM groups; "
+            f"[TRANSPORT][WARNING] {additive_label} diffusion is being estimated from 4 or fewer molecular COM groups; "
             "treat ranking against bulk solvents as low-statistics."
         )
-    if str(dtd.get("confidence") or "").lower() not in {"high", "medium"}:
+    if str(additive_row.get("confidence") or "").lower() not in {"high", "medium"}:
         print(
-            "[TRANSPORT][WARNING] DTD diffusion fit is not high-confidence; "
+            f"[TRANSPORT][WARNING] {additive_label} diffusion fit is not high-confidence; "
             "check msd.json / transport_diagnostics.json before trusting solvent-order conclusions."
         )
     if secondary_msd is None:
         return
 
-    primary_rank = [row["moltype"] for row in _rank_transport_species(primary_msd, ["DTD", "EMC", "DEC", "EC"])]
-    secondary_rank = [row["moltype"] for row in _rank_transport_species(secondary_msd, ["DTD", "EMC", "DEC", "EC"])]
+    primary_rank = [row["moltype"] for row in _rank_transport_species(primary_msd, moltypes)]
+    secondary_rank = [row["moltype"] for row in _rank_transport_species(secondary_msd, moltypes)]
     if primary_rank and secondary_rank and primary_rank != secondary_rank:
         print(
             "[TRANSPORT][WARNING] Solvent/additive ranking changes when drift correction is toggled; "
             "treat this run as drift-sensitive and prefer longer sampling or tail-window reanalysis."
         )
 
-    for moltype in ("EC", "EMC", "DEC", "DTD"):
+    for moltype in moltypes:
         p = _extract_species_metric(primary_msd, moltype)
         s = _extract_species_metric(secondary_msd, moltype)
         p_d = p.get("D_m2_s")
@@ -320,13 +366,107 @@ def _warn_if_transport_is_fragile(primary_msd: dict, secondary_msd: dict | None 
             )
 
 
-def _transport_probe_mols():
+def _transport_probe_mols(additive_smiles: str):
     return [
-        utils.mol_from_smiles(DTD_smiles),
+        utils.mol_from_smiles(additive_smiles),
         utils.mol_from_smiles(EMC_smiles),
         utils.mol_from_smiles(DEC_smiles),
         utils.mol_from_smiles(EC_smiles),
     ]
+
+
+def _extract_cmd_from_exception(message: str) -> str | None:
+    for line in str(message).splitlines():
+        if line.strip().startswith("cmd:"):
+            return line.split("cmd:", 1)[1].strip()
+    return None
+
+
+def _read_log_tail(path: Path, *, tail_chars: int = 12000) -> str | None:
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        return None
+    if len(text) <= int(tail_chars):
+        return text
+    return text[-int(tail_chars):]
+
+
+def _write_failure_diagnostics(*, work_root: Path, stage: str, stage_dir: Path, exc: BaseException) -> Path:
+    log_path = Path(stage_dir) / "md.log"
+    checkpoint_path = Path(stage_dir) / "md.cpt"
+    payload = {
+        "stage": str(stage),
+        "stage_dir": str(stage_dir),
+        "exception_type": exc.__class__.__name__,
+        "exception": str(exc),
+        "command": _extract_cmd_from_exception(str(exc)),
+        "checkpoint_exists": bool(checkpoint_path.exists()),
+        "log_exists": bool(log_path.exists()),
+        "lincs_fallback_eligible": bool(checkpoint_path.exists()) and ("lincs" in str(exc).lower() or "constraint" in str(exc).lower()),
+        "log_tail": _read_log_tail(log_path),
+    }
+    out = Path(work_root) / "failure_diagnostics.json"
+    out.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    print(f"[FAILURE] wrote diagnostics to {out}")
+    return out
+
+
+def _run_partial_eq21(
+    *,
+    eqmd: eq.EQ21step,
+    temp: float,
+    press: float,
+    mpi: int,
+    omp: int,
+    gpu: int,
+    gpu_id: int | None,
+    stage_cap: int,
+    final_ns: float,
+):
+    exp = eqmd.ensure_system_exported()
+    run_dir = Path(eqmd.work_dir) / "03_EQ21_partial"
+    if run_dir.exists():
+        import shutil
+
+        shutil.rmtree(run_dir, ignore_errors=True)
+
+    cfg = eq.EQ21ProtocolConfig(
+        t_max_k=float(temp),
+        t_anneal_k=float(temp),
+        p_max_bar=float(press),
+        p_anneal_bar=float(press),
+        npt_time_scale=float(eq21_npt_time_scale),
+    )
+    stages, records, params = eq._build_eq21_stages(
+        temp=float(temp),
+        press=float(press),
+        final_ns=float(final_ns),
+        cfg=cfg,
+    )
+    capped_stages = list(stages[: int(stage_cap)])
+    capped_records = list(records[: int(stage_cap)])
+    if not capped_stages:
+        raise ValueError(f"YADONPY_EQ21_STAGE_CAP={stage_cap} does not select any stage.")
+
+    eq._write_eq21_schedule(run_dir, capped_records, params)
+    use_gpu, gid = eq._parse_gpu_args(gpu, gpu_id)
+    res = eq.RunResources(ntmpi=int(mpi), ntomp=int(omp), use_gpu=use_gpu, gpu_id=gid)
+    job = eq.EquilibrationJob(
+        gro=exp.system_gro,
+        top=exp.system_top,
+        provenance_ndx=exp.system_ndx,
+        out_dir=run_dir,
+        stages=capped_stages,
+        resources=res,
+    )
+    job.run(restart=False)
+    print(
+        "[EQ21-PARTIAL] completed stages: "
+        + ", ".join(str(stage.name) for stage in capped_stages)
+        + f" | output={run_dir}"
+    )
+    return run_dir
 
 
 def main() -> int:
@@ -335,8 +475,13 @@ def main() -> int:
 
     wd = workdir(work_dir, restart=restart_status)
     analysis_dir = Path(wd) / "06_analysis"
-    cmc_rw_dir = wd.child("CMC_rw")
-    cmc_term_dir = wd.child("CMC_term")
+    if shared_polymer_root is not None:
+        shared_polymer_wd = workdir(shared_polymer_root, restart=restart_status)
+        cmc_rw_dir = shared_polymer_wd.child("CMC_rw")
+        cmc_term_dir = shared_polymer_wd.child("CMC_term")
+    else:
+        cmc_rw_dir = wd.child("CMC_rw")
+        cmc_term_dir = wd.child("CMC_term")
     ac_build_dir = wd.child("00_build_cell")
 
     msd_begin_ps = _env_optional_float("YADONPY_MSD_BEGIN_PS")
@@ -350,7 +495,7 @@ def main() -> int:
         if not skip_rdf:
             li_probe = utils.mol_from_smiles(Li_smiles)
             _ = analy.rdf(center_mol=li_probe)
-        transport_mols = _transport_probe_mols()
+        transport_mols = _transport_probe_mols(str(ADDITIVE["smiles"]))
         secondary_msd = None
         if msd_compare_drift_off and str(msd_drift).strip().lower() != "off":
             secondary_msd = analy.msd(
@@ -382,6 +527,7 @@ def main() -> int:
             _ = analy.den_dis()
         diag_path = _write_transport_diagnostics(
             analysis_dir,
+            moltypes=transport_labels,
             primary_msd=primary_msd,
             primary_label=f"drift={msd_drift}",
             secondary_msd=secondary_msd,
@@ -389,10 +535,15 @@ def main() -> int:
             begin_ps=msd_begin_ps,
             end_ps=msd_end_ps,
         )
-        _print_transport_summary(msd_payload=primary_msd, label=f"primary drift={msd_drift}")
+        _print_transport_summary(msd_payload=primary_msd, label=f"primary drift={msd_drift}", moltypes=transport_labels)
         if secondary_msd is not None:
-            _print_transport_summary(msd_payload=secondary_msd, label="secondary drift=off")
-        _warn_if_transport_is_fragile(primary_msd, secondary_msd)
+            _print_transport_summary(msd_payload=secondary_msd, label="secondary drift=off", moltypes=transport_labels)
+        _warn_if_transport_is_fragile(
+            primary_msd,
+            additive_label=str(ADDITIVE["label"]),
+            moltypes=transport_labels,
+            secondary_msd=secondary_msd,
+        )
         print(f"[ANALYSIS-ONLY] Transport diagnostics written to {diag_path}")
         return 0
 
@@ -467,7 +618,12 @@ def main() -> int:
     if not EC or not EMC or not DEC:
         raise RuntimeError("Can not assign force field parameters for carbonate solvents.")
 
-    DTD = _load_ready_from_moldb(ff, DTD_smiles, label="DTD", repo_db_dir=REPO_DB_DIR)
+    additive = _load_ready_from_moldb(
+        ff,
+        str(ADDITIVE["smiles"]),
+        label=str(ADDITIVE["label"]),
+        repo_db_dir=REPO_DB_DIR,
+    )
 
     # ---------------- ions ----------------
     Li = ion_ff.mol(Li_smiles)
@@ -485,27 +641,39 @@ def main() -> int:
     # ---------------- compute counts ----------------
     n_cmc = 1 if smoke_mode else 8
     n_na = abs(q_poly) * n_cmc
-    if smoke_mode:
-        counts = [n_cmc, 6, 6, 6, 2, 2, n_na, 1]
+    additive_count = int(ADDITIVE["smoke_count"] if smoke_mode else ADDITIVE["default_count"])
+    if counts_override is not None:
+        counts = list(counts_override)
+    elif smoke_mode:
+        counts = [n_cmc, 6, 6, 6, 2, 2, n_na, additive_count]
     else:
-        counts = [n_cmc, 40, 50, 20, 10, 10, n_na, 4]
+        counts = [n_cmc, 40, 50, 20, 10, 10, n_na, additive_count]
     charge_scale = [0.7, 1.0, 1.0, 1.0, 0.7, 0.7, 0.7, 1.0]
 
-    print(f"[FORMULATION] smoke_mode={smoke_mode} q_poly={q_poly} counts={counts}")
+    print(
+        f"[FORMULATION] additive={ADDITIVE['label']} smoke_mode={smoke_mode} "
+        f"q_poly={q_poly} counts={counts}"
+    )
     print(
         f"[RUNCFG] mpi={mpi} omp={omp} gpu={gpu} gpu_id={gpu_id} "
         f"eq21_final_ns={eq21_final_ns} eq21_npt_time_scale={eq21_npt_time_scale} "
-        f"additional_ns={additional_ns} additional_rounds={additional_rounds} prod_ns={prod_ns}"
+        f"additional_ns={additional_ns} additional_rounds={additional_rounds} prod_ns={prod_ns} "
+        f"shared_polymer_root={shared_polymer_root if shared_polymer_root is not None else '(none)'}"
     )
     print(
         f"[ANALYSISCFG] msd_begin_ps={msd_begin_ps} msd_end_ps={msd_end_ps} "
         f"msd_drift={msd_drift} compare_drift_off={msd_compare_drift_off} "
         f"skip_rdf={skip_rdf} skip_sigma={skip_sigma} skip_den_dis={skip_den_dis}"
     )
+    print(
+        f"[PRODOUT] traj_ps={prod_traj_ps} energy_ps={prod_energy_ps} "
+        f"log_ps={prod_log_ps if prod_log_ps is not None else prod_energy_ps} "
+        f"trr_ps={prod_trr_ps} velocity_ps={prod_velocity_ps} checkpoint_min={prod_checkpoint_min}"
+    )
 
     # ---------------- pack amorphous cell ----------------
     ac = poly.amorphous_cell(
-        [CMC, EC, EMC, DEC, Li, PF6, Na, DTD],
+        [CMC, EC, EMC, DEC, Li, PF6, Na, additive],
         counts,
         charge_scale=charge_scale,
         polyelectrolyte_mode=True,
@@ -524,16 +692,33 @@ def main() -> int:
         exported = eqmd.ensure_system_exported()
         print(f"[EXPORT-ONLY] Exported 02_system at {exported.system_top.parent}")
         return 0
-    ac = eqmd.exec(
-        temp=temp,
-        press=press,
-        mpi=mpi,
-        omp=omp,
-        gpu=gpu,
-        gpu_id=gpu_id,
-        time=eq21_final_ns,
-        eq21_npt_time_scale=eq21_npt_time_scale,
-    )
+    if eq21_stage_cap > 0:
+        _run_partial_eq21(
+            eqmd=eqmd,
+            temp=temp,
+            press=press,
+            mpi=mpi,
+            omp=omp,
+            gpu=gpu,
+            gpu_id=gpu_id,
+            stage_cap=eq21_stage_cap,
+            final_ns=eq21_final_ns,
+        )
+        return 0
+    try:
+        ac = eqmd.exec(
+            temp=temp,
+            press=press,
+            mpi=mpi,
+            omp=omp,
+            gpu=gpu,
+            gpu_id=gpu_id,
+            time=eq21_final_ns,
+            eq21_npt_time_scale=eq21_npt_time_scale,
+        )
+    except Exception as exc:
+        _write_failure_diagnostics(work_root=Path(wd), stage="eq21", stage_dir=Path(wd) / "03_EQ21", exc=exc)
+        raise
 
     analy = eqmd.analyze()
     _ = analy.get_all_prop(temp=temp, press=press, save=True)
@@ -543,15 +728,24 @@ def main() -> int:
         if result:
             break
         eqmd = eq.Additional(ac, work_dir=wd)
-        ac = eqmd.exec(
-            temp=temp,
-            press=press,
-            mpi=mpi,
-            omp=omp,
-            gpu=gpu,
-            gpu_id=gpu_id,
-            time=additional_ns,
-        )
+        try:
+            ac = eqmd.exec(
+                temp=temp,
+                press=press,
+                mpi=mpi,
+                omp=omp,
+                gpu=gpu,
+                gpu_id=gpu_id,
+                time=additional_ns,
+            )
+        except Exception as exc:
+            _write_failure_diagnostics(
+                work_root=Path(wd),
+                stage=f"additional_round_{_i + 1:02d}",
+                stage_dir=Path(wd) / "04_eq_additional",
+                exc=exc,
+            )
+            raise
         analy = eqmd.analyze()
         _ = analy.get_all_prop(temp=temp, press=press, save=True)
         result = analy.check_eq()
@@ -561,13 +755,36 @@ def main() -> int:
 
     # ---------------- Production NPT + analysis ----------------
     npt = eq.NPT(ac, work_dir=wd)
-    ac = npt.exec(temp=temp, press=press, mpi=mpi, omp=omp, gpu=gpu, gpu_id=gpu_id, time=prod_ns)
+    try:
+        ac = npt.exec(
+            temp=temp,
+            press=press,
+            mpi=mpi,
+            omp=omp,
+            gpu=gpu,
+            gpu_id=gpu_id,
+            time=prod_ns,
+            traj_ps=prod_traj_ps,
+            energy_ps=prod_energy_ps,
+            log_ps=prod_log_ps,
+            trr_ps=prod_trr_ps,
+            velocity_ps=prod_velocity_ps,
+            checkpoint_min=prod_checkpoint_min,
+        )
+    except Exception as exc:
+        _write_failure_diagnostics(
+            work_root=Path(wd),
+            stage="npt_production",
+            stage_dir=Path(wd) / "05_npt_production" / "01_npt",
+            exc=exc,
+        )
+        raise
 
     analy = npt.analyze()
     _ = analy.get_all_prop(temp=temp, press=press, save=True)
     if not skip_rdf:
         _ = analy.rdf(center_mol=Li)
-    transport_mols = [DTD, EMC, DEC, EC]
+    transport_mols = [additive, EMC, DEC, EC]
     msd_drift_off = None
     if msd_compare_drift_off and str(msd_drift).strip().lower() != "off":
         msd_drift_off = analy.msd(
@@ -599,6 +816,7 @@ def main() -> int:
         _ = analy.den_dis()
     diag_path = _write_transport_diagnostics(
         analysis_dir,
+        moltypes=transport_labels,
         primary_msd=msd,
         primary_label=f"drift={msd_drift}",
         secondary_msd=msd_drift_off,
@@ -606,10 +824,15 @@ def main() -> int:
         begin_ps=msd_begin_ps,
         end_ps=msd_end_ps,
     )
-    _print_transport_summary(msd_payload=msd, label=f"primary drift={msd_drift}")
+    _print_transport_summary(msd_payload=msd, label=f"primary drift={msd_drift}", moltypes=transport_labels)
     if msd_drift_off is not None:
-        _print_transport_summary(msd_payload=msd_drift_off, label="secondary drift=off")
-    _warn_if_transport_is_fragile(msd, msd_drift_off)
+        _print_transport_summary(msd_payload=msd_drift_off, label="secondary drift=off", moltypes=transport_labels)
+    _warn_if_transport_is_fragile(
+        msd,
+        additive_label=str(ADDITIVE["label"]),
+        moltypes=transport_labels,
+        secondary_msd=msd_drift_off,
+    )
     print(f"[TRANSPORT] diagnostics written to {diag_path}")
     return 0
 

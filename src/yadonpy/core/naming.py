@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 import inspect
+import json
 import hashlib
 import os
 from pathlib import Path
 import re
+from typing import Any
+
+from ..runtime import resolve_restart
 
 
 def _infer_var_name(obj, *, depth: int = 1, max_depth: int = 12) -> str | None:
@@ -362,6 +366,200 @@ def suggest_name_from_work_dir(work_dir) -> str | None:
     return stem
 
 
+_ASSIGNED_STATE_FILENAME = "assigned_state.json"
+_ATOM_DOUBLE_PROPS = (
+    "AtomicCharge",
+    "AtomicCharge_raw",
+    "RESP",
+    "RESP_raw",
+    "_GasteigerCharge",
+    "ff_sigma",
+    "ff_epsilon",
+    "ff_mass",
+)
+_BOND_DOUBLE_PROPS = (
+    "ff_k",
+    "ff_r0",
+)
+
+
+def _assignment_paths(root: Path, stem: str) -> tuple[Path, Path, Path, Path, Path]:
+    mol2_path = root / "00_molecules" / f"{stem}.mol2"
+    gmx_dir = root / f"90_{stem}_gmx"
+    return (
+        mol2_path,
+        gmx_dir / f"{stem}.gro",
+        gmx_dir / f"{stem}.itp",
+        gmx_dir / f"{stem}.top",
+        gmx_dir / _ASSIGNED_STATE_FILENAME,
+    )
+
+
+def _string_props(holder) -> dict[str, str]:
+    props: dict[str, str] = {}
+    try:
+        for key in holder.GetPropNames(includePrivate=True, includeComputed=False):
+            try:
+                props[str(key)] = str(holder.GetProp(key))
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return props
+
+
+def _atom_state(atom) -> dict[str, Any]:
+    entry: dict[str, Any] = {
+        "atomic_num": int(atom.GetAtomicNum()),
+        "formal_charge": int(atom.GetFormalCharge()),
+        "string_props": _string_props(atom),
+        "double_props": {},
+    }
+    for key in _ATOM_DOUBLE_PROPS:
+        try:
+            if atom.HasProp(key):
+                entry["double_props"][key] = float(atom.GetDoubleProp(key))
+        except Exception:
+            continue
+    return entry
+
+
+def _bond_state(bond) -> dict[str, Any]:
+    entry: dict[str, Any] = {
+        "begin": int(bond.GetBeginAtomIdx()),
+        "end": int(bond.GetEndAtomIdx()),
+        "order": float(bond.GetBondTypeAsDouble()),
+        "string_props": _string_props(bond),
+        "double_props": {},
+    }
+    for key in _BOND_DOUBLE_PROPS:
+        try:
+            if bond.HasProp(key):
+                entry["double_props"][key] = float(bond.GetDoubleProp(key))
+        except Exception:
+            continue
+    return entry
+
+
+def _serialize_assigned_state(obj, *, artifact_dir: Path) -> dict[str, Any]:
+    bonds = [_bond_state(bond) for bond in obj.GetBonds()]
+    atoms = [_atom_state(atom) for atom in obj.GetAtoms()]
+    return {
+        "schema_version": 1,
+        "ff_name": str(getattr(obj, "GetProp", lambda *_: "")("ff_name") if hasattr(obj, "HasProp") and obj.HasProp("ff_name") else ""),
+        "artifact_dir": str(artifact_dir),
+        "mol_props": _string_props(obj),
+        "atom_count": int(obj.GetNumAtoms()),
+        "atom_numbers": [int(atom.GetAtomicNum()) for atom in obj.GetAtoms()],
+        "bond_pairs": sorted((min(b["begin"], b["end"]), max(b["begin"], b["end"])) for b in bonds),
+        "atoms": atoms,
+        "bonds": bonds,
+    }
+
+
+def _apply_assigned_state(obj, state: dict[str, Any], *, artifact_dir: Path) -> bool:
+    try:
+        if int(state.get("atom_count", -1)) != int(obj.GetNumAtoms()):
+            return False
+        atom_numbers = list(state.get("atom_numbers") or [])
+        if atom_numbers and atom_numbers != [int(atom.GetAtomicNum()) for atom in obj.GetAtoms()]:
+            return False
+        state_pairs = sorted(
+            (min(int(p[0]), int(p[1])), max(int(p[0]), int(p[1])))
+            for p in list(state.get("bond_pairs") or [])
+            if isinstance(p, (list, tuple)) and len(p) >= 2
+        )
+        current_pairs = sorted(
+            (min(int(b.GetBeginAtomIdx()), int(b.GetEndAtomIdx())), max(int(b.GetBeginAtomIdx()), int(b.GetEndAtomIdx())))
+            for b in obj.GetBonds()
+        )
+        if state_pairs != current_pairs:
+            return False
+    except Exception:
+        return False
+
+    for key, value in dict(state.get("mol_props") or {}).items():
+        try:
+            obj.SetProp(str(key), str(value))
+        except Exception:
+            continue
+    try:
+        obj.SetProp("_yadonpy_artifact_dir", str(artifact_dir))
+    except Exception:
+        pass
+
+    atoms_state = list(state.get("atoms") or [])
+    if len(atoms_state) != int(obj.GetNumAtoms()):
+        return False
+    for atom, entry in zip(obj.GetAtoms(), atoms_state):
+        for key, value in dict(entry.get("string_props") or {}).items():
+            try:
+                atom.SetProp(str(key), str(value))
+            except Exception:
+                continue
+        for key, value in dict(entry.get("double_props") or {}).items():
+            try:
+                atom.SetDoubleProp(str(key), float(value))
+            except Exception:
+                continue
+
+    bond_lookup = {
+        (min(int(b.GetBeginAtomIdx()), int(b.GetEndAtomIdx())), max(int(b.GetBeginAtomIdx()), int(b.GetEndAtomIdx()))): b
+        for b in obj.GetBonds()
+    }
+    for entry in list(state.get("bonds") or []):
+        key = (
+            min(int(entry.get("begin", -1)), int(entry.get("end", -1))),
+            max(int(entry.get("begin", -1)), int(entry.get("end", -1))),
+        )
+        bond = bond_lookup.get(key)
+        if bond is None:
+            continue
+        for prop_key, value in dict(entry.get("string_props") or {}).items():
+            try:
+                bond.SetProp(str(prop_key), str(value))
+            except Exception:
+                continue
+        for prop_key, value in dict(entry.get("double_props") or {}).items():
+            try:
+                bond.SetDoubleProp(str(prop_key), float(value))
+            except Exception:
+                continue
+    return True
+
+
+def try_restore_assigned_mol(obj, *, depth: int = 1, work_dir=None, ff_name: str | None = None) -> bool:
+    """Best-effort restart shortcut for ``ff_assign``.
+
+    When restart is enabled and auto-exported per-molecule artifacts already
+    exist under the current ``work_dir``, reuse the recorded assigned state
+    instead of recomputing the force-field assignment.
+    """
+    if not resolve_restart(None):
+        return False
+    try:
+        root = _coerce_work_dir_path(work_dir)
+        if root is None:
+            root = infer_work_dir(depth=depth + 1, max_depth=12)
+        if root is None:
+            return False
+        current_name = get_name(obj, default=None)
+        if current_name is None or is_bad_default_name(current_name):
+            current_name = suggest_name_from_work_dir(root)
+        stem = ensure_name(obj, name=current_name, depth=depth + 1, prefer_var=(current_name is None))
+        mol2_path, gro_path, itp_path, top_path, state_path = _assignment_paths(root, stem)
+        if not (mol2_path.exists() and gro_path.exists() and itp_path.exists() and top_path.exists() and state_path.exists()):
+            return False
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state_ff_name = str((state.get("mol_props") or {}).get("ff_name") or "").strip().lower()
+        want_ff_name = str(ff_name or "").strip().lower()
+        if want_ff_name and state_ff_name and want_ff_name != state_ff_name:
+            return False
+        return _apply_assigned_state(obj, state, artifact_dir=top_path.parent)
+    except Exception:
+        return False
+
+
 def auto_export_assigned_mol(obj, *, depth: int = 1, work_dir=None) -> Path | None:
     """Best-effort auto export after successful ``ff_assign``.
 
@@ -386,8 +584,15 @@ def auto_export_assigned_mol(obj, *, depth: int = 1, work_dir=None) -> Path | No
 
         mol2_dir = root / "00_molecules"
         gmx_dir = root / f"90_{stem}_gmx"
+        mol2_path, gro_path, itp_path, top_path, state_path = _assignment_paths(root, stem)
+        if resolve_restart(None) and mol2_path.exists() and gro_path.exists() and itp_path.exists() and top_path.exists() and state_path.exists():
+            return root
         write_mol2(mol=obj, out_dir=mol2_dir, name=stem, mol_name=stem)
         write_gmx(mol=obj, out_dir=gmx_dir, name=stem, mol_name=stem)
+        state_path.write_text(
+            json.dumps(_serialize_assigned_state(obj, artifact_dir=gmx_dir), indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
         return root
     except Exception:
         return None

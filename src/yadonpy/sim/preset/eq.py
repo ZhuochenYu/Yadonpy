@@ -138,6 +138,49 @@ def _workflow_summary_matches(summary_path: Path, *, input_gro_sig: dict[str, An
     return True
 
 
+def _recover_completed_workflow_step(
+    resume: ResumeManager,
+    spec: StepSpec,
+    *,
+    summary_path: Path,
+    input_gro_sig: dict[str, Any],
+    input_top_sig: dict[str, Any],
+    input_ndx_sig: dict[str, Any] | None = None,
+    label: str,
+) -> bool:
+    """Recover a finished workflow step when outputs exist but resume state is missing.
+
+    This handles the common case where the scientific artifacts were fully written
+    but the process was terminated before ``resume_state.json`` was updated.
+    """
+    status = resume.reuse_status(spec)
+    if status == "done":
+        return False
+    if not all(Path(p).exists() for p in spec.outputs):
+        return False
+    if not _workflow_summary_matches(
+        summary_path,
+        input_gro_sig=input_gro_sig,
+        input_top_sig=input_top_sig,
+        input_ndx_sig=input_ndx_sig,
+    ):
+        return False
+
+    _preset_log(
+        f"[RESTART] Recovered completed {label} from existing outputs; "
+        f"resume state status was {status}.",
+        level=1,
+    )
+    resume.mark_done(
+        spec,
+        meta={
+            "recovered_from_summary": True,
+            "previous_resume_status": status,
+        },
+    )
+    return True
+
+
 def _parse_gpu_args(gpu: int, gpu_id: Optional[int]) -> tuple[bool, Optional[str]]:
     """Parse legacy + new GPU semantics.
 
@@ -162,6 +205,32 @@ def _parse_gpu_args(gpu: int, gpu_id: Optional[int]) -> tuple[bool, Optional[str
     use_gpu = bool(g)
     gid_s = str(int(gid)) if (use_gpu and gid is not None) else None
     return use_gpu, gid_s
+
+
+def _interval_ps_to_nsteps(dt_ps: float, interval_ps: Optional[float], *, disabled_value: int = 0) -> int:
+    if interval_ps is None:
+        return int(disabled_value)
+    interval = float(interval_ps)
+    if interval <= 0.0:
+        return int(disabled_value)
+    return max(int(round(interval / float(dt_ps))), 1)
+
+
+def _apply_production_output_cadence(
+    params: dict[str, object],
+    *,
+    traj_ps: float,
+    energy_ps: float,
+    log_ps: Optional[float],
+    trr_ps: Optional[float],
+    velocity_ps: Optional[float],
+) -> None:
+    dt_ps = float(params["dt"])
+    params["nstxout"] = _interval_ps_to_nsteps(dt_ps, float(traj_ps))
+    params["nstenergy"] = _interval_ps_to_nsteps(dt_ps, float(energy_ps))
+    params["nstlog"] = _interval_ps_to_nsteps(dt_ps, float(log_ps) if log_ps is not None else float(energy_ps))
+    params["nstxout_trr"] = _interval_ps_to_nsteps(dt_ps, trr_ps, disabled_value=0)
+    params["nstvout"] = _interval_ps_to_nsteps(dt_ps, velocity_ps, disabled_value=0)
 
 
 def _next_additional_round(work_dir: Path, *, restart: bool) -> tuple[int, Path]:
@@ -1225,6 +1294,15 @@ class EQ21step:
         expected_gro_sig = file_signature(exp.system_gro)
         expected_top_sig = file_signature(exp.system_top)
         expected_ndx_sig = file_signature(exp.system_ndx)
+        _recover_completed_workflow_step(
+            self._resume,
+            eq_spec,
+            summary_path=run_dir / "summary.json",
+            input_gro_sig=expected_gro_sig,
+            input_top_sig=expected_top_sig,
+            input_ndx_sig=expected_ndx_sig,
+            label="EQ21 workflow",
+        )
         if self._resume.is_done(eq_spec) and not _workflow_summary_matches(
             run_dir / "summary.json",
             input_gro_sig=expected_gro_sig,
@@ -1366,6 +1444,15 @@ class Additional(EQ21step):
         expected_gro_sig = file_signature(Path(start_gro))
         expected_top_sig = file_signature(exp.system_top)
         expected_ndx_sig = file_signature(exp.system_ndx)
+        _recover_completed_workflow_step(
+            self._resume,
+            spec,
+            summary_path=run_dir / "summary.json",
+            input_gro_sig=expected_gro_sig,
+            input_top_sig=expected_top_sig,
+            input_ndx_sig=expected_ndx_sig,
+            label=f"additional equilibration round {round_idx:02d}",
+        )
         if self._resume.is_done(spec) and not _workflow_summary_matches(
             run_dir / "summary.json",
             input_gro_sig=expected_gro_sig,
@@ -1406,6 +1493,12 @@ class NPT(EQ21step):
         gpu: int = 1,
         gpu_id: Optional[int] = None,
         time: float = 5.0,
+        traj_ps: float = 2.0,
+        energy_ps: float = 2.0,
+        log_ps: Optional[float] = None,
+        trr_ps: Optional[float] = None,
+        velocity_ps: Optional[float] = None,
+        checkpoint_min: float = 5.0,
         mdp_overrides: Optional[dict[str, object]] = None,
         restart: Optional[bool] = None,
     ):
@@ -1422,6 +1515,14 @@ class NPT(EQ21step):
         _preset_item("temperature_K", float(temp))
         _preset_item("pressure_bar", float(press))
         _preset_item("production_ns", float(time))
+        _preset_item(
+            "output_cadence",
+            f"xtc={float(traj_ps):.3f} ps | energy={float(energy_ps):.3f} ps | "
+            f"log={float(log_ps if log_ps is not None else energy_ps):.3f} ps | "
+            f"trr={'off' if trr_ps is None else f'{float(trr_ps):.3f} ps'} | "
+            f"vel={'off' if velocity_ps is None else f'{float(velocity_ps):.3f} ps'} | "
+            f"cpt={float(checkpoint_min):.2f} min"
+        )
         if mdp_overrides:
             _preset_item("mdp_overrides", mdp_overrides)
         _preset_item("resources", f"mpi={int(mpi)} | omp={int(omp)} | gpu={int(gpu)} | gpu_id={gpu_id}")
@@ -1435,16 +1536,16 @@ class NPT(EQ21step):
         p = default_mdp_params()
         p["ref_t"] = float(temp)
         p["ref_p"] = float(press)
+        _apply_production_output_cadence(
+            p,
+            traj_ps=float(traj_ps),
+            energy_ps=float(energy_ps),
+            log_ps=log_ps,
+            trr_ps=trr_ps,
+            velocity_ps=velocity_ps,
+        )
         if mdp_overrides:
             p.update(dict(mdp_overrides))
-
-        # Production trajectory: write frames reasonably frequently to make
-        # MSD/RDF smoother and more stable.
-        #
-        # Default: 0.5 ps per frame (good trade-off for Example 03).
-        frame_ps = 0.5
-        nst = max(int(round(float(frame_ps) / float(p["dt"]))), 1)
-        p["nstxout"] = nst
 
         def ns_to_steps(ns: float) -> int:
             return int((ns * 1000.0) / float(p["dt"]))
@@ -1455,6 +1556,7 @@ class NPT(EQ21step):
                 "md",
                 MdpSpec(NPT_MDP, {**p, "nsteps": max(ns_to_steps(float(time)), 1000)}),
                 lincs_retry=StageLincsRetryPolicy(),
+                checkpoint_minutes=(float(checkpoint_min) if float(checkpoint_min) > 0.0 else None),
             )
         ]
 
@@ -1472,6 +1574,12 @@ class NPT(EQ21step):
                 "temp": float(temp),
                 "press": float(press),
                 "time": float(time),
+                "traj_ps": float(traj_ps),
+                "energy_ps": float(energy_ps),
+                "log_ps": float(log_ps) if log_ps is not None else None,
+                "trr_ps": float(trr_ps) if trr_ps is not None else None,
+                "velocity_ps": float(velocity_ps) if velocity_ps is not None else None,
+                "checkpoint_min": float(checkpoint_min),
                 "mdp_overrides": json.dumps(mdp_overrides, sort_keys=True, default=str) if mdp_overrides else None,
                 "mpi": int(mpi),
                 "omp": int(omp),
@@ -1484,6 +1592,15 @@ class NPT(EQ21step):
         expected_gro_sig = file_signature(Path(start_gro))
         expected_top_sig = file_signature(exp.system_top)
         expected_ndx_sig = file_signature(exp.system_ndx)
+        _recover_completed_workflow_step(
+            self._resume,
+            spec,
+            summary_path=run_dir / "summary.json",
+            input_gro_sig=expected_gro_sig,
+            input_top_sig=expected_top_sig,
+            input_ndx_sig=expected_ndx_sig,
+            label="NPT production",
+        )
         if self._resume.is_done(spec) and not _workflow_summary_matches(
             run_dir / "summary.json",
             input_gro_sig=expected_gro_sig,
@@ -1538,6 +1655,12 @@ class NVT(EQ21step):
         gpu: int = 1,
         gpu_id: Optional[int] = None,
         time: float = 5.0,
+        traj_ps: float = 2.0,
+        energy_ps: float = 2.0,
+        log_ps: Optional[float] = None,
+        trr_ps: Optional[float] = None,
+        velocity_ps: Optional[float] = None,
+        checkpoint_min: float = 5.0,
         restart: Optional[bool] = None,
         density_control: bool = True,
         density_frac_last: float = 0.3,
@@ -1557,6 +1680,14 @@ class NVT(EQ21step):
         _preset_item("production_ns", float(time))
         _preset_item("density_control", bool(density_control))
         _preset_item("density_frac_last", float(density_frac_last))
+        _preset_item(
+            "output_cadence",
+            f"xtc={float(traj_ps):.3f} ps | energy={float(energy_ps):.3f} ps | "
+            f"log={float(log_ps if log_ps is not None else energy_ps):.3f} ps | "
+            f"trr={'off' if trr_ps is None else f'{float(trr_ps):.3f} ps'} | "
+            f"vel={'off' if velocity_ps is None else f'{float(velocity_ps):.3f} ps'} | "
+            f"cpt={float(checkpoint_min):.2f} min"
+        )
         _preset_item("resources", f"mpi={int(mpi)} | omp={int(omp)} | gpu={int(gpu)} | gpu_id={gpu_id}")
         if not rst_flag and run_dir.exists():
             shutil.rmtree(run_dir, ignore_errors=True)
@@ -1688,12 +1819,14 @@ class NVT(EQ21step):
 
         p = default_mdp_params()
         p["ref_t"] = float(temp)
-
-        # Production trajectory: keep a reasonably fine frame interval to
-        # avoid coarse/jagged MSD/RDF curves.
-        frame_ps = 0.5
-        nst = max(int(round(float(frame_ps) / float(p["dt"]))), 1)
-        p["nstxout"] = nst
+        _apply_production_output_cadence(
+            p,
+            traj_ps=float(traj_ps),
+            energy_ps=float(energy_ps),
+            log_ps=log_ps,
+            trr_ps=trr_ps,
+            velocity_ps=velocity_ps,
+        )
 
         def ns_to_steps(ns: float) -> int:
             return int((ns * 1000.0) / float(p["dt"]))
@@ -1704,6 +1837,7 @@ class NVT(EQ21step):
                 "md",
                 MdpSpec(NVT_MDP, {**p, "nsteps": max(ns_to_steps(float(time)), 1000)}),
                 lincs_retry=StageLincsRetryPolicy(),
+                checkpoint_minutes=(float(checkpoint_min) if float(checkpoint_min) > 0.0 else None),
             )
         ]
 
@@ -1720,6 +1854,12 @@ class NVT(EQ21step):
                 "input_top_sig": file_signature(exp.system_top),
                 "temp": float(temp),
                 "time": float(time),
+                "traj_ps": float(traj_ps),
+                "energy_ps": float(energy_ps),
+                "log_ps": float(log_ps) if log_ps is not None else None,
+                "trr_ps": float(trr_ps) if trr_ps is not None else None,
+                "velocity_ps": float(velocity_ps) if velocity_ps is not None else None,
+                "checkpoint_min": float(checkpoint_min),
                 "mpi": int(mpi),
                 "omp": int(omp),
                 "gpu": int(gpu),
@@ -1733,6 +1873,15 @@ class NVT(EQ21step):
         expected_gro_sig = file_signature(Path(scaled_gro))
         expected_top_sig = file_signature(exp.system_top)
         expected_ndx_sig = file_signature(exp.system_ndx)
+        _recover_completed_workflow_step(
+            self._resume,
+            spec,
+            summary_path=run_dir / "summary.json",
+            input_gro_sig=expected_gro_sig,
+            input_top_sig=expected_top_sig,
+            input_ndx_sig=expected_ndx_sig,
+            label="NVT production",
+        )
         if self._resume.is_done(spec) and not _workflow_summary_matches(
             run_dir / "summary.json",
             input_gro_sig=expected_gro_sig,

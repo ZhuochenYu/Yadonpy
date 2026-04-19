@@ -27,6 +27,7 @@ from .gaff import GAFF
 from . import ff_class
 from ..core import utils as core_utils
 from .report import print_ff_assignment_report
+from .oplsaa_reference import get_oplsaa_improper_templates, iter_source_backed_oplsaa_improper_candidates
 
 
 
@@ -114,6 +115,18 @@ _DONOR_H_LJ_FLOOR = {
     "opls_188": (0.053792, 0.019665),
 }
 
+
+def _param_source(param):
+    source = getattr(param, "source", None)
+    if source:
+        return str(source)
+    desc = getattr(param, "desc", None)
+    if desc and "source=" in str(desc):
+        try:
+            return str(desc).split("source=", 1)[1].split()[0].strip()
+        except Exception:
+            return None
+    return None
 
 def _get_compiled_rules():
     global _COMPILED
@@ -630,6 +643,86 @@ class OPLSAA(GAFF):
         self.assign_itypes(mol)
         return result
 
+    @staticmethod
+    def _has_angle_key(mol, a: int, b: int, c: int) -> bool:
+        angles = getattr(mol, "angles", {}) or {}
+        return (f"{a},{b},{c}" in angles) or (f"{c},{b},{a}" in angles)
+
+    @staticmethod
+    def _has_dihedral_key(mol, a: int, b: int, c: int, d: int) -> bool:
+        dihedrals = getattr(mol, "dihedrals", {}) or {}
+        return (f"{a},{b},{c},{d}" in dihedrals) or (f"{d},{c},{b},{a}" in dihedrals)
+
+    def _fill_missing_bonded_terms(self, mol, atom_indices: set[int] | None = None) -> bool:
+        result = True
+        scope = None if atom_indices is None else {int(idx) for idx in atom_indices}
+
+        if not hasattr(mol, "angles"):
+            setattr(mol, "angles", {})
+        if not hasattr(mol, "dihedrals"):
+            setattr(mol, "dihedrals", {})
+
+        for center in mol.GetAtoms():
+            center_idx = int(center.GetIdx())
+            neighbors = list(center.GetNeighbors())
+            if len(neighbors) < 2:
+                continue
+            for left_i in range(len(neighbors)):
+                for right_i in range(left_i + 1, len(neighbors)):
+                    left = neighbors[left_i]
+                    right = neighbors[right_i]
+                    indices = {int(left.GetIdx()), center_idx, int(right.GetIdx())}
+                    if scope is not None and not (indices & scope):
+                        continue
+                    if self._has_angle_key(mol, left.GetIdx(), center_idx, right.GetIdx()):
+                        continue
+                    tokens = (
+                        left.GetProp("ff_btype"),
+                        center.GetProp("ff_btype"),
+                        right.GetProp("ff_btype"),
+                    )
+                    param = self._lookup_angle_param(tokens)
+                    if param is None:
+                        utils.radon_print(
+                            f'Cannot assign angle parameters for {tokens[0]},{tokens[1]},{tokens[2]}',
+                            level=2,
+                        )
+                        result = False
+                        continue
+                    self.set_atype(mol, left.GetIdx(), center_idx, right.GetIdx(), param)
+
+        for bond in mol.GetBonds():
+            j = bond.GetBeginAtom()
+            k = bond.GetEndAtom()
+            jn = [atom for atom in j.GetNeighbors() if atom.GetIdx() != k.GetIdx()]
+            kn = [atom for atom in k.GetNeighbors() if atom.GetIdx() != j.GetIdx()]
+            if not jn or not kn:
+                continue
+            for i in jn:
+                for l in kn:
+                    indices = {int(i.GetIdx()), int(j.GetIdx()), int(k.GetIdx()), int(l.GetIdx())}
+                    if scope is not None and not (indices & scope):
+                        continue
+                    if self._has_dihedral_key(mol, i.GetIdx(), j.GetIdx(), k.GetIdx(), l.GetIdx()):
+                        continue
+                    tokens = (
+                        i.GetProp("ff_btype"),
+                        j.GetProp("ff_btype"),
+                        k.GetProp("ff_btype"),
+                        l.GetProp("ff_btype"),
+                    )
+                    param = self._lookup_dihedral_param(tokens)
+                    if param is None:
+                        utils.radon_print(
+                            f'Cannot assign dihedral parameters for {tokens[0]},{tokens[1]},{tokens[2]},{tokens[3]}',
+                            level=2,
+                        )
+                        result = False
+                        continue
+                    self.set_dtype(mol, i.GetIdx(), j.GetIdx(), k.GetIdx(), l.GetIdx(), param)
+
+        return result
+
     def refresh_polymer_junction_terms(self, mol, charge=None, *, radius: int = 2):
         new_bonds = self._new_bond_endpoints(mol)
         if not new_bonds:
@@ -643,13 +736,22 @@ class OPLSAA(GAFF):
         if not ok:
             return False
 
-        affected_atoms = set(endpoints) | set(changed_atoms)
+        # Junction edits can invalidate inherited local bonded terms even when
+        # nearby atoms keep the same OPLS type after re-typing. Refresh the
+        # full local workset instead of only atoms whose type changed.
+        affected_atoms = set(workset) | set(endpoints) | set(changed_atoms)
         utils.radon_print(
             f'Applying OPLS-AA local polymer junction refresh for {len(new_bonds)} new bond(s) '
             f'and {len(affected_atoms)} affected atom(s).',
             level=1,
         )
-        return self._refresh_local_bonded_terms(mol, affected_atoms=affected_atoms)
+        result = self._refresh_local_bonded_terms(mol, affected_atoms=affected_atoms)
+        # The inherited polymer topology may still contain sparse holes in
+        # remote angle/dihedral records after repeated atom deletions and index
+        # remapping. Fill only the missing bonded terms without disturbing the
+        # existing ones.
+        result = self._fill_missing_bonded_terms(mol) and result
+        return result
 
     def _resolve_spec(self, mol):
         """Resolve a MolSpec handle into an RDKit Mol, matching GAFF behavior."""
@@ -735,6 +837,13 @@ class OPLSAA(GAFF):
             current_name = None
         try:
             naming.ensure_name(mol, name=current_name, depth=2, prefer_var=(current_name is None))
+        except Exception:
+            pass
+        try:
+            if naming.try_restore_assigned_mol(mol, depth=2, ff_name=self.name):
+                if report:
+                    print_ff_assignment_report(mol, ff_obj=self)
+                return mol
         except Exception:
             pass
         bonded_override = self._normalize_bonded_override(charge_kwargs.get("bonded"))
@@ -929,6 +1038,10 @@ class OPLSAA(GAFF):
                 if sigma_now <= 0.0 and epsilon_now <= 0.0:
                     a.SetDoubleProp("ff_sigma", float(sigma_floor))
                     a.SetDoubleProp("ff_epsilon", float(epsilon_floor))
+                    a.SetProp("ff_provenance", "local_refine:donor_h_lj_floor")
+            source = _param_source(self.param.pt[opls_type])
+            if source:
+                a.SetProp("ff_source", source)
             try:
                 a.SetProp('ff_desc', str(rule.desc))
             except Exception:
@@ -975,13 +1088,32 @@ class OPLSAA(GAFF):
     # Bonded assignments (use ff_btype)
     # ----------------------------
 
-    def _clone_param(self, source, **overrides):
+    def _clone_param(self, template_param, **overrides):
         obj = self.Container()
-        for key, value in vars(source).items():
+        for key, value in vars(template_param).items():
             setattr(obj, key, value)
         for key, value in overrides.items():
             setattr(obj, key, value)
         return obj
+
+    @staticmethod
+    def _copy_param_provenance(target, param) -> None:
+        if isinstance(param, dict):
+            source = param.get("source")
+            provenance = param.get("provenance")
+        else:
+            source = _param_source(param)
+            provenance = getattr(param, "provenance", None)
+        if source:
+            try:
+                setattr(target, "source", str(source))
+            except Exception:
+                pass
+        if provenance:
+            try:
+                setattr(target, "provenance", str(provenance))
+            except Exception:
+                pass
 
     def _find_param(self, mapping, tokens):
         """Find the best bonded parameter for a token tuple."""
@@ -1064,6 +1196,8 @@ class OPLSAA(GAFF):
                 name='OS,C,OS',
                 rname='OS,C,OS',
                 theta0=110.6,
+                source='local_refine',
+                provenance='cyclic_carbonate_angle_fallback',
             )
 
         fallback_map = {
@@ -1072,6 +1206,8 @@ class OPLSAA(GAFF):
             # Carboxymethyl-glucose sidechain linkage
             ('OS', 'CT', 'CO'): ('CO', 'CT', 'OH'),
             ('CO', 'OH', 'CT'): ('CT', 'OH', 'CO'),
+            ('C', 'NT', 'H'): ('C', 'N', 'H'),
+            ('NT', 'CA', 'NT'): ('N2', 'CZ', 'NZ'),
             # Methoxide / thiolate methyl groups
             ('HC', 'C3', 'HC'): ('HC', 'CT', 'HC'),
             ('HC', 'C3', 'OH'): ('HC', 'CT', 'OH'),
@@ -1102,6 +1238,8 @@ class OPLSAA(GAFF):
             tag=pretty,
             name=pretty,
             rname=','.join(reversed(tokens)),
+            source='local_refine',
+            provenance='special_angle_fallback',
         )
 
     def _special_bond_param(self, tokens):
@@ -1131,6 +1269,8 @@ class OPLSAA(GAFF):
             tag=pretty,
             name=pretty,
             rname=','.join(reversed(tokens)),
+            source='local_refine',
+            provenance='special_bond_fallback',
         )
 
     def _special_dihedral_param(self, tokens):
@@ -1142,6 +1282,10 @@ class OPLSAA(GAFF):
             ('OS', 'C', 'OS', 'CT'): ('O', 'C', 'OS', 'CT'),
             # Acyclic carbonate esters (EMC/DEC)
             ('CT', 'OS', 'C_2', 'OS'): ('CT', 'OS', 'C_2', 'O_2'),
+            # Amides
+            ('CT', 'C', 'NT', 'H'): ('CT', 'C', 'N', 'H'),
+            ('O', 'C', 'NT', 'H'): ('O', 'C', 'N', 'H'),
+            ('HC', 'CT', 'C', 'NT'): ('CT', 'CT', 'C', 'N'),
             # Carboxymethyl-glucose sidechains
             ('HO', 'OH', 'CO', 'CT'): ('HO', 'OH', 'CO', 'OS'),
             ('HO', 'OH', 'CO', 'HC'): ('HO', 'OH', 'CO', 'OS'),
@@ -1166,6 +1310,9 @@ class OPLSAA(GAFF):
             ('OS', 'SY', 'OS', 'CM'): ('CT', 'P~', 'OS', 'CT'),
             ('SY', 'OS', 'CM', 'CM'): ('CT', 'OS', 'CM', 'CT'),
             ('SY', 'OS', 'CM', 'HC'): ('CT', 'OS', 'CM', 'HC'),
+            # Guanidinium / amidinium families
+            ('H', 'NT', 'CA', 'NT'): ('H', 'N2', 'CA', 'N2'),
+            ('NT', 'CA', 'NT', 'H'): ('N2', 'CA', 'N2', 'H'),
         }
         base_tokens = self._lookup_special_base_tokens(tokens, fallback_map)
         if base_tokens is None:
@@ -1186,6 +1333,8 @@ class OPLSAA(GAFF):
             tag=pretty,
             name=pretty,
             rname=','.join(reversed(tokens)),
+            source='local_refine',
+            provenance='special_dihedral_fallback',
         )
 
     def _lookup_bond_param(self, tokens):
@@ -1230,6 +1379,12 @@ class OPLSAA(GAFF):
         b.SetProp('ff_type', param.tag)
         b.SetDoubleProp('ff_k', param.k)
         b.SetDoubleProp('ff_r0', param.r0)
+        source = _param_source(param)
+        if source:
+            b.SetProp("ff_source", source)
+        provenance = getattr(param, "provenance", None)
+        if provenance:
+            b.SetProp("ff_provenance", str(provenance))
         return True
 
     def assign_atypes(self, mol):
@@ -1259,13 +1414,15 @@ class OPLSAA(GAFF):
         return result
 
     def set_atype(self, mol, a, b, c, param):
+        ff = ff_class.Angle_harmonic(
+            ff_type=param.tag,
+            k=param.k,
+            theta0=param.theta0
+        )
+        self._copy_param_provenance(ff, param)
         angle = core_utils.Angle(
             a=a, b=b, c=c,
-            ff=ff_class.Angle_harmonic(
-                ff_type=param.tag,
-                k=param.k,
-                theta0=param.theta0
-            )
+            ff=ff
         )
         key = f'{a},{b},{c}'
         mol.angles[key] = angle
@@ -1314,23 +1471,50 @@ class OPLSAA(GAFF):
         return result
 
     def set_dtype(self, mol, a, b, c, d, param):
+        ff = ff_class.Dihedral_fourier(
+            ff_type=param.tag,
+            k=param.k,
+            d0=param.d,
+            m=param.m,
+            n=param.n
+        )
+        self._copy_param_provenance(ff, param)
         dih = core_utils.Dihedral(
             a=a, b=b, c=c, d=d,
-            ff=ff_class.Dihedral_fourier(
-                ff_type=param.tag,
-                k=param.k,
-                d0=param.d,
-                m=param.m,
-                n=param.n
-            )
+            ff=ff
         )
         key = f'{a},{b},{c},{d}'
         mol.dihedrals[key] = dih
         return True
 
     def assign_itypes(self, mol):
-        # OPLS-AA (as provided by GROMACS ffoplsaa) typically doesn't provide a full improper table for all use cases.
-        # We keep impropers empty to avoid adding incorrect constraints by default.
         mol.SetProp('improper_style', self.improper_style)
         setattr(mol, 'impropers', {})
+        templates = get_oplsaa_improper_templates()
+        result = True
+        for candidate in iter_source_backed_oplsaa_improper_candidates(mol):
+            atoms = tuple(int(x) for x in candidate["atoms"])
+            template_name = str(candidate["template"])
+            param = templates.get(template_name)
+            if param is None:
+                utils.radon_print(
+                    f"Missing OPLS-AA improper template {template_name} for motif {candidate.get('motif')}",
+                    level=2,
+                )
+                result = False
+                continue
+            if not self.set_itype(mol, *atoms, param):
+                result = False
+        return result
+
+    def set_itype(self, mol, a, b, c, d, param):
+        ff = ff_class.Improper_cvff(
+            ff_type=str(param["tag"]),
+            k=float(param["k"]),
+            d0=int(param["d"]),
+            n=int(param["n"]),
+        )
+        self._copy_param_provenance(ff, param)
+        key = f"{a},{b},{c},{d}"
+        mol.impropers[key] = core_utils.Improper(a=a, b=b, c=c, d=d, ff=ff)
         return True

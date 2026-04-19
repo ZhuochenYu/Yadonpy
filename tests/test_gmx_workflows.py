@@ -591,6 +591,64 @@ def test_equilibration_job_retries_production_stage_with_stronger_lincs_after_fa
     assert any("Production LINCS fallback triggered" in msg for msg in runner.logs)
 
 
+def test_equilibration_job_passes_stage_checkpoint_minutes_to_mdrun(tmp_path, monkeypatch):
+    import yadonpy.gmx.workflows.eq as eqmod
+
+    monkeypatch.setattr(eqmod, 'pbc_mol_fix_inplace', lambda *args, **kwargs: {'applied': False, 'error': None})
+    monkeypatch.setattr(eqmod, 'normalize_gro_molecules_inplace', lambda *args, **kwargs: {'applied': False, 'error': None})
+    monkeypatch.setattr(eqmod, 'write_mol2_from_top_gro_parmed', lambda **kwargs: None)
+
+    gro, top = _write_diatomic_topology(tmp_path)
+    params = default_mdp_params()
+    params.update(
+        {
+            'nsteps': 1000,
+            'dt': 0.002,
+            'ref_t': 300.0,
+            'gen_vel': 'yes',
+            'gen_temp': 300.0,
+            'gen_seed': -1,
+        }
+    )
+    stage = EqStage(
+        name='01_npt',
+        kind='md',
+        mdp=MdpSpec(NVT_MDP, params),
+        checkpoint_minutes=2.5,
+    )
+    class _RecordingRunner(FakeRunner):
+        def __init__(self):
+            super().__init__()
+            self.mdrun_records = []
+
+        def mdrun(self, *, tpr: Path, deffnm: str, cwd: Path, cpi=None, append=True, **kwargs) -> None:
+            self.mdrun_calls += 1
+            cwd = Path(cwd)
+            self.mdrun_records.append(
+                {
+                    "tpr": Path(tpr),
+                    "deffnm": deffnm,
+                    "cwd": cwd,
+                    "cpi": None if cpi is None else Path(cpi),
+                    "append": bool(append),
+                    "kwargs": dict(kwargs),
+                }
+            )
+            (cwd / f'{deffnm}.gro').write_text('fake gro\n', encoding='utf-8')
+            (cwd / f'{deffnm}.cpt').write_text('fake cpt\n', encoding='utf-8')
+            (cwd / f'{deffnm}.edr').write_text('fake edr\n', encoding='utf-8')
+            (cwd / f'{deffnm}.log').write_text('ok\n', encoding='utf-8')
+
+    runner = _RecordingRunner()
+    job = EquilibrationJob(gro=gro, top=top, out_dir=tmp_path / 'eq_checkpoint_minutes', stages=[stage], runner=runner)
+
+    summary_path = job.run(restart=False)
+
+    assert summary_path.exists()
+    assert runner.mdrun_records
+    assert runner.mdrun_records[0]["kwargs"]["checkpoint_minutes"] == pytest.approx(2.5)
+
+
 def test_equilibration_job_refuses_lincs_retry_without_checkpoint(tmp_path, monkeypatch):
     import yadonpy.gmx.workflows.eq as eqmod
 

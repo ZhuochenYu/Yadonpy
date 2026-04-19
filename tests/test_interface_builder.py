@@ -1727,6 +1727,129 @@ def test_npt_exec_invalidates_nvt_resume_state_when_rebuilding(tmp_path: Path, m
     assert invalidations == [(("nvt_production",), ())]
 
 
+def test_npt_exec_sets_lean_production_output_cadence_and_checkpoints(tmp_path: Path, monkeypatch):
+    system_dir = tmp_path / "02_system"
+    system_dir.mkdir(parents=True, exist_ok=True)
+    for name in ("system.gro", "system.top", "system.ndx", "system_meta.json"):
+        (system_dir / name).write_text("x\n", encoding="utf-8")
+    exp = SystemExportResult(
+        system_gro=system_dir / "system.gro",
+        system_top=system_dir / "system.top",
+        system_ndx=system_dir / "system.ndx",
+        molecules_dir=system_dir / "molecules",
+        system_meta=system_dir / "system_meta.json",
+        box_nm=1.0,
+        species=[],
+    )
+    captured: dict[str, object] = {}
+
+    class _FakeJob:
+        default_stages = staticmethod(eqmod.EquilibrationJob.default_stages)
+
+        def __init__(self, *, gro, top, ndx=None, provenance_ndx=None, out_dir, stages, resources):
+            captured["stages"] = stages
+            captured["out_dir"] = out_dir
+
+        def run(self, *, restart=False):
+            out_dir = Path(captured["out_dir"]) / "01_npt"
+            out_dir.mkdir(parents=True, exist_ok=True)
+            for suffix in ("md.tpr", "md.xtc", "md.edr", "md.gro"):
+                (out_dir / suffix).write_text("x\n", encoding="utf-8")
+            return out_dir / "md.gro"
+
+    monkeypatch.setattr(eqmod.NPT, "_ensure_system_exported", lambda self: exp)
+    monkeypatch.setattr(eqmod, "_find_latest_equilibrated_gro", lambda work_dir, exclude_dirs=None: None)
+    monkeypatch.setattr(eqmod, "EquilibrationJob", _FakeJob)
+
+    npt = eqmod.NPT(ac=object(), work_dir=tmp_path)
+    monkeypatch.setattr(npt._resume, "run", lambda spec, fn: fn())
+
+    npt.exec(
+        temp=300.0,
+        press=1.0,
+        mpi=1,
+        omp=1,
+        gpu=0,
+        time=0.1,
+        traj_ps=2.0,
+        energy_ps=4.0,
+        log_ps=6.0,
+        trr_ps=None,
+        velocity_ps=None,
+        checkpoint_min=3.0,
+    )
+
+    stage = captured["stages"][0]
+    mdp_text = stage.mdp.render()
+    assert "nstxout-compressed       = 1000" in mdp_text
+    assert "nstenergy                = 2000" in mdp_text
+    assert "nstlog                   = 3000" in mdp_text
+    assert "nstxout                  = 0" in mdp_text
+    assert "nstvout                  = 0" in mdp_text
+    assert stage.checkpoint_minutes == pytest.approx(3.0)
+
+
+def test_nvt_exec_sets_lean_production_output_cadence_and_checkpoints(tmp_path: Path, monkeypatch):
+    system_dir = tmp_path / "02_system"
+    system_dir.mkdir(parents=True, exist_ok=True)
+    for name in ("system.gro", "system.top", "system.ndx", "system_meta.json"):
+        (system_dir / name).write_text("x\n", encoding="utf-8")
+    exp = SystemExportResult(
+        system_gro=system_dir / "system.gro",
+        system_top=system_dir / "system.top",
+        system_ndx=system_dir / "system.ndx",
+        molecules_dir=system_dir / "molecules",
+        system_meta=system_dir / "system_meta.json",
+        box_nm=1.0,
+        species=[],
+    )
+    captured: dict[str, object] = {}
+
+    class _FakeJob:
+        default_stages = staticmethod(eqmod.EquilibrationJob.default_stages)
+
+        def __init__(self, *, gro, top, ndx=None, provenance_ndx=None, out_dir, stages, resources):
+            captured["stages"] = stages
+            captured["out_dir"] = out_dir
+
+        def run(self, *, restart=False):
+            out_dir = Path(captured["out_dir"]) / "01_nvt"
+            out_dir.mkdir(parents=True, exist_ok=True)
+            for suffix in ("md.tpr", "md.xtc", "md.edr", "md.gro"):
+                (out_dir / suffix).write_text("x\n", encoding="utf-8")
+            return out_dir / "md.gro"
+
+    monkeypatch.setattr(eqmod.NVT, "_ensure_system_exported", lambda self: exp)
+    monkeypatch.setattr(eqmod, "_find_latest_equilibrated_gro", lambda work_dir, exclude_dirs=None: None)
+    monkeypatch.setattr(eqmod, "EquilibrationJob", _FakeJob)
+
+    nvt = eqmod.NVT(ac=object(), work_dir=tmp_path)
+    monkeypatch.setattr(nvt._resume, "run", lambda spec, fn: fn())
+
+    nvt.exec(
+        temp=300.0,
+        mpi=1,
+        omp=1,
+        gpu=0,
+        time=0.1,
+        traj_ps=1.0,
+        energy_ps=2.0,
+        log_ps=None,
+        trr_ps=5.0,
+        velocity_ps=5.0,
+        checkpoint_min=4.0,
+    )
+
+    stage = captured["stages"][0]
+    mdp_text = stage.mdp.render()
+    assert "nstxout-compressed       = 500" in mdp_text
+    assert "nstenergy                = 1000" in mdp_text
+    assert "nstlog                   = 1000" in mdp_text
+    assert "nstxout                  = 2500" in mdp_text
+    assert "nstvout                  = 2500" in mdp_text
+    assert stage.checkpoint_minutes == pytest.approx(4.0)
+
+
 def test_equilibrate_bulk_with_eq21_helper_runs_eq_additional_and_optional_npt(tmp_path: Path, monkeypatch):
     system_dir = tmp_path / "02_system"
     raw_dir = system_dir / "01_raw_non_scaled"

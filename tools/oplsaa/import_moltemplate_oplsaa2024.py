@@ -178,6 +178,7 @@ def parse_par_particles():
             "mass": mass,
             "epsilon": epsilon,
             "sigma": sigma,
+            "source": "moltemplate_oplsaa2024",
             "desc": f"bond_type={btype}; itp_charge={charge}; source=moltemplate_oplsaa2024",
         }
     return rows
@@ -209,6 +210,7 @@ def parse_lt_sections():
             "rname": ",".join(reversed(tokens)),
             "k": float(match.group(2)) * KCAL_TO_KJ * 400.0,
             "r0": float(match.group(3)) * ANGSTROM_TO_NM,
+            "source": "moltemplate_oplsaa2024",
         }
 
     for match in angle_re.finditer(text):
@@ -223,6 +225,7 @@ def parse_lt_sections():
             "rname": ",".join(reversed(tokens)),
             "k": float(match.group(2)) * KCAL_TO_KJ * 4.0,
             "theta0": float(match.group(3)),
+            "source": "moltemplate_oplsaa2024",
         }
 
     for match in dihedral_re.finditer(text):
@@ -261,6 +264,7 @@ def parse_lt_sections():
             "rname": "CT,Si,CT",
             "k": 37.0 * KCAL_TO_KJ * 4.0,
             "theta0": 112.5,
+            "source": "local_refine",
         }
 
     return bonds, angles, dihedrals

@@ -29,6 +29,7 @@ from .interface import BulkCalibrationResult, ElectrolyteSlabSpec, GraphitePrepa
 from .runtime import get_run_options, set_run_options, run_options  # noqa: F401
 from .api import (  # noqa: F401
     audit_default_moldb_sync,
+    audit_oplsaa_reference,
     analyze_interface_transport,
     assign_charges,
     assign_forcefield,
@@ -73,6 +74,7 @@ __all__ = [
     'assign_forcefield',
     'AnalyzeResult',
     'audit_default_moldb_sync',
+    'audit_oplsaa_reference',
     'analyze_interface_transport',
     'build_graphite',
     'build_cmc_electrolyte_interphase',

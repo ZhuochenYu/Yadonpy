@@ -891,10 +891,21 @@ def _next_amorphous_retry_target(cell, density, dec_rate, *, axes: tuple[int, ..
     retry_cell = _copy_cell_holder(cell)
     setattr(retry_cell, 'cell', utils.Cell(float(lengths[0]), 0.0, float(lengths[1]), 0.0, float(lengths[2]), 0.0))
     axes_label = ''.join('XYZ'[axis] for axis in axes)
+    fixed_axes = ''.join('XYZ'[axis] for axis in (0, 1, 2) if axis not in axes)
+    if fixed_axes:
+        log = (
+            f'[PACK] Retry poly.amorphous_cell. Remaining %i times. Density is fixed by explicit cell; '
+            f'expanded {axes_label} lengths to %s while keeping {fixed_axes} fixed.'
+        )
+    else:
+        log = (
+            f'[PACK] Retry poly.amorphous_cell. Remaining %i times. Density is fixed by explicit cell; '
+            f'expanded {axes_label} lengths to %s.'
+        )
     return {
         'cell': retry_cell,
         'density': None,
-        'log': f'[PACK] Retry poly.amorphous_cell. Remaining %i times. Density is fixed by explicit cell; expanded {axes_label} lengths to %s.',
+        'log': log,
         'log_value': tuple(float(v) for v in lengths.tolist()),
     }
 

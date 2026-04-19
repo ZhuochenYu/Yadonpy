@@ -59,6 +59,7 @@ class EqStage:
     kind: str  # minim | nvt | npt | md
     mdp: MdpSpec
     lincs_retry: "StageLincsRetryPolicy | None" = None
+    checkpoint_minutes: float | None = None
 
 
 @dataclass(frozen=True)
@@ -645,6 +646,7 @@ class EquilibrationJob:
                     gpu_id=self.resources.gpu_id,
                     append=True,
                     cpi=out_cpt,
+                    checkpoint_minutes=st.checkpoint_minutes,
                 )
                 current_gro = out_gro
                 current_cpt = out_cpt if out_cpt.exists() else None
@@ -683,6 +685,7 @@ class EquilibrationJob:
                     gpu_id=self.resources.gpu_id,
                     append=True,
                     cpi=out_cpt,
+                    checkpoint_minutes=st.checkpoint_minutes,
                 )
                 current_gro = out_gro
                 current_cpt = out_cpt if out_cpt.exists() else None
@@ -831,6 +834,7 @@ class EquilibrationJob:
                             nb=("gpu" if st.kind in ("minim", "em") else None),
                             gpu_id=self.resources.gpu_id,
                             append=True,
+                            checkpoint_minutes=st.checkpoint_minutes,
                         )
                     except Exception as e:
                         # If CG fails due to constraint problems (common for rough packed systems),
@@ -926,6 +930,7 @@ class EquilibrationJob:
                                 gpu_id=self.resources.gpu_id,
                                 append=True,
                                 cpi=out_cpt,
+                                checkpoint_minutes=st.checkpoint_minutes,
                             )
                             try:
                                 retry_state_path.unlink()

@@ -232,6 +232,17 @@ def _atom_residue_fields(atom, *, atom_index: int, default_resnr: int, default_r
 def write_gro_from_rdkit(mol, out_gro: Path, mol_name: str) -> None:
     """Write a minimal .gro from RDKit conformer (expects Angstrom coords)."""
 
+    if mol.GetNumConformers() == 0:
+        from rdkit import Chem
+        from rdkit.Chem import AllChem
+
+        work = Chem.Mol(mol)
+        try:
+            AllChem.EmbedMolecule(work, AllChem.ETKDGv3())
+        except Exception:
+            AllChem.EmbedMolecule(work)
+        mol = work
+
     conf = mol.GetConformer()
     n = mol.GetNumAtoms()
 
@@ -269,6 +280,7 @@ def write_gromacs_single_molecule_topology(
       - bond: ff_type, ff_k, ff_r0
       - mol.angles dict (Angle_harmonic)
       - mol.dihedrals dict (Dihedral_fourier/Dihedral_harmonic)
+      - mol.impropers dict (Improper_cvff), when present
 
     Returns:
         (gro_path, itp_path, top_path)
@@ -374,6 +386,21 @@ def write_gromacs_single_molecule_topology(
         else:
             continue
 
+    impropers_lines: List[str] = []
+    imp_dict = getattr(mol, "impropers", {}) or {}
+    for imp in imp_dict.values():
+        i = int(imp.a) + 1
+        j = int(imp.b) + 1
+        kidx = int(imp.c) + 1
+        l = int(imp.d) + 1
+        ff = imp.ff
+        if hasattr(ff, "k") and hasattr(ff, "n") and hasattr(ff, "d0"):
+            phase = 180.0 if int(getattr(ff, "d0")) < 0 else 0.0
+            mult = int(getattr(ff, "n"))
+            impropers_lines.append(
+                f"{i:5d} {j:5d} {kidx:5d} {l:5d}  4  {float(phase): .1f}  {float(getattr(ff,'k')): .4f}  {mult}\n"
+            )
+
     itp = []
     itp.append("[ atomtypes ]\n")
     itp.append("; name  mass    charge  ptype  sigma(nm)  epsilon(kJ/mol)\n")
@@ -408,6 +435,13 @@ def write_gromacs_single_molecule_topology(
         itp.append("[ dihedrals ]\n")
         itp.append("; i  j  k  l  funct  phi0(deg)  k(kJ/mol)  mult\n")
         itp.extend(dihedrals_lines)
+        itp.append("\n")
+
+    if impropers_lines:
+        itp.append("[ dihedrals ]\n")
+        itp.append("; impropers\n")
+        itp.append("; i  j  k  l  funct  phi0(deg)  k(kJ/mol)  mult\n")
+        itp.extend(impropers_lines)
         itp.append("\n")
 
     itp_path.write_text("".join(itp), encoding="utf-8")

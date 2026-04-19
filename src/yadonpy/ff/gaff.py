@@ -192,6 +192,13 @@ class GAFF():
                 naming.ensure_name(mol, name=current_name, depth=2, prefer_var=(current_name is None))
             except Exception:
                 pass
+            try:
+                if naming.try_restore_assigned_mol(mol, depth=2, ff_name=self.name):
+                    if report:
+                        print_ff_assignment_report(mol, ff_obj=self)
+                    return mol
+            except Exception:
+                pass
 
         if useMDL:
             Chem.rdmolops.Kekulize(mol, clearAromaticFlags=True)

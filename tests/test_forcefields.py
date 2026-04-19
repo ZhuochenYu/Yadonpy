@@ -10,6 +10,7 @@ from yadonpy.moldb import MolDB
 from yadonpy.ff.report import render_ff_assignment_report
 from yadonpy.ff.gaff2_mod import GAFF2_mod
 from yadonpy.ff.oplsaa import OPLSAA, validate_oplsaa_rule_table
+from yadonpy.ff.oplsaa_reference import audit_oplsaa_reference
 from yadonpy.core.resources import ff_data_path
 from yadonpy.io.gmx import write_gmx
 from yadonpy.io.gromacs_top import defaults_for_ff_name
@@ -38,6 +39,28 @@ def _assert_nonzero_opls_lj_for_materialized_types(mol):
         if sigma is None or epsilon is None or float(sigma) <= 0.0 or float(epsilon) <= 0.0:
             missing.append((atom.GetIdx(), atom.GetSymbol(), ff_type, sigma, epsilon))
     assert missing == [], f"OPLS-AA atoms lost LJ parameters: {missing[:20]}"
+
+
+def _assert_hydroxyl_donor_angles_present(mol):
+    angles = getattr(mol, "angles", {}) or {}
+    missing = []
+    for atom in mol.GetAtoms():
+        ff_type = atom.GetProp("ff_type")
+        if ff_type not in _OPLSAA_DONOR_H_TYPES:
+            continue
+        idx = int(atom.GetIdx())
+        neighbors = list(atom.GetNeighbors())
+        assert len(neighbors) == 1
+        donor = neighbors[0]
+        donor_idx = int(donor.GetIdx())
+        donor_angles = []
+        for angle in angles.values():
+            triple = (int(angle.a), int(angle.b), int(angle.c))
+            if triple[1] == donor_idx and idx in (triple[0], triple[2]):
+                donor_angles.append(triple)
+        if not donor_angles:
+            missing.append((idx, ff_type, donor_idx, donor.GetProp("ff_type")))
+    assert missing == [], f"Missing O-H angle terms for donor hydrogens: {missing[:20]}"
 
 
 def test_oplsaa_defaults_use_jorgensen_rule():
@@ -76,6 +99,63 @@ def test_oplsaa_materializes_small_lj_floor_for_hydroxyl_donor_hydrogens():
             )
     assert donor_h, "Expected at least one OPLS-AA hydroxyl donor hydrogen"
     assert all(sigma > 0.0 and epsilon > 0.0 for _, sigma, epsilon in donor_h)
+    _assert_hydroxyl_donor_angles_present(mol)
+
+
+def test_oplsaa_assigns_source_backed_planar_improper_for_acetate():
+    ff = OPLSAA()
+    mol = ff.ff_assign(Chem.AddHs(Chem.MolFromSmiles("CC(=O)[O-]")), charge="opls", report=False)
+
+    assert mol is not False
+    impropers = getattr(mol, "impropers", {}) or {}
+    assert len(impropers) >= 1
+    assert any(imp.ff.type == "improper_O_C_X_Y" for imp in impropers.values())
+    assert any(getattr(imp.ff, "source", "") == "gromacs_oplsaa" for imp in impropers.values())
+
+
+def test_oplsaa_assigns_amide_angles_and_planar_impropers():
+    ff = OPLSAA()
+    mol = ff.ff_assign(Chem.AddHs(Chem.MolFromSmiles("CC(=O)N")), charge="opls", report=False)
+
+    assert mol is not False
+    assert len(getattr(mol, "angles", {}) or {}) > 0
+    assert len(getattr(mol, "dihedrals", {}) or {}) > 0
+    impropers = getattr(mol, "impropers", {}) or {}
+    assert len(impropers) >= 2
+    assert {imp.ff.type for imp in impropers.values()} >= {"improper_O_C_X_Y", "improper_Z_N_X_Y"}
+
+
+def test_oplsaa_assigns_guanidinium_angles_and_planar_impropers():
+    ff = OPLSAA()
+    mol = ff.ff_assign(Chem.AddHs(Chem.MolFromSmiles("NC(=[NH2+])N")), charge="opls", report=False)
+
+    assert mol is not False
+    assert len(getattr(mol, "angles", {}) or {}) > 0
+    impropers = getattr(mol, "impropers", {}) or {}
+    assert len(impropers) >= 3
+    assert {imp.ff.type for imp in impropers.values()} >= {"improper_O_C_X_Y", "improper_Z_N_X_Y"}
+
+
+def test_write_gmx_exports_oplsaa_impropers_as_gromacs_dihedral_funct4(tmp_path: Path):
+    ff = OPLSAA()
+    mol = ff.ff_assign(Chem.AddHs(Chem.MolFromSmiles("CC(=O)[O-]")), charge="opls", report=False)
+    assert mol is not False
+
+    _, itp_path, _ = write_gmx(mol=mol, out_dir=tmp_path, mol_name="ACE")
+    txt = itp_path.read_text(encoding="utf-8")
+
+    assert txt.count("[ dihedrals ]") >= 2
+    assert "; impropers" in txt
+    assert "  4  180.0" in txt or "  4   180.0" in txt
+
+
+def test_oplsaa_reference_audit_tracks_assignment_and_topology_for_acetate():
+    report = audit_oplsaa_reference(smiles="CC(=O)[O-]", export_topology=True)
+
+    assert report["defaults_parity"]["matches"] is True
+    assert report["assignment"]["assignment_complete"] is True
+    assert report["topology"]["topology_complete"] is True
+    assert "donor_h_lj_floor" in {item["kind"] for item in report["locally_patched"]}
 
 
 def test_gaff2_mod_assigns_silicon_atom_types():
@@ -553,6 +633,7 @@ def test_oplsaa_assigns_resp_backed_cmc_short_copolymer_without_losing_types_or_
     assert len(getattr(assigned_polymer, "dihedrals", {})) > 0
     assert all(atom.HasProp("ff_type") and atom.HasProp("ff_btype") for atom in assigned_polymer.GetAtoms())
     _assert_nonzero_opls_lj_for_materialized_types(assigned_polymer)
+    _assert_hydroxyl_donor_angles_present(assigned_polymer)
 
 
 def test_oplsaa_random_walk_restart_cache_preserves_lj_parameters(tmp_path):

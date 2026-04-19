@@ -299,6 +299,7 @@ class GromacsRunner:
         gpu_id: Optional[str] = None,
         append: bool = True,
         cpi: Optional[Path] = None,
+        checkpoint_minutes: Optional[float] = None,
         mdrun_extra_args: Optional[Sequence[str]] = None,
         # "auto" is generally the safest default across clusters; "on" can
         # over-constrain pinning policies under some schedulers/cgroups.
@@ -344,6 +345,13 @@ class GromacsRunner:
         # Always write an explicit log file for debugging.
         if self._tool_has_option("mdrun", "-g", cwd=cwd):
             args += ["-g", f"{deffnm}.log"]
+
+        if (
+            checkpoint_minutes is not None
+            and float(checkpoint_minutes) > 0.0
+            and self._tool_has_option("mdrun", "-cpt", cwd=cwd)
+        ):
+            args += ["-cpt", str(float(checkpoint_minutes))]
 
         # Threads / ranks (thread-MPI)
         if ntomp is not None and self._tool_has_option("mdrun", "-ntomp", cwd=cwd):
@@ -455,6 +463,7 @@ class GromacsRunner:
             "-pin",
             "-stepout",
             "-g",
+            "-cpt",
             "-deffnm",
             "-s",
             "-cpi",

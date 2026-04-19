@@ -15,6 +15,7 @@ from .dreiding import Dreiding
 
 # Added: OPLS-AA (SMARTS-based typing + ffoplsaa-style parameter DB)
 from .oplsaa import OPLSAA
+from .oplsaa_reference import audit_oplsaa_reference
 
 # Added: Merz ion FF (OPC/OPC3 ion LJ parameters)
 from .merz import MERZ
@@ -43,6 +44,7 @@ __all__ = [
     "GAFF2_mod",
     "Dreiding",
     "OPLSAA",
+    "audit_oplsaa_reference",
     "MERZ",
     "gaff2",
     "available_forcefields",

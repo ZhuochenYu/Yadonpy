@@ -29,6 +29,7 @@ from yadonpy.io.gromacs_system import export_system_from_cell_meta
 import yadonpy.io.gromacs_system as gromacs_system_mod
 from yadonpy.io.mol2 import read_mol2_with_charges, write_mol2_from_rdkit
 from yadonpy.core.data_dir import ensure_initialized
+from yadonpy.runtime import get_run_options, run_options, set_run_options
 from yadonpy.workflow.resume import file_signature as resume_file_signature
 import yadonpy.sim.qm as qm_mod
 
@@ -565,6 +566,66 @@ def test_ff_assign_auto_exports_to_work_dir(tmp_path: Path):
     assert (work_dir / "90_Na_gmx" / "Na.gro").exists()
     assert (work_dir / "90_Na_gmx" / "Na.itp").exists()
     assert (work_dir / "90_Na_gmx" / "Na.top").exists()
+
+
+def test_auto_export_assigned_mol_skips_rewrite_when_restart_enabled(tmp_path: Path, monkeypatch):
+    work_dir = tmp_path / "run"
+    work_dir.mkdir(parents=True)
+
+    with run_options(restart=False):
+        ff = MERZ()
+        Na = utils.named(ff.mol("[Na+]"), "Na")
+        Na = ff.ff_assign(Na, report=False)
+        assert Na is not False
+
+    import yadonpy.io.mol2 as mol2_mod
+    import yadonpy.io.gmx as gmx_mod
+
+    def _boom(*args, **kwargs):
+        raise AssertionError("auto_export_assigned_mol should reuse existing outputs during restart")
+
+    monkeypatch.setattr(mol2_mod, "write_mol2", _boom)
+    monkeypatch.setattr(gmx_mod, "write_gmx", _boom)
+
+    with run_options(restart=True):
+        reused = utils.auto_export_assigned_mol(Na, work_dir=work_dir)
+
+    assert reused == work_dir
+    assert (work_dir / "90_Na_gmx" / "assigned_state.json").exists()
+
+
+def test_ff_assign_restart_reuses_assigned_state_and_skips_retyping(tmp_path: Path, monkeypatch):
+    work_dir = tmp_path / "run"
+    work_dir.mkdir(parents=True)
+
+    ff = GAFF2_mod()
+    smiles = "CCO"
+    prev = get_run_options()
+
+    try:
+        set_run_options(restart=False, strict_inputs=prev.strict_inputs)
+        ethanol = utils.named(Chem.AddHs(Chem.MolFromSmiles(smiles)), "ethanol")
+        assert AllChem.EmbedMolecule(ethanol, randomSeed=0xC0DE) == 0
+        assert ff.ff_assign(ethanol, charge="gasteiger", report=False) is not False
+
+        restored_ff = GAFF2_mod()
+        restored = utils.named(Chem.AddHs(Chem.MolFromSmiles(smiles)), "ethanol")
+        assert AllChem.EmbedMolecule(restored, randomSeed=0xC0DE) == 0
+
+        def _should_not_retype(*args, **kwargs):
+            raise AssertionError("restart restore should bypass assign_ptypes")
+
+        monkeypatch.setattr(restored_ff, "assign_ptypes", _should_not_retype)
+
+        set_run_options(restart=True, strict_inputs=prev.strict_inputs)
+        result = restored_ff.ff_assign(restored, charge="gasteiger", report=False)
+    finally:
+        set_run_options(restart=prev.restart, strict_inputs=prev.strict_inputs)
+
+    assert result is not False
+    assert restored.HasProp("_yadonpy_artifact_dir")
+    assert restored.GetProp("_yadonpy_artifact_dir").endswith("90_ethanol_gmx")
+    assert all(atom.HasProp("ff_type") for atom in restored.GetAtoms())
 
 
 def test_random_copolymerize_rw_uses_work_dir_basename_as_default_name(tmp_path: Path, monkeypatch):
@@ -1945,6 +2006,65 @@ def test_eq21_forces_fresh_stage_rebuild_when_resume_inputs_change(tmp_path: Pat
     assert job._resume.needs_fresh_run(new_spec) is True
     assert job._job_restart_flag(new_spec, True) is False
     assert job._job_restart_flag(new_spec, False) is False
+
+
+def test_eq21_recovers_completed_workflow_when_resume_record_is_missing(tmp_path: Path):
+    import yadonpy.sim.preset.eq as eqmod
+
+    job = eqmod.EQ21step(ac=object(), work_dir=tmp_path / 'eq')
+    final_dir = tmp_path / 'eq' / '03_EQ21' / '03_EQ21' / 'step_21'
+    final_dir.mkdir(parents=True, exist_ok=True)
+    outputs = [
+        final_dir / 'md.tpr',
+        final_dir / 'md.xtc',
+        final_dir / 'md.edr',
+        final_dir / 'md.gro',
+    ]
+    for path in outputs:
+        path.write_text('mock\n', encoding='utf-8')
+
+    input_gro_sig = {'path': 'system.gro', 'size': 11, 'sha256': 'gro'}
+    input_top_sig = {'path': 'system.top', 'size': 22, 'sha256': 'top'}
+    input_ndx_sig = {'path': 'system.ndx', 'size': 33, 'sha256': 'ndx'}
+    spec = eqmod.StepSpec(
+        name='equilibration_eq21',
+        outputs=outputs,
+        inputs={
+            'input_gro_sig': input_gro_sig,
+            'input_top_sig': input_top_sig,
+            'input_ndx_sig': input_ndx_sig,
+        },
+    )
+
+    summary_path = tmp_path / 'eq' / '03_EQ21' / 'summary.json'
+    summary_path.parent.mkdir(parents=True, exist_ok=True)
+    summary_path.write_text(
+        json.dumps(
+            {
+                'provenance': {
+                    'input_gro_sig': input_gro_sig,
+                    'input_top_sig': input_top_sig,
+                    'input_ndx_sig': input_ndx_sig,
+                }
+            }
+        ) + '\n',
+        encoding='utf-8',
+    )
+
+    assert job._resume.reuse_status(spec) == 'no_record'
+    recovered = eqmod._recover_completed_workflow_step(
+        job._resume,
+        spec,
+        summary_path=summary_path,
+        input_gro_sig=input_gro_sig,
+        input_top_sig=input_top_sig,
+        input_ndx_sig=input_ndx_sig,
+        label='EQ21 workflow',
+    )
+
+    assert recovered is True
+    assert job._resume.is_done(spec) is True
+    assert job._job_restart_flag(spec, True) is True
 
 
 def test_file_signature_is_stable_across_mtime_only_rewrites(tmp_path: Path):

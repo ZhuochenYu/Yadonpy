@@ -271,6 +271,9 @@ def _ensure_bonded_terms_for_export(mol, ff_name: str) -> None:
         elif ff_name_l in {"merz", "merzop", "merzopc3"}:
             from ..ff.merz import MERZ
             ff_obj = MERZ()
+        elif ff_name_l == "oplsaa":
+            from ..ff.oplsaa import OPLSAA
+            ff_obj = OPLSAA()
     except Exception:
         ff_obj = None
 

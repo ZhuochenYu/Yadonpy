@@ -88,6 +88,8 @@ def test_list_charge_methods_exposes_scaled_charge_tokens():
 def test_top_level_api_exports_mechanics_helpers():
     assert hasattr(yadonpy, 'doctor')
     assert hasattr(yadonpy, 'AnalyzeResult')
+    assert hasattr(api, 'audit_oplsaa_reference')
+    assert hasattr(yadonpy, 'audit_oplsaa_reference')
     assert hasattr(api, 'resolve_prepared_system')
     assert hasattr(api, 'run_tg_scan_gmx')
     assert hasattr(api, 'run_elongation_gmx')
@@ -98,6 +100,7 @@ def test_top_level_api_exports_mechanics_helpers():
     assert 'run_elongation_gmx' in api.__all__
     assert 'format_mechanics_result_summary' in api.__all__
     assert 'print_mechanics_result_summary' in api.__all__
+    assert 'audit_oplsaa_reference' in api.__all__
     assert hasattr(yadonpy, 'resolve_prepared_system')
     assert hasattr(yadonpy, 'run_tg_scan_gmx')
     assert hasattr(yadonpy, 'run_elongation_gmx')

@@ -106,7 +106,7 @@ def _load_ready_resp_from_moldb(
 
 
 def _assign_builtin_opls_ion(ff: OPLSAA, smiles: str, *, label: str):
-    mol = ff.mol(smiles, name=label, charge="opls", require_ready=False, prefer_db=False)
+    mol = ff.mol(smiles, charge="opls", require_ready=False, prefer_db=False)
     mol = ff.ff_assign(mol, charge="opls", report=False)
     if not mol:
         raise RuntimeError(f"Cannot assign built-in OPLS-AA ion parameters for {label}.")
@@ -117,7 +117,7 @@ def _assign_builtin_opls_ion(ff: OPLSAA, smiles: str, *, label: str):
 def _load_pf6_with_opls_builtin_charges(*, ion_ff: OPLSAA, repo_db_dir: Path):
     gaff_ff = GAFF2_mod()
     last_exc: Exception | None = None
-    opls_probe = ion_ff.mol(PF6_smiles, name="PF6_probe", charge="opls", require_ready=False, prefer_db=False)
+    opls_probe = ion_ff.mol(PF6_smiles, charge="opls", require_ready=False, prefer_db=False)
     if not ion_ff.assign_ptypes(opls_probe, charge="opls"):
         raise RuntimeError("Cannot build the PF6 OPLS-AA atom-type probe from SMILES.")
 
