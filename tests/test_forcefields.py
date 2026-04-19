@@ -3,13 +3,16 @@ from pathlib import Path
 
 import pytest
 from rdkit import Chem
+from rdkit.Chem import AllChem
 
-from yadonpy.core import poly
+from yadonpy.core import poly, workdir
 from yadonpy.moldb import MolDB
 from yadonpy.ff.report import render_ff_assignment_report
 from yadonpy.ff.gaff2_mod import GAFF2_mod
 from yadonpy.ff.oplsaa import OPLSAA, validate_oplsaa_rule_table
 from yadonpy.core.resources import ff_data_path
+from yadonpy.io.gmx import write_gmx
+from yadonpy.io.gromacs_top import defaults_for_ff_name
 
 
 def _assign_gaff2_mod(smiles: str):
@@ -18,6 +21,61 @@ def _assign_gaff2_mod(smiles: str):
     out = ff.ff_assign(mol, charge=None)
     assert out is not False
     return out
+
+
+_OPLSAA_DONOR_H_TYPES = {"opls_155", "opls_170", "opls_172", "opls_188"}
+
+
+def _assert_nonzero_opls_lj_for_materialized_types(mol):
+    missing = []
+    for atom in mol.GetAtoms():
+        if not atom.HasProp("ff_type"):
+            missing.append((atom.GetIdx(), atom.GetSymbol(), "missing_ff_type"))
+            continue
+        ff_type = atom.GetProp("ff_type")
+        sigma = atom.GetDoubleProp("ff_sigma") if atom.HasProp("ff_sigma") else None
+        epsilon = atom.GetDoubleProp("ff_epsilon") if atom.HasProp("ff_epsilon") else None
+        if sigma is None or epsilon is None or float(sigma) <= 0.0 or float(epsilon) <= 0.0:
+            missing.append((atom.GetIdx(), atom.GetSymbol(), ff_type, sigma, epsilon))
+    assert missing == [], f"OPLS-AA atoms lost LJ parameters: {missing[:20]}"
+
+
+def test_oplsaa_defaults_use_jorgensen_rule():
+    defaults = defaults_for_ff_name("oplsaa")
+    assert defaults.comb_rule == 3
+    assert defaults.gen_pairs == "yes"
+    assert defaults.fudge_lj == pytest.approx(0.5)
+    assert defaults.fudge_qq == pytest.approx(0.5)
+
+
+def test_write_gmx_uses_oplsaa_defaults_block(tmp_path: Path):
+    mol = Chem.AddHs(Chem.MolFromSmiles("CCO"))
+    assert AllChem.EmbedMolecule(mol, randomSeed=0xC0DE) == 0
+    ff = OPLSAA()
+    out = ff.ff_assign(mol, charge="opls", report=False)
+    assert out is not False
+    _, _, top_path = write_gmx(mol=out, out_dir=tmp_path, mol_name="ETH")
+    top_txt = top_path.read_text(encoding="utf-8")
+    assert "1  3  yes  0.500000  0.5000000000" in top_txt
+
+
+def test_oplsaa_materializes_small_lj_floor_for_hydroxyl_donor_hydrogens():
+    ff = OPLSAA()
+    mol = ff.ff_assign(Chem.AddHs(Chem.MolFromSmiles("OCCO")), charge="opls", report=False)
+    assert mol is not False
+    donor_h = []
+    for atom in mol.GetAtoms():
+        ff_type = atom.GetProp("ff_type")
+        if ff_type in _OPLSAA_DONOR_H_TYPES:
+            donor_h.append(
+                (
+                    ff_type,
+                    atom.GetDoubleProp("ff_sigma"),
+                    atom.GetDoubleProp("ff_epsilon"),
+                )
+            )
+    assert donor_h, "Expected at least one OPLS-AA hydroxyl donor hydrogen"
+    assert all(sigma > 0.0 and epsilon > 0.0 for _, sigma, epsilon in donor_h)
 
 
 def test_gaff2_mod_assigns_silicon_atom_types():
@@ -494,6 +552,47 @@ def test_oplsaa_assigns_resp_backed_cmc_short_copolymer_without_losing_types_or_
     assert len(getattr(assigned_polymer, "angles", {})) > 0
     assert len(getattr(assigned_polymer, "dihedrals", {})) > 0
     assert all(atom.HasProp("ff_type") and atom.HasProp("ff_btype") for atom in assigned_polymer.GetAtoms())
+    _assert_nonzero_opls_lj_for_materialized_types(assigned_polymer)
+
+
+def test_oplsaa_random_walk_restart_cache_preserves_lj_parameters(tmp_path):
+    ff = OPLSAA()
+    monomer = ff.mol("*OCC*", require_ready=False, prefer_db=False)
+    monomer = ff.ff_assign(monomer, charge="opls", report=False)
+
+    assert monomer is not False
+
+    wd = workdir(tmp_path / "opls_rw_cache", restart=True)
+    polymer_1 = poly.random_copolymerize_rw(
+        [monomer],
+        3,
+        ratio=[1.0],
+        tacticity="atactic",
+        name="opls_poly_cache",
+        retry=1,
+        retry_step=20,
+        retry_opt_step=0,
+        work_dir=wd,
+    )
+    polymer_2 = poly.random_copolymerize_rw(
+        [monomer],
+        3,
+        ratio=[1.0],
+        tacticity="atactic",
+        name="opls_poly_cache",
+        retry=1,
+        retry_step=20,
+        retry_opt_step=0,
+        work_dir=wd,
+    )
+
+    assigned_1 = ff.ff_assign(polymer_1, charge=None, report=False)
+    assigned_2 = ff.ff_assign(polymer_2, charge=None, report=False)
+
+    assert assigned_1 is not False
+    assert assigned_2 is not False
+    _assert_nonzero_opls_lj_for_materialized_types(assigned_1)
+    _assert_nonzero_opls_lj_for_materialized_types(assigned_2)
 
 
 def test_render_ff_assignment_report_summarizes_charged_side_groups():

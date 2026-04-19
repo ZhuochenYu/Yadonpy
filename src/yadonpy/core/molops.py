@@ -107,6 +107,7 @@ def remove_atom(mol, idx, angle_fix=False):
         'RESP', 'RESP_raw',
         'ESP', 'MullikenCharge', 'LowdinCharge',
         '_GasteigerCharge',
+        'ff_sigma', 'ff_epsilon',
     ]
     _SAFE_STR_PROPS = [
         'ff_type', 'ff_btype', 'ff_ptype',

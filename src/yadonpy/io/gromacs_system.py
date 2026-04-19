@@ -37,6 +37,7 @@ from ..core.polyelectrolyte import (
 )
 from ..gmx.topology import parse_system_top
 from ..gmx.analysis.structured import build_site_map
+from .gromacs_top import defaults_block_from_spec, defaults_for_ff_name
 from ..schema_versions import EXPORT_SYSTEM_SCHEMA_VERSION
 from ..workflow.resume import file_signature
 
@@ -1987,9 +1988,16 @@ def export_system_from_cell_meta(
     system_top = out_dir / "system.top"
     lines: list[str] = []
     lines.append("; yadonpy generated system.top")
-    lines.append("[ defaults ]")
-    lines.append("; nbfunc comb-rule gen-pairs fudgeLJ fudgeQQ")
-    lines.append("1 2 yes 0.5 0.8333333333")
+    species_ff_names = {
+        str(sp.get("ff_name") or "").strip().lower()
+        for sp in species
+        if str(sp.get("ff_name") or "").strip()
+    }
+    if species_ff_names == {"oplsaa"}:
+        defaults_ff_name = "oplsaa"
+    else:
+        defaults_ff_name = str(ff_name or "").strip().lower() or None
+    lines.extend(defaults_block_from_spec(defaults_for_ff_name(defaults_ff_name)).rstrip().splitlines())
     lines.append("")
 
     # Write combined parameter include if needed.

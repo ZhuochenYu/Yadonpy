@@ -103,6 +103,17 @@ _BTYPE_ALIASES = {
     "I~": "I",
 }
 
+# A strict zero-LJ donor hydrogen is standard in some OPLS-AA distributions,
+# but in GROMACS condensed-phase carbohydrate / polyol systems it can collapse
+# onto nearby acceptor oxygens during minimization. We therefore materialize a
+# tiny GAFF-like repulsive floor for hydroxyl donor hydrogens after typing.
+_DONOR_H_LJ_FLOOR = {
+    "opls_155": (0.053792, 0.019665),
+    "opls_170": (0.053792, 0.019665),
+    "opls_172": (0.053792, 0.019665),
+    "opls_188": (0.053792, 0.019665),
+}
+
 
 def _get_compiled_rules():
     global _COMPILED
@@ -911,6 +922,13 @@ class OPLSAA(GAFF):
                 return False
 
             self.set_ptype(a, opls_type)
+            if opls_type in _DONOR_H_LJ_FLOOR:
+                sigma_floor, epsilon_floor = _DONOR_H_LJ_FLOOR[opls_type]
+                sigma_now = float(a.GetDoubleProp("ff_sigma")) if a.HasProp("ff_sigma") else 0.0
+                epsilon_now = float(a.GetDoubleProp("ff_epsilon")) if a.HasProp("ff_epsilon") else 0.0
+                if sigma_now <= 0.0 and epsilon_now <= 0.0:
+                    a.SetDoubleProp("ff_sigma", float(sigma_floor))
+                    a.SetDoubleProp("ff_epsilon", float(epsilon_floor))
             try:
                 a.SetProp('ff_desc', str(rule.desc))
             except Exception:

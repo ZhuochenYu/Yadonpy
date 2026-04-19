@@ -447,10 +447,16 @@ def write_gromacs_single_molecule_topology(
         )
 
     # 3) TOP
-    from .gromacs_top import defaults_block
+    from .gromacs_top import defaults_block_from_spec, defaults_for_ff_name
 
     top = []
-    top.append(defaults_block())
+    ff_name = None
+    try:
+        if hasattr(mol, "HasProp") and mol.HasProp("ff_name"):
+            ff_name = str(mol.GetProp("ff_name")).strip() or None
+    except Exception:
+        ff_name = None
+    top.append(defaults_block_from_spec(defaults_for_ff_name(ff_name)))
     top.append(f'#include "{mol_name}.itp"\n\n')
     top.append("[ system ]\n")
     top.append(f"{mol_name}\n\n")

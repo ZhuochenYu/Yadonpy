@@ -378,6 +378,8 @@ _CACHE_SAFE_ATOM_FLOAT_PROPS = (
     'MullikenCharge',
     'LowdinCharge',
     '_GasteigerCharge',
+    'ff_sigma',
+    'ff_epsilon',
 )
 _CACHE_SAFE_ATOM_STR_PROPS = (
     'ff_type',
