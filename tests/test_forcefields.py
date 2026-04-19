@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 
+import pytest
 from rdkit import Chem
 
 from yadonpy.core import poly
@@ -188,6 +189,97 @@ def test_oplsaa_assigns_pf6_with_builtin_ion_types():
     assert atom_types.count("opls_786") == 6
     assert atom_types.count("opls_785") == 1
     assert abs(sum(atom_charges) + 1.0) < 1.0e-8
+
+
+@pytest.mark.parametrize(
+    ("smiles", "expected_charge"),
+    [
+        ("[F-]", -1.0),
+        ("[Cl-]", -1.0),
+        ("[Br-]", -1.0),
+        ("[I-]", -1.0),
+        ("[Li+]", 1.0),
+        ("[Na+]", 1.0),
+        ("[Mg+2]", 2.0),
+        ("[Ca+2]", 2.0),
+    ],
+)
+def test_oplsaa_assigns_supported_simple_inorganic_ions(smiles, expected_charge):
+    ff = OPLSAA()
+    mol = Chem.MolFromSmiles(smiles)
+
+    assigned = ff.ff_assign(mol, charge="opls", report=False)
+
+    assert assigned is not False
+    total_charge = sum(atom.GetDoubleProp("AtomicCharge") for atom in assigned.GetAtoms())
+    assert abs(total_charge - expected_charge) < 1.0e-8
+
+
+def test_oplsaa_assigns_hydroxide_when_explicit_hydrogen_is_materialized():
+    ff = OPLSAA()
+    hydroxide = ff.mol("[OH-]", require_ready=False, prefer_db=False)
+
+    assigned = ff.ff_assign(hydroxide, charge="opls", report=False)
+
+    assert assigned is not False
+    atom_types = [atom.GetProp("ff_type") for atom in assigned.GetAtoms()]
+    atom_charges = [atom.GetDoubleProp("AtomicCharge") for atom in assigned.GetAtoms()]
+    assert atom_types == ["opls_434", "opls_435"]
+    assert abs(sum(atom_charges) + 1.0) < 1.0e-8
+
+
+@pytest.mark.parametrize(
+    ("smiles", "expected_charge"),
+    [
+        ("C[O-]", -1.0),
+        ("C[S-]", -1.0),
+        ("O=[N+]([O-])[O-]", -1.0),
+        ("C[N+](C)(C)C", 1.0),
+        ("C[P+](C)(C)C", 1.0),
+        ("C[NH3+]", 1.0),
+    ],
+)
+def test_oplsaa_assigns_supported_organic_ions(smiles, expected_charge):
+    ff = OPLSAA()
+    base = Chem.MolFromSmiles(smiles)
+    mol = Chem.AddHs(base) if base.GetNumAtoms() > 1 else base
+
+    assigned = ff.ff_assign(mol, charge="opls", report=False)
+
+    assert assigned is not False
+    total_charge = sum(atom.GetDoubleProp("AtomicCharge") for atom in assigned.GetAtoms())
+    assert abs(total_charge - expected_charge) < 1.0e-8
+    if smiles == "C[N+](C)(C)C":
+        atom_types = [atom.GetProp("ff_type") for atom in assigned.GetAtoms()]
+        assert atom_types.count("opls_288") == 1
+        assert atom_types.count("opls_291") == 4
+        assert atom_types.count("opls_156") == 12
+
+
+def test_oplsaa_mol_preserves_embedded_hydrogen_ions_for_assignment():
+    ff = OPLSAA()
+
+    for smiles, expected_types, expected_charge in (
+        ("[NH4+]", ["opls_286", "opls_289"], 1.0),
+        ("[OH-]", ["opls_434", "opls_435"], -1.0),
+    ):
+        mol = ff.mol(smiles, require_ready=False, prefer_db=False)
+        assigned = ff.ff_assign(mol, charge="opls", report=False)
+
+        assert assigned is not False
+        atom_types = {atom.GetProp("ff_type") for atom in assigned.GetAtoms()}
+        total_charge = sum(atom.GetDoubleProp("AtomicCharge") for atom in assigned.GetAtoms())
+        assert atom_types == set(expected_types)
+        assert abs(total_charge - expected_charge) < 1.0e-8
+
+
+@pytest.mark.parametrize("smiles", ["F[B-](F)(F)F", "[O-][Cl+3]([O-])([O-])[O-]"])
+def test_oplsaa_explicitly_rejects_unsupported_inorganic_ions(smiles):
+    ff = OPLSAA()
+    mol = Chem.MolFromSmiles(smiles)
+
+    assert mol is not None
+    assert ff.assign_ptypes(mol, charge="opls") is False
 
 
 def test_moldb_roundtrip_restores_pf6_anion_graph_semantics():

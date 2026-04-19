@@ -1434,6 +1434,22 @@
   {
     "element": "C",
     "btype": "CT",
+    "opls": "opls_291",
+    "smarts": "[$([CH3D4][#7H0D4+])]",
+    "charge": 0.13,
+    "desc": "Ammonium CH3-NR3+"
+  },
+  {
+    "element": "H",
+    "btype": "HC",
+    "opls": "opls_156",
+    "smarts": "[$([#1][CH3D4][#7H0D4+])]",
+    "charge": 0.04,
+    "desc": "Ammonium CH3-NR3+"
+  },
+  {
+    "element": "C",
+    "btype": "CT",
     "opls": "opls_292",
     "smarts": "[$([CH2D4][#7H3D4])]",
     "charge": 0.19,

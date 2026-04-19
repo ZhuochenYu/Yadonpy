@@ -249,7 +249,8 @@ class OPLSAA(GAFF):
         if m is not None and int(m.GetNumAtoms()) == 1:
             a = m.GetAtomWithIdx(0)
             q = int(a.GetFormalCharge())
-            if q != 0:
+            has_embedded_h = int(a.GetTotalNumHs()) > 0 or int(a.GetNumExplicitHs()) > 0
+            if q != 0 and not has_embedded_h:
                 rw = Chem.RWMol()
                 atom = Chem.Atom(a.GetSymbol())
                 atom.SetFormalCharge(q)
@@ -1000,6 +1001,12 @@ class OPLSAA(GAFF):
             # Carboxymethyl-glucose sidechain linkage
             ('OS', 'CT', 'CO'): ('CO', 'CT', 'OH'),
             ('CO', 'OH', 'CT'): ('CT', 'OH', 'CO'),
+            # Methoxide / thiolate methyl groups
+            ('HC', 'C3', 'HC'): ('HC', 'CT', 'HC'),
+            ('HC', 'C3', 'OH'): ('HC', 'CT', 'OH'),
+            ('HC', 'C3', 'SH'): ('HC', 'CT', 'SH'),
+            # Nitrate ion
+            ('O', 'N', 'O'): ('ON', 'NO', 'ON'),
             # 1,3,2-dioxathiol-2,2-dioxide (DTD) / cyclic sulfate family
             ('OY', 'SY', 'OS'): ('OY', 'SY', 'CT'),
             ('OS', 'SY', 'OS'): ('OS', 'P~', 'OS'),
@@ -1017,6 +1024,35 @@ class OPLSAA(GAFF):
         self._log_special_override(
             f'angle:{pretty}',
             'Applying OPLS-AA fallback for missing angle '
+            f'{pretty} (copied from {",".join(base_tokens)}).'
+        )
+        return self._clone_param(
+            base,
+            tag=pretty,
+            name=pretty,
+            rname=','.join(reversed(tokens)),
+        )
+
+    def _special_bond_param(self, tokens):
+        fallback_map = {
+            # Methoxide / thiolate methyl groups use the ordinary CT-HC bond.
+            ('C3', 'HC'): ('CT', 'HC'),
+            # Nitrate uses legacy N/O btypes in the SMARTS table while bonded
+            # terms are keyed as NO/ON.
+            ('O', 'N'): ('ON', 'NO'),
+        }
+        base_tokens = self._lookup_special_base_tokens(tokens, fallback_map)
+        if base_tokens is None:
+            return None
+
+        base, _ = self._find_param(self.param.bt, base_tokens)
+        if base is None:
+            return None
+
+        pretty = ','.join(tokens)
+        self._log_special_override(
+            f'bond:{pretty}',
+            'Applying OPLS-AA fallback for missing bond '
             f'{pretty} (copied from {",".join(base_tokens)}).'
         )
         return self._clone_param(
@@ -1083,7 +1119,9 @@ class OPLSAA(GAFF):
 
     def _lookup_bond_param(self, tokens):
         param, _ = self._find_param(self.param.bt, tokens)
-        return param
+        if param is not None:
+            return param
+        return self._special_bond_param(tokens)
 
     def _lookup_angle_param(self, tokens):
         param, _ = self._find_param(self.param.at, tokens)
