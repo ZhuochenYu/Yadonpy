@@ -39,6 +39,8 @@ def _stable_smarts(smarts: str):
 
 
 _TEMPLATES: tuple[tuple[str, int, str, Any], ...] = (
+    # More specific linker-inclusive motifs must win before generic ion cores.
+    ("cmc_carboxylate", -1, "[O:1][CH2:2][C:3](=[O:4])[O-:5]", _stable_smarts("[O:1][CH2:2][C:3](=[O:4])[O-:5]")),
     ("carboxylate", -1, "[C:1](=[O:2])[O-:3]", _stable_smarts("[C:1](=[O:2])[O-:3]")),
     ("sulfonate", -1, "[S:1](=[O:2])(=[O:3])[O-:4]", _stable_smarts("[S:1](=[O:2])(=[O:3])[O-:4]")),
     ("phosphate", -1, "[P:1](=[O:2])([O-:3])([O:4])[O:5]", _stable_smarts("[P:1](=[O:2])([O-:3])([O:4])[O:5]")),
@@ -46,7 +48,6 @@ _TEMPLATES: tuple[tuple[str, int, str, Any], ...] = (
     ("quaternary_ammonium", +1, "[N+:1]([C:2])([C:3])([C:4])[C:5]", _stable_smarts("[N+:1]([C:2])([C:3])([C:4])[C:5]")),
     ("imidazolium", +1, "[n+:1]1[c,n][c,n][c,n]1", _stable_smarts("[n+:1]1[c,n][c,n][c,n]1")),
     ("pyridinium", +1, "[n+:1]1ccccc1", _stable_smarts("[n+:1]1ccccc1")),
-    ("cmc_carboxylate", -1, "[CH2:1][O:2][C:3](=[O:4])[O-:5]", _stable_smarts("[CH2:1][O:2][C:3](=[O:4])[O-:5]")),
 )
 
 

@@ -26,9 +26,10 @@ from pathlib import Path
 
 from yadonpy.runtime import set_run_options
 from yadonpy.core import utils, poly, workdir
+from yadonpy.core.polymer_audit import audit_polymer_state, compare_exported_charge_groups, write_polymer_audit
 from yadonpy.core.data_dir import ensure_initialized
 from yadonpy.diagnostics import doctor
-from yadonpy.ff import GAFF2, MERZ
+from yadonpy.ff import GAFF2, GAFF2_mod, MERZ
 from yadonpy.sim.analyzer import AnalyzeResult
 from yadonpy.sim import qm
 from yadonpy.sim.preset import eq
@@ -133,7 +134,7 @@ skip_sigma = _env_flag("YADONPY_SKIP_SIGMA", default=fast_analysis)
 
 set_run_options(restart=restart_status)
 
-ff = GAFF2()
+ff = GAFF2_mod() if _env_text("YADONPY_FORCEFIELD", "GAFF2_MOD").strip().upper() == "GAFF2_MOD" else GAFF2()
 ion_ff = MERZ()
 
 # ---- CMC monomers (two connection points '*...*') ----
@@ -180,6 +181,15 @@ msd_compare_drift_off = _env_flag(
     default=(str(msd_drift).strip().lower() != "off" and not smoke_mode),
 )
 additive_name = _env_text("YADONPY_ADDITIVE", "DTD").strip().upper()
+forcefield_name = _env_text("YADONPY_FORCEFIELD", "GAFF2_MOD").strip().upper()
+system_variant = _env_text("YADONPY_SYSTEM_VARIANT", "full").strip().lower()
+prod_ensemble = _env_text("YADONPY_PROD_ENSEMBLE", "npt").strip().lower()
+gpu_offload_mode = _env_text("YADONPY_GPU_OFFLOAD_MODE", "conservative").strip().lower()
+prod_bridge_ps = _env_float("YADONPY_PROD_BRIDGE_PS", 100.0)
+prod_bridge_dt_fs = _env_float("YADONPY_PROD_BRIDGE_DT_FS", 1.0)
+prod_bridge_lincs_iter = _env_int("YADONPY_PROD_BRIDGE_LINCS_ITER", 4)
+prod_bridge_lincs_order = _env_int("YADONPY_PROD_BRIDGE_LINCS_ORDER", 12)
+nvt_density_control = _env_flag("YADONPY_NVT_DENSITY_CONTROL", default=False)
 counts_override = _env_int_list("YADONPY_COUNTS", 8)
 eq21_final_ns = _env_float("YADONPY_EQ21_FINAL_NS", 0.8)
 eq21_npt_time_scale = _env_float("YADONPY_EQ21_NPT_TIME_SCALE", 2.0)
@@ -200,6 +210,14 @@ _ADDITIVE_LIBRARY = {
 }
 if additive_name not in _ADDITIVE_LIBRARY:
     raise ValueError(f"Unsupported YADONPY_ADDITIVE={additive_name!r}; expected one of {sorted(_ADDITIVE_LIBRARY)}")
+if forcefield_name not in {"GAFF2", "GAFF2_MOD"}:
+    raise ValueError("YADONPY_FORCEFIELD must be GAFF2 or GAFF2_MOD")
+if system_variant not in {"full", "electrolyte_additive", "polymer_ions", "polymer_solvents"}:
+    raise ValueError("YADONPY_SYSTEM_VARIANT must be full, electrolyte_additive, polymer_ions, or polymer_solvents")
+if prod_ensemble not in {"npt", "nvt"}:
+    raise ValueError("YADONPY_PROD_ENSEMBLE must be npt or nvt")
+if gpu_offload_mode not in {"full", "conservative", "cpu"}:
+    raise ValueError("YADONPY_GPU_OFFLOAD_MODE must be full, conservative, or cpu")
 ADDITIVE = dict(_ADDITIVE_LIBRARY[additive_name])
 transport_labels = [str(ADDITIVE["label"]), "EMC", "DEC", "EC"]
 work_dir = (
@@ -216,6 +234,38 @@ shared_polymer_root = (
 
 def _formal_charge(mol) -> int:
     return int(sum(int(atom.GetFormalCharge()) for atom in mol.GetAtoms()))
+
+
+def _write_polymer_checkpoint_audit(audit_dir: Path, label: str, mol) -> Path:
+    return write_polymer_audit(
+        audit_polymer_state(mol, label=label, radius=2),
+        audit_dir / f"{label}.json",
+    )
+
+
+def _formulation_counts(
+    *,
+    smoke: bool,
+    additive_default_count: int,
+    n_na: int,
+    variant: str,
+    override: list[int] | None,
+) -> list[int]:
+    if override is not None:
+        return list(override)
+    if smoke:
+        base = [1, 6, 6, 6, 2, 2, n_na, int(ADDITIVE["smoke_count"])]
+    else:
+        base = [8, 40, 50, 20, 10, 10, n_na, int(additive_default_count)]
+    if variant == "full":
+        return base
+    if variant == "electrolyte_additive":
+        return [0, base[1], base[2], base[3], base[4], base[5], 0, base[7]]
+    if variant == "polymer_ions":
+        return [base[0], 0, 0, 0, base[4], base[5], base[6], 0]
+    if variant == "polymer_solvents":
+        return [base[0], base[1], base[2], base[3], base[4], base[5], base[6], 0]
+    raise ValueError(f"Unsupported system variant: {variant}")
 
 
 def _default_msd_begin_ps(prod_time_ns: float) -> float:
@@ -475,6 +525,7 @@ def main() -> int:
 
     wd = workdir(work_dir, restart=restart_status)
     analysis_dir = Path(wd) / "06_analysis"
+    audit_dir = Path(wd) / "07_polymer_audit"
     if shared_polymer_root is not None:
         shared_polymer_wd = workdir(shared_polymer_root, restart=restart_status)
         cmc_rw_dir = shared_polymer_wd.child("CMC_rw")
@@ -574,6 +625,12 @@ def main() -> int:
         polyelectrolyte_mode=True,
         repo_db_dir=REPO_DB_DIR,
     )
+    for name, mol in (
+        ("glucose_2_ready", glucose_2),
+        ("glucose_3_ready", glucose_3),
+        ("glucose_6_ready", glucose_6),
+    ):
+        _write_polymer_checkpoint_audit(audit_dir, name, mol)
 
     # termination
     ter1 = utils.mol_from_smiles(ter_smiles)
@@ -605,10 +662,13 @@ def main() -> int:
         tacticity="atactic",
         work_dir=cmc_rw_dir,
     )
+    _write_polymer_checkpoint_audit(audit_dir, "cmc_random_walk", CMC)
     CMC = poly.terminate_rw(CMC, ter1, work_dir=cmc_term_dir)
+    _write_polymer_checkpoint_audit(audit_dir, "cmc_terminated", CMC)
     CMC = ff.ff_assign(CMC, polyelectrolyte_mode=True)
     if not CMC:
         raise RuntimeError("Can not assign force field parameters for CMC.")
+    _write_polymer_checkpoint_audit(audit_dir, "cmc_final_assigned", CMC)
     q_poly = _formal_charge(CMC)
 
     # ---------------- build solvents / additive ----------------
@@ -642,23 +702,30 @@ def main() -> int:
     n_cmc = 1 if smoke_mode else 8
     n_na = abs(q_poly) * n_cmc
     additive_count = int(ADDITIVE["smoke_count"] if smoke_mode else ADDITIVE["default_count"])
-    if counts_override is not None:
-        counts = list(counts_override)
-    elif smoke_mode:
-        counts = [n_cmc, 6, 6, 6, 2, 2, n_na, additive_count]
-    else:
-        counts = [n_cmc, 40, 50, 20, 10, 10, n_na, additive_count]
+    counts = _formulation_counts(
+        smoke=smoke_mode,
+        additive_default_count=additive_count,
+        n_na=n_na,
+        variant=system_variant,
+        override=counts_override,
+    )
     charge_scale = [0.7, 1.0, 1.0, 1.0, 0.7, 0.7, 0.7, 1.0]
 
     print(
-        f"[FORMULATION] additive={ADDITIVE['label']} smoke_mode={smoke_mode} "
-        f"q_poly={q_poly} counts={counts}"
+        f"[FORMULATION] ff={forcefield_name} variant={system_variant} additive={ADDITIVE['label']} "
+        f"smoke_mode={smoke_mode} q_poly={q_poly} counts={counts}"
     )
     print(
         f"[RUNCFG] mpi={mpi} omp={omp} gpu={gpu} gpu_id={gpu_id} "
         f"eq21_final_ns={eq21_final_ns} eq21_npt_time_scale={eq21_npt_time_scale} "
         f"additional_ns={additional_ns} additional_rounds={additional_rounds} prod_ns={prod_ns} "
         f"shared_polymer_root={shared_polymer_root if shared_polymer_root is not None else '(none)'}"
+    )
+    print(
+        f"[PRODMODE] ensemble={prod_ensemble} gpu_offload_mode={gpu_offload_mode} "
+        f"bridge_ps={prod_bridge_ps} bridge_dt_fs={prod_bridge_dt_fs} "
+        f"bridge_lincs_iter={prod_bridge_lincs_iter} bridge_lincs_order={prod_bridge_lincs_order} "
+        f"nvt_density_control={nvt_density_control}"
     )
     print(
         f"[ANALYSISCFG] msd_begin_ps={msd_begin_ps} msd_end_ps={msd_end_ps} "
@@ -672,10 +739,15 @@ def main() -> int:
     )
 
     # ---------------- pack amorphous cell ----------------
+    species = [CMC, EC, EMC, DEC, Li, PF6, Na, additive]
+    active = [(mol, cnt, scl) for mol, cnt, scl in zip(species, counts, charge_scale) if int(cnt) > 0]
+    active_mols = [mol for mol, _cnt, _scl in active]
+    active_counts = [int(cnt) for _mol, cnt, _scl in active]
+    active_charge_scale = [float(scl) for _mol, _cnt, scl in active]
     ac = poly.amorphous_cell(
-        [CMC, EC, EMC, DEC, Li, PF6, Na, additive],
-        counts,
-        charge_scale=charge_scale,
+        active_mols,
+        active_counts,
+        charge_scale=active_charge_scale,
         polyelectrolyte_mode=True,
         density=0.05,
         neutralize=False,
@@ -690,6 +762,10 @@ def main() -> int:
     eqmd = eq.EQ21step(ac, work_dir=wd)
     if export_only:
         exported = eqmd.ensure_system_exported()
+        write_polymer_audit(
+            compare_exported_charge_groups(system_dir=exported.system_top.parent, moltype="CMC", mol=CMC),
+            audit_dir / "cmc_export_charge_groups.json",
+        )
         print(f"[EXPORT-ONLY] Exported 02_system at {exported.system_top.parent}")
         return 0
     if eq21_stage_cap > 0:
@@ -719,6 +795,12 @@ def main() -> int:
     except Exception as exc:
         _write_failure_diagnostics(work_root=Path(wd), stage="eq21", stage_dir=Path(wd) / "03_EQ21", exc=exc)
         raise
+
+    exported = eqmd.ensure_system_exported()
+    write_polymer_audit(
+        compare_exported_charge_groups(system_dir=exported.system_top.parent, moltype="CMC", mol=CMC),
+        audit_dir / "cmc_export_charge_groups.json",
+    )
 
     analy = eqmd.analyze()
     _ = analy.get_all_prop(temp=temp, press=press, save=True)
@@ -753,40 +835,87 @@ def main() -> int:
     if not result:
         print("[WARNING] Did not reach an equilibrium state after EQ21 + Additional cycles.")
 
-    # ---------------- Production NPT + analysis ----------------
-    npt = eq.NPT(ac, work_dir=wd)
+    # ---------------- Production + analysis ----------------
+    prod_runner: eq.NPT | eq.NVT
+    if prod_ensemble == "nvt":
+        prod_runner = eq.NVT(ac, work_dir=wd)
+        prod_stage_name = "nvt_production"
+        prod_stage_dir = Path(wd) / "05_nvt_production"
+        prod_kwargs = {
+            "temp": temp,
+            "mpi": mpi,
+            "omp": omp,
+            "gpu": gpu,
+            "gpu_id": gpu_id,
+            "time": prod_ns,
+            "traj_ps": prod_traj_ps,
+            "energy_ps": prod_energy_ps,
+            "log_ps": prod_log_ps,
+            "trr_ps": prod_trr_ps,
+            "velocity_ps": prod_velocity_ps,
+            "checkpoint_min": prod_checkpoint_min,
+            "gpu_offload_mode": gpu_offload_mode,
+            "bridge_ps": prod_bridge_ps,
+            "bridge_dt_fs": prod_bridge_dt_fs,
+            "bridge_lincs_iter": prod_bridge_lincs_iter,
+            "bridge_lincs_order": prod_bridge_lincs_order,
+            "density_control": nvt_density_control,
+        }
+    else:
+        prod_runner = eq.NPT(ac, work_dir=wd)
+        prod_stage_name = "npt_production"
+        prod_stage_dir = Path(wd) / "05_npt_production"
+        prod_kwargs = {
+            "temp": temp,
+            "press": press,
+            "mpi": mpi,
+            "omp": omp,
+            "gpu": gpu,
+            "gpu_id": gpu_id,
+            "time": prod_ns,
+            "traj_ps": prod_traj_ps,
+            "energy_ps": prod_energy_ps,
+            "log_ps": prod_log_ps,
+            "trr_ps": prod_trr_ps,
+            "velocity_ps": prod_velocity_ps,
+            "checkpoint_min": prod_checkpoint_min,
+            "gpu_offload_mode": gpu_offload_mode,
+            "bridge_ps": prod_bridge_ps,
+            "bridge_dt_fs": prod_bridge_dt_fs,
+            "bridge_lincs_iter": prod_bridge_lincs_iter,
+            "bridge_lincs_order": prod_bridge_lincs_order,
+        }
     try:
-        ac = npt.exec(
-            temp=temp,
-            press=press,
-            mpi=mpi,
-            omp=omp,
-            gpu=gpu,
-            gpu_id=gpu_id,
-            time=prod_ns,
-            traj_ps=prod_traj_ps,
-            energy_ps=prod_energy_ps,
-            log_ps=prod_log_ps,
-            trr_ps=prod_trr_ps,
-            velocity_ps=prod_velocity_ps,
-            checkpoint_min=prod_checkpoint_min,
-        )
+        ac = prod_runner.exec(**prod_kwargs)
     except Exception as exc:
         _write_failure_diagnostics(
             work_root=Path(wd),
-            stage="npt_production",
-            stage_dir=Path(wd) / "05_npt_production" / "01_npt",
+            stage=prod_stage_name,
+            stage_dir=prod_stage_dir,
             exc=exc,
         )
         raise
 
-    analy = npt.analyze()
+    analy = prod_runner.analyze()
     _ = analy.get_all_prop(temp=temp, press=press, save=True)
-    if not skip_rdf:
+    if not skip_rdf and counts[4] > 0:
         _ = analy.rdf(center_mol=Li)
-    transport_mols = [additive, EMC, DEC, EC]
+    transport_mols = []
+    present_transport_labels: list[str] = []
+    if counts[7] > 0:
+        transport_mols.append(additive)
+        present_transport_labels.append(str(ADDITIVE["label"]))
+    if counts[2] > 0:
+        transport_mols.append(EMC)
+        present_transport_labels.append("EMC")
+    if counts[3] > 0:
+        transport_mols.append(DEC)
+        present_transport_labels.append("DEC")
+    if counts[1] > 0:
+        transport_mols.append(EC)
+        present_transport_labels.append("EC")
     msd_drift_off = None
-    if msd_compare_drift_off and str(msd_drift).strip().lower() != "off":
+    if transport_mols and msd_compare_drift_off and str(msd_drift).strip().lower() != "off":
         msd_drift_off = analy.msd(
             mols=transport_mols,
             geometry="3d",
@@ -795,13 +924,17 @@ def main() -> int:
             end_ps=msd_end_ps,
             drift="off",
         )
-    msd = analy.msd(
-        mols=transport_mols,
-        geometry="3d",
-        unwrap="on",
-        begin_ps=msd_begin_ps,
-        end_ps=msd_end_ps,
-        drift=msd_drift,
+    msd = (
+        analy.msd(
+            mols=transport_mols,
+            geometry="3d",
+            unwrap="on",
+            begin_ps=msd_begin_ps,
+            end_ps=msd_end_ps,
+            drift=msd_drift,
+        )
+        if transport_mols
+        else {}
     )
     if not skip_sigma:
         sigma_msd = analy.msd(
@@ -814,26 +947,30 @@ def main() -> int:
         _ = analy.sigma(temp_k=temp, msd=sigma_msd, drift=msd_drift)
     if not skip_den_dis:
         _ = analy.den_dis()
-    diag_path = _write_transport_diagnostics(
-        analysis_dir,
-        moltypes=transport_labels,
-        primary_msd=msd,
-        primary_label=f"drift={msd_drift}",
-        secondary_msd=msd_drift_off,
-        secondary_label="drift=off" if msd_drift_off is not None else None,
-        begin_ps=msd_begin_ps,
-        end_ps=msd_end_ps,
-    )
-    _print_transport_summary(msd_payload=msd, label=f"primary drift={msd_drift}", moltypes=transport_labels)
-    if msd_drift_off is not None:
-        _print_transport_summary(msd_payload=msd_drift_off, label="secondary drift=off", moltypes=transport_labels)
-    _warn_if_transport_is_fragile(
-        msd,
-        additive_label=str(ADDITIVE["label"]),
-        moltypes=transport_labels,
-        secondary_msd=msd_drift_off,
-    )
-    print(f"[TRANSPORT] diagnostics written to {diag_path}")
+    diag_path = None
+    if transport_mols:
+        diag_path = _write_transport_diagnostics(
+            analysis_dir,
+            moltypes=present_transport_labels,
+            primary_msd=msd,
+            primary_label=f"drift={msd_drift}",
+            secondary_msd=msd_drift_off,
+            secondary_label="drift=off" if msd_drift_off is not None else None,
+            begin_ps=msd_begin_ps,
+            end_ps=msd_end_ps,
+        )
+        _print_transport_summary(msd_payload=msd, label=f"primary drift={msd_drift}", moltypes=present_transport_labels)
+        if msd_drift_off is not None:
+            _print_transport_summary(msd_payload=msd_drift_off, label="secondary drift=off", moltypes=present_transport_labels)
+        _warn_if_transport_is_fragile(
+            msd,
+            additive_label=str(ADDITIVE["label"]),
+            moltypes=present_transport_labels,
+            secondary_msd=msd_drift_off,
+        )
+        print(f"[TRANSPORT] diagnostics written to {diag_path}")
+    else:
+        print("[TRANSPORT] skipped transport diagnostics because this system variant has no transport probes.")
     return 0
 
 
