@@ -131,6 +131,46 @@ def test_oplsaa_assign_ptypes_from_external_rule_table():
     assert any(atom.GetProp("ff_type") == "opls_154" for atom in mol.GetAtoms())
 
 
+def test_oplsaa_mol_defaults_to_resp_then_falls_back_to_builtin_path(monkeypatch):
+    ff = OPLSAA()
+    calls = []
+
+    def fake_mol_rdkit(smiles, **kwargs):
+        calls.append((smiles, dict(kwargs)))
+        if kwargs.get("require_ready"):
+            raise RuntimeError("no RESP-ready variant")
+        return Chem.AddHs(Chem.MolFromSmiles(smiles))
+
+    monkeypatch.setattr(ff, "mol_rdkit", fake_mol_rdkit)
+
+    mol = ff.mol("CCO")
+
+    assert mol is not None
+    assert len(calls) == 2
+    assert calls[0][0] == "CCO"
+    assert calls[0][1]["charge"] == "RESP"
+    assert calls[0][1]["require_ready"] is True
+    assert calls[1][1]["charge"] == "opls"
+    assert calls[1][1]["require_ready"] is False
+    assert mol.HasProp("_yadonpy_charge_fallback")
+    assert mol.GetProp("_yadonpy_charge_fallback") == "opls"
+
+
+def test_oplsaa_default_resp_handle_falls_back_to_builtin_charges_when_resp_is_unavailable():
+    ff = OPLSAA()
+
+    assigned = ff.ff_assign(ff.mol("C[N+](C)(C)C"), report=False)
+
+    assert assigned is not False
+    atom_types = [atom.GetProp("ff_type") for atom in assigned.GetAtoms()]
+    atom_charges = [atom.GetDoubleProp("AtomicCharge") for atom in assigned.GetAtoms()]
+    assert atom_types.count("opls_288") == 1
+    assert atom_types.count("opls_291") == 4
+    assert abs(sum(atom_charges) - 1.0) < 1.0e-8
+    assert assigned.HasProp("_yadonpy_charge_fallback")
+    assert assigned.GetProp("_yadonpy_charge_fallback") == "opls"
+
+
 def test_oplsaa2024_integrates_new_particles_and_rules():
     with open(ff_data_path("ff_dat", "oplsaa.json"), "r", encoding="utf-8") as fh:
         ff_data = json.load(fh)
@@ -410,16 +450,50 @@ def test_oplsaa_polymer_junction_refresh_reuses_existing_monomer_assignment(caps
     captured = capsys.readouterr()
     assert polymer is not None
     assert 'OPLS-AA typing failed' not in captured.out
-    assert all(atom.HasProp('ff_type') and atom.HasProp('ff_btype') for atom in polymer.GetAtoms())
-    assert polymer.angles
-    assert polymer.dihedrals
 
-    capsys.readouterr()
-    reassigned = ff.ff_assign(polymer, charge=None, report=False)
-    captured = capsys.readouterr()
 
-    assert reassigned is not False
-    assert 'OPLS-AA typing failed' not in captured.out
+def test_oplsaa_assigns_resp_backed_cmc_short_copolymer_without_losing_types_or_charges():
+    ff = OPLSAA()
+    repo_db_dir = Path(__file__).resolve().parents[1] / "moldb"
+
+    monomers = []
+    for smiles in (
+        "*OC1OC(CO)C(*)C(O)C1OCC(=O)[O-]",
+        "*OC1OC(CO)C(*)C(OCC(=O)[O-])C1O",
+        "*OC1OC(COCC(=O)[O-])C(*)C(O)C1O",
+    ):
+        mol = ff.mol_rdkit(
+            smiles,
+            db_dir=repo_db_dir,
+            charge="RESP",
+            require_ready=True,
+            prefer_db=True,
+            polyelectrolyte_mode=True,
+            polyelectrolyte_detection="auto",
+        )
+        before = [atom.GetDoubleProp("AtomicCharge") for atom in mol.GetAtoms()]
+        assigned = ff.ff_assign(mol, charge=None, report=False)
+        after = [atom.GetDoubleProp("AtomicCharge") for atom in assigned.GetAtoms()]
+        assert assigned is not False
+        assert before == after
+        monomers.append(assigned)
+
+    polymer = poly.random_copolymerize_rw(
+        monomers,
+        6,
+        ratio=[1 / 3, 1 / 3, 1 / 3],
+        tacticity="atactic",
+        name="opls_cmc_short",
+        retry=1,
+        retry_step=30,
+        retry_opt_step=0,
+    )
+    assigned_polymer = ff.ff_assign(polymer, charge=None, report=False)
+
+    assert assigned_polymer is not False
+    assert len(getattr(assigned_polymer, "angles", {})) > 0
+    assert len(getattr(assigned_polymer, "dihedrals", {})) > 0
+    assert all(atom.HasProp("ff_type") and atom.HasProp("ff_btype") for atom in assigned_polymer.GetAtoms())
 
 
 def test_render_ff_assignment_report_summarizes_charged_side_groups():

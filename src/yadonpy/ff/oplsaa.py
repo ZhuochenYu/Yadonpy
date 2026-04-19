@@ -228,18 +228,18 @@ class OPLSAA(GAFF):
         name: str | None = None,
         basis_set: str | None = None,
         method: str | None = None,
-        charge: str = "opls",
-        require_ready: bool = False,
+        charge: str = "RESP",
+        require_ready: bool = True,
         prefer_db: bool = True,
         polyelectrolyte_mode: bool | None = None,
         polyelectrolyte_detection: str | None = None,
     ):
         """Create a lightweight MolSpec handle for OPLS-AA workflows.
 
-        OPLS-AA differs from GAFF-style workflows in that it often uses built-in
-        type charges.  Therefore the default handle does **not** require a ready
-        MolDB entry and uses ``charge='opls'`` unless the caller explicitly asks
-        for an external charge model such as RESP.
+        Default behavior mirrors the broader YadonPy workflow:
+        try to resolve a RESP-ready MolDB entry first.  If the handle is later
+        resolved during ``ff_assign()`` and no RESP-ready entry is available,
+        YadonPy falls back to OPLS-AA built-in type charges instead of failing.
         """
         s = str(smiles_or_psmiles).strip()
         try:
@@ -266,18 +266,46 @@ class OPLSAA(GAFF):
                         pass
                 return mol
 
-        return self.mol_rdkit(
-            smiles_or_psmiles,
-            name=name,
-            prefer_db=prefer_db,
-            require_db=False,
-            require_ready=require_ready,
-            charge=charge,
-            basis_set=basis_set,
-            method=method,
-            polyelectrolyte_mode=polyelectrolyte_mode,
-            polyelectrolyte_detection=polyelectrolyte_detection,
-        )
+        try:
+            return self.mol_rdkit(
+                smiles_or_psmiles,
+                name=name,
+                prefer_db=prefer_db,
+                require_db=False,
+                require_ready=require_ready,
+                charge=charge,
+                basis_set=basis_set,
+                method=method,
+                polyelectrolyte_mode=polyelectrolyte_mode,
+                polyelectrolyte_detection=polyelectrolyte_detection,
+            )
+        except Exception as exc:
+            charge_token = str(charge or "").strip().upper()
+            if charge_token != "RESP":
+                raise
+            utils.radon_print(
+                f"RESP-ready MolDB entry unavailable for {smiles_or_psmiles}; "
+                "falling back to OPLS-AA built-in charges.",
+                level=1,
+            )
+            mol = self.mol_rdkit(
+                smiles_or_psmiles,
+                name=name,
+                prefer_db=prefer_db,
+                require_db=False,
+                require_ready=False,
+                charge="opls",
+                basis_set=basis_set,
+                method=method,
+                polyelectrolyte_mode=polyelectrolyte_mode,
+                polyelectrolyte_detection=polyelectrolyte_detection,
+            )
+            try:
+                mol.SetProp("_yadonpy_charge_fallback", "opls")
+                mol.SetProp("_yadonpy_charge_fallback_reason", str(exc))
+            except Exception:
+                pass
+            return mol
 
     @staticmethod
     def _has_complete_atomic_charges(mol) -> bool:
@@ -626,15 +654,40 @@ class OPLSAA(GAFF):
                 # Skip the current helper frame so user-script variable names win
                 # over internal aliases such as `spec`.
                 spec.name = naming.infer_var_name(mol, depth=3) or naming.infer_var_name(mol, depth=2) or None
-            resolved = self.mol_rdkit(
-                spec.smiles,
-                name=spec.name,
-                prefer_db=spec.prefer_db,
-                require_ready=spec.require_ready,
-                charge=spec.charge,
-                basis_set=spec.basis_set,
-                method=spec.method,
-            )
+            try:
+                resolved = self.mol_rdkit(
+                    spec.smiles,
+                    name=spec.name,
+                    prefer_db=spec.prefer_db,
+                    require_ready=spec.require_ready,
+                    charge=spec.charge,
+                    basis_set=spec.basis_set,
+                    method=spec.method,
+                )
+            except Exception as exc:
+                charge_token = str(getattr(spec, "charge", "") or "").strip().upper()
+                if charge_token == "RESP":
+                    utils.radon_print(
+                        f"RESP-ready MolDB entry unavailable for {spec.smiles}; "
+                        "falling back to OPLS-AA built-in charges.",
+                        level=1,
+                    )
+                    resolved = self.mol_rdkit(
+                        spec.smiles,
+                        name=spec.name,
+                        prefer_db=spec.prefer_db,
+                        require_ready=False,
+                        charge="opls",
+                        basis_set=spec.basis_set,
+                        method=spec.method,
+                    )
+                    try:
+                        resolved.SetProp("_yadonpy_charge_fallback", "opls")
+                        resolved.SetProp("_yadonpy_charge_fallback_reason", str(exc))
+                    except Exception:
+                        pass
+                else:
+                    raise
             try:
                 spec.cache_resolved_mol(resolved)
             except Exception:
