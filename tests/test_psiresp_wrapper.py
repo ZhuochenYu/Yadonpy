@@ -76,6 +76,22 @@ class _FakeJob:
         return np.array([-0.3, 0.3])
 
 
+class _FakeResp2Job(_FakeJob):
+    def __init__(self, *, molecules, charge_constraints, working_directory):
+        super().__init__(molecules=molecules, charge_constraints=charge_constraints, working_directory=working_directory)
+        self._label = str(working_directory)
+
+    def compute_charges(self, update_molecules=True):
+        self.computed = True
+        pmol = self.molecules[0]
+        if "solvated_water" in self._label:
+            pmol.stage_1_unrestrained_charges = np.array([-0.25, 0.25])
+            pmol.stage_2_restrained_charges = np.array([-0.40, 0.40])
+        else:
+            pmol.stage_1_unrestrained_charges = np.array([-0.20, 0.20])
+            pmol.stage_2_restrained_charges = np.array([-0.30, 0.30])
+
+
 def test_run_psiresp_fit_uses_precomputed_psi4_path(monkeypatch, tmp_path):
     fake_psiresp = SimpleNamespace(
         ChargeConstraintOptions=_FakeConstraintOptions,
@@ -96,6 +112,7 @@ def test_run_psiresp_fit_uses_precomputed_psi4_path(monkeypatch, tmp_path):
         run_dir=None,
         ncores=None,
         memory_mib=None,
+        pcm_solvent=None,
     ):
         calls.append(
             {
@@ -104,6 +121,7 @@ def test_run_psiresp_fit_uses_precomputed_psi4_path(monkeypatch, tmp_path):
                 "run_dir": run_dir,
                 "ncores": ncores,
                 "memory_mib": memory_mib,
+                "pcm_solvent": pcm_solvent,
                 "grid_options": grid_options,
             }
         )
@@ -133,6 +151,7 @@ def test_run_psiresp_fit_uses_precomputed_psi4_path(monkeypatch, tmp_path):
     assert calls[0]["run_dir"] == tmp_path / "psiresp"
     assert calls[0]["ncores"] == 36
     assert calls[0]["memory_mib"] == 20000
+    assert calls[0]["pcm_solvent"] is None
     assert calls[0]["grid_options"].use_radii == "msk"
     assert calls[0]["grid_options"].vdw_scale_factors == [1.4, 1.6, 1.8, 2.0]
     assert calls[0]["grid_options"].vdw_point_density == 20.0
@@ -145,3 +164,58 @@ def test_ensure_psiresp_numpy_compat_restores_in1d(monkeypatch):
 
     result = wrapper.np.in1d([0, 1, 2], [1, 3])  # type: ignore[attr-defined]
     assert np.array_equal(result, np.array([False, True, False]))
+
+
+def test_run_psiresp_fit_resp2_mixes_solvated_and_gas_resp(monkeypatch, tmp_path):
+    fake_psiresp = SimpleNamespace(
+        ChargeConstraintOptions=_FakeConstraintOptions,
+        Molecule=_FakeMoleculeFactory,
+        TwoStageRESP=_FakeResp2Job,
+        ESP=_FakeResp2Job,
+    )
+    monkeypatch.setattr(wrapper, "psiresp", fake_psiresp)
+
+    calls = []
+
+    def fake_populate_orientation(
+        orientation,
+        *,
+        grid_options,
+        method,
+        basis,
+        run_dir=None,
+        ncores=None,
+        memory_mib=None,
+        pcm_solvent=None,
+    ):
+        calls.append(
+            {
+                "method": method,
+                "basis": basis,
+                "run_dir": Path(run_dir) if run_dir is not None else None,
+                "pcm_solvent": pcm_solvent,
+            }
+        )
+        orientation.grid = np.array([[0.0, 0.0, 0.0]])
+        orientation.qc_wavefunction = object()
+        orientation.esp = np.array([0.1])
+
+    monkeypatch.setattr(wrapper, "_populate_orientation_with_precomputed_esp", fake_populate_orientation)
+
+    mol = Chem.MolFromSmiles("CC")
+    result = wrapper.run_psiresp_fit(
+        mol,
+        fit_kind="RESP2",
+        method="wb97m-v",
+        basis="def2-TZVP",
+        work_dir=tmp_path,
+        name="ethane",
+    )
+
+    assert np.allclose(result["resp_gas"], [-0.30, 0.30])
+    assert np.allclose(result["resp_solvated"], [-0.40, 0.40])
+    assert np.allclose(result["resp2"], [-0.36, 0.36])
+    assert np.allclose(result["resp"], [-0.36, 0.36])
+    assert len(calls) == 2
+    assert {call["pcm_solvent"] for call in calls} == {None, "Water"}
+    assert {call["run_dir"].name for call in calls if call["run_dir"] is not None} == {"vacuum", "solvated_water"}

@@ -1080,6 +1080,70 @@ class Psi4w():
         return resp_q
 
 
+    def resp2(self, **kwargs):
+        """
+        Psi4w.resp2
+
+        RESP2 charge calculation by PsiRESP/Psi4.
+
+        Returns:
+            RESP2 charge (float, array)
+        """
+        import json
+        from .psiresp_wrapper import run_psiresp_fit
+
+        polyelectrolyte_mode = bool(kwargs.pop("polyelectrolyte_mode", False))
+        polyelectrolyte_detection = str(kwargs.pop("polyelectrolyte_detection", "auto") or "auto")
+
+        try:
+            result = run_psiresp_fit(
+                self.mol,
+                fit_kind="RESP2",
+                method=str(self.method),
+                basis=str(self.basis),
+                total_charge=int(self.charge),
+                total_multiplicity=int(self.multiplicity),
+                work_dir=self.work_dir,
+                name=str(self.name),
+                polyelectrolyte_mode=polyelectrolyte_mode,
+                polyelectrolyte_detection=polyelectrolyte_detection,
+                ncores=int(self.num_threads),
+                memory_mib=float(self.memory),
+            )
+            resp2_q = np.asarray(result["resp2"], dtype=float)
+            resp_q = np.asarray(result.get("resp_gas", resp2_q), dtype=float)
+            esp_q = np.asarray(result["esp"], dtype=float)
+            meta = result.get("constraint_meta")
+        except BaseException as e:
+            self.error_flag = True
+            utils.radon_print(f"Error termination of PsiRESP2 charge calculation. {e}", level=3)
+            nan_arr = np.asarray([np.nan for _ in range(self.mol.GetNumAtoms())], dtype=float)
+            for atom in self.mol.GetAtoms():
+                atom.SetDoubleProp("ESP", float("nan"))
+                atom.SetDoubleProp("RESP", float("nan"))
+                atom.SetDoubleProp("RESP2", float("nan"))
+            return nan_arr
+
+        for i, atom in enumerate(self.mol.GetAtoms()):
+            atom.SetDoubleProp("ESP", float(esp_q[i]))
+            atom.SetDoubleProp("RESP", float(resp_q[i]))
+            atom.SetDoubleProp("RESP2", float(resp2_q[i]))
+        try:
+            if meta:
+                self.mol.SetProp("_yadonpy_psiresp_constraints", json.dumps(meta, ensure_ascii=False))
+                summary = meta.get("summary") if isinstance(meta, dict) else None
+                constraints = meta.get("constraints") if isinstance(meta, dict) else None
+                if isinstance(summary, dict):
+                    self.mol.SetProp("_yadonpy_polyelectrolyte_summary_json", json.dumps(summary, ensure_ascii=False))
+                    if isinstance(summary.get("groups"), list):
+                        self.mol.SetProp("_yadonpy_charge_groups_json", json.dumps(summary.get("groups"), ensure_ascii=False))
+                if isinstance(constraints, dict):
+                    self.mol.SetProp("_yadonpy_resp_constraints_json", json.dumps(constraints, ensure_ascii=False))
+        except Exception:
+            pass
+        return resp2_q
+
+
     def mulliken_charge(self, recalc=False, **kwargs):
         """
         Psi4w.mulliken_charge

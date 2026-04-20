@@ -654,6 +654,24 @@ def _select_variant(
         for vid, meta in sorted(variants.items())
         if _variant_matches(meta, charge=charge, basis_set=basis_set, method=method)
     ]
+    if not candidates and (basis_set is None or method is None):
+        candidates = [
+            (vid, meta)
+            for vid, meta in sorted(variants.items())
+            if isinstance(meta, dict)
+            and _variant_default_token(meta.get("charge"), default="RESP").upper()
+            == _variant_default_token(charge, default="RESP").upper()
+            and (
+                basis_set is None
+                or _variant_default_token(meta.get("basis_set"), default="Default")
+                == _variant_default_token(basis_set, default="Default")
+            )
+            and (
+                method is None
+                or _variant_default_token(meta.get("method"), default="Default")
+                == _variant_default_token(method, default="Default")
+            )
+        ]
     if not candidates:
         return legacy_vid, variants.get(legacy_vid)
     if len(candidates) == 1:

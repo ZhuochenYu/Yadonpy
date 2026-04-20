@@ -649,7 +649,7 @@ def assign_charges(mol, charge='gasteiger', confId=0, opt=True, work_dir=None, t
         mol: RDKit Mol object
 
     Optional args:
-        charge: Select charge type of gasteiger, RESP, ESP, Mulliken, Lowdin, zero, CM1A, <scale>*CM1A, CM5, or <scale>*CM5 (str, default:gasteiger)
+        charge: Select charge type of gasteiger, RESP, RESP2, ESP, Mulliken, Lowdin, zero, CM1A, <scale>*CM1A, CM5, or <scale>*CM5 (str, default:gasteiger)
         confID: Target conformer ID (int)
         opt: Do optimization (boolean)
         work_dir: Work directory path (str)
@@ -691,7 +691,7 @@ def assign_charges(mol, charge='gasteiger', confId=0, opt=True, work_dir=None, t
             **kwargs,
         )
 
-    elif charge in ['RESP', 'ESP', 'Mulliken', 'Lowdin']:
+    elif charge in ['RESP', 'RESP2', 'ESP', 'Mulliken', 'Lowdin']:
         if not qm_avail:
             utils.radon_print('Cannot import psi4_wrapper. Install the QM stack with "conda install -c conda-forge rdkit openbabel parmed mdtraj matplotlib pandas scipy packaging psi4=1.10 dftd3-python psiresp-base", then run "python -m pip install \\"pydantic==1.10.26\\"".', level=3)
             return False
@@ -802,6 +802,20 @@ def assign_charges(mol, charge='gasteiger', confId=0, opt=True, work_dir=None, t
                 mol.GetAtomWithIdx(i).SetDoubleProp('RESP', atom.GetDoubleProp('RESP'))
                 mol.GetAtomWithIdx(i).SetDoubleProp('ESP', atom.GetDoubleProp('ESP'))
                 mol.GetAtomWithIdx(i).SetDoubleProp('AtomicCharge', atom.GetDoubleProp('RESP'))
+
+        elif charge == 'RESP2':
+            psi4mol.resp2(
+                polyelectrolyte_mode=bool(polyelectrolyte_mode),
+                polyelectrolyte_detection=str(polyelectrolyte_detection or 'auto'),
+            )
+            if psi4mol.error_flag: return False
+            for i, atom in enumerate(psi4mol.mol.GetAtoms()):
+                if atom.HasProp('RESP'):
+                    mol.GetAtomWithIdx(i).SetDoubleProp('RESP', atom.GetDoubleProp('RESP'))
+                if atom.HasProp('ESP'):
+                    mol.GetAtomWithIdx(i).SetDoubleProp('ESP', atom.GetDoubleProp('ESP'))
+                mol.GetAtomWithIdx(i).SetDoubleProp('RESP2', atom.GetDoubleProp('RESP2'))
+                mol.GetAtomWithIdx(i).SetDoubleProp('AtomicCharge', atom.GetDoubleProp('RESP2'))
 
         elif charge == 'ESP':
             psi4mol.resp(

@@ -121,6 +121,24 @@ def _build_psiresp_job(
     return job
 
 
+def _default_pcm_input(*, solvent: str = "Water") -> str:
+    return (
+        f"\n"
+        f"Units = Angstrom\n"
+        f"Medium {{\n"
+        f"    SolverType = IEFPCM\n"
+        f"    Solvent = {str(solvent).strip() or 'Water'}\n"
+        f"}}\n"
+        f"Cavity {{\n"
+        f"    RadiiSet = UFF\n"
+        f"    Type = GePol\n"
+        f"    Scaling = False\n"
+        f"    Area = 0.3\n"
+        f"    Mode = Implicit\n"
+        f"}}\n"
+    )
+
+
 def _ensure_orientation_grid(orientation, *, grid_options) -> np.ndarray:
     if orientation.grid is None:
         orientation.compute_grid(grid_options=grid_options)
@@ -135,6 +153,7 @@ def _compute_orientation_esp_from_psi4(
     run_dir: Path | None = None,
     ncores: int | None = None,
     memory_mib: int | float | None = None,
+    pcm_solvent: str | None = None,
 ) -> np.ndarray:
     import psi4  # type: ignore
     from psiresp import psi4utils  # type: ignore
@@ -180,7 +199,20 @@ def _compute_orientation_esp_from_psi4(
     except Exception:
         pass
 
-    psi4.set_options({"basis": str(basis).strip(), "scf_type": "df", "fail_on_maxiter": True})
+    options: dict[str, Any] = {
+        "basis": str(basis).strip(),
+        "scf_type": "df",
+        "fail_on_maxiter": True,
+    }
+    if pcm_solvent:
+        options.update(
+            {
+                "pcm": True,
+                "pcm_scf_type": "total",
+                "pcm__input": _default_pcm_input(solvent=str(pcm_solvent)),
+            }
+        )
+    psi4.set_options(options)
     _energy, wfn = psi4.energy(str(method).strip().lower(), molecule=pmol, return_wfn=True)
     esp_calc = psi4.core.ESPPropCalc(wfn)
     psi4grid = psi4.core.Matrix.from_array(grid)
@@ -202,6 +234,7 @@ def _populate_orientation_with_precomputed_esp(
     run_dir: Path | None = None,
     ncores: int | None = None,
     memory_mib: int | float | None = None,
+    pcm_solvent: str | None = None,
 ) -> None:
     grid = _ensure_orientation_grid(orientation, grid_options=grid_options)
     esp = _compute_orientation_esp_from_psi4(
@@ -211,9 +244,82 @@ def _populate_orientation_with_precomputed_esp(
         run_dir=run_dir,
         ncores=ncores,
         memory_mib=memory_mib,
+        pcm_solvent=pcm_solvent,
     )
     orientation.grid = grid
     orientation.esp = esp
+
+
+def _extract_psiresp_charge_arrays(*, fit_kind: str, pmol, job) -> tuple[np.ndarray, np.ndarray]:
+    esp_charges = getattr(pmol, "stage_1_unrestrained_charges", None)
+    final_resp = (
+        getattr(pmol, "stage_2_restrained_charges", None)
+        if str(fit_kind).strip().upper() == "RESP"
+        else getattr(pmol, "stage_1_unrestrained_charges", None)
+    )
+    if final_resp is None:
+        charges = job.charges
+        if isinstance(charges, (list, tuple)):
+            final_resp = np.asarray(charges[0], dtype=float)
+        else:
+            final_resp = np.asarray(charges, dtype=float)
+    if esp_charges is None:
+        esp_charges = np.asarray(final_resp, dtype=float)
+    return np.asarray(final_resp, dtype=float), np.asarray(esp_charges, dtype=float)
+
+
+def _run_precomputed_psiresp_job(
+    *,
+    mol,
+    fit_kind: str,
+    charge: int,
+    multiplicity: int,
+    run_dir: Path,
+    method: str,
+    basis: str,
+    polyelectrolyte_mode: bool,
+    polyelectrolyte_detection: str,
+    ncores: int | None,
+    memory_mib: int | float | None,
+    pcm_solvent: str | None = None,
+) -> dict[str, Any]:
+    mol_copy, pmol = _make_psiresp_molecule(
+        mol,
+        charge=charge,
+        multiplicity=multiplicity,
+    )
+    constraints, constraint_meta = _charge_constraints_for_molecule(
+        mol_copy,
+        pmol=pmol,
+        polyelectrolyte_mode=bool(polyelectrolyte_mode),
+        polyelectrolyte_detection=str(polyelectrolyte_detection or "auto"),
+    )
+    job = _build_psiresp_job(
+        pmol=pmol,
+        fit_kind=str(fit_kind).strip().upper(),
+        constraints=constraints,
+        run_dir=run_dir,
+    )
+    job.generate_orientations()
+    for orientation in job.iter_orientations():
+        if orientation.esp is None:
+            _populate_orientation_with_precomputed_esp(
+                orientation,
+                grid_options=job.grid_options,
+                method=str(method),
+                basis=str(basis),
+                run_dir=run_dir,
+                ncores=ncores,
+                memory_mib=memory_mib,
+                pcm_solvent=pcm_solvent,
+            )
+    job.compute_charges(update_molecules=True)
+    resp_arr, esp_arr = _extract_psiresp_charge_arrays(fit_kind=fit_kind, pmol=pmol, job=job)
+    return {
+        "resp": resp_arr,
+        "esp": esp_arr,
+        "constraint_meta": constraint_meta,
+    }
 
 
 def run_psiresp_fit(
@@ -240,7 +346,7 @@ def run_psiresp_fit(
     _require_psiresp()
     _ensure_psiresp_numpy_compat()
     fit_kind_up = str(fit_kind).strip().upper()
-    if fit_kind_up not in {"RESP", "ESP"}:
+    if fit_kind_up not in {"RESP", "RESP2", "ESP"}:
         raise ValueError(f"Unsupported psiresp fit kind: {fit_kind}")
 
     charge = int(total_charge) if total_charge is not None else int(Chem.GetFormalCharge(mol))
@@ -249,68 +355,76 @@ def run_psiresp_fit(
     run_dir = work_root / "psiresp"
     run_dir.mkdir(parents=True, exist_ok=True)
 
-    mol_copy, pmol = _make_psiresp_molecule(
-        mol,
-        charge=charge,
-        multiplicity=multiplicity,
-    )
-    constraints, constraint_meta = _charge_constraints_for_molecule(
-        mol_copy,
-        pmol=pmol,
-        polyelectrolyte_mode=bool(polyelectrolyte_mode),
-        polyelectrolyte_detection=str(polyelectrolyte_detection or "auto"),
-    )
-    job = _build_psiresp_job(
-        pmol=pmol,
-        fit_kind=fit_kind_up,
-        constraints=constraints,
-        run_dir=run_dir,
-    )
-
     dt1 = datetime.datetime.now()
     utils.radon_print(
         f"PsiRESP {fit_kind_up} is running... name={name} charge={charge} mult={multiplicity} method={method} basis={basis}",
         level=1,
     )
-    job.generate_orientations()
-    for orientation in job.iter_orientations():
-        if orientation.esp is None:
-            _populate_orientation_with_precomputed_esp(
-                orientation,
-                grid_options=job.grid_options,
-                method=str(method),
-                basis=str(basis),
-                run_dir=run_dir,
-                ncores=ncores,
-                memory_mib=memory_mib,
-            )
-    job.compute_charges(update_molecules=True)
+    if fit_kind_up == "RESP2":
+        gas = _run_precomputed_psiresp_job(
+            mol=mol,
+            fit_kind="RESP",
+            charge=charge,
+            multiplicity=multiplicity,
+            run_dir=run_dir / "vacuum",
+            method=str(method),
+            basis=str(basis),
+            polyelectrolyte_mode=bool(polyelectrolyte_mode),
+            polyelectrolyte_detection=str(polyelectrolyte_detection or "auto"),
+            ncores=ncores,
+            memory_mib=memory_mib,
+            pcm_solvent=None,
+        )
+        solv = _run_precomputed_psiresp_job(
+            mol=mol,
+            fit_kind="RESP",
+            charge=charge,
+            multiplicity=multiplicity,
+            run_dir=run_dir / "solvated_water",
+            method=str(method),
+            basis=str(basis),
+            polyelectrolyte_mode=bool(polyelectrolyte_mode),
+            polyelectrolyte_detection=str(polyelectrolyte_detection or "auto"),
+            ncores=ncores,
+            memory_mib=memory_mib,
+            pcm_solvent="Water",
+        )
+        resp2_arr = 0.6 * np.asarray(solv["resp"], dtype=float) + 0.4 * np.asarray(gas["resp"], dtype=float)
+        esp_arr = np.asarray(gas["esp"], dtype=float)
+        constraint_meta = gas.get("constraint_meta") or solv.get("constraint_meta")
+    else:
+        result = _run_precomputed_psiresp_job(
+            mol=mol,
+            fit_kind=fit_kind_up,
+            charge=charge,
+            multiplicity=multiplicity,
+            run_dir=run_dir,
+            method=str(method),
+            basis=str(basis),
+            polyelectrolyte_mode=bool(polyelectrolyte_mode),
+            polyelectrolyte_detection=str(polyelectrolyte_detection or "auto"),
+            ncores=ncores,
+            memory_mib=memory_mib,
+            pcm_solvent=None,
+        )
+        resp_arr = np.asarray(result["resp"], dtype=float)
+        esp_arr = np.asarray(result["esp"], dtype=float)
+        constraint_meta = result.get("constraint_meta")
     dt2 = datetime.datetime.now()
     utils.radon_print(
         f"Normal termination of PsiRESP {fit_kind_up} charge calculation. Elapsed time = {str(dt2-dt1)}",
         level=1,
     )
-
-    # PsiRESP keeps multiple charge arrays. For YadonPy we expose:
-    #   ESP  -> unrestrained first-stage fit
-    #   RESP -> final restrained fit (or ESP charges if no stage-2 exists)
-    esp_charges = getattr(pmol, "stage_1_unrestrained_charges", None)
-    final_resp = (
-        getattr(pmol, "stage_2_restrained_charges", None)
-        if fit_kind_up == "RESP"
-        else getattr(pmol, "stage_1_unrestrained_charges", None)
-    )
-    if final_resp is None:
-        charges = job.charges
-        if isinstance(charges, (list, tuple)):
-            final_resp = np.asarray(charges[0], dtype=float)
-        else:
-            final_resp = np.asarray(charges, dtype=float)
-    if esp_charges is None:
-        esp_charges = np.asarray(final_resp, dtype=float)
-
-    resp_arr = np.asarray(final_resp, dtype=float)
-    esp_arr = np.asarray(esp_charges, dtype=float)
+    if fit_kind_up == "RESP2":
+        return {
+            "resp": np.asarray(resp2_arr, dtype=float),
+            "resp2": np.asarray(resp2_arr, dtype=float),
+            "resp_gas": np.asarray(gas["resp"], dtype=float),
+            "resp_solvated": np.asarray(solv["resp"], dtype=float),
+            "esp": esp_arr,
+            "constraint_meta": constraint_meta,
+            "working_directory": str(run_dir),
+        }
     return {
         "resp": resp_arr,
         "esp": esp_arr,

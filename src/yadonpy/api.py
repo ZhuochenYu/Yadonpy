@@ -10,7 +10,7 @@ from .ff.registry import available_forcefields, create_forcefield
 from .core.charge_models import supported_quick_charge_methods
 
 
-_PSI4_CHARGE_METHODS = ('RESP', 'ESP', 'Mulliken', 'Lowdin')
+_PSI4_CHARGE_METHODS = ('RESP', 'RESP2', 'ESP', 'Mulliken', 'Lowdin')
 _BASELINE_CHARGE_METHODS = ('zero', 'gasteiger')
 
 

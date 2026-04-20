@@ -79,6 +79,7 @@ def test_assign_forcefield_returns_ff_instance_and_status(monkeypatch):
 def test_list_charge_methods_exposes_scaled_charge_tokens():
     methods = api.list_charge_methods()
     assert 'RESP' in methods
+    assert 'RESP2' in methods
     assert 'CM1A' in methods
     assert 'CM5' in methods
     assert '1.14*CM1A' in methods
@@ -376,3 +377,30 @@ def test_moldb_load_upgrades_legacy_false_variant_when_localized_groups_are_requ
     assert constraints.get("mode") == "grouped"
     assert summary.get("groups")
     assert loaded.GetProp("_YADONPY_POLYELECTROLYTE_MODE") == "1"
+
+
+def test_moldb_load_can_select_resp2_variant_without_explicit_level(tmp_path: Path):
+    db = moldb.MolDB(db_dir=tmp_path / "moldb")
+    smiles = "O=C1OCCO1"
+    mol = api.mol_from_smiles(smiles, coord=True, name="EC")
+    charges = [-0.59, 0.89, -0.40, 0.11, 0.10, -0.40, 0.07, 0.07, 0.07, 0.08]
+    assert mol.GetNumAtoms() == len(charges)
+    for atom, charge in zip(mol.GetAtoms(), charges):
+        atom.SetDoubleProp("RESP2", float(charge))
+        atom.SetDoubleProp("AtomicCharge", float(charge))
+
+    rec = db.update_from_mol(
+        mol,
+        smiles_or_psmiles=smiles,
+        name="EC",
+        charge="RESP2",
+        basis_set="def2-TZVP",
+        method="wb97m-v",
+    )
+
+    loaded, loaded_rec = db.load_mol(smiles, require_ready=True, charge="RESP2")
+
+    assert loaded_rec.key == rec.key
+    assert all(atom.HasProp("RESP2") for atom in loaded.GetAtoms())
+    got = [atom.GetDoubleProp("RESP2") for atom in loaded.GetAtoms()]
+    assert got == pytest.approx(charges)
