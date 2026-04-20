@@ -1680,6 +1680,117 @@ def test_additional_exec_applies_mdp_overrides_to_relaxation_stages(tmp_path: Pa
     assert any("pcoupltype                = semiisotropic" in stage.mdp.render() for stage in npt_like)
 
 
+def test_additional_exec_defaults_to_unconstrained_1fs_and_auto_gpu_policy(tmp_path: Path, monkeypatch):
+    system_dir = tmp_path / "02_system"
+    system_dir.mkdir(parents=True, exist_ok=True)
+    for name in ("system.gro", "system.top", "system.ndx", "system_meta.json"):
+        (system_dir / name).write_text("x\n", encoding="utf-8")
+    latest_gro = tmp_path / "03_EQ21" / "03_EQ21" / "step_21" / "md.gro"
+    latest_gro.parent.mkdir(parents=True, exist_ok=True)
+    latest_gro.write_text("x\n", encoding="utf-8")
+    exp = SystemExportResult(
+        system_gro=system_dir / "system.gro",
+        system_top=system_dir / "system.top",
+        system_ndx=system_dir / "system.ndx",
+        molecules_dir=system_dir / "molecules",
+        system_meta=system_dir / "system_meta.json",
+        box_nm=1.0,
+        species=[],
+    )
+    captured: dict[str, object] = {}
+
+    class _FakeJob:
+        default_stages = staticmethod(eqmod.EquilibrationJob.default_stages)
+
+        def __init__(self, *, gro, top, ndx=None, provenance_ndx=None, out_dir, stages, resources):
+            captured["gro"] = gro
+            captured["stages"] = stages
+            captured["resources"] = resources
+            captured["out_dir"] = out_dir
+
+        def run(self, *, restart=False):
+            out_dir = Path(captured["out_dir"]) / captured["stages"][-1].name
+            out_dir.mkdir(parents=True, exist_ok=True)
+            for suffix in ("md.tpr", "md.xtc", "md.edr", "md.gro"):
+                (out_dir / suffix).write_text("x\n", encoding="utf-8")
+            return out_dir / "md.gro"
+
+    monkeypatch.setattr(eqmod.Additional, "_ensure_system_exported", lambda self: exp)
+    monkeypatch.setattr(eqmod, "_find_latest_equilibrated_gro", lambda work_dir, exclude_dirs=None: latest_gro)
+    monkeypatch.setattr(eqmod, "EquilibrationJob", _FakeJob)
+
+    add = eqmod.Additional(ac=_polymer_like_ac(), work_dir=tmp_path)
+    monkeypatch.setattr(add._resume, "run", lambda spec, fn: fn())
+
+    add.exec(temp=300.0, press=1.0, mpi=1, omp=1, gpu=1, gpu_id=0, time=0.1)
+
+    stages = captured["stages"]
+    resources = captured["resources"]
+    assert captured["gro"] == latest_gro
+    assert len(stages) == 1
+    assert stages[0].name == "04_md"
+    assert stages[0].mdp.params["dt"] == pytest.approx(0.001)
+    assert stages[0].mdp.params["constraints"] == "none"
+    assert resources.gpu_offload_mode == "conservative"
+
+
+def test_additional_exec_supports_explicit_constraint_mode(tmp_path: Path, monkeypatch):
+    system_dir = tmp_path / "02_system"
+    system_dir.mkdir(parents=True, exist_ok=True)
+    for name in ("system.gro", "system.top", "system.ndx", "system_meta.json"):
+        (system_dir / name).write_text("x\n", encoding="utf-8")
+    exp = SystemExportResult(
+        system_gro=system_dir / "system.gro",
+        system_top=system_dir / "system.top",
+        system_ndx=system_dir / "system.ndx",
+        molecules_dir=system_dir / "molecules",
+        system_meta=system_dir / "system_meta.json",
+        box_nm=1.0,
+        species=[],
+    )
+    captured: dict[str, object] = {}
+
+    class _FakeJob:
+        default_stages = staticmethod(eqmod.EquilibrationJob.default_stages)
+
+        def __init__(self, *, gro, top, ndx=None, provenance_ndx=None, out_dir, stages, resources):
+            captured["stages"] = stages
+            captured["out_dir"] = out_dir
+
+        def run(self, *, restart=False):
+            out_dir = Path(captured["out_dir"]) / captured["stages"][-1].name
+            out_dir.mkdir(parents=True, exist_ok=True)
+            for suffix in ("md.tpr", "md.xtc", "md.edr", "md.gro"):
+                (out_dir / suffix).write_text("x\n", encoding="utf-8")
+            return out_dir / "md.gro"
+
+    monkeypatch.setattr(eqmod.Additional, "_ensure_system_exported", lambda self: exp)
+    monkeypatch.setattr(eqmod, "_find_latest_equilibrated_gro", lambda work_dir, exclude_dirs=None: None)
+    monkeypatch.setattr(eqmod, "EquilibrationJob", _FakeJob)
+
+    add = eqmod.Additional(ac=object(), work_dir=tmp_path)
+    monkeypatch.setattr(add._resume, "run", lambda spec, fn: fn())
+
+    add.exec(
+        temp=300.0,
+        press=1.0,
+        mpi=1,
+        omp=1,
+        gpu=0,
+        time=0.1,
+        dt_ps=0.0005,
+        constraints="h-bonds",
+        lincs_iter=5,
+        lincs_order=10,
+    )
+
+    mdp_text = captured["stages"][-1].mdp.render()
+    assert "dt                       = 0.0005" in mdp_text
+    assert "constraints              = h-bonds" in mdp_text
+    assert "lincs_iter               = 5" in mdp_text
+    assert "lincs_order              = 10" in mdp_text
+
+
 def test_npt_exec_invalidates_nvt_resume_state_when_rebuilding(tmp_path: Path, monkeypatch):
     system_dir = tmp_path / "02_system"
     system_dir.mkdir(parents=True, exist_ok=True)

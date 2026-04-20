@@ -495,7 +495,15 @@ def main() -> int:
         if result:
             break
         eqmd = eq.Additional(ac, work_dir=wd)
-        ac = eqmd.exec(temp=temp, press=press, mpi=mpi, omp=omp, gpu=gpu, gpu_id=gpu_id)
+        ac = eqmd.exec(
+            temp=temp,
+            press=press,
+            mpi=mpi,
+            omp=omp,
+            gpu=gpu,
+            gpu_id=gpu_id,
+            dt_ps=eq21_dt_ps,
+        )
         analy = eqmd.analyze()
         _ = analy.get_all_prop(temp=temp, press=press, save=True)
         result = analy.check_eq()
@@ -512,6 +520,8 @@ def main() -> int:
         gpu=gpu,
         gpu_id=gpu_id,
         time=float(prod_ns),
+        dt_ps=eq21_dt_ps,
+        bridge_ps=0.0,
         gpu_offload_mode=gpu_offload_mode,
     )
 

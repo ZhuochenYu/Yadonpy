@@ -27,7 +27,9 @@ from ..mdp_templates import (
     MINIM_STEEP_HBONDS_MDP,
     MINIM_CG_MDP,
     NVT_MDP,
+    NVT_NO_CONSTRAINTS_MDP,
     NPT_MDP,
+    NPT_NO_CONSTRAINTS_MDP,
     MdpSpec,
     default_mdp_params,
 )
@@ -64,6 +66,21 @@ def _normalize_gpu_offload_mode(mode: object) -> str:
     if token in {"cpu", "none"}:
         return "cpu"
     raise ValueError(f"Unsupported gpu_offload_mode={mode!r}")
+
+
+def _normalize_constraints_mode(mode: object) -> str:
+    token = str(mode or "none").strip().lower()
+    if token in {"", "none", "off", "no"}:
+        return "none"
+    if token in {"h-bonds", "hbonds", "h_bonds"}:
+        return "h-bonds"
+    if token in {"all-bonds", "allbonds", "all_bonds"}:
+        return "all-bonds"
+    return token
+
+
+def _constraints_use_lincs(mode: object) -> bool:
+    return _normalize_constraints_mode(mode) != "none"
 
 
 @dataclass(frozen=True)
@@ -331,15 +348,27 @@ class EquilibrationJob:
         *,
         temperature_k: float = 298.15,
         pressure_bar: float = 1.0,
-        dt_ps: float = 0.002,
+        dt_ps: float = 0.001,
+        constraints: str = "none",
+        lincs_iter: int | None = None,
+        lincs_order: int | None = None,
         nvt_ns: float = 0.2,
         npt_ns: float = 0.5,
         prod_ns: float = 1.0,
     ) -> list[EqStage]:
         p = default_mdp_params()
         p["dt"] = dt_ps
+        constraints_mode = _normalize_constraints_mode(constraints)
+        p["constraints"] = constraints_mode
+        p["constraint_algorithm"] = "lincs" if _constraints_use_lincs(constraints_mode) else "none"
+        if lincs_iter is not None:
+            p["lincs_iter"] = int(lincs_iter)
+        if lincs_order is not None:
+            p["lincs_order"] = int(lincs_order)
         p["ref_t"] = temperature_k
         p["ref_p"] = pressure_bar
+        nvt_template = NVT_MDP if _constraints_use_lincs(constraints_mode) else NVT_NO_CONSTRAINTS_MDP
+        npt_template = NPT_MDP if _constraints_use_lincs(constraints_mode) else NPT_NO_CONSTRAINTS_MDP
 
         def ns_to_steps(ns: float) -> int:
             return int((ns * 1000.0) / float(p["dt"]))
@@ -362,7 +391,7 @@ class EquilibrationJob:
                 "02_nvt",
                 "nvt",
                 MdpSpec(
-                    NVT_MDP,
+                    nvt_template,
                     {
                         **p,
                         "nsteps": max(ns_to_steps(nvt_ns), 1000),
@@ -387,7 +416,7 @@ class EquilibrationJob:
                 "03_npt",
                 "npt",
                 MdpSpec(
-                    NPT_MDP,
+                    npt_template,
                     {
                         **p,
                         "pcoupl": "C-rescale",
@@ -408,7 +437,7 @@ class EquilibrationJob:
                 "04_md",
                 "md",
                 MdpSpec(
-                    NPT_MDP,
+                    npt_template,
                     {
                         **p,
                         "pcoupl": "C-rescale",

@@ -298,6 +298,9 @@ def test_default_stages_keep_single_velocity_seed_and_c_rescale_npt():
     assert stages[3].mdp.params['gen_vel'] == 'no'
     assert stages[2].mdp.params['pcoupl'] == 'C-rescale'
     assert stages[3].mdp.params['pcoupl'] == 'C-rescale'
+    assert stages[1].mdp.params['constraints'] == 'none'
+    assert stages[2].mdp.params['constraints'] == 'none'
+    assert stages[3].mdp.params['constraints'] == 'none'
 
 
 def test_equilibration_job_smoke_run_and_restart_skip(tmp_path, monkeypatch):

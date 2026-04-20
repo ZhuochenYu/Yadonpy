@@ -1758,6 +1758,11 @@ class Additional(EQ21step):
         gpu_id: Optional[int] = None,
         sim_time: float = 1.0,
         time: Optional[float] = None,
+        dt_ps: float = 0.001,
+        constraints: str = "none",
+        lincs_iter: Optional[int] = None,
+        lincs_order: Optional[int] = None,
+        gpu_offload_mode: str = "auto",
         mdp_overrides: Optional[dict[str, object]] = None,
         restart: Optional[bool] = None,
     ):
@@ -1787,12 +1792,22 @@ class Additional(EQ21step):
         _preset_item("temperature_K", float(temp))
         _preset_item("pressure_bar", float(press))
         _preset_item("production_ns", float(sim_time))
+        _preset_item("dt_ps", float(dt_ps))
+        _preset_item("constraints", _normalize_constraints_mode(constraints))
+        _preset_item("lincs_iter", int(lincs_iter) if lincs_iter is not None else None)
+        _preset_item("lincs_order", int(lincs_order) if lincs_order is not None else None)
+        resolved_gpu_offload_mode = _resolve_production_gpu_offload_mode(self.ac, gpu_offload_mode)
+        _preset_item("gpu_offload_mode", resolved_gpu_offload_mode)
         if mdp_overrides:
             _preset_item("mdp_overrides", mdp_overrides)
 
         stages = EquilibrationJob.default_stages(
             temperature_k=float(temp),
             pressure_bar=float(press),
+            dt_ps=float(dt_ps),
+            constraints=constraints,
+            lincs_iter=lincs_iter,
+            lincs_order=lincs_order,
             nvt_ns=0.1,
             npt_ns=0.2,
             prod_ns=float(sim_time),
@@ -1804,7 +1819,13 @@ class Additional(EQ21step):
             stages = [stages[-1]]
 
         use_gpu, gid = _parse_gpu_args(gpu, gpu_id)
-        res = RunResources(ntmpi=int(mpi), ntomp=int(omp), use_gpu=use_gpu, gpu_id=gid)
+        res = RunResources(
+            ntmpi=int(mpi),
+            ntomp=int(omp),
+            use_gpu=use_gpu,
+            gpu_id=gid,
+            gpu_offload_mode=resolved_gpu_offload_mode,
+        )
         job = EquilibrationJob(gro=start_gro, top=exp.system_top, provenance_ndx=exp.system_ndx, out_dir=run_dir, stages=stages, resources=res)
 
         final_dir = run_dir / stages[-1].name if stages else run_dir
@@ -1817,6 +1838,11 @@ class Additional(EQ21step):
                 "temp": float(temp),
                 "press": float(press),
                 "sim_time": float(sim_time),
+                "dt_ps": float(dt_ps),
+                "constraints": _normalize_constraints_mode(constraints),
+                "lincs_iter": int(lincs_iter) if lincs_iter is not None else None,
+                "lincs_order": int(lincs_order) if lincs_order is not None else None,
+                "gpu_offload_mode": resolved_gpu_offload_mode,
                 "mdp_overrides": json.dumps(mdp_overrides, sort_keys=True, default=str) if mdp_overrides else None,
                 "mpi": int(mpi),
                 "omp": int(omp),
