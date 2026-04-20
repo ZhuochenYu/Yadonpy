@@ -490,6 +490,10 @@ class EquilibrationJob:
             )
             return any(token in text for token in needles)
 
+        def _is_sigsegv_failure(msg: object) -> bool:
+            text = str(msg or "").lower()
+            return ("sigsegv" in text) or ("signal 11" in text)
+
         def _constraints_mode(mdp: MdpSpec) -> str | None:
             try:
                 for raw in mdp.render().splitlines():
@@ -502,6 +506,30 @@ class EquilibrationJob:
             except Exception:
                 return None
             return None
+
+        def _should_retry_without_checkpoint_handoff(
+            *,
+            stage: EqStage,
+            mdp: MdpSpec,
+            stage_dir: Path,
+            deffnm: str,
+            used_cpt: Path | None,
+            error: object,
+        ) -> bool:
+            if used_cpt is None:
+                return False
+            if stage.kind in ("minim", "em"):
+                return False
+            if _constraints_mode(mdp) != "none":
+                return False
+            if not _is_sigsegv_failure(error):
+                return False
+            failed_step, failed_time_ps = self._read_last_md_progress(stage_dir / f"{deffnm}.log")
+            if failed_step not in (None, 0):
+                return False
+            if failed_time_ps is not None and float(failed_time_ps) > 0.0:
+                return False
+            return True
 
         def _canonicalize_stage_gro(*, out_tpr: Path, out_gro: Path, stage_dir: Path) -> dict[str, object]:
             pbc_gro = pbc_mol_fix_inplace(self.runner, tpr=out_tpr, traj_or_gro=out_gro, cwd=stage_dir)
@@ -565,6 +593,7 @@ class EquilibrationJob:
             stage_runtime_tpr = out_tpr
             stage_cutoff_events: list[dict[str, object]] = []
             stage_lincs_fallback: dict[str, object] | None = None
+            stage_checkpoint_handoff_fallback: dict[str, object] | None = None
 
             def _write_stage_mdp(*, mdp: MdpSpec, gro: Path, filename: str, label: str) -> Path:
                 prepared_mdp, cutoff_info = self._apply_box_safe_cutoffs(mdp, gro=gro)
@@ -861,13 +890,14 @@ class EquilibrationJob:
                     else:
                         mdp_path = _write_stage_mdp(mdp=st.mdp, gro=gro_for_main, filename=f"{st.kind}.mdp", label="main")
                     tpr = out_tpr
+                    grompp_cpt = current_cpt
                     self.runner.grompp(
                         mdp=mdp_path,
                         gro=gro_for_main,
                         top=self.top,
                         ndx=self.ndx,
                         out_tpr=tpr,
-                        cpt=current_cpt,
+                        cpt=grompp_cpt,
                         cwd=stage_dir,
                     )
                     ntomp_sel, ntmpi_sel = _choose_threads(stage_use_gpu)
@@ -894,7 +924,53 @@ class EquilibrationJob:
                         # the workflow can proceed.
                         msg = str(e)
                         retry_policy = st.lincs_retry
-                        if (
+                        if _should_retry_without_checkpoint_handoff(
+                            stage=st,
+                            mdp=st.mdp,
+                            stage_dir=stage_dir,
+                            deffnm=deffnm,
+                            used_cpt=grompp_cpt,
+                            error=e,
+                        ):
+                            self._log(
+                                "[WARN] Stage failed immediately after checkpoint handoff. "
+                                f"Retrying {st.name} without -t {Path(grompp_cpt).name}."
+                            )
+                            retry_tpr = stage_dir / f"{deffnm}_nocpt_retry.tpr"
+                            self.runner.grompp(
+                                mdp=mdp_path,
+                                gro=gro_for_main,
+                                top=self.top,
+                                ndx=self.ndx,
+                                out_tpr=retry_tpr,
+                                cpt=None,
+                                cwd=stage_dir,
+                            )
+                            self.runner.mdrun(
+                                tpr=retry_tpr,
+                                deffnm=deffnm,
+                                cwd=stage_dir,
+                                ntomp=ntomp_sel,
+                                ntmpi=ntmpi_sel,
+                                use_gpu=stage_use_gpu,
+                                prefer_gpu_update=stage_prefer_gpu_update,
+                                gpu_id=self.resources.gpu_id,
+                                append=False,
+                                checkpoint_minutes=st.checkpoint_minutes,
+                                **stage_mdrun_kwargs,
+                            )
+                            stage_runtime_tpr = retry_tpr
+                            stage_checkpoint_handoff_fallback = {
+                                "triggered": True,
+                                "reason": msg,
+                                "original_cpt": str(grompp_cpt),
+                                "retry_tpr": str(retry_tpr),
+                            }
+                            self._log(
+                                "[DONE] Checkpoint handoff fallback completed | "
+                                f"stage={st.name} | retry_tpr={retry_tpr.name}"
+                            )
+                        elif (
                             st.kind == "md"
                             and retry_policy is not None
                             and bool(retry_policy.enabled)
@@ -1117,6 +1193,7 @@ class EquilibrationJob:
                 "whole_molecule_gro": whole_gro,
                 "auto_cutoff_adjustments": stage_cutoff_events,
                 "lincs_fallback": stage_lincs_fallback,
+                "checkpoint_handoff_fallback": stage_checkpoint_handoff_fallback,
             }
 
             edr = stage_dir / f"{deffnm}.edr"

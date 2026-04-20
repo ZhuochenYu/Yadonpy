@@ -49,6 +49,14 @@ def _env_float(name: str, default: float) -> float:
     return float(raw)
 
 
+def _env_text(name: str, default: str = "") -> str:
+    raw = os.environ.get(name)
+    if raw is None:
+        return str(default)
+    text = str(raw).strip()
+    return text if text else str(default)
+
+
 def _env_int_list(name: str, expected_len: int) -> list[int] | None:
     raw = str(os.environ.get(name, "")).strip()
     if not raw:
@@ -166,12 +174,16 @@ def _load_pf6_with_opls_builtin_charges(*, ion_ff: OPLSAA, repo_db_dir: Path):
 
 
 # ---------------- user inputs ----------------
-restart_status = False
+restart_status = _env_flag("YADONPY_RESTART", default=False)
 build_only = _env_flag("YADONPY_BUILD_ONLY", default=False)
 export_only = _env_flag("YADONPY_EXPORT_ONLY", default=False)
 smoke_mode = _env_flag("YADONPY_SMOKE", default=False)
+fast_analysis = _env_flag("YADONPY_FAST_ANALYSIS", default=False)
+skip_rdf = _env_flag("YADONPY_SKIP_RDF", default=fast_analysis)
+skip_sigma = _env_flag("YADONPY_SKIP_SIGMA", default=fast_analysis)
+skip_den_dis = _env_flag("YADONPY_SKIP_DEN_DIS", default=fast_analysis)
 eq21_stage_cap = _env_int("YADONPY_EQ21_STAGE_CAP", 0)
-eq21_dt_ps = _env_float("YADONPY_EQ21_DT_PS", 0.001)
+eq21_dt_ps = _env_float("YADONPY_EQ21_DT_PS", 0.0005)
 eq21_pre_nvt_ps = _env_float("YADONPY_EQ21_PRE_NVT_PS", 10.0)
 eq21_final_ns = _env_float("YADONPY_EQ21_FINAL_NS", 0.8)
 eq21_tmax = _env_float("YADONPY_EQ21_TMAX_K", 1000.0)
@@ -182,6 +194,8 @@ eq21_em_nsteps = _env_int("YADONPY_EQ21_EM_NSTEPS", 50000)
 eq21_em_emtol = _env_float("YADONPY_EQ21_EM_EMTOL", 1000.0)
 eq21_em_emstep = _env_float("YADONPY_EQ21_EM_EMSTEP", 0.001)
 counts_override = _env_int_list("YADONPY_COUNTS", 8)
+prod_ns = _env_float("YADONPY_PROD_NS", 20.0)
+gpu_offload_mode = _env_text("YADONPY_GPU_OFFLOAD_MODE", "auto")
 
 set_run_options(restart=restart_status)
 
@@ -226,10 +240,14 @@ mem_mb = _env_int("YADONPY_PSI4_MEMORY_MB", 20000)
 BASE_DIR = Path(__file__).resolve().parent
 REPO_DB_DIR = BASE_DIR.parents[1] / "moldb"
 _work_dir_override = str(os.environ.get("YADONPY_WORK_DIR", "")).strip()
+_shared_polymer_root_override = str(os.environ.get("YADONPY_SHARED_POLYMER_ROOT", "")).strip()
 work_dir = (
     Path(_work_dir_override).expanduser()
     if _work_dir_override
     else (BASE_DIR / "work_dir_dtd_oplsaa_moldb")
+)
+shared_polymer_root = (
+    Path(_shared_polymer_root_override).expanduser() if _shared_polymer_root_override else None
 )
 
 
@@ -315,8 +333,13 @@ def main() -> int:
     ensure_initialized()
 
     wd = workdir(work_dir, restart=restart_status)
-    cmc_rw_dir = wd.child("CMC_rw")
-    cmc_term_dir = wd.child("CMC_term")
+    if shared_polymer_root is not None:
+        shared_polymer_wd = workdir(shared_polymer_root, restart=restart_status)
+        cmc_rw_dir = shared_polymer_wd.child("CMC_rw")
+        cmc_term_dir = shared_polymer_wd.child("CMC_term")
+    else:
+        cmc_rw_dir = wd.child("CMC_rw")
+        cmc_term_dir = wd.child("CMC_term")
     ac_build_dir = wd.child("00_build_cell")
 
     # ---------------- build monomers ----------------
@@ -481,14 +504,26 @@ def main() -> int:
         print("[WARNING] Did not reach an equilibrium state after EQ21 + Additional cycles.")
 
     npt = eq.NPT(ac, work_dir=wd)
-    ac = npt.exec(temp=temp, press=press, mpi=mpi, omp=omp, gpu=gpu, gpu_id=gpu_id, time=20)
+    ac = npt.exec(
+        temp=temp,
+        press=press,
+        mpi=mpi,
+        omp=omp,
+        gpu=gpu,
+        gpu_id=gpu_id,
+        time=float(prod_ns),
+        gpu_offload_mode=gpu_offload_mode,
+    )
 
     analy = npt.analyze()
     _ = analy.get_all_prop(temp=temp, press=press, save=True)
-    _ = analy.rdf(center_mol=Li)
+    if not skip_rdf:
+        _ = analy.rdf(center_mol=Li)
     msd = analy.msd()
-    _ = analy.sigma(temp_k=temp, msd=msd)
-    _ = analy.den_dis()
+    if not skip_sigma:
+        _ = analy.sigma(temp_k=temp, msd=msd)
+    if not skip_den_dis:
+        _ = analy.den_dis()
     return 0
 
 

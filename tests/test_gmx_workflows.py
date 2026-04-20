@@ -207,6 +207,41 @@ class FakeConservativeGpuRunner(FakeRunner):
         (cwd / f'{deffnm}.log').write_text('ok\n', encoding='utf-8')
 
 
+class FakeCheckpointHandoffRunner(FakeRunner):
+    def __init__(self):
+        super().__init__()
+        self.grompp_cpt_by_tpr = {}
+        self.mdrun_records = []
+
+    def grompp(self, *, out_tpr: Path, cpt=None, **kwargs) -> None:
+        self.grompp_calls += 1
+        out_tpr = Path(out_tpr)
+        self.grompp_cpt_by_tpr[str(out_tpr)] = None if cpt is None else str(cpt)
+        out_tpr.write_text('fake tpr\n', encoding='utf-8')
+
+    def mdrun(self, *, tpr: Path, deffnm: str, cwd: Path, append=True, **kwargs) -> None:
+        self.mdrun_calls += 1
+        cwd = Path(cwd)
+        tpr = Path(tpr)
+        self.mdrun_records.append(
+            {
+                'tpr': str(tpr),
+                'cwd': str(cwd),
+                'append': bool(append),
+                'kwargs': dict(kwargs),
+                'grompp_cpt': self.grompp_cpt_by_tpr.get(str(tpr)),
+            }
+        )
+        if self.mdrun_calls == 2 and self.grompp_cpt_by_tpr.get(str(tpr)) is not None:
+            (cwd / f'{deffnm}.log').write_text('starting mdrun\n', encoding='utf-8')
+            raise RuntimeError('GROMACS mdrun failed\n  reason: terminated by signal 11 (SIGSEGV)\n')
+
+        (cwd / f'{deffnm}.gro').write_text('fake gro\n', encoding='utf-8')
+        (cwd / f'{deffnm}.cpt').write_text('fake cpt\n', encoding='utf-8')
+        (cwd / f'{deffnm}.edr').write_text('fake edr\n', encoding='utf-8')
+        (cwd / f'{deffnm}.log').write_text('ok\n', encoding='utf-8')
+
+
 def _write_diatomic_topology(root: Path) -> tuple[Path, Path]:
     gro = root / 'input.gro'
     mol_dir = root / 'molecules'
@@ -351,6 +386,50 @@ def test_equilibration_job_conservative_gpu_mode_passes_single_offload_override(
     assert kwargs['pme'] == 'gpu'
     assert kwargs['pmefft'] == 'gpu'
     assert kwargs['update'] == 'cpu'
+
+
+def test_equilibration_job_retries_unconstrained_stage_without_checkpoint_handoff_after_sigsegv(tmp_path, monkeypatch):
+    import yadonpy.gmx.workflows.eq as eqmod
+
+    monkeypatch.setattr(eqmod, 'pbc_mol_fix_inplace', lambda *args, **kwargs: {'applied': False, 'error': None})
+    monkeypatch.setattr(eqmod, 'write_mol2_from_top_gro_parmed', lambda **kwargs: None)
+
+    gro = tmp_path / 'input.gro'
+    top = tmp_path / 'input.top'
+    gro.write_text('fake input gro\n', encoding='utf-8')
+    top.write_text('fake input top\n', encoding='utf-8')
+
+    params = default_mdp_params()
+    params.update(
+        {
+            'nsteps': 1000,
+            'dt': 0.001,
+            'ref_t': 300.0,
+            'gen_vel': 'no',
+            'constraints': 'none',
+        }
+    )
+    stages = [
+        EqStage(name='01_nvt', kind='nvt', mdp=MdpSpec(NVT_MDP, {**params, 'gen_vel': 'yes'})),
+        EqStage(name='02_nvt', kind='nvt', mdp=MdpSpec(NVT_MDP, params)),
+    ]
+    runner = FakeCheckpointHandoffRunner()
+    job = EquilibrationJob(gro=gro, top=top, out_dir=tmp_path / 'eq_job_checkpoint_retry', stages=stages, runner=runner)
+
+    summary_path = job.run(restart=False)
+
+    assert summary_path.exists()
+    assert runner.grompp_calls == 3
+    assert runner.mdrun_calls == 3
+    assert runner.mdrun_records[1]['grompp_cpt'] is not None
+    assert runner.mdrun_records[2]['grompp_cpt'] is None
+    assert runner.mdrun_records[2]['append'] is False
+
+    summary = json.loads(summary_path.read_text(encoding='utf-8'))
+    fallback = summary['stages'][1]['checkpoint_handoff_fallback']
+    assert fallback['triggered'] is True
+    assert fallback['original_cpt'].endswith('md.cpt')
+    assert fallback['retry_tpr'].endswith('md_nocpt_retry.tpr')
 
 
 def test_equilibration_job_skips_stage_mol2_export_for_large_systems(tmp_path, monkeypatch):
