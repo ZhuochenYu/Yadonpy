@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from yadonpy.gmx.mdp_templates import MINIM_CG_MDP, MINIM_STEEP_MDP, MdpSpec, NVT_MDP, default_mdp_params
-from yadonpy.gmx.workflows._util import RunResources
+from yadonpy.gmx.workflows._util import RunResources, gro_topology_bond_geometry, normalize_gro_molecules_inplace
 from yadonpy.gmx.workflows.eq import EqStage, EquilibrationJob, StageLincsRetryPolicy
 from yadonpy.interface import InterfaceProtocol
 
@@ -623,6 +623,74 @@ def test_equilibration_job_canonicalizes_stage_output_gro_between_stages(tmp_pat
     stage2_x1, stage2_x2 = _gro_x_coords(runner.grompp_gro_texts[1])
     assert abs(stage2_x2 - stage2_x1) < 0.2
     assert any('Whole-molecule canonicalization applied' in msg for msg in runner.logs)
+
+
+def test_handoff_bond_geometry_detects_and_repairs_pbc_split_molecule(tmp_path):
+    gro, top = _write_diatomic_topology(tmp_path)
+    gro.write_text(
+        '\n'.join(
+            [
+                'broken across boundary',
+                '    2',
+                '    1MOL     A    1   0.950   0.100   0.100  0.0100  0.0200  0.0300',
+                '    1MOL     B    2   0.050   0.100   0.100  0.0400  0.0500  0.0600',
+                '   1.00000   1.00000   1.00000',
+            ]
+        )
+        + '\n',
+        encoding='utf-8',
+    )
+
+    before = gro_topology_bond_geometry(top=top, gro=gro, max_bond_nm_threshold=0.8)
+    assert before["ok"] is False
+    assert before["max_bond_nm"] > 0.8
+
+    repaired = normalize_gro_molecules_inplace(top=top, gro=gro)
+    after = gro_topology_bond_geometry(top=top, gro=gro, max_bond_nm_threshold=0.8)
+
+    assert repaired["applied"] is True
+    assert after["ok"] is True
+    assert after["max_bond_nm"] < 0.2
+
+
+def test_handoff_bond_geometry_uses_constraints_section(tmp_path):
+    gro, top = _write_diatomic_topology(tmp_path)
+    itp = tmp_path / "molecules" / "MOL.itp"
+    itp.write_text(
+        '\n'.join(
+            [
+                '[ moleculetype ]',
+                'MOL   3',
+                '',
+                '[ atoms ]',
+                '1   C   1  MOL  A   1  0.0  12.011',
+                '2   H   1  MOL  B   1  0.0  1.008',
+                '',
+                '[ constraints ]',
+                '1 2 1 0.109',
+            ]
+        )
+        + '\n',
+        encoding='utf-8',
+    )
+    gro.write_text(
+        '\n'.join(
+            [
+                'constraint split',
+                '    2',
+                '    1MOL     A    1   0.950   0.100   0.100',
+                '    1MOL     B    2   0.050   0.100   0.100',
+                '   1.00000   1.00000   1.00000',
+            ]
+        )
+        + '\n',
+        encoding='utf-8',
+    )
+
+    check = gro_topology_bond_geometry(top=top, gro=gro, max_bond_nm_threshold=0.8)
+
+    assert check["ok"] is False
+    assert check["checked_bonds"] == 1
 
 
 def test_equilibration_job_auto_shrinks_cutoffs_for_small_box(tmp_path, monkeypatch):

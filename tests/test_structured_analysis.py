@@ -93,7 +93,9 @@ def test_compute_msd_series_respects_begin_end_window(monkeypatch):
         end_ps=7.0,
     )
 
-    assert np.allclose(out["t_ps"], np.array([3.0, 4.0, 5.0, 6.0, 7.0]))
+    assert np.allclose(out["t_ps"], np.array([0.0, 1.0, 2.0, 3.0, 4.0]))
+    assert out["trajectory_time_start_ps"] == pytest.approx(3.0)
+    assert out["trajectory_time_end_ps"] == pytest.approx(7.0)
     assert out["n_groups"] == 0
 
 
@@ -304,6 +306,97 @@ def test_build_site_map_marks_fluorine_as_weaker_coordination_site(tmp_path: Pat
     assert entries["fluorine_site"]["coordination_relevance"] == "weak"
     assert entries["sulfonyl_oxygen"]["coordination_relevance"] == "primary"
     assert entries["fluorine_site"]["coordination_priority"] > entries["sulfonyl_oxygen"]["coordination_priority"]
+
+
+def test_build_site_map_recovers_elements_from_opls_atom_labels(tmp_path: Path):
+    system_dir = tmp_path / "02_system"
+    system_dir.mkdir(parents=True, exist_ok=True)
+    (system_dir / "system_meta.json").write_text(
+        json.dumps({"species": [{"moltype": "EMC", "smiles": "CCOC(=O)OC", "kind": "solvent"}]}, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    (system_dir / "residue_map.json").write_text(json.dumps({"species": []}, indent=2) + "\n", encoding="utf-8")
+    (system_dir / "charge_groups.json").write_text(json.dumps({"species": []}, indent=2) + "\n", encoding="utf-8")
+    top = SystemTopology(
+        moleculetypes={
+            "EMC": MoleculeType(
+                name="EMC",
+                atomtypes=[
+                    "opls_135",
+                    "opls_490",
+                    "opls_467",
+                    "opls_465",
+                    "opls_466",
+                    "opls_467",
+                    "opls_468",
+                    "opls_140",
+                    "opls_140",
+                    "opls_140",
+                    "opls_469",
+                    "opls_469",
+                    "opls_469",
+                    "opls_469",
+                    "opls_469",
+                ],
+                atomnames=[
+                    "opls_135",
+                    "opls_490",
+                    "opls_467",
+                    "opls_465",
+                    "opls_466",
+                    "opls_467",
+                    "opls_468",
+                    "opls_140",
+                    "opls_140",
+                    "opls_140",
+                    "opls_469",
+                    "opls_469",
+                    "opls_469",
+                    "opls_469",
+                    "opls_469",
+                ],
+                charges=[0.0] * 15,
+                masses=[
+                    12.011,
+                    12.011,
+                    15.999,
+                    12.011,
+                    15.999,
+                    15.999,
+                    12.011,
+                    1.008,
+                    1.008,
+                    1.008,
+                    1.008,
+                    1.008,
+                    1.008,
+                    1.008,
+                    1.008,
+                ],
+                bonds=[
+                    (1, 2),
+                    (2, 3),
+                    (3, 4),
+                    (4, 5),
+                    (4, 6),
+                    (6, 7),
+                    (1, 8),
+                    (1, 9),
+                    (1, 10),
+                    (2, 11),
+                    (2, 12),
+                    (7, 13),
+                    (7, 14),
+                    (7, 15),
+                ],
+            )
+        },
+        molecules=[("EMC", 1)],
+    )
+    site_map = build_site_map(top, system_dir)
+    labels = {sp["site_label"] for sp in site_map["site_groups"]}
+    assert "carbonyl_oxygen" in labels
+    assert "ether_oxygen" in labels
 
 
 def test_resolve_moltypes_from_mols_uses_smiles_from_system_meta(tmp_path: Path):

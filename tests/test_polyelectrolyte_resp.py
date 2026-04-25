@@ -28,6 +28,17 @@ def test_detect_charged_groups_finds_carboxylate():
     assert summary["groups"][0]["label"] in {"carboxylate", "graph_group_1"}
 
 
+def test_detect_charged_groups_marks_neutral_carbonate_equivalence_groups():
+    dec = Chem.MolFromSmiles("CCOC(=O)OCC")
+    ec = Chem.MolFromSmiles("O=C1OCCO1")
+
+    dec_summary = detect_charged_groups(dec, detection="auto")
+    ec_summary = detect_charged_groups(ec, detection="auto")
+
+    assert [2, 5] in dec_summary["equivalence_groups"]
+    assert [2, 5] in ec_summary["equivalence_groups"]
+
+
 def test_annotate_polyelectrolyte_metadata_persists_props():
     mol = Chem.MolFromSmiles("*OC1OC(CO)C(*)C(O)C1OCC(=O)[O-]")
     mol.SetProp("_yadonpy_smiles", "*OC1OC(CO)C(*)C(O)C1OCC(=O)[O-]")
@@ -145,3 +156,21 @@ def test_annotate_polyelectrolyte_metadata_marks_graph_only_small_ions_as_whole_
     acetate = Chem.MolFromSmiles("CC(=O)[O-]")
     annotated_acetate = annotate_polyelectrolyte_metadata(acetate)
     assert annotated_acetate["constraints"]["mode"] == "grouped"
+
+
+def test_annotate_polyelectrolyte_metadata_adds_carboxylate_resonance_equivalence():
+    acetate = Chem.MolFromSmiles("CC(=O)[O-]")
+    annotated = annotate_polyelectrolyte_metadata(acetate, resp_profile="adaptive")
+    constraints = annotated["constraints"]
+
+    assert constraints["charged_group_constraints"][0]["target_charge"] == -1
+    assert [2, 3] in constraints["equivalence_groups"]
+
+
+def test_legacy_profile_keeps_neutral_remainder_equivalence_without_resonance_patch():
+    acetate = Chem.MolFromSmiles("CC(=O)[O-]")
+    annotated = annotate_polyelectrolyte_metadata(acetate, resp_profile="legacy")
+    constraints = annotated["constraints"]
+
+    assert [2, 3] not in constraints["equivalence_groups"]
+    assert constraints["charged_group_constraints"][0]["target_charge"] == -1

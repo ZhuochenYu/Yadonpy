@@ -13,6 +13,15 @@ _RESP_CONSTRAINTS_PROP = "_yadonpy_resp_constraints_json"
 _POLYELECTROLYTE_PROP = "_yadonpy_polyelectrolyte_summary_json"
 
 
+def _normalize_resp_profile(resp_profile: str | None) -> str:
+    profile = str(resp_profile or "adaptive").strip().lower()
+    if profile in {"default", "current"}:
+        profile = "adaptive"
+    if profile not in {"adaptive", "legacy"}:
+        raise ValueError(f"Unsupported RESP profile: {resp_profile!r}")
+    return profile
+
+
 @dataclass(frozen=True)
 class ChargedGroup:
     group_id: str
@@ -184,10 +193,100 @@ def _canonical_equivalence_groups(mol, atom_indices: Iterable[int]) -> list[list
     return [sorted(v) for v in grouped.values() if len(v) > 1]
 
 
-def detect_charged_groups(mol, *, detection: str = "auto") -> dict[str, Any]:
+def _merge_equivalence_groups(groups: Iterable[Iterable[int]]) -> list[list[int]]:
+    merged: list[set[int]] = []
+    for group in groups:
+        group_set = {int(i) for i in group}
+        if len(group_set) <= 1:
+            continue
+        overlaps = [idx for idx, existing in enumerate(merged) if existing.intersection(group_set)]
+        if not overlaps:
+            merged.append(set(group_set))
+            continue
+        union = set(group_set)
+        for idx in reversed(overlaps):
+            union.update(merged.pop(idx))
+        merged.append(union)
+    return [sorted(group) for group in sorted(merged, key=lambda item: (min(item), len(item), tuple(sorted(item))))]
+
+
+def _charged_group_resonance_equivalence(mol, group: ChargedGroup) -> list[list[int]]:
+    label = str(group.label or "").strip().lower()
+    selected = {int(i) for i in group.atom_indices}
+    if not selected:
+        return []
+
+    if label in {"carboxylate", "cmc_carboxylate"}:
+        for idx in selected:
+            atom = mol.GetAtomWithIdx(idx)
+            if atom.GetSymbol() != "C":
+                continue
+            oxygens = []
+            has_carbonyl = False
+            for nb in atom.GetNeighbors():
+                j = int(nb.GetIdx())
+                if j not in selected or nb.GetSymbol() != "O":
+                    continue
+                bond = mol.GetBondBetweenAtoms(idx, j)
+                if bond is None:
+                    continue
+                if bond.GetBondTypeAsDouble() >= 1.5:
+                    has_carbonyl = True
+                oxygens.append(j)
+            if len(oxygens) == 2 and has_carbonyl:
+                return [sorted(oxygens)]
+        return []
+
+    if label == "sulfonate":
+        for idx in selected:
+            atom = mol.GetAtomWithIdx(idx)
+            if atom.GetSymbol() != "S":
+                continue
+            oxygens = []
+            for nb in atom.GetNeighbors():
+                j = int(nb.GetIdx())
+                if j not in selected or nb.GetSymbol() != "O":
+                    continue
+                heavy_neighbors = [
+                    int(nn.GetIdx())
+                    for nn in nb.GetNeighbors()
+                    if nn.GetAtomicNum() > 1 and int(nn.GetIdx()) != idx
+                ]
+                if heavy_neighbors:
+                    continue
+                oxygens.append(j)
+            if len(oxygens) >= 2:
+                return [sorted(oxygens)]
+        return []
+
+    return []
+
+
+def _resp_equivalence_groups(
+    mol,
+    *,
+    groups: list[ChargedGroup],
+    neutral_atoms: list[int],
+    localized_groups: bool,
+    resp_profile: str,
+) -> list[list[int]]:
+    if not groups:
+        return _canonical_equivalence_groups(mol, range(mol.GetNumAtoms()))
+    if not localized_groups:
+        return _canonical_equivalence_groups(mol, range(mol.GetNumAtoms()))
+
+    eq_groups: list[list[int]] = list(_canonical_equivalence_groups(mol, neutral_atoms))
+    if str(resp_profile).strip().lower() == "adaptive":
+        for grp in groups:
+            eq_groups.extend(_charged_group_resonance_equivalence(mol, grp))
+    return _merge_equivalence_groups(eq_groups)
+
+
+def detect_charged_groups(mol, *, detection: str = "auto", resp_profile: str = "adaptive") -> dict[str, Any]:
     groups: list[ChargedGroup] = []
     fallback = None
     requested = str(detection or "auto").strip().lower()
+    profile = _normalize_resp_profile(resp_profile)
 
     if requested in {"auto", "template"}:
         groups = _template_detect_groups(mol)
@@ -199,8 +298,8 @@ def detect_charged_groups(mol, *, detection: str = "auto") -> dict[str, Any]:
         fallback = f"unsupported_detection:{requested}"
 
     charged_atoms = sorted({i for grp in groups for i in grp.atom_indices})
-    neutral_atoms = [i for i in range(mol.GetNumAtoms()) if i not in set(charged_atoms)]
-    equivalence = _canonical_equivalence_groups(mol, neutral_atoms)
+    charged_set = set(charged_atoms)
+    neutral_atoms = [i for i in range(mol.GetNumAtoms()) if i not in charged_set]
 
     detected = bool(groups)
     if _is_polymer_like(mol) and not detected and any(int(a.GetFormalCharge()) != 0 for a in mol.GetAtoms()):
@@ -213,14 +312,25 @@ def detect_charged_groups(mol, *, detection: str = "auto") -> dict[str, Any]:
         "fallback": fallback,
         "groups": [grp.to_dict() for grp in groups],
         "neutral_remainder": list(neutral_atoms),
-        "equivalence_groups": [list(g) for g in equivalence],
         "molecule_formal_charge": int(sum(int(a.GetFormalCharge()) for a in mol.GetAtoms())),
+        "resp_profile": profile,
     }
+    localized_groups = uses_localized_charge_groups(summary)
+    equivalence = _resp_equivalence_groups(
+        mol,
+        groups=groups,
+        neutral_atoms=neutral_atoms,
+        localized_groups=bool(localized_groups),
+        resp_profile=profile,
+    )
+
+    summary["equivalence_groups"] = [list(g) for g in equivalence]
     return summary
 
 
-def annotate_polyelectrolyte_metadata(mol, *, detection: str = "auto") -> dict[str, Any]:
-    summary = detect_charged_groups(mol, detection=detection)
+def annotate_polyelectrolyte_metadata(mol, *, detection: str = "auto", resp_profile: str = "adaptive") -> dict[str, Any]:
+    profile = _normalize_resp_profile(resp_profile)
+    summary = detect_charged_groups(mol, detection=detection, resp_profile=profile)
     localized_groups = uses_localized_charge_groups(summary)
     constraints = {
         "mode": "grouped" if localized_groups else "whole_molecule_scale",
@@ -237,6 +347,7 @@ def annotate_polyelectrolyte_metadata(mol, *, detection: str = "auto") -> dict[s
         "neutral_remainder_indices": list(summary["neutral_remainder"]),
         "equivalence_groups": [list(g) for g in summary["equivalence_groups"]],
         "fallback": summary["fallback"],
+        "resp_profile": profile,
     }
     if summary["groups"] and not localized_groups and constraints["fallback"] is None:
         constraints["fallback"] = "whole_molecule_scale"

@@ -94,6 +94,115 @@ def _density_from_mass_and_volume(total_mass_amu: float, volume_nm3: float) -> O
     except Exception:
         return None
 
+
+def _tail_linear_trend(t_ps: np.ndarray, y: np.ndarray, *, tail_frac: float = 0.35) -> Dict[str, Any]:
+    """Small trend diagnostic for density/volume relaxation gates."""
+
+    try:
+        t = np.asarray(t_ps, dtype=float)
+        yv = np.asarray(y, dtype=float)
+        mask = np.isfinite(t) & np.isfinite(yv)
+        t = t[mask]
+        yv = yv[mask]
+        if t.size < 8 or yv.size < 8:
+            return {"ok": False, "reason": "series_too_short"}
+        start = max(0, int(np.floor((1.0 - float(tail_frac)) * t.size)))
+        tt = t[start:]
+        yy = yv[start:]
+        if tt.size < 5 or yy.size < 5:
+            return {"ok": False, "reason": "tail_too_short"}
+        A = np.vstack([tt, np.ones_like(tt)]).T
+        slope, intercept = np.linalg.lstsq(A, yy, rcond=None)[0]
+        half = max(1, yy.size // 2)
+        first_mean = float(np.mean(yy[:half]))
+        second_mean = float(np.mean(yy[-half:]))
+        mean = float(np.mean(yy))
+        delta = float(second_mean - first_mean)
+        return {
+            "ok": True,
+            "slope_per_ps": float(slope),
+            "slope_rel_per_ps": float(slope / abs(mean)) if mean != 0.0 else float("inf"),
+            "intercept": float(intercept),
+            "tail_delta": delta,
+            "tail_rel_delta": float(delta / abs(mean)) if mean != 0.0 else float("inf"),
+            "tail_start_ps": float(tt[0]),
+            "tail_end_ps": float(tt[-1]),
+            "tail_mean": mean,
+            "tail_rel_std": float(np.std(yy) / abs(mean)) if mean != 0.0 else float("inf"),
+        }
+    except Exception as exc:
+        return {"ok": False, "reason": str(exc)}
+
+
+def _compression_relaxation_state(
+    *,
+    density_gate: Optional[Dict[str, Any]],
+    density_trend: Optional[Dict[str, Any]],
+    volume_trend: Optional[Dict[str, Any]],
+    rg_gate: Optional[Dict[str, Any]],
+    handoff_bond_geometry: Optional[Dict[str, Any]],
+    has_polymer: bool,
+    density_slope_threshold_per_ps: float,
+    density_delta_threshold_kg_m3: float = 2.0,
+    volume_rel_slope_threshold_per_ps: float = 5.0e-5,
+    volume_rel_delta_threshold: float = 2.0e-3,
+) -> Dict[str, Any]:
+    density_trend = density_trend if isinstance(density_trend, dict) else {}
+    volume_trend = volume_trend if isinstance(volume_trend, dict) else {}
+    density_gate = density_gate if isinstance(density_gate, dict) else {}
+    rg_gate = rg_gate if isinstance(rg_gate, dict) else None
+    handoff_bond_geometry = handoff_bond_geometry if isinstance(handoff_bond_geometry, dict) else None
+
+    density_still_compressing = False
+    if bool(density_trend.get("ok")):
+        density_still_compressing = bool(
+            float(density_trend.get("slope_per_ps") or 0.0) > float(density_slope_threshold_per_ps)
+            and float(density_trend.get("tail_delta") or 0.0) > float(density_delta_threshold_kg_m3)
+        )
+
+    volume_still_compressing = False
+    if bool(volume_trend.get("ok")):
+        volume_still_compressing = bool(
+            float(volume_trend.get("slope_rel_per_ps") or 0.0) < -float(volume_rel_slope_threshold_per_ps)
+            and float(volume_trend.get("tail_rel_delta") or 0.0) < -float(volume_rel_delta_threshold)
+        )
+
+    density_ok = bool(density_gate.get("ok"))
+    rg_ok = True if not has_polymer else bool(rg_gate and rg_gate.get("ok"))
+    still_compressing = bool(density_still_compressing or volume_still_compressing)
+    if has_polymer:
+        if still_compressing or not density_ok:
+            recommended = "polymer_density_recovery"
+        elif not rg_ok:
+            recommended = "polymer_chain_relaxation"
+        else:
+            recommended = "production"
+    else:
+        if density_ok and not still_compressing:
+            recommended = "production"
+        elif still_compressing:
+            recommended = "liquid_density_recovery"
+        else:
+            recommended = "additional_npt"
+
+    return {
+        "system_class": "polymer" if has_polymer else "liquid",
+        "density_ok": bool(density_ok),
+        "rg_ok": bool(rg_ok),
+        "density_still_compressing": bool(density_still_compressing),
+        "box_volume_still_compressing": bool(volume_still_compressing),
+        "density_or_volume_still_compressing": bool(still_compressing),
+        "handoff_bond_geometry": handoff_bond_geometry,
+        "recommended_next_strategy": recommended,
+        "criteria": {
+            "density_slope_threshold_per_ps": float(density_slope_threshold_per_ps),
+            "density_delta_threshold_kg_m3": float(density_delta_threshold_kg_m3),
+            "volume_rel_slope_threshold_per_ps": float(volume_rel_slope_threshold_per_ps),
+            "volume_rel_delta_threshold": float(volume_rel_delta_threshold),
+        },
+    }
+
+
 def _first_shell_from_gr(r: np.ndarray, g: np.ndarray, cn: np.ndarray) -> Dict[str, Any]:
     """Estimate first shell location: peak and first minimum after peak."""
     if len(r) < 5:
@@ -882,15 +991,15 @@ class AnalyzeResult:
                 # even when the box is already usable for downstream interface preparation.
                 "slope_threshold_per_ps": 1.5e-1,
                 "rel_std_threshold": 0.03,
+                "rel_drift_threshold": 0.05,
             }
         return {
             "min_window_frac": 0.2,
             "step_frac": 0.02,
             "slope_threshold_per_ps": 8e-2,
             "rel_std_threshold": 0.02,
+            "rel_drift_threshold": 0.03,
         }
-
-
 
     def _read_mdp_kv(self, mdp_path: Path) -> dict[str, str]:
         """Parse a GROMACS .mdp into a {key: value} mapping (best-effort)."""
@@ -1243,6 +1352,42 @@ class AnalyzeResult:
         s = self._rg_series()
         return None if s is None else np.asarray(s["rg_nm"], dtype=float)
 
+    def _handoff_bond_geometry_summary(self) -> Optional[Dict[str, Any]]:
+        """Return the final stage handoff bond check if the workflow recorded one."""
+
+        candidates = [
+            Path(self.tpr).parent / "summary.json",
+            Path(self.edr).parent / "summary.json",
+            Path(self.tpr).parent.parent / "summary.json",
+        ]
+        for path in candidates:
+            try:
+                payload = json.loads(Path(path).read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            if not isinstance(payload, dict):
+                continue
+            direct = payload.get("handoff_bond_geometry")
+            if isinstance(direct, dict):
+                return direct
+            stages = payload.get("stages")
+            if isinstance(stages, list):
+                stage_dir = str(Path(self.tpr).parent)
+                match = None
+                for row in stages:
+                    if not isinstance(row, dict):
+                        continue
+                    if str(row.get("dir") or "") == stage_dir:
+                        match = row
+                if match is None:
+                    for row in reversed(stages):
+                        if isinstance(row, dict):
+                            match = row
+                            break
+                if isinstance(match, dict) and isinstance(match.get("handoff_bond_geometry"), dict):
+                    return match["handoff_bond_geometry"]
+        return None
+
     def check_eq(self) -> bool:
         """Equilibration convergence check (yzc-gmx-gen style).
 
@@ -1257,6 +1402,8 @@ class AnalyzeResult:
         ok = True
         density_gate = None
         rg_gate = None
+        density_trend = None
+        box_volume_trend = None
         poly_mts = self._polymer_moltypes_from_meta()
         density_kwargs = self._density_plateau_kwargs(has_polymer=bool(poly_mts))
 
@@ -1270,38 +1417,100 @@ class AnalyzeResult:
                 if "density" in str(have).lower():
                     dens_term = str(have)
                     break
-            if dens_term is not None:
-                runner.energy_xvg(edr=self.edr, out_xvg=out_xvg, terms=[dens_term])
+            if dens_term is None:
+                density_gate = {
+                    "ok": False,
+                    "reason": "Density term not available in EDR",
+                    "severity": "high",
+                    "recommended_action": "density_cannot_be_verified; do_not_trust_transport",
+                }
+                ok = False
+            else:
+                volume_term = None
+                for have in mapping.keys():
+                    norm = self._normalize_term_name(have)
+                    if "volume" in norm:
+                        volume_term = str(have)
+                        break
+                terms = [dens_term]
+                if volume_term is not None and volume_term != dens_term:
+                    terms.append(volume_term)
+                try:
+                    runner.energy_xvg(edr=self.edr, out_xvg=out_xvg, terms=terms, allow_missing=True)
+                except TypeError:
+                    runner.energy_xvg(edr=self.edr, out_xvg=out_xvg, terms=terms)
                 df = read_xvg(out_xvg).df
                 if "x" in df.columns and len(df.columns) >= 2:
                     t_ps = np.asarray(df["x"].values, dtype=float)
-                    y = np.asarray(df[df.columns[1]].values, dtype=float)
+                    density_col = None
+                    volume_col = None
+                    for col in df.columns:
+                        if col == "x":
+                            continue
+                        norm = self._normalize_term_name(col)
+                        if density_col is None and "density" in norm:
+                            density_col = col
+                        if volume_col is None and "volume" in norm:
+                            volume_col = col
+                    if density_col is None:
+                        density_col = df.columns[1]
+                    y = np.asarray(df[density_col].values, dtype=float)
                     from ..gmx.analysis.plateau import find_plateau_start
 
                     # Density in GROMACS is typically kg/m^3. Use a relaxed slope gate for
                     # polymer and electrolyte systems where the tail-window mean can still drift
                     # slightly even after the short-time fluctuations have settled.
                     res = find_plateau_start(t_ps, y, **density_kwargs)
+                    density_trend = _tail_linear_trend(t_ps, y)
+                    if volume_col is not None:
+                        box_volume_trend = _tail_linear_trend(t_ps, np.asarray(df[volume_col].values, dtype=float))
+                    plateau_ok = bool(res.ok)
+                    density_ok = bool(plateau_ok)
+                    severity = "none" if density_ok else "medium"
+                    recommended_action = (
+                        "density_converged"
+                        if density_ok
+                        else "continue_NPT_density_relaxation_until_density_time_series_plateaus"
+                    )
                     density_gate = {
-                        "ok": bool(res.ok),
+                        "ok": density_ok,
+                        "plateau_ok": plateau_ok,
                         "window_start_time_ps": float(res.window_start_time_ps),
                         "mean": float(res.mean),
                         "std": float(res.std),
                         "rel_std": float(res.rel_std),
                         "slope_per_ps": float(res.slope),
+                        "tail_span_ps": float(getattr(res, "tail_span_ps", float("nan"))),
+                        "rel_drift": float(getattr(res, "rel_drift", float("nan"))),
                         "term": str(dens_term),
                         "criteria": {k: float(v) for k, v in density_kwargs.items()},
+                        "severity": severity,
+                        "recommended_action": recommended_action,
                         "system_class": ("polymer" if poly_mts else "liquid"),
                     }
-                    if not res.ok:
+                    if not density_ok:
                         ok = False
                         utils.radon_print(
-                            f"Density gate does not converge. mean={res.mean:.6g}, std={res.std:.6g}, rel_std={res.rel_std:.3g}, slope={res.slope:.3g} /ps",
+                            f"Density gate does not converge. mean={res.mean:.6g}, std={res.std:.6g}, rel_std={res.rel_std:.3g}, slope={res.slope:.3g} /ps, severity={severity}",
                             level=2,
                         )
+                else:
+                    density_gate = {
+                        "ok": False,
+                        "reason": "Density term could not be parsed from energy output",
+                        "term": str(dens_term),
+                        "severity": "high",
+                        "recommended_action": "density_cannot_be_verified; do_not_trust_transport",
+                    }
+                    ok = False
         except Exception:
             # If density cannot be computed, we do not fail hard, but report.
-            density_gate = {"ok": False, "reason": "Density term not available or parse failed"}
+            density_gate = {
+                "ok": False,
+                "reason": "Density term not available or parse failed",
+                "severity": "high",
+                "recommended_action": "density_cannot_be_verified; do_not_trust_transport",
+            }
             ok = False
 
         # --- polymer Rg gate (only for polymer systems) ---
@@ -1339,6 +1548,27 @@ class AnalyzeResult:
                         level=2,
                     )
         # --- print a clear summary (so users can see why additional rounds run) ---
+        relaxation_state = _compression_relaxation_state(
+            density_gate=density_gate,
+            density_trend=density_trend,
+            volume_trend=box_volume_trend,
+            rg_gate=rg_gate,
+            handoff_bond_geometry=self._handoff_bond_geometry_summary(),
+            has_polymer=bool(poly_mts),
+            density_slope_threshold_per_ps=float(density_kwargs.get("slope_threshold_per_ps", 8e-2)),
+        )
+        if (
+            isinstance(density_gate, dict)
+            and bool(density_gate.get("plateau_ok"))
+            and bool(relaxation_state.get("density_or_volume_still_compressing"))
+        ):
+            ok = False
+            density_gate["ok"] = False
+            density_gate["trend_ok"] = False
+            density_gate["severity"] = "medium"
+            density_gate["recommended_action"] = (
+                "continue_NPT_density_relaxation_until_box_volume_and_density_stop_compressing"
+            )
         try:
             utils.radon_print("================ Equilibration convergence check ================", level=1)
 
@@ -1349,12 +1579,13 @@ class AnalyzeResult:
                 st = "PASS" if density_gate.get("ok") else "FAIL"
                 lvl = 1 if density_gate.get("ok") else 2
                 utils.radon_print(
-                    "[EQ-CHECK] Density plateau: %s | term=%s | mean=%.6g | rel_std=%.3g | slope=%.3g /ps | window_start=%.3g ps" % (
+                    "[EQ-CHECK] Density plateau: %s | term=%s | mean=%.6g | rel_std=%.3g | slope=%.3g /ps | severity=%s | window_start=%.3g ps" % (
                         st,
                         density_gate.get("term"),
                         float(density_gate.get("mean", float('nan'))),
                         float(density_gate.get("rel_std", float('nan'))),
                         float(density_gate.get("slope_per_ps", float('nan'))),
+                        density_gate.get("severity"),
                         float(density_gate.get("window_start_time_ps", float('nan'))),
                     ),
                     level=lvl,
@@ -1386,6 +1617,14 @@ class AnalyzeResult:
             # Overall
             st = "PASS" if ok else "FAIL"
             utils.radon_print("[EQ-CHECK] Overall: %s" % st, level=1 if ok else 2)
+            utils.radon_print(
+                "[EQ-CHECK] Relaxation strategy: %s | density_or_volume_still_compressing=%s"
+                % (
+                    relaxation_state.get("recommended_next_strategy"),
+                    relaxation_state.get("density_or_volume_still_compressing"),
+                ),
+                level=1 if ok else 2,
+            )
             utils.radon_print("[EQ-CHECK] Details saved to analysis/equilibrium.json and analysis/plots/", level=1)
             utils.radon_print("=================================================================", level=1)
         except Exception:
@@ -1396,8 +1635,13 @@ class AnalyzeResult:
             payload = {"ok": bool(ok)}
             if density_gate is not None:
                 payload["density_gate"] = density_gate
+            if density_trend is not None:
+                payload["density_trend"] = density_trend
+            if box_volume_trend is not None:
+                payload["box_volume_trend"] = box_volume_trend
             if rg_gate is not None:
                 payload["rg_gate"] = rg_gate
+            payload["relaxation_state"] = relaxation_state
             (self._analysis_dir() / "equilibrium.json").write_text(
                 json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
             )
@@ -1780,6 +2024,8 @@ class AnalyzeResult:
                     "geometry": str(metric_data.get("geometry") or geometry_mode),
                     "n_groups": int(metric_data.get("n_groups") or 0),
                     "frame_interval_ps": metric_data.get("frame_interval_ps"),
+                    "trajectory_time_start_ps": metric_data.get("trajectory_time_start_ps"),
+                    "trajectory_time_end_ps": metric_data.get("trajectory_time_end_ps"),
                     "series_csv": str(csv_path),
                     "fit_t_start_ps": fit.get("fit_t_start_ps"),
                     "fit_t_end_ps": fit.get("fit_t_end_ps"),
@@ -1813,6 +2059,8 @@ class AnalyzeResult:
                             "formal_charge_e": comp.get("formal_charge_e"),
                             "charge_sign": comp.get("charge_sign"),
                             "n_groups": comp.get("n_groups"),
+                            "trajectory_time_start_ps": metric_data.get("trajectory_time_start_ps"),
+                            "trajectory_time_end_ps": metric_data.get("trajectory_time_end_ps"),
                             "series_csv": str(comp_csv),
                             "fit_t_start_ps": comp.get("fit_t_start_ps"),
                             "fit_t_end_ps": comp.get("fit_t_end_ps"),

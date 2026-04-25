@@ -42,6 +42,12 @@ _POLYELECTROLYTE_PROP_KEYS = (
     "_yadonpy_polyelectrolyte_summary_json",
 )
 
+_RESP_META_PROP_KEYS = (
+    "_yadonpy_psiresp_constraints",
+    "_yadonpy_resp_profile",
+    "_yadonpy_qm_recipe_json",
+)
+
 
 def _bonded_meta_from_mol(mol: Chem.Mol) -> Dict[str, str]:
     meta: Dict[str, str] = {}
@@ -72,18 +78,31 @@ def _variant_default_token(value: str | None, *, default: str) -> str:
     return s if s else default
 
 
+def _normalize_resp_profile(value: str | None) -> str | None:
+    raw = str(value or "").strip().lower()
+    if not raw:
+        return None
+    if raw in {"default", "current"}:
+        raw = "adaptive"
+    if raw not in {"adaptive", "legacy"}:
+        raise ValueError(f"Unsupported RESP profile: {value!r}")
+    return raw
+
+
 def _constraint_signature(summary: Any, constraints: Any) -> str | None:
     payload: dict[str, Any] = {}
     if isinstance(summary, dict):
         payload["groups"] = summary.get("groups") or []
         payload["detection"] = summary.get("detection")
         payload["fallback"] = summary.get("fallback")
+        payload["resp_profile"] = summary.get("resp_profile")
     if isinstance(constraints, dict):
         payload["mode"] = constraints.get("mode")
         payload["charged_group_constraints"] = constraints.get("charged_group_constraints") or []
         payload["equivalence_groups"] = constraints.get("equivalence_groups") or []
         payload["neutral_remainder_indices"] = constraints.get("neutral_remainder_indices") or []
         payload["neutral_remainder_charge"] = constraints.get("neutral_remainder_charge")
+        payload["resp_profile"] = constraints.get("resp_profile") or payload.get("resp_profile")
     if not payload:
         return None
     raw = json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
@@ -95,11 +114,25 @@ def _polyelectrolyte_variant_meta_from_mol(
     *,
     polyelectrolyte_mode: bool | None = None,
     polyelectrolyte_detection: str | None = None,
+    resp_profile: str | None = None,
 ) -> Dict[str, Any]:
     summary = _json_prop(mol, "_yadonpy_polyelectrolyte_summary_json")
     charge_groups = _json_prop(mol, "_yadonpy_charge_groups_json")
     constraints = _json_prop(mol, "_yadonpy_resp_constraints_json")
+    psiresp_constraints = _json_prop(mol, "_yadonpy_psiresp_constraints")
+    qm_recipe = _json_prop(mol, "_yadonpy_qm_recipe_json")
     detection = str(polyelectrolyte_detection).strip() if polyelectrolyte_detection is not None else None
+    profile = _normalize_resp_profile(resp_profile)
+    if profile is None:
+        try:
+            if mol.HasProp("_yadonpy_resp_profile"):
+                profile = _normalize_resp_profile(mol.GetProp("_yadonpy_resp_profile"))
+        except Exception:
+            profile = None
+    if profile is None and isinstance(constraints, dict):
+        profile = _normalize_resp_profile(constraints.get("resp_profile"))
+    if profile is None and isinstance(summary, dict):
+        profile = _normalize_resp_profile(summary.get("resp_profile"))
     if not detection and isinstance(summary, dict):
         raw_detection = summary.get("detection")
         if raw_detection is not None:
@@ -114,7 +147,11 @@ def _polyelectrolyte_variant_meta_from_mol(
         )
     ):
         try:
-            regenerated = annotate_polyelectrolyte_metadata(mol, detection=detection or "auto")
+            regenerated = annotate_polyelectrolyte_metadata(
+                mol,
+                detection=detection or "auto",
+                resp_profile=profile or "adaptive",
+            )
             regen_summary = regenerated.get("summary")
             if isinstance(regen_summary, dict) and uses_localized_charge_groups(regen_summary):
                 summary = regen_summary
@@ -129,6 +166,8 @@ def _polyelectrolyte_variant_meta_from_mol(
         "polyelectrolyte_detection": detection or "auto",
         "constraint_signature": _constraint_signature(summary, constraints),
     }
+    if profile:
+        meta["resp_profile"] = profile
     if isinstance(summary, dict):
         meta["polyelectrolyte_summary"] = summary
         meta["is_polyelectrolyte"] = bool(summary.get("is_polyelectrolyte"))
@@ -138,6 +177,10 @@ def _polyelectrolyte_variant_meta_from_mol(
         meta["charge_groups"] = charge_groups
     if isinstance(constraints, dict):
         meta["resp_constraints"] = constraints
+    if isinstance(psiresp_constraints, dict):
+        meta["psiresp_constraints"] = psiresp_constraints
+    if isinstance(qm_recipe, dict):
+        meta["qm_recipe"] = qm_recipe
     try:
         if mol.HasProp("_YADONPY_KIND"):
             meta["source_kind"] = str(mol.GetProp("_YADONPY_KIND"))
@@ -154,6 +197,7 @@ def _variant_payload_dict(
     polyelectrolyte_mode: bool | None = None,
     polyelectrolyte_detection: str | None = None,
     constraint_signature: str | None = None,
+    resp_profile: str | None = None,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "charge": _variant_default_token(charge, default="RESP").upper(),
@@ -166,6 +210,9 @@ def _variant_payload_dict(
         payload["polyelectrolyte_detection"] = str(polyelectrolyte_detection).strip()
     if constraint_signature:
         payload["constraint_signature"] = str(constraint_signature).strip()
+    normalized_profile = _normalize_resp_profile(resp_profile)
+    if normalized_profile:
+        payload["resp_profile"] = normalized_profile
     return payload
 
 
@@ -586,6 +633,7 @@ def variant_id(
     polyelectrolyte_mode: bool | None = None,
     polyelectrolyte_detection: str | None = None,
     constraint_signature: str | None = None,
+    resp_profile: str | None = None,
 ) -> str:
     """Stable short id for a charge variant."""
     payload = _variant_payload_dict(
@@ -595,6 +643,7 @@ def variant_id(
         polyelectrolyte_mode=polyelectrolyte_mode,
         polyelectrolyte_detection=polyelectrolyte_detection,
         constraint_signature=constraint_signature,
+        resp_profile=resp_profile,
     )
     raw = json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(raw).hexdigest()[:12]
@@ -608,6 +657,7 @@ def _variant_matches(
     method: str | None = None,
     polyelectrolyte_mode: bool | None = None,
     polyelectrolyte_detection: str | None = None,
+    resp_profile: str | None = None,
 ) -> bool:
     if not isinstance(meta, dict):
         return False
@@ -622,6 +672,11 @@ def _variant_matches(
     if polyelectrolyte_detection is not None:
         if _variant_default_token(meta.get("polyelectrolyte_detection"), default="auto") != _variant_default_token(polyelectrolyte_detection, default="auto"):
             return False
+    expected_profile = _normalize_resp_profile(resp_profile)
+    if expected_profile is not None:
+        meta_profile = _normalize_resp_profile(meta.get("resp_profile")) or "legacy"
+        if meta_profile != expected_profile:
+            return False
     return True
 
 
@@ -633,6 +688,7 @@ def _select_variant(
     method: str | None = None,
     polyelectrolyte_mode: bool | None = None,
     polyelectrolyte_detection: str | None = None,
+    resp_profile: str | None = None,
 ) -> tuple[str, dict[str, Any] | None]:
     variants = rec.variants or {}
     exact_vid = variant_id(
@@ -641,6 +697,7 @@ def _select_variant(
         method=method,
         polyelectrolyte_mode=polyelectrolyte_mode,
         polyelectrolyte_detection=polyelectrolyte_detection,
+        resp_profile=resp_profile,
     )
     if exact_vid in variants:
         return exact_vid, variants.get(exact_vid)
@@ -652,7 +709,7 @@ def _select_variant(
     candidates = [
         (vid, meta)
         for vid, meta in sorted(variants.items())
-        if _variant_matches(meta, charge=charge, basis_set=basis_set, method=method)
+        if _variant_matches(meta, charge=charge, basis_set=basis_set, method=method, resp_profile=resp_profile)
     ]
     if not candidates and (basis_set is None or method is None):
         candidates = [
@@ -677,7 +734,7 @@ def _select_variant(
     if len(candidates) == 1:
         return candidates[0]
 
-    if polyelectrolyte_mode is not None or polyelectrolyte_detection is not None:
+    if polyelectrolyte_mode is not None or polyelectrolyte_detection is not None or resp_profile is not None:
         strict = [
             (vid, meta)
             for vid, meta in candidates
@@ -688,19 +745,21 @@ def _select_variant(
                 method=method,
                 polyelectrolyte_mode=polyelectrolyte_mode,
                 polyelectrolyte_detection=polyelectrolyte_detection,
+                resp_profile=resp_profile,
             )
         ]
         if strict:
             return strict[0]
 
-    def _score(item: tuple[str, dict[str, Any]]) -> tuple[int, int, int, str]:
+    def _score(item: tuple[str, dict[str, Any]]) -> tuple[int, int, int, int, str]:
         vid, meta = item
+        profile_rank = {"adaptive": 2, "legacy": 1}.get(str(meta.get("resp_profile") or "").strip().lower(), 0)
         pe = int(bool(meta.get("polyelectrolyte_mode", False)))
         ready = int(bool(meta.get("ready", False)))
         group_count = int(meta.get("charge_group_count", 0) or 0)
         if rec.kind == "psmiles":
-            return (pe, group_count, ready, vid)
-        return (ready, pe, group_count, vid)
+            return (profile_rank, pe, group_count, ready, vid)
+        return (profile_rank, ready, pe, group_count, vid)
 
     return max(candidates, key=_score)
 
@@ -712,6 +771,7 @@ def _restore_polyelectrolyte_variant(mol: Chem.Mol, meta: dict[str, Any] | None)
         ("_yadonpy_charge_groups_json", "charge_groups"),
         ("_yadonpy_resp_constraints_json", "resp_constraints"),
         ("_yadonpy_polyelectrolyte_summary_json", "polyelectrolyte_summary"),
+        ("_yadonpy_psiresp_constraints", "psiresp_constraints"),
     ):
         try:
             value = meta.get(key)
@@ -726,6 +786,10 @@ def _restore_polyelectrolyte_variant(mol: Chem.Mol, meta: dict[str, Any] | None)
             mol.SetProp("_YADONPY_POLYELECTROLYTE_DETECTION", str(meta.get("polyelectrolyte_detection")))
         if meta.get("constraint_signature"):
             mol.SetProp("_YADONPY_CONSTRAINT_SIGNATURE", str(meta.get("constraint_signature")))
+        if meta.get("resp_profile"):
+            mol.SetProp("_yadonpy_resp_profile", str(meta.get("resp_profile")))
+        if isinstance(meta.get("qm_recipe"), dict):
+            mol.SetProp("_yadonpy_qm_recipe_json", json.dumps(meta.get("qm_recipe"), ensure_ascii=False))
     except Exception:
         pass
 
@@ -828,6 +892,7 @@ class MolDB:
         method: str | None = None,
         polyelectrolyte_mode: bool | None = None,
         polyelectrolyte_detection: str | None = None,
+        resp_profile: str | None = None,
     ) -> str:
         charges: List[float] = []
         for atom in mol.GetAtoms():
@@ -841,6 +906,7 @@ class MolDB:
             mol,
             polyelectrolyte_mode=polyelectrolyte_mode,
             polyelectrolyte_detection=polyelectrolyte_detection,
+            resp_profile=resp_profile,
         )
         vid = variant_id(
             charge=charge,
@@ -849,6 +915,7 @@ class MolDB:
             polyelectrolyte_mode=pe_meta.get("polyelectrolyte_mode"),
             polyelectrolyte_detection=pe_meta.get("polyelectrolyte_detection"),
             constraint_signature=pe_meta.get("constraint_signature"),
+            resp_profile=pe_meta.get("resp_profile"),
         )
         payload = {
             "key": key,
@@ -863,6 +930,9 @@ class MolDB:
             "charge_groups": pe_meta.get("charge_groups") or [],
             "resp_constraints": pe_meta.get("resp_constraints") or {},
             "polyelectrolyte_summary": pe_meta.get("polyelectrolyte_summary") or {},
+            "psiresp_constraints": pe_meta.get("psiresp_constraints") or {},
+            "resp_profile": pe_meta.get("resp_profile"),
+            "qm_recipe": pe_meta.get("qm_recipe") or {},
             "source_kind": pe_meta.get("source_kind"),
         }
 
@@ -904,9 +974,12 @@ class MolDB:
                 "charge_groups": payload.get("charge_groups") or [],
                 "resp_constraints": payload.get("resp_constraints") or {},
                 "polyelectrolyte_summary": payload.get("polyelectrolyte_summary") or {},
+                "psiresp_constraints": payload.get("psiresp_constraints") or {},
                 "polyelectrolyte_mode": payload.get("polyelectrolyte_mode"),
                 "polyelectrolyte_detection": payload.get("polyelectrolyte_detection"),
                 "constraint_signature": payload.get("constraint_signature"),
+                "resp_profile": payload.get("resp_profile"),
+                "qm_recipe": payload.get("qm_recipe") or {},
             },
         )
         return mol
@@ -984,6 +1057,7 @@ class MolDB:
         method: str | None = None,
         polyelectrolyte_mode: bool | None = None,
         polyelectrolyte_detection: str | None = None,
+        resp_profile: str | None = None,
     ) -> Tuple[Chem.Mol, MolRecord]:
         kind, canon, key = canonical_key(smiles_or_psmiles)
         rec = self.load_record(key)
@@ -997,6 +1071,7 @@ class MolDB:
             method=method,
             polyelectrolyte_mode=polyelectrolyte_mode,
             polyelectrolyte_detection=polyelectrolyte_detection,
+            resp_profile=resp_profile,
         )
 
         if require_ready:
@@ -1067,7 +1142,8 @@ class MolDB:
                         if polyelectrolyte_detection is not None
                         else str((selected_meta or {}).get("polyelectrolyte_detection") or "auto").strip() or "auto"
                     )
-                    regenerated = annotate_polyelectrolyte_metadata(mol, detection=detection)
+                    regen_profile = _normalize_resp_profile(resp_profile) or _normalize_resp_profile((selected_meta or {}).get("resp_profile")) or "adaptive"
+                    regenerated = annotate_polyelectrolyte_metadata(mol, detection=detection, resp_profile=regen_profile)
                     regen_summary = regenerated.get("summary")
                     regen_constraints = regenerated.get("constraints")
                     regen_groups = regen_summary.get("groups") if isinstance(regen_summary, dict) else None
@@ -1121,6 +1197,7 @@ class MolDB:
         method: str | None = None,
         polyelectrolyte_mode: bool | None = None,
         polyelectrolyte_detection: str | None = None,
+        resp_profile: str | None = None,
     ) -> MolRecord:
         """Persist current geometry + charges from an in-memory mol into the DB.
 
@@ -1161,6 +1238,7 @@ class MolDB:
             mol,
             polyelectrolyte_mode=polyelectrolyte_mode,
             polyelectrolyte_detection=polyelectrolyte_detection,
+            resp_profile=resp_profile,
         )
         vid = self.save_charges(
             key,
@@ -1170,6 +1248,7 @@ class MolDB:
             method=method,
             polyelectrolyte_mode=pe_meta.get("polyelectrolyte_mode"),
             polyelectrolyte_detection=pe_meta.get("polyelectrolyte_detection"),
+            resp_profile=pe_meta.get("resp_profile"),
         )
 
         bonded_meta = self._persist_bonded_variant(mol, key=key, vid=vid)
@@ -1188,6 +1267,9 @@ class MolDB:
             "charge_groups": pe_meta.get("charge_groups") or [],
             "resp_constraints": pe_meta.get("resp_constraints") or {},
             "polyelectrolyte_summary": pe_meta.get("polyelectrolyte_summary") or {},
+            "psiresp_constraints": pe_meta.get("psiresp_constraints") or {},
+            "resp_profile": pe_meta.get("resp_profile"),
+            "qm_recipe": pe_meta.get("qm_recipe") or {},
             "is_polyelectrolyte": bool(pe_meta.get("is_polyelectrolyte", False)),
             "is_polymer": bool(pe_meta.get("is_polymer", False)),
             "charge_group_count": int(pe_meta.get("charge_group_count", 0) or 0),

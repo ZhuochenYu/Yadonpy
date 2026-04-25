@@ -3940,6 +3940,10 @@ def amorphous_cell(
             _cached_mol_id = None
             _cached_artifact_dir = None
             _ff_name = None
+            _charge_method = None
+            _prefer_db = None
+            _require_db = None
+            _require_ready = None
             _charge_groups = None
             _resp_constraints = None
             _polyelectrolyte_summary = None
@@ -3960,6 +3964,14 @@ def amorphous_cell(
                         _cached_artifact_dir = str(_mol.GetProp('_yadonpy_artifact_dir')).strip() or None
                     if _mol.HasProp('ff_name'):
                         _ff_name = str(_mol.GetProp('ff_name')).strip() or None
+                    if _mol.HasProp('_yadonpy_charge_method'):
+                        _charge_method = str(_mol.GetProp('_yadonpy_charge_method')).strip() or None
+                    if _mol.HasProp('_yadonpy_prefer_db'):
+                        _prefer_db = str(_mol.GetProp('_yadonpy_prefer_db')).strip() or None
+                    if _mol.HasProp('_yadonpy_require_db'):
+                        _require_db = str(_mol.GetProp('_yadonpy_require_db')).strip() or None
+                    if _mol.HasProp('_yadonpy_require_ready'):
+                        _require_ready = str(_mol.GetProp('_yadonpy_require_ready')).strip() or None
                     try:
                         _charge_groups = get_charge_groups(_mol)
                         _resp_constraints = get_resp_constraints(_mol)
@@ -3979,6 +3991,10 @@ def amorphous_cell(
                 _cached_mol_id = None
                 _cached_artifact_dir = None
                 _ff_name = None
+                _charge_method = None
+                _prefer_db = None
+                _require_db = None
+                _require_ready = None
                 _charge_groups = None
                 _resp_constraints = None
                 _polyelectrolyte_summary = None
@@ -4002,6 +4018,10 @@ def amorphous_cell(
                 'cached_mol_id': _cached_mol_id,
                 'cached_artifact_dir': _cached_artifact_dir,
                 'ff_name': _ff_name,
+                'charge_method': _charge_method,
+                'prefer_db': _prefer_db,
+                'require_db': _require_db,
+                'require_ready': _require_ready,
                 'charge_groups': _charge_groups,
                 'resp_constraints': _resp_constraints,
                 'polyelectrolyte_summary': _polyelectrolyte_summary,

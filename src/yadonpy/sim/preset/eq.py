@@ -406,6 +406,10 @@ def _cell_meta_contains_polymer(ac) -> bool:
     for sp in species:
         if not isinstance(sp, dict):
             continue
+        kind = str(sp.get("kind") or "").strip().lower()
+        smiles = str(sp.get("smiles") or sp.get("psmiles") or "")
+        if kind == "polymer" or "*" in smiles:
+            return True
         residue_map = sp.get("residue_map")
         if isinstance(residue_map, dict):
             try:
@@ -421,6 +425,68 @@ def _cell_meta_contains_polymer(ac) -> bool:
     return False
 
 
+def _cell_meta_contains_mobile_ions(ac) -> bool:
+    payload = _cell_meta_payload(ac)
+    species = list(payload.get("species") or [])
+    ion_kinds = {"ion", "salt", "cation", "anion"}
+    ion_names = {"li", "na", "k", "pf6", "fsi", "tfsi", "bf4", "cl", "br", "i"}
+    for sp in species:
+        if not isinstance(sp, dict):
+            continue
+        kind = str(sp.get("kind") or "").strip().lower()
+        if kind in ion_kinds:
+            return True
+        label = str(sp.get("label") or sp.get("name") or sp.get("moltype") or sp.get("mol_name") or "").strip().lower()
+        if label in ion_names:
+            return True
+        smiles = str(sp.get("smiles") or sp.get("psmiles") or "")
+        if "+" in smiles or "-" in smiles:
+            return True
+        try:
+            charge = float(sp.get("charge") or sp.get("net_charge") or sp.get("formal_charge") or 0.0)
+        except Exception:
+            charge = 0.0
+        if abs(charge) > 1.0e-6:
+            return True
+    return False
+
+
+def cell_meta_contains_polymer(ac) -> bool:
+    """Return whether an amorphous cell metadata payload looks polymeric.
+
+    This public wrapper lets examples and higher-level workflows choose an
+    equilibration strategy without relying on private helper names.
+    """
+
+    return _cell_meta_contains_polymer(ac)
+
+
+def select_relaxation_strategy(equilibrium_payload: dict[str, Any] | None, *, has_polymer: bool) -> str:
+    """Choose the next additional-equilibration strategy from gate diagnostics."""
+
+    payload = equilibrium_payload if isinstance(equilibrium_payload, dict) else {}
+    if bool(payload.get("ok")):
+        return "production"
+    density_gate = payload.get("density_gate") if isinstance(payload.get("density_gate"), dict) else {}
+    rg_gate = payload.get("rg_gate") if isinstance(payload.get("rg_gate"), dict) else {}
+    state = payload.get("relaxation_state") if isinstance(payload.get("relaxation_state"), dict) else {}
+    density_ok = bool(density_gate.get("ok"))
+    rg_ok = True if not has_polymer else bool(rg_gate.get("ok"))
+    still_compressing = bool(state.get("density_or_volume_still_compressing"))
+
+    if not has_polymer:
+        if still_compressing:
+            return "liquid_density_recovery"
+        if not density_ok:
+            return "additional_npt"
+        return "additional_npt"
+    if (not density_ok) or still_compressing:
+        return "polymer_density_recovery"
+    if not rg_ok:
+        return "polymer_chain_relaxation"
+    return "additional_npt"
+
+
 def _resolve_production_gpu_offload_mode(ac, requested_mode: object) -> str:
     token = _normalize_gpu_offload_mode(requested_mode)
     if token != "auto":
@@ -431,7 +497,11 @@ def _resolve_production_gpu_offload_mode(ac, requested_mode: object) -> str:
 def _resolve_production_bridge_ps(ac, bridge_ps: float | None) -> float:
     if bridge_ps is not None:
         return float(bridge_ps)
-    return 100.0 if _cell_meta_contains_polymer(ac) else 0.0
+    if _cell_meta_contains_polymer(ac):
+        return 100.0
+    if _cell_meta_contains_mobile_ions(ac):
+        return 20.0
+    return 0.0
 
 
 def _resolve_nvt_density_control(ac, density_control: bool | None) -> bool:
@@ -552,12 +622,38 @@ def _build_production_stages(
     bridge_dt_fs: float = 1.0,
     bridge_lincs_iter: int = 4,
     bridge_lincs_order: int = 12,
+    first_stage_gen_vel: str = "no",
+    settle_constraints: bool = True,
+    settle_nsteps: int = 5000,
 ) -> list[EqStage]:
+    from ...gmx.mdp_templates import MINIM_STEEP_HBONDS_MDP
+
     dt_ps = float(params["dt"])
     constraints_mode = _normalize_constraints_mode(constraints_mode)
     constraints_active = _constraints_use_lincs(constraints_mode)
     prod_steps = max(int((float(prod_ns) * 1000.0) / dt_ps), 1000)
     stages: list[EqStage] = []
+    stage_index = 1
+    if constraints_active and bool(settle_constraints):
+        settle_params = {
+            **params,
+            "nsteps": int(max(1, int(settle_nsteps))),
+            "emtol": 1000.0,
+            "emstep": 0.0005,
+            "constraints": constraints_mode,
+            "constraint_algorithm": "lincs",
+            "lincs_iter": max(int(params.get("lincs_iter", 2)), int(bridge_lincs_iter)),
+            "lincs_order": max(int(params.get("lincs_order", 8)), int(bridge_lincs_order)),
+        }
+        stages.append(
+            EqStage(
+                f"{stage_index:02d}_settle_constraints",
+                "minim",
+                MdpSpec(MINIM_STEEP_HBONDS_MDP, settle_params),
+                strict_constraints=True,
+            )
+        )
+        stage_index += 1
     if float(bridge_ps) > 0.0:
         bridge_dt_ps = max(float(bridge_dt_fs), 0.1) / 1000.0
         bridge_steps = max(int(round(float(bridge_ps) / bridge_dt_ps)), 1)
@@ -565,33 +661,49 @@ def _build_production_stages(
             **params,
             "dt": bridge_dt_ps,
             "nsteps": bridge_steps,
-            "continuation": "yes",
-            "gen_vel": "no",
+            "continuation": "no" if str(first_stage_gen_vel).strip().lower() == "yes" else "yes",
+            "gen_vel": str(first_stage_gen_vel),
         }
         if constraints_active:
             bridge_params["lincs_iter"] = max(int(params.get("lincs_iter", 2)), int(bridge_lincs_iter))
             bridge_params["lincs_order"] = max(int(params.get("lincs_order", 8)), int(bridge_lincs_order))
         stages.append(
             EqStage(
-                f"01_bridge_{stage_name}",
+                f"{stage_index:02d}_bridge_{stage_name}",
                 "md",
                 MdpSpec(template, bridge_params),
                 checkpoint_minutes=(float(checkpoint_min) if float(checkpoint_min) > 0.0 else None),
             )
         )
-        main_name = f"02_{stage_name}"
-    else:
-        main_name = f"01_{stage_name}"
+        stage_index += 1
+    main_name = f"{stage_index:02d}_{stage_name}"
     stages.append(
         EqStage(
             main_name,
             "md",
-            MdpSpec(template, {**params, "nsteps": prod_steps}),
+            MdpSpec(
+                template,
+                {
+                    **params,
+                    "nsteps": prod_steps,
+                    "continuation": "yes" if float(bridge_ps) > 0.0 else ("no" if str(first_stage_gen_vel).strip().lower() == "yes" else "yes"),
+                    "gen_vel": ("no" if float(bridge_ps) > 0.0 else str(first_stage_gen_vel)),
+                },
+            ),
             lincs_retry=StageLincsRetryPolicy() if constraints_active else None,
             checkpoint_minutes=(float(checkpoint_min) if float(checkpoint_min) > 0.0 else None),
         )
     )
     return stages
+
+
+def _has_md_outputs(stage_dir: Path) -> bool:
+    return all((Path(stage_dir) / name).exists() for name in ("md.tpr", "md.xtc", "md.edr", "md.gro"))
+
+
+def _is_additional_final_stage(stage_dir: Path) -> bool:
+    name = Path(stage_dir).name
+    return name == "04_md" or name.endswith("_final_npt")
 
 
 def _next_additional_round(work_dir: Path, *, restart: bool) -> tuple[int, Path]:
@@ -615,10 +727,16 @@ def _next_additional_round(work_dir: Path, *, restart: bool) -> tuple[int, Path]
             rounds.append((idx, d))
     rounds.sort(key=lambda x: x[0])
 
+    def _round_complete(d: Path) -> bool:
+        for stage_dir in sorted(Path(d).iterdir() if Path(d).exists() else ()):
+            if stage_dir.is_dir() and _is_additional_final_stage(stage_dir) and _has_md_outputs(stage_dir):
+                return True
+        return False
+
     if rounds and restart:
         idx, d = rounds[-1]
         # consider complete if final md files exist
-        if not ((d / "04_md" / "md.tpr").exists() and (d / "04_md" / "md.xtc").exists() and (d / "04_md" / "md.edr").exists() and (d / "04_md" / "md.gro").exists()):
+        if not _round_complete(d):
             return idx, d
         return idx + 1, base / f"round_{idx + 1:02d}"
 
@@ -646,8 +764,9 @@ def _find_latest_equilibrated_gro(work_dir: Path, *, exclude_dirs: Sequence[Path
     Priority:
             1) Production NPT run (05_npt_production/01_npt/md.gro)
             2) Additional rounds (highest round idx)
-            3) Main EQ21 run (new layout: 03_EQ21/03_EQ21/step_*/md.gro)
-            4) Legacy main EQ run (03_eq/04_md/md.gro)
+            3) Liquid anneal final NPT
+            4) Main EQ21 run (new layout: 03_EQ21/03_EQ21/step_*/md.gro)
+            5) Legacy main EQ run (03_eq/04_md/md.gro)
     """
     wd = Path(work_dir)
     excluded = tuple(Path(p) for p in (exclude_dirs or ()))
@@ -665,16 +784,49 @@ def _find_latest_equilibrated_gro(work_dir: Path, *, exclude_dirs: Sequence[Path
                 idx = int(d.name.split("_")[-1])
             except Exception:
                 continue
-            candidates = sorted([p for p in d.glob('*/md.gro') if p.is_file()])
-            gro = candidates[-1] if candidates else (d / "04_md" / "md.gro")
+            candidates = []
+            for stage_dir in sorted(d.iterdir()):
+                if not stage_dir.is_dir() or not _is_additional_final_stage(stage_dir):
+                    continue
+                gro = stage_dir / "md.gro"
+                if gro.is_file():
+                    candidates.append(gro)
+            if not candidates:
+                continue
+            gro = candidates[-1]
             if gro.exists() and not _is_within_any(gro, excluded):
                 rounds.append((idx, gro))
         if rounds:
             rounds.sort(key=lambda x: x[0])
             return rounds[-1][1]
 
+    liquid_root = wd / "03_liquid_anneal"
+    if liquid_root.exists():
+        candidates = [
+            p
+            for p in liquid_root.glob("*final_npt/md.gro")
+            if p.is_file() and not _is_within_any(p, excluded)
+        ]
+        if candidates:
+            candidates.sort(key=lambda p: p.stat().st_mtime)
+            return candidates[-1]
+
     eq21_root = wd / "03_EQ21"
     if eq21_root.exists():
+        ext_rounds = []
+        for d in eq21_root.glob('final_extend/round_*'):
+            if not d.is_dir():
+                continue
+            try:
+                idx = int(d.name.split("_")[-1])
+            except Exception:
+                continue
+            gro = d / "01_npt" / "md.gro"
+            if gro.exists() and not _is_within_any(gro, excluded):
+                ext_rounds.append((idx, gro))
+        if ext_rounds:
+            ext_rounds.sort(key=lambda x: x[0])
+            return ext_rounds[-1][1]
         candidates = [p for p in eq21_root.glob('03_EQ21/step_*/md.gro') if p.is_file() and not _is_within_any(p, excluded)]
         if candidates:
             def _step_key(path: Path) -> int:
@@ -784,7 +936,7 @@ def _eq21_barostat_controls(target_pressure_bar: float, prev_pressure_bar: float
     if (not cfg.robust) or is_final:
         return {
             'pcoupl': str(cfg.barostat),
-            'tau_p_ps': max(base_tau, 2.0 if is_final else base_tau),
+            'tau_p_ps': max(base_tau, 1.0) if is_final else base_tau,
             'compressibility_bar_inv': base_comp,
             'safety_mode': ('final-production' if is_final else 'legacy'),
         }
@@ -1171,6 +1323,785 @@ def _build_eq21_stages(temp: float, press: float, *, final_ns: float, cfg: EQ21P
     return stages, records, params
 
 
+def _ns_to_steps_for_dt(ns: float, dt_ps: float) -> int:
+    return max(int(round((float(ns) * 1000.0) / float(dt_ps))), 1)
+
+
+def _liquid_cooling_temperatures(target_temp: float, hot_temp: float) -> list[float]:
+    """Default CEMP-like cooling ladder for simple liquids."""
+
+    target = float(target_temp)
+    hot = float(hot_temp)
+    candidates = [450.0, target + 50.0]
+    out: list[float] = []
+    for t in candidates:
+        t = float(t)
+        if t <= target + 5.0 or t >= hot - 5.0:
+            continue
+        if all(abs(t - prev) > 5.0 for prev in out):
+            out.append(t)
+    return out
+
+
+def _build_liquid_anneal_stages(
+    *,
+    temp: float,
+    press: float,
+    final_ns: float,
+    hot_temp: float,
+    hot_pressure_bar: float,
+    compact_pressure_bar: float,
+    hot_nvt_ns: float,
+    compact_npt_ns: float,
+    hot_npt_ns: float,
+    cooling_npt_ns: float,
+    dt_ps: float,
+    hot_dt_ps: float,
+    constraints: str,
+    lincs_iter: Optional[int],
+    lincs_order: Optional[int],
+    checkpoint_min: float,
+    mdp_overrides: Optional[dict[str, object]] = None,
+) -> list[EqStage]:
+    from ...gmx.mdp_templates import MINIM_STEEP_MDP, NPT_MDP, NPT_NO_CONSTRAINTS_MDP, NVT_MDP, NVT_NO_CONSTRAINTS_MDP, MdpSpec, default_mdp_params
+
+    constraints_mode = _normalize_constraints_mode(constraints)
+    use_lincs = _constraints_use_lincs(constraints_mode)
+    nvt_template = NVT_MDP if use_lincs else NVT_NO_CONSTRAINTS_MDP
+    npt_template = NPT_MDP if use_lincs else NPT_NO_CONSTRAINTS_MDP
+    effective_lincs_iter = int(lincs_iter) if lincs_iter is not None else 2
+    effective_lincs_order = int(lincs_order) if lincs_order is not None else 8
+
+    def base_params(
+        *,
+        temperature: float,
+        pressure: Optional[float],
+        stage_dt_ps: float,
+        nsteps: int,
+        gen_vel: str,
+        pcoupl: str = "C-rescale",
+        tau_p_ps: Optional[float] = None,
+        compressibility: float = 4.5e-5,
+    ) -> dict[str, object]:
+        p = default_mdp_params()
+        p.update(
+            {
+                "dt": float(stage_dt_ps),
+                "nsteps": int(max(nsteps, 1000)),
+                "ref_t": float(temperature),
+                "gen_temp": float(temperature),
+                "gen_vel": str(gen_vel),
+                "gen_seed": -1,
+                "constraints": constraints_mode,
+                "constraint_algorithm": "lincs" if use_lincs else "none",
+                "lincs_iter": effective_lincs_iter,
+                "lincs_order": effective_lincs_order,
+                "tau_t": 0.5,
+            }
+        )
+        if pressure is not None:
+            p.update(
+                {
+                    "pcoupl": str(pcoupl),
+                    "tau_p": float(tau_p_ps) if tau_p_ps is not None else 5.0,
+                    "ref_p": float(pressure),
+                    "compressibility": float(compressibility),
+                }
+            )
+        return p
+
+    stages: list[EqStage] = [
+        EqStage(
+            "01_em",
+            "minim",
+            MdpSpec(MINIM_STEEP_MDP, {**default_mdp_params(), "nsteps": 50000, "emtol": 1000.0, "emstep": 0.001}),
+        )
+    ]
+
+    stages.append(
+        EqStage(
+            "02_hot_nvt",
+            "nvt",
+            MdpSpec(
+                nvt_template,
+                base_params(
+                    temperature=float(hot_temp),
+                    pressure=None,
+                    stage_dt_ps=float(hot_dt_ps),
+                    nsteps=_ns_to_steps_for_dt(float(hot_nvt_ns), float(hot_dt_ps)),
+                    gen_vel="yes",
+                ),
+            ),
+            lincs_retry=StageLincsRetryPolicy() if use_lincs else None,
+        )
+    )
+    stages.append(
+        EqStage(
+            "03_compact_npt",
+            "npt",
+            MdpSpec(
+                npt_template,
+                base_params(
+                    temperature=float(hot_temp),
+                    pressure=float(max(float(compact_pressure_bar), float(hot_pressure_bar))),
+                    stage_dt_ps=float(hot_dt_ps),
+                    nsteps=_ns_to_steps_for_dt(float(compact_npt_ns), float(hot_dt_ps)),
+                    gen_vel="no",
+                    pcoupl="Berendsen",
+                    tau_p_ps=5.0,
+                    compressibility=4.5e-5,
+                ),
+            ),
+            lincs_retry=StageLincsRetryPolicy() if use_lincs else None,
+        )
+    )
+    stages.append(
+        EqStage(
+            "04_hot_npt",
+            "npt",
+            MdpSpec(
+                npt_template,
+                base_params(
+                    temperature=float(hot_temp),
+                    pressure=float(hot_pressure_bar),
+                    stage_dt_ps=float(hot_dt_ps),
+                    nsteps=_ns_to_steps_for_dt(float(hot_npt_ns), float(hot_dt_ps)),
+                    gen_vel="no",
+                    pcoupl="C-rescale",
+                    tau_p_ps=4.0,
+                ),
+            ),
+            lincs_retry=StageLincsRetryPolicy() if use_lincs else None,
+        )
+    )
+
+    stage_idx = 5
+    for cool_temp in _liquid_cooling_temperatures(float(temp), float(hot_temp)):
+        stages.append(
+            EqStage(
+                f"{stage_idx:02d}_cool_{int(round(cool_temp))}K_npt",
+                "npt",
+                MdpSpec(
+                    npt_template,
+                    base_params(
+                        temperature=float(cool_temp),
+                        pressure=float(press),
+                        stage_dt_ps=float(dt_ps),
+                        nsteps=_ns_to_steps_for_dt(float(cooling_npt_ns), float(dt_ps)),
+                        gen_vel="no",
+                    ),
+                ),
+                lincs_retry=StageLincsRetryPolicy() if use_lincs else None,
+            )
+        )
+        stage_idx += 1
+
+    stages.append(
+        EqStage(
+            f"{stage_idx:02d}_final_npt",
+            "npt",
+            MdpSpec(
+                npt_template,
+                base_params(
+                    temperature=float(temp),
+                    pressure=float(press),
+                    stage_dt_ps=float(dt_ps),
+                    nsteps=_ns_to_steps_for_dt(float(final_ns), float(dt_ps)),
+                    gen_vel="no",
+                ),
+            ),
+            lincs_retry=StageLincsRetryPolicy() if use_lincs else None,
+            checkpoint_minutes=float(checkpoint_min),
+        )
+    )
+
+    return _apply_stage_mdp_overrides(stages, mdp_overrides)
+
+
+def _liquid_templates_and_controls(
+    *,
+    constraints: str,
+    lincs_iter: Optional[int],
+    lincs_order: Optional[int],
+) -> tuple[str, bool, int, int, object, object]:
+    from ...gmx.mdp_templates import NPT_MDP, NPT_NO_CONSTRAINTS_MDP, NVT_MDP, NVT_NO_CONSTRAINTS_MDP
+
+    constraints_mode = _normalize_constraints_mode(constraints)
+    use_lincs = _constraints_use_lincs(constraints_mode)
+    nvt_template = NVT_MDP if use_lincs else NVT_NO_CONSTRAINTS_MDP
+    npt_template = NPT_MDP if use_lincs else NPT_NO_CONSTRAINTS_MDP
+    effective_lincs_iter = int(lincs_iter) if lincs_iter is not None else 2
+    effective_lincs_order = int(lincs_order) if lincs_order is not None else 8
+    return constraints_mode, use_lincs, effective_lincs_iter, effective_lincs_order, nvt_template, npt_template
+
+
+def _liquid_md_params(
+    *,
+    constraints_mode: str,
+    use_lincs: bool,
+    lincs_iter: int,
+    lincs_order: int,
+    temperature: float,
+    pressure: Optional[float],
+    dt_ps: float,
+    nsteps: int,
+    gen_vel: str,
+    pcoupl: str = "C-rescale",
+    tau_t_ps: float = 0.5,
+    tau_p_ps: float = 2.0,
+    compressibility: float = 4.5e-5,
+) -> dict[str, object]:
+    from ...gmx.mdp_templates import default_mdp_params
+
+    p = default_mdp_params()
+    p.update(
+        {
+            "dt": float(dt_ps),
+            "nsteps": int(max(nsteps, 1000)),
+            "ref_t": float(temperature),
+            "gen_temp": float(temperature),
+            "gen_vel": str(gen_vel),
+            "gen_seed": -1,
+            "constraints": constraints_mode,
+            "constraint_algorithm": "lincs" if use_lincs else "none",
+            "lincs_iter": int(lincs_iter),
+            "lincs_order": int(lincs_order),
+            "tau_t": float(tau_t_ps),
+        }
+    )
+    if pressure is not None:
+        p.update(
+            {
+                "pcoupl": str(pcoupl),
+                "tau_p": float(tau_p_ps),
+                "ref_p": float(pressure),
+                "compressibility": float(compressibility),
+            }
+        )
+    return p
+
+
+def _build_liquid_recovery_compaction_stages(
+    *,
+    hot_temp: float,
+    compact_pressure_bar: float,
+    hot_nvt_ns: float,
+    compact_npt_ns: float,
+    hot_dt_ps: float,
+    constraints: str,
+    lincs_iter: Optional[int],
+    lincs_order: Optional[int],
+) -> list[EqStage]:
+    from ...gmx.mdp_templates import MINIM_STEEP_MDP, MdpSpec, default_mdp_params
+
+    constraints_mode, use_lincs, effective_lincs_iter, effective_lincs_order, nvt_template, npt_template = _liquid_templates_and_controls(
+        constraints=constraints,
+        lincs_iter=lincs_iter,
+        lincs_order=lincs_order,
+    )
+    retry = StageLincsRetryPolicy() if use_lincs else None
+    return [
+        EqStage(
+            "01_minim",
+            "minim",
+            MdpSpec(MINIM_STEEP_MDP, {**default_mdp_params(), "nsteps": 50000, "emtol": 1000.0, "emstep": 0.001}),
+        ),
+        EqStage(
+            "02_hot_nvt",
+            "nvt",
+            MdpSpec(
+                nvt_template,
+                _liquid_md_params(
+                    constraints_mode=constraints_mode,
+                    use_lincs=use_lincs,
+                    lincs_iter=effective_lincs_iter,
+                    lincs_order=effective_lincs_order,
+                    temperature=float(hot_temp),
+                    pressure=None,
+                    dt_ps=float(hot_dt_ps),
+                    nsteps=_ns_to_steps_for_dt(float(hot_nvt_ns), float(hot_dt_ps)),
+                    gen_vel="yes",
+                ),
+            ),
+            lincs_retry=retry,
+        ),
+        EqStage(
+            "03_compact_npt",
+            "npt",
+            MdpSpec(
+                npt_template,
+                _liquid_md_params(
+                    constraints_mode=constraints_mode,
+                    use_lincs=use_lincs,
+                    lincs_iter=effective_lincs_iter,
+                    lincs_order=effective_lincs_order,
+                    temperature=float(hot_temp),
+                    pressure=float(compact_pressure_bar),
+                    dt_ps=float(hot_dt_ps),
+                    nsteps=_ns_to_steps_for_dt(float(compact_npt_ns), float(hot_dt_ps)),
+                    gen_vel="no",
+                    pcoupl="Berendsen",
+                    tau_p_ps=5.0,
+                    compressibility=4.5e-5,
+                ),
+            ),
+            lincs_retry=retry,
+        ),
+    ]
+
+
+def _build_liquid_recovery_release_stages(
+    *,
+    temp: float,
+    press: float,
+    final_ns: float,
+    hot_temp: float,
+    hot_pressure_bar: float,
+    cooling_npt_ns: float,
+    dt_ps: float,
+    hot_dt_ps: float,
+    constraints: str,
+    lincs_iter: Optional[int],
+    lincs_order: Optional[int],
+    checkpoint_min: float,
+    mdp_overrides: Optional[dict[str, object]] = None,
+) -> list[EqStage]:
+    constraints_mode, use_lincs, effective_lincs_iter, effective_lincs_order, _nvt_template, npt_template = _liquid_templates_and_controls(
+        constraints=constraints,
+        lincs_iter=lincs_iter,
+        lincs_order=lincs_order,
+    )
+    retry = StageLincsRetryPolicy() if use_lincs else None
+    stages: list[EqStage] = [
+        EqStage(
+            "04_hot_release_npt",
+            "npt",
+            MdpSpec(
+                npt_template,
+                _liquid_md_params(
+                    constraints_mode=constraints_mode,
+                    use_lincs=use_lincs,
+                    lincs_iter=effective_lincs_iter,
+                    lincs_order=effective_lincs_order,
+                    temperature=float(hot_temp),
+                    pressure=float(hot_pressure_bar),
+                    dt_ps=float(hot_dt_ps),
+                    nsteps=_ns_to_steps_for_dt(float(cooling_npt_ns), float(hot_dt_ps)),
+                    gen_vel="no",
+                    pcoupl="C-rescale",
+                    tau_p_ps=4.0,
+                ),
+            ),
+            lincs_retry=retry,
+        )
+    ]
+
+    stage_idx = 5
+    for cool_temp in _liquid_cooling_temperatures(float(temp), float(hot_temp)):
+        stages.append(
+            EqStage(
+                f"{stage_idx:02d}_cool_{int(round(cool_temp))}K_npt",
+                "npt",
+                MdpSpec(
+                    npt_template,
+                    _liquid_md_params(
+                        constraints_mode=constraints_mode,
+                        use_lincs=use_lincs,
+                        lincs_iter=effective_lincs_iter,
+                        lincs_order=effective_lincs_order,
+                        temperature=float(cool_temp),
+                        pressure=float(press),
+                        dt_ps=float(dt_ps),
+                        nsteps=_ns_to_steps_for_dt(float(cooling_npt_ns), float(dt_ps)),
+                        gen_vel="no",
+                        pcoupl="C-rescale",
+                        tau_p_ps=5.0,
+                    ),
+                ),
+                lincs_retry=retry,
+            )
+        )
+        stage_idx += 1
+
+    stages.append(
+        EqStage(
+            f"{stage_idx:02d}_final_npt",
+            "npt",
+            MdpSpec(
+                npt_template,
+                _liquid_md_params(
+                    constraints_mode=constraints_mode,
+                    use_lincs=use_lincs,
+                    lincs_iter=effective_lincs_iter,
+                    lincs_order=effective_lincs_order,
+                    temperature=float(temp),
+                    pressure=float(press),
+                    dt_ps=float(dt_ps),
+                    nsteps=_ns_to_steps_for_dt(float(final_ns), float(dt_ps)),
+                    gen_vel="no",
+                    pcoupl="C-rescale",
+                    tau_p_ps=5.0,
+                ),
+            ),
+            lincs_retry=retry,
+            checkpoint_minutes=float(checkpoint_min),
+        )
+    )
+    return _apply_stage_mdp_overrides(stages, mdp_overrides)
+
+
+def _polymer_warm_temperature(target_temp: float, warm_temp: Optional[float]) -> float:
+    if warm_temp is not None and float(warm_temp) > 0.0:
+        return float(warm_temp)
+    return float(min(600.0, max(float(target_temp) + 100.0, 450.0)))
+
+
+def _polymer_recovery_pressure(round_idx: int, pressure_ladder: Sequence[float] = (500.0, 1000.0, 2000.0, 5000.0)) -> float:
+    ladder = [float(x) for x in pressure_ladder if float(x) > 0.0]
+    if not ladder:
+        return 1000.0
+    idx = min(max(int(round_idx), 0), len(ladder) - 1)
+    return float(ladder[idx])
+
+
+def _no_constraint_md_params(
+    *,
+    temperature: float,
+    pressure: Optional[float],
+    dt_ps: float,
+    nsteps: int,
+    gen_vel: str,
+    pcoupl: str = "C-rescale",
+    tau_t_ps: float = 0.5,
+    tau_p_ps: float = 2.0,
+    compressibility: float = 4.5e-5,
+) -> dict[str, object]:
+    return _liquid_md_params(
+        constraints_mode="none",
+        use_lincs=False,
+        lincs_iter=2,
+        lincs_order=8,
+        temperature=float(temperature),
+        pressure=pressure,
+        dt_ps=float(dt_ps),
+        nsteps=int(nsteps),
+        gen_vel=str(gen_vel),
+        pcoupl=str(pcoupl),
+        tau_t_ps=float(tau_t_ps),
+        tau_p_ps=float(tau_p_ps),
+        compressibility=float(compressibility),
+    )
+
+
+def _build_polymer_density_recovery_compaction_stages(
+    *,
+    warm_temp: float,
+    compact_pressure_bar: float,
+    warm_nvt_ns: float,
+    compact_npt_ns: float,
+    dt_ps: float,
+) -> list[EqStage]:
+    from ...gmx.mdp_templates import MINIM_STEEP_MDP, MdpSpec, NPT_NO_CONSTRAINTS_MDP, NVT_NO_CONSTRAINTS_MDP, default_mdp_params
+
+    return [
+        EqStage(
+            "01_minim",
+            "minim",
+            MdpSpec(MINIM_STEEP_MDP, {**default_mdp_params(), "nsteps": 50000, "emtol": 1000.0, "emstep": 0.001}),
+        ),
+        EqStage(
+            "02_warm_nvt",
+            "nvt",
+            MdpSpec(
+                NVT_NO_CONSTRAINTS_MDP,
+                _no_constraint_md_params(
+                    temperature=float(warm_temp),
+                    pressure=None,
+                    dt_ps=float(dt_ps),
+                    nsteps=_ns_to_steps_for_dt(float(warm_nvt_ns), float(dt_ps)),
+                    gen_vel="yes",
+                    tau_t_ps=0.5,
+                ),
+            ),
+        ),
+        EqStage(
+            "03_compact_npt",
+            "npt",
+            MdpSpec(
+                NPT_NO_CONSTRAINTS_MDP,
+                _no_constraint_md_params(
+                    temperature=float(warm_temp),
+                    pressure=float(compact_pressure_bar),
+                    dt_ps=float(dt_ps),
+                    nsteps=_ns_to_steps_for_dt(float(compact_npt_ns), float(dt_ps)),
+                    gen_vel="no",
+                    pcoupl="Berendsen",
+                    tau_p_ps=8.0,
+                    compressibility=4.5e-5 * 0.35,
+                ),
+            ),
+        ),
+    ]
+
+
+def _build_polymer_density_recovery_release_stages(
+    *,
+    temp: float,
+    press: float,
+    final_ns: float,
+    dt_ps: float,
+    checkpoint_min: float,
+) -> list[EqStage]:
+    from ...gmx.mdp_templates import MdpSpec, NPT_NO_CONSTRAINTS_MDP
+
+    return [
+        EqStage(
+            "04_final_npt",
+            "npt",
+            MdpSpec(
+                NPT_NO_CONSTRAINTS_MDP,
+                _no_constraint_md_params(
+                    temperature=float(temp),
+                    pressure=float(press),
+                    dt_ps=float(dt_ps),
+                    nsteps=_ns_to_steps_for_dt(float(final_ns), float(dt_ps)),
+                    gen_vel="no",
+                    pcoupl="C-rescale",
+                    tau_p_ps=2.0,
+                    compressibility=4.5e-5,
+                ),
+            ),
+            checkpoint_minutes=float(checkpoint_min),
+        )
+    ]
+
+
+def _build_polymer_chain_relaxation_stages(
+    *,
+    temp: float,
+    press: float,
+    final_ns: float,
+    warm_temp: float,
+    warm_nvt_ns: float,
+    dt_ps: float,
+    checkpoint_min: float,
+) -> list[EqStage]:
+    from ...gmx.mdp_templates import MdpSpec, NPT_NO_CONSTRAINTS_MDP, NVT_NO_CONSTRAINTS_MDP
+
+    return [
+        EqStage(
+            "01_warm_nvt",
+            "nvt",
+            MdpSpec(
+                NVT_NO_CONSTRAINTS_MDP,
+                _no_constraint_md_params(
+                    temperature=float(warm_temp),
+                    pressure=None,
+                    dt_ps=float(dt_ps),
+                    nsteps=_ns_to_steps_for_dt(float(warm_nvt_ns), float(dt_ps)),
+                    gen_vel="yes",
+                    tau_t_ps=0.5,
+                ),
+            ),
+        ),
+        EqStage(
+            "02_final_npt",
+            "npt",
+            MdpSpec(
+                NPT_NO_CONSTRAINTS_MDP,
+                _no_constraint_md_params(
+                    temperature=float(temp),
+                    pressure=float(press),
+                    dt_ps=float(dt_ps),
+                    nsteps=_ns_to_steps_for_dt(float(final_ns), float(dt_ps)),
+                    gen_vel="no",
+                    pcoupl="C-rescale",
+                    tau_p_ps=2.0,
+                    compressibility=4.5e-5,
+                ),
+            ),
+            checkpoint_minutes=float(checkpoint_min),
+        ),
+    ]
+
+
+def _build_liquid_target_relaxation_stages(
+    *,
+    temp: float,
+    press: float,
+    final_ns: float,
+    dt_ps: float,
+    checkpoint_min: float = 5.0,
+    mdp_overrides: Optional[dict[str, object]] = None,
+) -> list[EqStage]:
+    """Conservative target-temperature relaxation for already-compacted liquids.
+
+    This is intentionally slower than the generic ``Additional`` schedule.  It is
+    used after a liquid/electrolyte box is dense enough to be physically
+    meaningful but still fails the plateau gate.  The early stages are
+    unconstrained, cold, and strongly thermostatted so GROMACS does not have to
+    survive a one-shot handoff from a rough structure to 1 fs dynamics.
+    """
+
+    from ...gmx.mdp_templates import MINIM_STEEP_MDP, MdpSpec, NPT_NO_CONSTRAINTS_MDP, NVT_NO_CONSTRAINTS_MDP, default_mdp_params
+
+    target_temp = float(temp)
+    cold_temp = float(max(80.0, min(120.0, 0.35 * target_temp)))
+    warm_temp = float(max(cold_temp + 50.0, min(250.0, 0.70 * target_temp)))
+    micro_dt = 0.0001
+    target_nvt_dt = min(float(dt_ps), 0.0002)
+    soft_npt_dt = min(float(dt_ps), 0.00025)
+    final_dt = min(float(dt_ps), 0.0005)
+
+    def params(
+        *,
+        temperature: float,
+        pressure: Optional[float],
+        step_dt: float,
+        nsteps: int,
+        gen_vel: str,
+        continuation: str,
+        tcoupl: str,
+        tau_t: float,
+        pcoupl: str = "C-rescale",
+        tau_p: float = 5.0,
+        compressibility: float = 4.5e-5,
+    ) -> dict[str, object]:
+        p = _no_constraint_md_params(
+            temperature=float(temperature),
+            pressure=pressure,
+            dt_ps=float(step_dt),
+            nsteps=int(nsteps),
+            gen_vel=str(gen_vel),
+            pcoupl=str(pcoupl),
+            tau_t_ps=float(tau_t),
+            tau_p_ps=float(tau_p),
+            compressibility=float(compressibility),
+        )
+        p.update(
+            {
+                "continuation": str(continuation),
+                "tcoupl": str(tcoupl),
+                "nstenergy": 1000,
+                "nstlog": 1000,
+                "nstxout": 10000,
+                "nstxout_trr": 10000,
+                "nstvout": 10000,
+            }
+        )
+        return p
+
+    stages = [
+        EqStage(
+            "01_minim",
+            "minim",
+            MdpSpec(
+                MINIM_STEEP_MDP,
+                {
+                    **default_mdp_params(),
+                    "nsteps": 200000,
+                    "emtol": 100.0,
+                    "emstep": 0.0002,
+                },
+            ),
+        ),
+        EqStage(
+            "02_cold_nvt_0p1fs",
+            "nvt",
+            MdpSpec(
+                NVT_NO_CONSTRAINTS_MDP,
+                params(
+                    temperature=cold_temp,
+                    pressure=None,
+                    step_dt=micro_dt,
+                    nsteps=_ps_to_steps(2.0, micro_dt),
+                    gen_vel="yes",
+                    continuation="no",
+                    tcoupl="Berendsen",
+                    tau_t=0.02,
+                ),
+            ),
+        ),
+        EqStage(
+            "03_warm_nvt_0p1fs",
+            "nvt",
+            MdpSpec(
+                NVT_NO_CONSTRAINTS_MDP,
+                params(
+                    temperature=warm_temp,
+                    pressure=None,
+                    step_dt=micro_dt,
+                    nsteps=_ps_to_steps(3.0, micro_dt),
+                    gen_vel="no",
+                    continuation="yes",
+                    tcoupl="Berendsen",
+                    tau_t=0.02,
+                ),
+            ),
+        ),
+        EqStage(
+            "04_target_nvt_0p2fs",
+            "nvt",
+            MdpSpec(
+                NVT_NO_CONSTRAINTS_MDP,
+                params(
+                    temperature=target_temp,
+                    pressure=None,
+                    step_dt=target_nvt_dt,
+                    nsteps=_ps_to_steps(10.0, target_nvt_dt),
+                    gen_vel="no",
+                    continuation="yes",
+                    tcoupl="Berendsen",
+                    tau_t=0.05,
+                ),
+            ),
+        ),
+        EqStage(
+            "05_soft_npt_0p25fs",
+            "npt",
+            MdpSpec(
+                NPT_NO_CONSTRAINTS_MDP,
+                params(
+                    temperature=target_temp,
+                    pressure=float(press),
+                    step_dt=soft_npt_dt,
+                    nsteps=_ps_to_steps(20.0, soft_npt_dt),
+                    gen_vel="no",
+                    continuation="yes",
+                    tcoupl="Berendsen",
+                    tau_t=0.05,
+                    pcoupl="Berendsen",
+                    tau_p=12.0,
+                    compressibility=1.0e-5,
+                ),
+            ),
+        ),
+        EqStage(
+            "06_final_npt",
+            "npt",
+            MdpSpec(
+                NPT_NO_CONSTRAINTS_MDP,
+                params(
+                    temperature=target_temp,
+                    pressure=float(press),
+                    step_dt=final_dt,
+                    nsteps=_ns_to_steps_for_dt(float(final_ns), final_dt),
+                    gen_vel="no",
+                    continuation="yes",
+                    tcoupl="V-rescale",
+                    tau_t=0.1,
+                    pcoupl="C-rescale",
+                    tau_p=5.0,
+                    compressibility=4.5e-5,
+                ),
+            ),
+            checkpoint_minutes=float(checkpoint_min),
+        ),
+    ]
+
+    return _apply_stage_mdp_overrides(stages, mdp_overrides, stage_kinds=("npt", "md"))
+
+
 def _apply_stage_mdp_overrides(stages: Sequence[EqStage], overrides: Optional[dict[str, object]], *, stage_kinds: Sequence[str] = ("npt", "md")) -> list[EqStage]:
     from ...gmx.mdp_templates import MdpSpec
 
@@ -1187,6 +2118,7 @@ def _apply_stage_mdp_overrides(stages: Sequence[EqStage], overrides: Optional[di
                     MdpSpec(stage.mdp.template, {**stage.mdp.params, **dict(overrides)}),
                     lincs_retry=stage.lincs_retry,
                     checkpoint_minutes=stage.checkpoint_minutes,
+                    strict_constraints=bool(getattr(stage, "strict_constraints", False)),
                 )
             )
         else:
@@ -1236,12 +2168,447 @@ def _eq21_load_thermo_series(stage_dir: Path):
         if 'x' not in df.columns:
             return None
         out = {'time_ps': np.asarray(df['x'].to_numpy(dtype=float), dtype=float)}
-        for col in ('Density', 'Total Energy', 'Box-X', 'Box-Y', 'Box-Z'):
+        for col in ('Density', 'Volume', 'Total Energy', 'Box-X', 'Box-Y', 'Box-Z'):
             if col in df.columns:
                 out[col] = np.asarray(df[col].to_numpy(dtype=float), dtype=float)
         return out
     except Exception:
         return None
+
+
+def _tail_linear_trend(t_ps: np.ndarray, y: np.ndarray, *, tail_frac: float = 0.35) -> dict[str, object]:
+    try:
+        t = np.asarray(t_ps, dtype=float)
+        yv = np.asarray(y, dtype=float)
+        mask = np.isfinite(t) & np.isfinite(yv)
+        t = t[mask]
+        yv = yv[mask]
+        if t.size < 8 or yv.size < 8:
+            return {"ok": False, "reason": "series_too_short"}
+        start = max(0, int(np.floor((1.0 - float(tail_frac)) * t.size)))
+        tt = t[start:]
+        yy = yv[start:]
+        if tt.size < 5:
+            return {"ok": False, "reason": "tail_too_short"}
+        A = np.vstack([tt, np.ones_like(tt)]).T
+        slope, intercept = np.linalg.lstsq(A, yy, rcond=None)[0]
+        half = max(1, yy.size // 2)
+        first_mean = float(np.mean(yy[:half]))
+        second_mean = float(np.mean(yy[-half:]))
+        mean = float(np.mean(yy))
+        delta = float(second_mean - first_mean)
+        return {
+            "ok": True,
+            "slope_per_ps": float(slope),
+            "slope_rel_per_ps": float(slope / abs(mean)) if mean != 0.0 else float("inf"),
+            "intercept": float(intercept),
+            "tail_delta": delta,
+            "tail_rel_delta": float(delta / abs(mean)) if mean != 0.0 else float("inf"),
+            "tail_start_ps": float(tt[0]),
+            "tail_end_ps": float(tt[-1]),
+            "tail_mean": mean,
+            "tail_rel_std": float(np.std(yy) / abs(mean)) if mean != 0.0 else float("inf"),
+        }
+    except Exception as exc:
+        return {"ok": False, "reason": str(exc)}
+
+
+def _eq21_density_trend(stage_dir: Path, *, tail_frac: float = 0.35) -> dict[str, object]:
+    """Return density trend diagnostics for an EQ21/extension stage."""
+
+    data = _eq21_load_thermo_series(stage_dir)
+    if not isinstance(data, dict) or "Density" not in data:
+        return {"ok": False, "reason": "density_series_unavailable"}
+    trend = _tail_linear_trend(np.asarray(data.get("time_ps"), dtype=float), np.asarray(data.get("Density"), dtype=float), tail_frac=tail_frac)
+    if bool(trend.get("ok")):
+        trend["tail_delta_kg_m3"] = float(trend.get("tail_delta") or 0.0)
+        trend["tail_mean_kg_m3"] = float(trend.get("tail_mean") or 0.0)
+    return trend
+
+
+def _eq21_box_volume_trend(stage_dir: Path, *, tail_frac: float = 0.35) -> dict[str, object]:
+    """Return box-volume trend diagnostics for an EQ21/extension stage."""
+
+    data = _eq21_load_thermo_series(stage_dir)
+    if not isinstance(data, dict):
+        return {"ok": False, "reason": "thermo_series_unavailable"}
+    t = np.asarray(data.get("time_ps"), dtype=float)
+    if "Volume" in data:
+        y = np.asarray(data.get("Volume"), dtype=float)
+    elif all(k in data for k in ("Box-X", "Box-Y", "Box-Z")):
+        y = np.asarray(data["Box-X"], dtype=float) * np.asarray(data["Box-Y"], dtype=float) * np.asarray(data["Box-Z"], dtype=float)
+    else:
+        return {"ok": False, "reason": "volume_series_unavailable"}
+    return _tail_linear_trend(t, y, tail_frac=tail_frac)
+
+
+def _compression_state_from_trends(
+    *,
+    density_trend: dict[str, object] | None,
+    volume_trend: dict[str, object] | None,
+    density_slope_threshold_per_ps: float,
+    density_delta_threshold_kg_m3: float,
+    volume_rel_slope_threshold_per_ps: float = 5.0e-5,
+    volume_rel_delta_threshold: float = 2.0e-3,
+) -> dict[str, object]:
+    density_trend = density_trend if isinstance(density_trend, dict) else {}
+    volume_trend = volume_trend if isinstance(volume_trend, dict) else {}
+    density_still_compressing = False
+    if bool(density_trend.get("ok")):
+        density_still_compressing = bool(
+            float(density_trend.get("slope_per_ps") or 0.0) > float(density_slope_threshold_per_ps)
+            and float(density_trend.get("tail_delta_kg_m3", density_trend.get("tail_delta") or 0.0)) > float(density_delta_threshold_kg_m3)
+        )
+    volume_still_compressing = False
+    if bool(volume_trend.get("ok")):
+        volume_still_compressing = bool(
+            float(volume_trend.get("slope_rel_per_ps") or 0.0) < -float(volume_rel_slope_threshold_per_ps)
+            and float(volume_trend.get("tail_rel_delta") or 0.0) < -float(volume_rel_delta_threshold)
+        )
+    return {
+        "still_compressing": bool(density_still_compressing or volume_still_compressing),
+        "density_still_compressing": bool(density_still_compressing),
+        "box_volume_still_compressing": bool(volume_still_compressing),
+        "criteria": {
+            "density_slope_threshold_per_ps": float(density_slope_threshold_per_ps),
+            "density_delta_threshold_kg_m3": float(density_delta_threshold_kg_m3),
+            "volume_rel_slope_threshold_per_ps": float(volume_rel_slope_threshold_per_ps),
+            "volume_rel_delta_threshold": float(volume_rel_delta_threshold),
+        },
+    }
+
+
+def _run_eq21_final_density_extensions(
+    *,
+    work_dir: Path,
+    exp: SystemExportResult,
+    initial_job: EquilibrationJob,
+    resources: RunResources,
+    temp: float,
+    press: float,
+    dt_ps: float,
+    tau_p_ps: float,
+    compressibility: float,
+    max_rounds: int,
+    round_ns: float,
+    slope_threshold_per_ps: float,
+    delta_threshold_kg_m3: float,
+    restart: bool,
+) -> tuple[EquilibrationJob, list[dict[str, object]]]:
+    """Extend EQ21 final NPT while density is still clearly increasing."""
+
+    from ...gmx.mdp_templates import NPT_NO_CONSTRAINTS_MDP, MdpSpec, default_mdp_params
+
+    current_job = initial_job
+    history: list[dict[str, object]] = []
+    if int(max_rounds) <= 0 or float(round_ns) <= 0.0:
+        return current_job, history
+    if not (hasattr(current_job, "final_stage_dir") and hasattr(current_job, "final_gro")):
+        return current_job, history
+
+    ext_root = Path(work_dir) / "03_EQ21" / "final_extend"
+    ext_root.mkdir(parents=True, exist_ok=True)
+    for round_idx in range(int(max_rounds)):
+        stage_dir = current_job.final_stage_dir()
+        trend = _eq21_density_trend(stage_dir)
+        volume_trend = _eq21_box_volume_trend(stage_dir)
+        compression_state = _compression_state_from_trends(
+            density_trend=trend,
+            volume_trend=volume_trend,
+            density_slope_threshold_per_ps=float(slope_threshold_per_ps),
+            density_delta_threshold_kg_m3=float(delta_threshold_kg_m3),
+        )
+        should_extend = bool(compression_state.get("still_compressing"))
+        rec = {
+            "round": int(round_idx),
+            "stage_dir": str(stage_dir),
+            "density_trend": trend,
+            "box_volume_trend": volume_trend,
+            "compression_state": compression_state,
+            "extended": should_extend,
+        }
+        history.append(rec)
+        if not should_extend:
+            break
+
+        p = default_mdp_params()
+        p.update(
+            {
+                "dt": float(dt_ps),
+                "nsteps": _ns_to_steps_for_dt(float(round_ns), float(dt_ps)),
+                "ref_t": float(temp),
+                "gen_temp": float(temp),
+                "gen_vel": "no",
+                "gen_seed": -1,
+                "pcoupl": "C-rescale",
+                "tau_p": float(tau_p_ps),
+                "ref_p": float(press),
+                "compressibility": float(compressibility),
+                "constraints": "none",
+                "constraint_algorithm": "none",
+            }
+        )
+        round_dir = ext_root / f"round_{round_idx:02d}"
+        if not restart and round_dir.exists():
+            shutil.rmtree(round_dir, ignore_errors=True)
+        ext_job = EquilibrationJob(
+            gro=current_job.final_gro(),
+            top=exp.system_top,
+            provenance_ndx=exp.system_ndx,
+            out_dir=round_dir,
+            stages=[
+                EqStage(
+                    "01_npt",
+                    "npt",
+                    MdpSpec(NPT_NO_CONSTRAINTS_MDP, p),
+                )
+            ],
+            resources=resources,
+        )
+        _preset_log(
+            "[EQ21] Final NPT box still compressing; extending "
+            f"round={round_idx} | slope={float(trend.get('slope_per_ps') or 0.0):.4g} kg/m^3/ps | "
+            f"tail_delta={float(trend.get('tail_delta_kg_m3') or 0.0):.4g} kg/m^3 | "
+            f"volume_rel_delta={float(volume_trend.get('tail_rel_delta') or 0.0):.4g} | "
+            f"time={float(round_ns):.3f} ns",
+            level=1,
+        )
+        ext_job.run(restart=bool(restart))
+        current_job = ext_job
+
+    try:
+        (ext_root / "final_density_extension.json").write_text(
+            json.dumps({"history": history}, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+    except Exception:
+        pass
+    return current_job, history
+
+
+def _run_liquid_compaction_extensions(
+    *,
+    ext_root: Path,
+    exp: SystemExportResult,
+    initial_job: EquilibrationJob,
+    resources: RunResources,
+    hot_temp: float,
+    compact_pressure_bar: float,
+    hot_dt_ps: float,
+    constraints: str,
+    lincs_iter: Optional[int],
+    lincs_order: Optional[int],
+    max_rounds: int,
+    round_ns: float,
+    slope_threshold_per_ps: float,
+    delta_threshold_kg_m3: float,
+    restart: bool,
+) -> tuple[EquilibrationJob, list[dict[str, object]]]:
+    """Continue high-pressure liquid compaction while density is still rising.
+
+    This deliberately uses density-trend diagnostics rather than an absolute
+    density floor. Some legitimate systems are light, but a low-density box that
+    is still compressing has not finished returning from the packing vacuum.
+    """
+
+    from ...gmx.mdp_templates import MdpSpec
+
+    current_job = initial_job
+    history: list[dict[str, object]] = []
+    if int(max_rounds) <= 0 or float(round_ns) <= 0.0:
+        return current_job, history
+    if not (hasattr(current_job, "final_stage_dir") and hasattr(current_job, "final_gro")):
+        return current_job, history
+
+    constraints_mode, use_lincs, effective_lincs_iter, effective_lincs_order, _nvt_template, npt_template = _liquid_templates_and_controls(
+        constraints=constraints,
+        lincs_iter=lincs_iter,
+        lincs_order=lincs_order,
+    )
+    retry = StageLincsRetryPolicy() if use_lincs else None
+    ext_root = Path(ext_root)
+    ext_root.mkdir(parents=True, exist_ok=True)
+
+    for round_idx in range(int(max_rounds)):
+        stage_dir = current_job.final_stage_dir()
+        trend = _eq21_density_trend(stage_dir)
+        volume_trend = _eq21_box_volume_trend(stage_dir)
+        compression_state = _compression_state_from_trends(
+            density_trend=trend,
+            volume_trend=volume_trend,
+            density_slope_threshold_per_ps=float(slope_threshold_per_ps),
+            density_delta_threshold_kg_m3=float(delta_threshold_kg_m3),
+        )
+        should_extend = bool(compression_state.get("still_compressing"))
+        rec = {
+            "round": int(round_idx),
+            "stage_dir": str(stage_dir),
+            "density_trend": trend,
+            "box_volume_trend": volume_trend,
+            "compression_state": compression_state,
+            "extended": should_extend,
+        }
+        history.append(rec)
+        if not should_extend:
+            break
+
+        round_dir = ext_root / f"round_{round_idx:02d}"
+        if not restart and round_dir.exists():
+            shutil.rmtree(round_dir, ignore_errors=True)
+        p = _liquid_md_params(
+            constraints_mode=constraints_mode,
+            use_lincs=use_lincs,
+            lincs_iter=effective_lincs_iter,
+            lincs_order=effective_lincs_order,
+            temperature=float(hot_temp),
+            pressure=float(compact_pressure_bar),
+            dt_ps=float(hot_dt_ps),
+            nsteps=_ns_to_steps_for_dt(float(round_ns), float(hot_dt_ps)),
+            gen_vel="no",
+            pcoupl="Berendsen",
+            tau_p_ps=2.0,
+            compressibility=4.5e-5,
+        )
+        ext_job = EquilibrationJob(
+            gro=current_job.final_gro(),
+            top=exp.system_top,
+            provenance_ndx=exp.system_ndx,
+            out_dir=round_dir,
+            stages=[EqStage("01_compact_npt", "npt", MdpSpec(npt_template, p), lincs_retry=retry)],
+            resources=resources,
+        )
+        _preset_log(
+            "[LIQUID-RECOVERY] High-pressure compaction box still compressing; extending "
+            f"round={round_idx} | slope={float(trend.get('slope_per_ps') or 0.0):.4g} kg/m^3/ps | "
+            f"tail_delta={float(trend.get('tail_delta_kg_m3') or 0.0):.4g} kg/m^3 | "
+            f"volume_rel_delta={float(volume_trend.get('tail_rel_delta') or 0.0):.4g} | "
+            f"P={float(compact_pressure_bar):.1f} bar | time={float(round_ns):.3f} ns",
+            level=1,
+        )
+        ext_job.run(restart=bool(restart))
+        current_job = ext_job
+
+    try:
+        (ext_root / "liquid_compaction_extension.json").write_text(
+            json.dumps(
+                {
+                    "criterion": {
+                        "slope_threshold_per_ps": float(slope_threshold_per_ps),
+                        "delta_threshold_kg_m3": float(delta_threshold_kg_m3),
+                    },
+                    "history": history,
+                },
+                indent=2,
+                ensure_ascii=False,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+    except Exception:
+        pass
+    return current_job, history
+
+
+def _run_polymer_compaction_extensions(
+    *,
+    ext_root: Path,
+    exp: SystemExportResult,
+    initial_job: EquilibrationJob,
+    resources: RunResources,
+    warm_temp: float,
+    compact_pressure_bar: float,
+    dt_ps: float,
+    max_rounds: int,
+    round_ns: float,
+    slope_threshold_per_ps: float,
+    delta_threshold_kg_m3: float,
+    restart: bool,
+) -> tuple[EquilibrationJob, list[dict[str, object]]]:
+    from ...gmx.mdp_templates import MdpSpec, NPT_NO_CONSTRAINTS_MDP
+
+    current_job = initial_job
+    history: list[dict[str, object]] = []
+    if int(max_rounds) <= 0 or float(round_ns) <= 0.0:
+        return current_job, history
+    if not (hasattr(current_job, "final_stage_dir") and hasattr(current_job, "final_gro")):
+        return current_job, history
+
+    ext_root = Path(ext_root)
+    ext_root.mkdir(parents=True, exist_ok=True)
+    for round_idx in range(int(max_rounds)):
+        stage_dir = current_job.final_stage_dir()
+        trend = _eq21_density_trend(stage_dir)
+        volume_trend = _eq21_box_volume_trend(stage_dir)
+        compression_state = _compression_state_from_trends(
+            density_trend=trend,
+            volume_trend=volume_trend,
+            density_slope_threshold_per_ps=float(slope_threshold_per_ps),
+            density_delta_threshold_kg_m3=float(delta_threshold_kg_m3),
+        )
+        should_extend = bool(compression_state.get("still_compressing"))
+        rec = {
+            "round": int(round_idx),
+            "stage_dir": str(stage_dir),
+            "density_trend": trend,
+            "box_volume_trend": volume_trend,
+            "compression_state": compression_state,
+            "extended": should_extend,
+        }
+        history.append(rec)
+        if not should_extend:
+            break
+
+        round_dir = ext_root / f"round_{round_idx:02d}"
+        if not restart and round_dir.exists():
+            shutil.rmtree(round_dir, ignore_errors=True)
+        p = _no_constraint_md_params(
+            temperature=float(warm_temp),
+            pressure=float(compact_pressure_bar),
+            dt_ps=float(dt_ps),
+            nsteps=_ns_to_steps_for_dt(float(round_ns), float(dt_ps)),
+            gen_vel="no",
+            pcoupl="Berendsen",
+            tau_p_ps=8.0,
+            compressibility=4.5e-5 * 0.35,
+        )
+        ext_job = EquilibrationJob(
+            gro=current_job.final_gro(),
+            top=exp.system_top,
+            provenance_ndx=exp.system_ndx,
+            out_dir=round_dir,
+            stages=[EqStage("01_compact_npt", "npt", MdpSpec(NPT_NO_CONSTRAINTS_MDP, p))],
+            resources=resources,
+        )
+        _preset_log(
+            "[POLYMER-RECOVERY] Conservative compaction box still compressing; extending "
+            f"round={round_idx} | slope={float(trend.get('slope_per_ps') or 0.0):.4g} kg/m^3/ps | "
+            f"tail_delta={float(trend.get('tail_delta_kg_m3') or 0.0):.4g} kg/m^3 | "
+            f"volume_rel_delta={float(volume_trend.get('tail_rel_delta') or 0.0):.4g} | "
+            f"P={float(compact_pressure_bar):.1f} bar | time={float(round_ns):.3f} ns",
+            level=1,
+        )
+        ext_job.run(restart=bool(restart))
+        current_job = ext_job
+
+    try:
+        (ext_root / "polymer_compaction_extension.json").write_text(
+            json.dumps(
+                {
+                    "criterion": {
+                        "slope_threshold_per_ps": float(slope_threshold_per_ps),
+                        "delta_threshold_kg_m3": float(delta_threshold_kg_m3),
+                    },
+                    "history": history,
+                },
+                indent=2,
+                ensure_ascii=False,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+    except Exception:
+        pass
+    return current_job, history
 
 
 def _write_eq21_overview_plot(run_dir: Path, records: list[dict[str, Any]], params: dict[str, Any]) -> Optional[Path]:
@@ -1561,6 +2928,11 @@ class EQ21step:
         eq21_stage_reseed: Optional[bool] = None,
         eq21_npt_time_scale: float = 2.0,
         eq21_npt_mdp_overrides: Optional[dict[str, object]] = None,
+        eq21_final_extend: bool = True,
+        eq21_final_extend_max_rounds: int = 4,
+        eq21_final_extend_ns: float = 0.2,
+        eq21_final_extend_density_slope_per_ps: float = 5.0e-2,
+        eq21_final_extend_density_delta_kg_m3: float = 2.0,
     ):
         """Run the EQ21 multi-stage equilibration.
 
@@ -1621,6 +2993,13 @@ class EQ21step:
         _preset_item("final_stage_ns", float(final_ns))
         if eq21_npt_mdp_overrides:
             _preset_item("eq21_npt_mdp_overrides", eq21_npt_mdp_overrides)
+        _preset_item(
+            "eq21_final_extend",
+            f"{bool(eq21_final_extend)} | max_rounds={int(eq21_final_extend_max_rounds)} | "
+            f"round_ns={float(eq21_final_extend_ns):.3f} | "
+            f"slope>{float(eq21_final_extend_density_slope_per_ps):.4g} kg/m^3/ps | "
+            f"delta>{float(eq21_final_extend_density_delta_kg_m3):.4g} kg/m^3",
+        )
         _preset_item("resources", f"mpi={int(mpi)} | omp={int(omp)} | gpu={int(gpu)} | gpu_id={gpu_id}")
         _print_eq21_schedule(stage_records, params)
 
@@ -1652,6 +3031,11 @@ class EQ21step:
                 "eq21_stage_reseed": bool(cfg.reseed_each_stage),
                 "eq21_npt_time_scale": float(cfg.npt_time_scale),
                 "eq21_npt_mdp_overrides": json.dumps(eq21_npt_mdp_overrides, sort_keys=True, default=str) if eq21_npt_mdp_overrides else None,
+                "eq21_final_extend": bool(eq21_final_extend),
+                "eq21_final_extend_max_rounds": int(eq21_final_extend_max_rounds),
+                "eq21_final_extend_ns": float(eq21_final_extend_ns),
+                "eq21_final_extend_density_slope_per_ps": float(eq21_final_extend_density_slope_per_ps),
+                "eq21_final_extend_density_delta_kg_m3": float(eq21_final_extend_density_delta_kg_m3),
                 "mpi": int(mpi),
                 "omp": int(omp),
                 "gpu": int(gpu),
@@ -1688,7 +3072,12 @@ class EQ21step:
             _invalidate_downstream_resume_steps(
                 self._resume,
                 names=("npt_production", "nvt_production"),
-                prefixes=("equilibration_additional_",),
+                prefixes=(
+                    "equilibration_additional_",
+                    "equilibration_liquid_density_recovery_",
+                    "equilibration_polymer_density_recovery_",
+                    "equilibration_polymer_chain_relaxation_",
+                ),
             )
         job_restart = self._job_restart_flag(eq_spec, bool(rst_flag))
         if bool(rst_flag) and not job_restart:
@@ -1709,10 +3098,31 @@ class EQ21step:
         if not job_restart and run_dir.exists():
             shutil.rmtree(run_dir, ignore_errors=True)
         self._resume.run(eq_spec, lambda: job.run(restart=job_restart))
+        final_job = job
+        final_extension_history: list[dict[str, object]] = []
+        if bool(eq21_final_extend):
+            final_job, final_extension_history = _run_eq21_final_density_extensions(
+                work_dir=self.work_dir,
+                exp=exp,
+                initial_job=job,
+                resources=res,
+                temp=float(temp),
+                press=float(press),
+                dt_ps=float(cfg.dt_ps),
+                tau_p_ps=max(float(cfg.tau_p_ps), 1.0),
+                compressibility=float(cfg.compressibility_bar_inv),
+                max_rounds=int(eq21_final_extend_max_rounds),
+                round_ns=float(eq21_final_extend_ns),
+                slope_threshold_per_ps=float(eq21_final_extend_density_slope_per_ps),
+                delta_threshold_kg_m3=float(eq21_final_extend_density_delta_kg_m3),
+                restart=bool(rst_flag),
+            )
         overview_svg = _write_eq21_overview_plot(run_dir, stage_records, params)
         if overview_svg is not None:
             print(f"[EQ21] Overview plot written: {overview_svg}")
-        self._job = job
+        if final_extension_history:
+            _preset_item("eq21_final_extension_rounds", sum(1 for rec in final_extension_history if rec.get("extended")))
+        self._job = final_job
         _preset_done("EQ21 preset", t_all, detail=f"output={run_dir}")
         return self.ac
 
@@ -1736,6 +3146,862 @@ class EQ21step:
             ndx=exp.system_ndx,
             omp=int(getattr(getattr(self._job, "resources", None), "ntomp", 1) or 1),
         )
+
+    def final_gro(self) -> Path:
+        """Return the final coordinate file from the most recent preset run."""
+
+        if self._job is None:
+            raise RuntimeError("exec() must be called before final_gro().")
+        return self._job.final_gro()
+
+
+class LiquidAnneal(EQ21step):
+    """Fast CEMP-like annealing preset for non-polymer liquids/electrolytes."""
+
+    def exec(
+        self,
+        *,
+        temp: float,
+        press: float,
+        mpi: int = 1,
+        omp: int = 1,
+        gpu: int = 1,
+        gpu_id: Optional[int] = None,
+        time: float = 0.8,
+        hot_temp: float = 600.0,
+        hot_pressure_bar: float = 1000.0,
+        compact_pressure_bar: Optional[float] = None,
+        hot_nvt_ns: float = 0.05,
+        compact_npt_ns: float = 0.15,
+        hot_npt_ns: float = 0.20,
+        cooling_npt_ns: float = 0.10,
+        dt_ps: float = 0.002,
+        hot_dt_ps: float = 0.001,
+        constraints: str = "h-bonds",
+        lincs_iter: Optional[int] = None,
+        lincs_order: Optional[int] = None,
+        checkpoint_min: float = 5.0,
+        gpu_offload_mode: str = "auto",
+        mdp_overrides: Optional[dict[str, object]] = None,
+        start_gro: Optional[Union[str, Path]] = None,
+        restart: Optional[bool] = None,
+    ):
+        t_all = _preset_section("Liquid anneal equilibration preset", detail=f"restart={bool(resolve_restart(restart))} | work_dir={self.work_dir}")
+        rst_flag = resolve_restart(restart)
+        self._resume.enabled = bool(rst_flag)
+        exp = self._ensure_system_exported()
+
+        run_dir = self.work_dir / "03_liquid_anneal"
+        if not rst_flag and run_dir.exists():
+            shutil.rmtree(run_dir, ignore_errors=True)
+
+        constraints_mode = _normalize_constraints_mode(constraints)
+        resolved_compact_pressure = float(compact_pressure_bar) if compact_pressure_bar is not None else max(float(hot_pressure_bar), 5000.0)
+        resolved_gpu_offload_mode = _resolve_production_gpu_offload_mode(self.ac, gpu_offload_mode)
+        _preset_item("run_dir", run_dir)
+        _preset_item("temperature_K", float(temp))
+        _preset_item("pressure_bar", float(press))
+        _preset_item("hot_temperature_K", float(hot_temp))
+        _preset_item("hot_pressure_bar", float(hot_pressure_bar))
+        _preset_item("compact_pressure_bar", float(resolved_compact_pressure))
+        _preset_item("final_stage_ns", float(time))
+        _preset_item("compact_npt_ns", float(compact_npt_ns))
+        _preset_item("dt_ps", float(dt_ps))
+        _preset_item("hot_dt_ps", float(hot_dt_ps))
+        _preset_item("constraints", constraints_mode)
+        _preset_item("gpu_offload_mode", resolved_gpu_offload_mode)
+        if mdp_overrides:
+            _preset_item("mdp_overrides", mdp_overrides)
+        _preset_item("resources", f"mpi={int(mpi)} | omp={int(omp)} | gpu={int(gpu)} | gpu_id={gpu_id}")
+
+        stages = _build_liquid_anneal_stages(
+            temp=float(temp),
+            press=float(press),
+            final_ns=float(time),
+            hot_temp=float(hot_temp),
+            hot_pressure_bar=float(hot_pressure_bar),
+            compact_pressure_bar=float(resolved_compact_pressure),
+            hot_nvt_ns=float(hot_nvt_ns),
+            compact_npt_ns=float(compact_npt_ns),
+            hot_npt_ns=float(hot_npt_ns),
+            cooling_npt_ns=float(cooling_npt_ns),
+            dt_ps=float(dt_ps),
+            hot_dt_ps=float(hot_dt_ps),
+            constraints=constraints_mode,
+            lincs_iter=lincs_iter,
+            lincs_order=lincs_order,
+            checkpoint_min=float(checkpoint_min),
+            mdp_overrides=mdp_overrides,
+        )
+
+        use_gpu, gid = _parse_gpu_args(gpu, gpu_id)
+        res = RunResources(
+            ntmpi=int(mpi),
+            ntomp=int(omp),
+            use_gpu=use_gpu,
+            gpu_id=gid,
+            gpu_offload_mode=resolved_gpu_offload_mode,
+        )
+        job = EquilibrationJob(gro=exp.system_gro, top=exp.system_top, provenance_ndx=exp.system_ndx, out_dir=run_dir, stages=stages, resources=res)
+
+        final_dir = run_dir / stages[-1].name
+        spec = StepSpec(
+            name="equilibration_liquid_anneal",
+            outputs=[final_dir / "md.tpr", final_dir / "md.xtc", final_dir / "md.edr", final_dir / "md.gro"],
+            inputs={
+                "input_gro_sig": file_signature(exp.system_gro),
+                "input_top_sig": file_signature(exp.system_top),
+                "temp": float(temp),
+                "press": float(press),
+                "time": float(time),
+                "hot_temp": float(hot_temp),
+                "hot_pressure_bar": float(hot_pressure_bar),
+                "compact_pressure_bar": float(resolved_compact_pressure),
+                "hot_nvt_ns": float(hot_nvt_ns),
+                "compact_npt_ns": float(compact_npt_ns),
+                "hot_npt_ns": float(hot_npt_ns),
+                "cooling_npt_ns": float(cooling_npt_ns),
+                "dt_ps": float(dt_ps),
+                "hot_dt_ps": float(hot_dt_ps),
+                "constraints": constraints_mode,
+                "lincs_iter": int(lincs_iter) if lincs_iter is not None else None,
+                "lincs_order": int(lincs_order) if lincs_order is not None else None,
+                "gpu_offload_mode": resolved_gpu_offload_mode,
+                "checkpoint_min": float(checkpoint_min),
+                "mdp_overrides": json.dumps(mdp_overrides, sort_keys=True, default=str) if mdp_overrides else None,
+                "mpi": int(mpi),
+                "omp": int(omp),
+                "gpu": int(gpu),
+                "gpu_id": int(gpu_id) if gpu_id is not None else None,
+            },
+            description="CEMP-like liquid annealing workflow",
+        )
+
+        expected_gro_sig = file_signature(exp.system_gro)
+        expected_top_sig = file_signature(exp.system_top)
+        expected_ndx_sig = file_signature(exp.system_ndx)
+        _recover_completed_workflow_step(
+            self._resume,
+            spec,
+            summary_path=run_dir / "summary.json",
+            input_gro_sig=expected_gro_sig,
+            input_top_sig=expected_top_sig,
+            input_ndx_sig=expected_ndx_sig,
+            label="liquid anneal workflow",
+            fallback_markers=(final_dir / "summary.json",),
+        )
+        if self._resume.is_done(spec) and not _workflow_summary_matches(
+            run_dir / "summary.json",
+            input_gro_sig=expected_gro_sig,
+            input_top_sig=expected_top_sig,
+            input_ndx_sig=expected_ndx_sig,
+        ):
+            _preset_log(
+                "[RESTART] Cached liquid anneal summary does not match the current exported system. Rebuilding from scratch.",
+                level=1,
+            )
+            self._resume.mark_failed(spec, error="stale liquid anneal workflow summary", meta={"auto_rebuild": True})
+        if self._resume.reuse_status(spec) != "done":
+            _invalidate_downstream_resume_steps(
+                self._resume,
+                names=("npt_production", "nvt_production"),
+                prefixes=(
+                    "equilibration_additional_",
+                    "equilibration_liquid_density_recovery_",
+                    "equilibration_polymer_density_recovery_",
+                    "equilibration_polymer_chain_relaxation_",
+                ),
+            )
+        job_restart = self._job_restart_flag(spec, bool(rst_flag))
+        if bool(rst_flag) and not job_restart:
+            latest_stage, next_stage = _latest_reusable_stage_progress(
+                run_dir,
+                [stage.name for stage in stages],
+                input_gro_sig=expected_gro_sig,
+                input_top_sig=expected_top_sig,
+                input_ndx_sig=expected_ndx_sig,
+            )
+            if latest_stage is not None:
+                detail = f"resuming from {next_stage}" if next_stage is not None else "all stages already present"
+                _preset_log(
+                    f"[RESTART] Reusing completed liquid-anneal substeps through {latest_stage}; {detail}.",
+                    level=1,
+                )
+                job_restart = True
+        if not job_restart and run_dir.exists():
+            shutil.rmtree(run_dir, ignore_errors=True)
+        self._resume.run(spec, lambda: job.run(restart=job_restart))
+        self._job = job
+        _preset_done("Liquid anneal preset", t_all, detail=f"output={run_dir}")
+        return self.ac
+
+
+class LiquidDensityRecovery(EQ21step):
+    """No-polymer liquid recovery round for very low-density starting boxes.
+
+    The round is intentionally different from generic ``Additional``:
+    it reheats, compacts at elevated pressure, extends that compaction while the
+    density tail is still increasing, then releases/cools back to the target
+    temperature and pressure before the normal density plateau gate is checked.
+    """
+
+    def exec(
+        self,
+        *,
+        temp: float,
+        press: float,
+        mpi: int = 1,
+        omp: int = 1,
+        gpu: int = 1,
+        gpu_id: Optional[int] = None,
+        time: float = 1.0,
+        hot_temp: float = 600.0,
+        hot_pressure_bar: float = 1000.0,
+        compact_pressure_bar: float = 5000.0,
+        hot_nvt_ns: float = 0.03,
+        compact_npt_ns: float = 0.25,
+        cooling_npt_ns: float = 0.10,
+        compact_extend: bool = True,
+        compact_extend_max_rounds: int = 4,
+        compact_extend_ns: float = 0.20,
+        compact_extend_density_slope_per_ps: float = 5.0e-2,
+        compact_extend_density_delta_kg_m3: float = 2.0,
+        dt_ps: float = 0.002,
+        hot_dt_ps: float = 0.001,
+        constraints: str = "none",
+        lincs_iter: Optional[int] = None,
+        lincs_order: Optional[int] = None,
+        checkpoint_min: float = 5.0,
+        gpu_offload_mode: str = "auto",
+        mdp_overrides: Optional[dict[str, object]] = None,
+        start_gro: Optional[Union[str, Path]] = None,
+        restart: Optional[bool] = None,
+    ):
+        t_all = _preset_section("Liquid density recovery preset", detail=f"restart={bool(resolve_restart(restart))} | work_dir={self.work_dir}")
+        rst_flag = resolve_restart(restart)
+        self._resume.enabled = bool(rst_flag)
+        exp = self._ensure_system_exported()
+        start_gro = Path(start_gro) if start_gro is not None else (_find_latest_equilibrated_gro(self.work_dir) or exp.system_gro)
+
+        round_idx, run_dir = _next_additional_round(self.work_dir, restart=bool(rst_flag))
+        constraints_mode = _normalize_constraints_mode(constraints)
+        resolved_gpu_offload_mode = _resolve_production_gpu_offload_mode(self.ac, gpu_offload_mode)
+        compact_pressure = max(float(compact_pressure_bar), float(hot_pressure_bar))
+        _preset_item("round", round_idx)
+        _preset_item("run_dir", run_dir)
+        _preset_item("start_gro", start_gro)
+        _preset_item("temperature_K", float(temp))
+        _preset_item("pressure_bar", float(press))
+        _preset_item("hot_temperature_K", float(hot_temp))
+        _preset_item("hot_pressure_bar", float(hot_pressure_bar))
+        _preset_item("compact_pressure_bar", float(compact_pressure))
+        _preset_item("final_stage_ns", float(time))
+        _preset_item("compact_npt_ns", float(compact_npt_ns))
+        _preset_item(
+            "compact_extend",
+            f"{bool(compact_extend)} | max_rounds={int(compact_extend_max_rounds)} | "
+            f"round_ns={float(compact_extend_ns):.3f} | "
+            f"slope>{float(compact_extend_density_slope_per_ps):.4g} kg/m^3/ps | "
+            f"delta>{float(compact_extend_density_delta_kg_m3):.4g} kg/m^3",
+        )
+        _preset_item("dt_ps", float(dt_ps))
+        _preset_item("hot_dt_ps", float(hot_dt_ps))
+        _preset_item("constraints", constraints_mode)
+        _preset_item("gpu_offload_mode", resolved_gpu_offload_mode)
+        if mdp_overrides:
+            _preset_item("mdp_overrides", mdp_overrides)
+        _preset_item("resources", f"mpi={int(mpi)} | omp={int(omp)} | gpu={int(gpu)} | gpu_id={gpu_id}")
+
+        compaction_stages = _build_liquid_recovery_compaction_stages(
+            hot_temp=float(hot_temp),
+            compact_pressure_bar=float(compact_pressure),
+            hot_nvt_ns=float(hot_nvt_ns),
+            compact_npt_ns=float(compact_npt_ns),
+            hot_dt_ps=float(hot_dt_ps),
+            constraints=constraints_mode,
+            lincs_iter=lincs_iter,
+            lincs_order=lincs_order,
+        )
+        release_stages = _build_liquid_recovery_release_stages(
+            temp=float(temp),
+            press=float(press),
+            final_ns=float(time),
+            hot_temp=float(hot_temp),
+            hot_pressure_bar=float(hot_pressure_bar),
+            cooling_npt_ns=float(cooling_npt_ns),
+            dt_ps=float(dt_ps),
+            hot_dt_ps=float(hot_dt_ps),
+            constraints=constraints_mode,
+            lincs_iter=lincs_iter,
+            lincs_order=lincs_order,
+            checkpoint_min=float(checkpoint_min),
+            mdp_overrides=mdp_overrides,
+        )
+
+        final_dir = run_dir / release_stages[-1].name
+        spec = StepSpec(
+            name=f"equilibration_liquid_density_recovery_{round_idx:02d}",
+            outputs=[final_dir / "md.tpr", final_dir / "md.xtc", final_dir / "md.edr", final_dir / "md.gro"],
+            inputs={
+                "start_gro_sig": file_signature(Path(start_gro)),
+                "input_top_sig": file_signature(exp.system_top),
+                "temp": float(temp),
+                "press": float(press),
+                "time": float(time),
+                "hot_temp": float(hot_temp),
+                "hot_pressure_bar": float(hot_pressure_bar),
+                "compact_pressure_bar": float(compact_pressure),
+                "hot_nvt_ns": float(hot_nvt_ns),
+                "compact_npt_ns": float(compact_npt_ns),
+                "cooling_npt_ns": float(cooling_npt_ns),
+                "compact_extend": bool(compact_extend),
+                "compact_extend_max_rounds": int(compact_extend_max_rounds),
+                "compact_extend_ns": float(compact_extend_ns),
+                "compact_extend_density_slope_per_ps": float(compact_extend_density_slope_per_ps),
+                "compact_extend_density_delta_kg_m3": float(compact_extend_density_delta_kg_m3),
+                "dt_ps": float(dt_ps),
+                "hot_dt_ps": float(hot_dt_ps),
+                "constraints": constraints_mode,
+                "lincs_iter": int(lincs_iter) if lincs_iter is not None else None,
+                "lincs_order": int(lincs_order) if lincs_order is not None else None,
+                "gpu_offload_mode": resolved_gpu_offload_mode,
+                "checkpoint_min": float(checkpoint_min),
+                "mdp_overrides": json.dumps(mdp_overrides, sort_keys=True, default=str) if mdp_overrides else None,
+                "mpi": int(mpi),
+                "omp": int(omp),
+                "gpu": int(gpu),
+                "gpu_id": int(gpu_id) if gpu_id is not None else None,
+            },
+            description="No-polymer liquid density recovery round",
+        )
+
+        expected_gro_sig = file_signature(Path(start_gro))
+        expected_top_sig = file_signature(exp.system_top)
+        expected_ndx_sig = file_signature(exp.system_ndx)
+        _recover_completed_workflow_step(
+            self._resume,
+            spec,
+            summary_path=run_dir / "summary.json",
+            input_gro_sig=expected_gro_sig,
+            input_top_sig=expected_top_sig,
+            input_ndx_sig=expected_ndx_sig,
+            label=f"liquid density recovery round {round_idx:02d}",
+            fallback_markers=(final_dir / "summary.json",),
+        )
+        if self._resume.reuse_status(spec) != "done":
+            _invalidate_downstream_resume_steps(
+                self._resume,
+                names=("npt_production", "nvt_production"),
+                prefixes=(
+                    "equilibration_additional_",
+                    "equilibration_liquid_density_recovery_",
+                    "equilibration_polymer_density_recovery_",
+                    "equilibration_polymer_chain_relaxation_",
+                ),
+            )
+
+        use_gpu, gid = _parse_gpu_args(gpu, gpu_id)
+        res = RunResources(
+            ntmpi=int(mpi),
+            ntomp=int(omp),
+            use_gpu=use_gpu,
+            gpu_id=gid,
+            gpu_offload_mode=resolved_gpu_offload_mode,
+        )
+
+        release_job_for_cached = EquilibrationJob(
+            gro=start_gro,
+            top=exp.system_top,
+            provenance_ndx=exp.system_ndx,
+            out_dir=run_dir,
+            stages=release_stages,
+            resources=res,
+        )
+
+        job_restart = self._job_restart_flag(spec, bool(rst_flag))
+        if not job_restart and run_dir.exists():
+            shutil.rmtree(run_dir, ignore_errors=True)
+
+        def _run_recovery() -> EquilibrationJob:
+            compaction_job = EquilibrationJob(
+                gro=start_gro,
+                top=exp.system_top,
+                provenance_ndx=exp.system_ndx,
+                out_dir=run_dir,
+                stages=compaction_stages,
+                resources=res,
+            )
+            compaction_job.run(restart=job_restart)
+            current_job = compaction_job
+            extension_history: list[dict[str, object]] = []
+            if bool(compact_extend):
+                current_job, extension_history = _run_liquid_compaction_extensions(
+                    ext_root=run_dir / "03_compact_extend",
+                    exp=exp,
+                    initial_job=compaction_job,
+                    resources=res,
+                    hot_temp=float(hot_temp),
+                    compact_pressure_bar=float(compact_pressure),
+                    hot_dt_ps=float(hot_dt_ps),
+                    constraints=constraints_mode,
+                    lincs_iter=lincs_iter,
+                    lincs_order=lincs_order,
+                    max_rounds=int(compact_extend_max_rounds),
+                    round_ns=float(compact_extend_ns),
+                    slope_threshold_per_ps=float(compact_extend_density_slope_per_ps),
+                    delta_threshold_kg_m3=float(compact_extend_density_delta_kg_m3),
+                    restart=bool(rst_flag),
+                )
+            if extension_history:
+                _preset_item("compact_extension_rounds", sum(1 for rec in extension_history if rec.get("extended")))
+            release_job = EquilibrationJob(
+                gro=current_job.final_gro(),
+                top=exp.system_top,
+                provenance_ndx=exp.system_ndx,
+                out_dir=run_dir,
+                stages=release_stages,
+                resources=res,
+            )
+            release_job.run(restart=job_restart)
+            try:
+                (run_dir / "liquid_density_recovery.json").write_text(
+                    json.dumps(
+                        {
+                            "round": int(round_idx),
+                            "start_gro": str(start_gro),
+                            "compact_pressure_bar": float(compact_pressure),
+                            "hot_pressure_bar": float(hot_pressure_bar),
+                            "target_pressure_bar": float(press),
+                            "target_temperature_K": float(temp),
+                            "compact_extension_history": extension_history,
+                            "final_gro": str(release_job.final_gro()),
+                            "notes": (
+                                "Recovery uses density-trend extensions during high-pressure compaction, "
+                                "then releases/cools to the target T/P before the standard density plateau gate."
+                            ),
+                        },
+                        indent=2,
+                        ensure_ascii=False,
+                    )
+                    + "\n",
+                    encoding="utf-8",
+                )
+            except Exception:
+                pass
+            return release_job
+
+        maybe_job = self._resume.run(spec, _run_recovery)
+        self._job = maybe_job if isinstance(maybe_job, EquilibrationJob) else release_job_for_cached
+        _preset_done("Liquid density recovery preset", t_all, detail=f"output={run_dir}")
+        return self.ac
+
+
+class PolymerDensityRecovery(EQ21step):
+    """Conservative no-constraint density recovery for sparse polymer boxes.
+
+    This preset is intentionally LINCS-free. It applies a modest pressure ladder
+    across additional rounds, and within each round it may extend the compaction
+    segment while density/box-volume diagnostics still show active compression.
+    """
+
+    def exec(
+        self,
+        *,
+        temp: float,
+        press: float,
+        mpi: int = 1,
+        omp: int = 1,
+        gpu: int = 1,
+        gpu_id: Optional[int] = None,
+        time: float = 1.0,
+        warm_temp: Optional[float] = None,
+        pressure_ladder: Sequence[float] = (500.0, 1000.0, 2000.0, 5000.0),
+        warm_nvt_ns: float = 0.05,
+        compact_npt_ns: float = 0.25,
+        compact_extend: bool = True,
+        compact_extend_max_rounds: int = 3,
+        compact_extend_ns: float = 0.20,
+        compact_extend_density_slope_per_ps: float = 5.0e-2,
+        compact_extend_density_delta_kg_m3: float = 2.0,
+        dt_ps: float = 0.001,
+        checkpoint_min: float = 5.0,
+        gpu_offload_mode: str = "auto",
+        mdp_overrides: Optional[dict[str, object]] = None,
+        start_gro: Optional[Union[str, Path]] = None,
+        restart: Optional[bool] = None,
+    ):
+        t_all = _preset_section("Polymer density recovery preset", detail=f"restart={bool(resolve_restart(restart))} | work_dir={self.work_dir}")
+        rst_flag = resolve_restart(restart)
+        self._resume.enabled = bool(rst_flag)
+        exp = self._ensure_system_exported()
+        start_gro = Path(start_gro) if start_gro is not None else (_find_latest_equilibrated_gro(self.work_dir) or exp.system_gro)
+
+        round_idx, run_dir = _next_additional_round(self.work_dir, restart=bool(rst_flag))
+        resolved_warm_temp = _polymer_warm_temperature(float(temp), warm_temp)
+        compact_pressure = _polymer_recovery_pressure(round_idx, pressure_ladder)
+        resolved_gpu_offload_mode = _resolve_production_gpu_offload_mode(self.ac, gpu_offload_mode)
+        _preset_item("round", round_idx)
+        _preset_item("run_dir", run_dir)
+        _preset_item("start_gro", start_gro)
+        _preset_item("temperature_K", float(temp))
+        _preset_item("pressure_bar", float(press))
+        _preset_item("warm_temperature_K", float(resolved_warm_temp))
+        _preset_item("compact_pressure_bar", float(compact_pressure))
+        _preset_item("final_stage_ns", float(time))
+        _preset_item("warm_nvt_ns", float(warm_nvt_ns))
+        _preset_item("compact_npt_ns", float(compact_npt_ns))
+        _preset_item(
+            "compact_extend",
+            f"{bool(compact_extend)} | max_rounds={int(compact_extend_max_rounds)} | "
+            f"round_ns={float(compact_extend_ns):.3f} | "
+            f"slope>{float(compact_extend_density_slope_per_ps):.4g} kg/m^3/ps | "
+            f"delta>{float(compact_extend_density_delta_kg_m3):.4g} kg/m^3",
+        )
+        _preset_item("dt_ps", float(dt_ps))
+        _preset_item("constraints", "none")
+        _preset_item("gpu_offload_mode", resolved_gpu_offload_mode)
+        if mdp_overrides:
+            _preset_item("mdp_overrides", mdp_overrides)
+        _preset_item("resources", f"mpi={int(mpi)} | omp={int(omp)} | gpu={int(gpu)} | gpu_id={gpu_id}")
+
+        compaction_stages = _build_polymer_density_recovery_compaction_stages(
+            warm_temp=float(resolved_warm_temp),
+            compact_pressure_bar=float(compact_pressure),
+            warm_nvt_ns=float(warm_nvt_ns),
+            compact_npt_ns=float(compact_npt_ns),
+            dt_ps=float(dt_ps),
+        )
+        release_stages = _build_polymer_density_recovery_release_stages(
+            temp=float(temp),
+            press=float(press),
+            final_ns=float(time),
+            dt_ps=float(dt_ps),
+            checkpoint_min=float(checkpoint_min),
+        )
+        compaction_stages = _apply_stage_mdp_overrides(compaction_stages, mdp_overrides)
+        release_stages = _apply_stage_mdp_overrides(release_stages, mdp_overrides)
+
+        final_dir = run_dir / release_stages[-1].name
+        spec = StepSpec(
+            name=f"equilibration_polymer_density_recovery_{round_idx:02d}",
+            outputs=[final_dir / "md.tpr", final_dir / "md.xtc", final_dir / "md.edr", final_dir / "md.gro"],
+            inputs={
+                "start_gro_sig": file_signature(Path(start_gro)),
+                "input_top_sig": file_signature(exp.system_top),
+                "temp": float(temp),
+                "press": float(press),
+                "time": float(time),
+                "warm_temp": float(resolved_warm_temp),
+                "pressure_ladder": json.dumps([float(x) for x in pressure_ladder], default=str),
+                "compact_pressure_bar": float(compact_pressure),
+                "warm_nvt_ns": float(warm_nvt_ns),
+                "compact_npt_ns": float(compact_npt_ns),
+                "compact_extend": bool(compact_extend),
+                "compact_extend_max_rounds": int(compact_extend_max_rounds),
+                "compact_extend_ns": float(compact_extend_ns),
+                "compact_extend_density_slope_per_ps": float(compact_extend_density_slope_per_ps),
+                "compact_extend_density_delta_kg_m3": float(compact_extend_density_delta_kg_m3),
+                "dt_ps": float(dt_ps),
+                "constraints": "none",
+                "gpu_offload_mode": resolved_gpu_offload_mode,
+                "checkpoint_min": float(checkpoint_min),
+                "mdp_overrides": json.dumps(mdp_overrides, sort_keys=True, default=str) if mdp_overrides else None,
+                "mpi": int(mpi),
+                "omp": int(omp),
+                "gpu": int(gpu),
+                "gpu_id": int(gpu_id) if gpu_id is not None else None,
+            },
+            description="Polymer density recovery round",
+        )
+
+        expected_gro_sig = file_signature(Path(start_gro))
+        expected_top_sig = file_signature(exp.system_top)
+        expected_ndx_sig = file_signature(exp.system_ndx)
+        _recover_completed_workflow_step(
+            self._resume,
+            spec,
+            summary_path=run_dir / "summary.json",
+            input_gro_sig=expected_gro_sig,
+            input_top_sig=expected_top_sig,
+            input_ndx_sig=expected_ndx_sig,
+            label=f"polymer density recovery round {round_idx:02d}",
+            fallback_markers=(final_dir / "summary.json",),
+        )
+        if self._resume.reuse_status(spec) != "done":
+            _invalidate_downstream_resume_steps(
+                self._resume,
+                names=("npt_production", "nvt_production"),
+                prefixes=(
+                    "equilibration_additional_",
+                    "equilibration_liquid_density_recovery_",
+                    "equilibration_polymer_density_recovery_",
+                    "equilibration_polymer_chain_relaxation_",
+                ),
+            )
+
+        use_gpu, gid = _parse_gpu_args(gpu, gpu_id)
+        res = RunResources(
+            ntmpi=int(mpi),
+            ntomp=int(omp),
+            use_gpu=use_gpu,
+            gpu_id=gid,
+            gpu_offload_mode=resolved_gpu_offload_mode,
+        )
+        release_job_for_cached = EquilibrationJob(
+            gro=start_gro,
+            top=exp.system_top,
+            provenance_ndx=exp.system_ndx,
+            out_dir=run_dir,
+            stages=release_stages,
+            resources=res,
+        )
+
+        job_restart = self._job_restart_flag(spec, bool(rst_flag))
+        if not job_restart and run_dir.exists():
+            shutil.rmtree(run_dir, ignore_errors=True)
+
+        def _run_recovery() -> EquilibrationJob:
+            compaction_job = EquilibrationJob(
+                gro=start_gro,
+                top=exp.system_top,
+                provenance_ndx=exp.system_ndx,
+                out_dir=run_dir,
+                stages=compaction_stages,
+                resources=res,
+            )
+            compaction_job.run(restart=job_restart)
+            current_job = compaction_job
+            extension_history: list[dict[str, object]] = []
+            if bool(compact_extend):
+                current_job, extension_history = _run_polymer_compaction_extensions(
+                    ext_root=run_dir / "03_compact_extend",
+                    exp=exp,
+                    initial_job=compaction_job,
+                    resources=res,
+                    warm_temp=float(resolved_warm_temp),
+                    compact_pressure_bar=float(compact_pressure),
+                    dt_ps=float(dt_ps),
+                    max_rounds=int(compact_extend_max_rounds),
+                    round_ns=float(compact_extend_ns),
+                    slope_threshold_per_ps=float(compact_extend_density_slope_per_ps),
+                    delta_threshold_kg_m3=float(compact_extend_density_delta_kg_m3),
+                    restart=bool(rst_flag),
+                )
+            if extension_history:
+                _preset_item("compact_extension_rounds", sum(1 for rec in extension_history if rec.get("extended")))
+            release_job = EquilibrationJob(
+                gro=current_job.final_gro(),
+                top=exp.system_top,
+                provenance_ndx=exp.system_ndx,
+                out_dir=run_dir,
+                stages=release_stages,
+                resources=res,
+            )
+            release_job.run(restart=job_restart)
+            try:
+                (run_dir / "polymer_density_recovery.json").write_text(
+                    json.dumps(
+                        {
+                            "round": int(round_idx),
+                            "start_gro": str(start_gro),
+                            "warm_temperature_K": float(resolved_warm_temp),
+                            "compact_pressure_bar": float(compact_pressure),
+                            "target_pressure_bar": float(press),
+                            "target_temperature_K": float(temp),
+                            "constraints": "none",
+                            "compact_extension_history": extension_history,
+                            "final_gro": str(release_job.final_gro()),
+                            "notes": (
+                                "Polymer recovery is no-constraint, moderate-pressure compaction. "
+                                "It is selected only when density/box-volume diagnostics still indicate compression."
+                            ),
+                        },
+                        indent=2,
+                        ensure_ascii=False,
+                    )
+                    + "\n",
+                    encoding="utf-8",
+                )
+            except Exception:
+                pass
+            return release_job
+
+        maybe_job = self._resume.run(spec, _run_recovery)
+        self._job = maybe_job if isinstance(maybe_job, EquilibrationJob) else release_job_for_cached
+        _preset_done("Polymer density recovery preset", t_all, detail=f"output={run_dir}")
+        return self.ac
+
+
+class PolymerChainRelaxation(EQ21step):
+    """No-constraint warm chain relaxation when density is stable but Rg is not."""
+
+    def exec(
+        self,
+        *,
+        temp: float,
+        press: float,
+        mpi: int = 1,
+        omp: int = 1,
+        gpu: int = 1,
+        gpu_id: Optional[int] = None,
+        time: float = 1.0,
+        warm_temp: Optional[float] = None,
+        warm_nvt_ns: float = 0.10,
+        dt_ps: float = 0.001,
+        checkpoint_min: float = 5.0,
+        gpu_offload_mode: str = "auto",
+        mdp_overrides: Optional[dict[str, object]] = None,
+        start_gro: Optional[Union[str, Path]] = None,
+        restart: Optional[bool] = None,
+    ):
+        t_all = _preset_section("Polymer chain relaxation preset", detail=f"restart={bool(resolve_restart(restart))} | work_dir={self.work_dir}")
+        rst_flag = resolve_restart(restart)
+        self._resume.enabled = bool(rst_flag)
+        exp = self._ensure_system_exported()
+        start_gro = Path(start_gro) if start_gro is not None else (_find_latest_equilibrated_gro(self.work_dir) or exp.system_gro)
+
+        round_idx, run_dir = _next_additional_round(self.work_dir, restart=bool(rst_flag))
+        resolved_warm_temp = _polymer_warm_temperature(float(temp), warm_temp)
+        resolved_gpu_offload_mode = _resolve_production_gpu_offload_mode(self.ac, gpu_offload_mode)
+        _preset_item("round", round_idx)
+        _preset_item("run_dir", run_dir)
+        _preset_item("start_gro", start_gro)
+        _preset_item("temperature_K", float(temp))
+        _preset_item("pressure_bar", float(press))
+        _preset_item("warm_temperature_K", float(resolved_warm_temp))
+        _preset_item("warm_nvt_ns", float(warm_nvt_ns))
+        _preset_item("final_stage_ns", float(time))
+        _preset_item("dt_ps", float(dt_ps))
+        _preset_item("constraints", "none")
+        _preset_item("gpu_offload_mode", resolved_gpu_offload_mode)
+        if mdp_overrides:
+            _preset_item("mdp_overrides", mdp_overrides)
+        _preset_item("resources", f"mpi={int(mpi)} | omp={int(omp)} | gpu={int(gpu)} | gpu_id={gpu_id}")
+
+        stages = _build_polymer_chain_relaxation_stages(
+            temp=float(temp),
+            press=float(press),
+            final_ns=float(time),
+            warm_temp=float(resolved_warm_temp),
+            warm_nvt_ns=float(warm_nvt_ns),
+            dt_ps=float(dt_ps),
+            checkpoint_min=float(checkpoint_min),
+        )
+        stages = _apply_stage_mdp_overrides(stages, mdp_overrides, stage_kinds=("minim", "nvt", "npt", "md"))
+
+        final_dir = run_dir / stages[-1].name
+        spec = StepSpec(
+            name=f"equilibration_polymer_chain_relaxation_{round_idx:02d}",
+            outputs=[final_dir / "md.tpr", final_dir / "md.xtc", final_dir / "md.edr", final_dir / "md.gro"],
+            inputs={
+                "start_gro_sig": file_signature(Path(start_gro)),
+                "input_top_sig": file_signature(exp.system_top),
+                "temp": float(temp),
+                "press": float(press),
+                "time": float(time),
+                "warm_temp": float(resolved_warm_temp),
+                "warm_nvt_ns": float(warm_nvt_ns),
+                "dt_ps": float(dt_ps),
+                "constraints": "none",
+                "gpu_offload_mode": resolved_gpu_offload_mode,
+                "checkpoint_min": float(checkpoint_min),
+                "mdp_overrides": json.dumps(mdp_overrides, sort_keys=True, default=str) if mdp_overrides else None,
+                "mpi": int(mpi),
+                "omp": int(omp),
+                "gpu": int(gpu),
+                "gpu_id": int(gpu_id) if gpu_id is not None else None,
+            },
+            description="Polymer Rg/chain relaxation round",
+        )
+
+        expected_gro_sig = file_signature(Path(start_gro))
+        expected_top_sig = file_signature(exp.system_top)
+        expected_ndx_sig = file_signature(exp.system_ndx)
+        _recover_completed_workflow_step(
+            self._resume,
+            spec,
+            summary_path=run_dir / "summary.json",
+            input_gro_sig=expected_gro_sig,
+            input_top_sig=expected_top_sig,
+            input_ndx_sig=expected_ndx_sig,
+            label=f"polymer chain relaxation round {round_idx:02d}",
+            fallback_markers=(final_dir / "summary.json",),
+        )
+        if self._resume.is_done(spec) and not _workflow_summary_matches(
+            run_dir / "summary.json",
+            input_gro_sig=expected_gro_sig,
+            input_top_sig=expected_top_sig,
+            input_ndx_sig=expected_ndx_sig,
+        ):
+            _preset_log(
+                f"[RESTART] Cached polymer chain relaxation summary for round {round_idx:02d} does not match current inputs. Rebuilding from scratch.",
+                level=1,
+            )
+            self._resume.mark_failed(spec, error="stale polymer chain relaxation summary", meta={"auto_rebuild": True})
+        if self._resume.reuse_status(spec) != "done":
+            _invalidate_downstream_resume_steps(
+                self._resume,
+                names=("npt_production", "nvt_production"),
+                prefixes=(
+                    "equilibration_additional_",
+                    "equilibration_liquid_density_recovery_",
+                    "equilibration_polymer_density_recovery_",
+                    "equilibration_polymer_chain_relaxation_",
+                ),
+            )
+
+        use_gpu, gid = _parse_gpu_args(gpu, gpu_id)
+        res = RunResources(
+            ntmpi=int(mpi),
+            ntomp=int(omp),
+            use_gpu=use_gpu,
+            gpu_id=gid,
+            gpu_offload_mode=resolved_gpu_offload_mode,
+        )
+        job = EquilibrationJob(gro=start_gro, top=exp.system_top, provenance_ndx=exp.system_ndx, out_dir=run_dir, stages=stages, resources=res)
+        job_restart = self._job_restart_flag(spec, bool(rst_flag))
+        if bool(rst_flag) and not job_restart:
+            latest_stage, next_stage = _latest_reusable_stage_progress(
+                run_dir,
+                [stage.name for stage in stages],
+                input_gro_sig=expected_gro_sig,
+                input_top_sig=expected_top_sig,
+                input_ndx_sig=expected_ndx_sig,
+            )
+            if latest_stage is not None:
+                detail = f"resuming from {next_stage}" if next_stage is not None else "all stages already present"
+                _preset_log(
+                    f"[RESTART] Reusing completed polymer-chain-relaxation substeps through {latest_stage}; {detail}.",
+                    level=1,
+                )
+                job_restart = True
+        if not job_restart and run_dir.exists():
+            shutil.rmtree(run_dir, ignore_errors=True)
+        self._resume.run(spec, lambda: job.run(restart=job_restart))
+        try:
+            (run_dir / "polymer_chain_relaxation.json").write_text(
+                json.dumps(
+                    {
+                        "round": int(round_idx),
+                        "start_gro": str(start_gro),
+                        "warm_temperature_K": float(resolved_warm_temp),
+                        "target_pressure_bar": float(press),
+                        "target_temperature_K": float(temp),
+                        "constraints": "none",
+                        "final_gro": str(job.final_gro()),
+                        "notes": "Selected when density is stable but polymer Rg has not plateaued.",
+                    },
+                    indent=2,
+                    ensure_ascii=False,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+        except Exception:
+            pass
+        self._job = job
+        _preset_done("Polymer chain relaxation preset", t_all, detail=f"output={run_dir}")
+        return self.ac
 
 
 class Additional(EQ21step):
@@ -1764,6 +4030,9 @@ class Additional(EQ21step):
         lincs_order: Optional[int] = None,
         gpu_offload_mode: str = "auto",
         mdp_overrides: Optional[dict[str, object]] = None,
+        start_gro: Optional[Union[str, Path]] = None,
+        skip_rebuild: Optional[bool] = None,
+        micro_relax: bool = False,
         restart: Optional[bool] = None,
     ):
         t_all = _preset_section("Additional equilibration preset", detail=f"restart={bool(resolve_restart(restart))} | work_dir={self.work_dir}")
@@ -1778,12 +4047,12 @@ class Additional(EQ21step):
         # Prefer continuing from the latest equilibrated structure already present in work_dir.
         # This is important when the user creates a new `Additional(...)` instance in scripts
         # (common in examples), in which case self._job is None.
-        start_gro = _find_latest_equilibrated_gro(self.work_dir) or exp.system_gro
+        start_gro = Path(start_gro) if start_gro is not None else (_find_latest_equilibrated_gro(self.work_dir) or exp.system_gro)
 
         # 判定标签：若已有可用的平衡结构（即 start_gro 不是原始 system.gro），
         # 则无需重复建盒子/EM/NVT/NPT 等流程。
         # 只在原有基础上重复跑最终平衡阶段（04_md）。
-        _skip_rebuild = bool(start_gro != exp.system_gro)
+        _skip_rebuild = bool(start_gro != exp.system_gro) if skip_rebuild is None else bool(skip_rebuild)
 
         round_idx, run_dir = _next_additional_round(self.work_dir, restart=bool(rst_flag))
         _preset_item("round", round_idx)
@@ -1800,19 +4069,33 @@ class Additional(EQ21step):
         _preset_item("gpu_offload_mode", resolved_gpu_offload_mode)
         if mdp_overrides:
             _preset_item("mdp_overrides", mdp_overrides)
+        if skip_rebuild is not None:
+            _preset_item("skip_rebuild", bool(skip_rebuild))
+        if micro_relax:
+            _preset_item("micro_relax", "cold/warm 0.1 fs NVT -> 0.2 fs target NVT -> 0.25/0.5 fs NPT")
 
-        stages = EquilibrationJob.default_stages(
-            temperature_k=float(temp),
-            pressure_bar=float(press),
-            dt_ps=float(dt_ps),
-            constraints=constraints,
-            lincs_iter=lincs_iter,
-            lincs_order=lincs_order,
-            nvt_ns=0.1,
-            npt_ns=0.2,
-            prod_ns=float(sim_time),
-        )
-        stages = _apply_stage_mdp_overrides(stages, mdp_overrides)
+        if bool(micro_relax) and not _skip_rebuild:
+            stages = _build_liquid_target_relaxation_stages(
+                temp=float(temp),
+                press=float(press),
+                final_ns=float(sim_time),
+                dt_ps=float(dt_ps),
+                checkpoint_min=5.0,
+                mdp_overrides=mdp_overrides,
+            )
+        else:
+            stages = EquilibrationJob.default_stages(
+                temperature_k=float(temp),
+                pressure_bar=float(press),
+                dt_ps=float(dt_ps),
+                constraints=constraints,
+                lincs_iter=lincs_iter,
+                lincs_order=lincs_order,
+                nvt_ns=0.1,
+                npt_ns=0.2,
+                prod_ns=float(sim_time),
+            )
+            stages = _apply_stage_mdp_overrides(stages, mdp_overrides, stage_kinds=("minim", "nvt", "npt", "md"))
 
         # 判定标签：只保留最终平衡阶段（04_md）
         if _skip_rebuild and stages:
@@ -1842,6 +4125,9 @@ class Additional(EQ21step):
                 "constraints": _normalize_constraints_mode(constraints),
                 "lincs_iter": int(lincs_iter) if lincs_iter is not None else None,
                 "lincs_order": int(lincs_order) if lincs_order is not None else None,
+                "explicit_start_gro": str(start_gro) if start_gro is not None else None,
+                "skip_rebuild": bool(_skip_rebuild),
+                "micro_relax": bool(micro_relax),
                 "gpu_offload_mode": resolved_gpu_offload_mode,
                 "mdp_overrides": json.dumps(mdp_overrides, sort_keys=True, default=str) if mdp_overrides else None,
                 "mpi": int(mpi),
@@ -1880,7 +4166,12 @@ class Additional(EQ21step):
             _invalidate_downstream_resume_steps(
                 self._resume,
                 names=("npt_production", "nvt_production"),
-                prefixes=("equilibration_additional_",),
+                prefixes=(
+                    "equilibration_additional_",
+                    "equilibration_liquid_density_recovery_",
+                    "equilibration_polymer_density_recovery_",
+                    "equilibration_polymer_chain_relaxation_",
+                ),
             )
         job_restart = self._job_restart_flag(spec, bool(rst_flag))
         if bool(rst_flag) and not job_restart:
@@ -1936,6 +4227,7 @@ class NPT(EQ21step):
         bridge_lincs_iter: int = 4,
         bridge_lincs_order: int = 12,
         mdp_overrides: Optional[dict[str, object]] = None,
+        start_gro: Optional[Union[str, Path]] = None,
         restart: Optional[bool] = None,
     ):
         t_all = _preset_section("NPT production preset", detail=f"restart={bool(resolve_restart(restart))} | work_dir={self.work_dir}")
@@ -1945,7 +4237,7 @@ class NPT(EQ21step):
 
         run_dir = self.work_dir / "05_npt_production"
         # Production must restart from upstream equilibration, not from its own prior output.
-        start_gro = _find_latest_equilibrated_gro(self.work_dir, exclude_dirs=[run_dir]) or exp.system_gro
+        start_gro = Path(start_gro) if start_gro is not None else (_find_latest_equilibrated_gro(self.work_dir, exclude_dirs=[run_dir]) or exp.system_gro)
         _preset_item("run_dir", run_dir)
         _preset_item("start_gro", start_gro)
         _preset_item("temperature_K", float(temp))
@@ -1983,6 +4275,12 @@ class NPT(EQ21step):
         p = default_mdp_params()
         p["ref_t"] = float(temp)
         p["ref_p"] = float(press)
+        # Production starts from an equilibrated coordinate snapshot, not from
+        # the previous stage checkpoint. Generate a clean target-temperature
+        # Maxwell distribution for the first production/bridge stage.
+        p["gen_vel"] = "yes"
+        p["gen_temp"] = float(temp)
+        p["continuation"] = "no"
         p, constraints_mode = _prepare_production_mdp_params(
             base_params=p,
             dt_ps=float(dt_ps),
@@ -2012,6 +4310,7 @@ class NPT(EQ21step):
             bridge_dt_fs=float(bridge_dt_fs),
             bridge_lincs_iter=int(bridge_lincs_iter),
             bridge_lincs_order=int(bridge_lincs_order),
+            first_stage_gen_vel=str(p.get("gen_vel", "yes")),
         )
 
         use_gpu, gid = _parse_gpu_args(gpu, gpu_id)

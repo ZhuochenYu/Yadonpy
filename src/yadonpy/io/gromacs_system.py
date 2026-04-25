@@ -81,6 +81,40 @@ def _requires_charge_groups(species_payload: Mapping[str, Any]) -> bool:
     return False
 
 
+def _coerce_optional_bool(value: Any) -> bool | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    if text in {"0", "false", "no", "off"}:
+        return False
+    return None
+
+
+def _species_charge_policy(species_payload: Mapping[str, Any], default_charge_method: str) -> dict[str, Any]:
+    charge_method = str(species_payload.get("charge_method") or default_charge_method or "RESP").strip() or str(
+        default_charge_method or "RESP"
+    )
+    prefer_db = _coerce_optional_bool(species_payload.get("prefer_db"))
+    if prefer_db is None:
+        prefer_db = True
+    require_db = _coerce_optional_bool(species_payload.get("require_db"))
+    if require_db is None:
+        require_db = bool(prefer_db)
+    require_ready = _coerce_optional_bool(species_payload.get("require_ready"))
+    if require_ready is None:
+        require_ready = str(charge_method).strip().upper() == "RESP"
+    return {
+        "charge_method": charge_method,
+        "prefer_db": bool(prefer_db),
+        "require_db": bool(require_db),
+        "require_ready": bool(require_ready),
+    }
+
+
 def _enrich_species_polyelectrolyte_payload(
     payload: dict[str, Any],
     *,
@@ -199,7 +233,39 @@ def _species_compatibility_context(species_payload: Mapping[str, Any]) -> dict[s
     else:
         context["_residue_count"] = 0
 
+    resp_constraints = species_payload.get("resp_constraints")
+    if isinstance(resp_constraints, Mapping) and resp_constraints:
+        context["resp_constraints_signature"] = _stable_signature(dict(resp_constraints))
+
+    for key in ("resp_profile", "qm_recipe"):
+        value = species_payload.get(key)
+        if not value:
+            continue
+        if key == "resp_profile":
+            context["resp_profile"] = str(value).strip().lower()
+        else:
+            context["qm_recipe_signature"] = _stable_signature(value)
+
     return context
+
+
+def _stamp_species_resp_metadata_on_mol(mol, species_payload: Mapping[str, Any]) -> None:
+    """Attach species-level RESP provenance to representative molecules."""
+
+    if mol is None:
+        return
+    try:
+        resp_constraints = species_payload.get("resp_constraints")
+        if isinstance(resp_constraints, Mapping) and resp_constraints:
+            mol.SetProp("_yadonpy_resp_constraints_json", json.dumps(dict(resp_constraints), ensure_ascii=False))
+        resp_profile = str(species_payload.get("resp_profile") or "").strip().lower()
+        if resp_profile:
+            mol.SetProp("_yadonpy_resp_profile", resp_profile)
+        qm_recipe = species_payload.get("qm_recipe")
+        if qm_recipe:
+            mol.SetProp("_yadonpy_qm_recipe_json", json.dumps(qm_recipe, ensure_ascii=False))
+    except Exception:
+        pass
 
 
 def _cached_artifact_compatible(
@@ -209,9 +275,22 @@ def _cached_artifact_compatible(
     kind: str,
     rep_mol=None,
     mol_name: str | None = None,
+    allow_missing_meta: bool = False,
 ) -> bool:
+    try:
+        from .gromacs_molecule import itp_has_invalid_bond_parameters
+
+        if src_dir is not None:
+            for itp in Path(src_dir).glob("*.itp"):
+                if itp_has_invalid_bond_parameters(itp):
+                    return False
+    except Exception:
+        return False
+
     meta = _read_artifact_meta(src_dir)
     if not meta:
+        if allow_missing_meta:
+            return True
         return not bool(_requires_charge_groups(species_payload) and str(kind) == "polymer")
 
     try:
@@ -240,10 +319,24 @@ def _cached_artifact_compatible(
 
     current_residue_sig = str(current.get("residue_signature") or "").strip()
     cached_residue_sig = str(meta.get("residue_signature") or "").strip()
+    strict_residue_signatures = bool(str(kind) == "polymer" or _requires_charge_groups(species_payload))
     if current_residue_sig and cached_residue_sig and current_residue_sig != cached_residue_sig:
-        return False
+        if strict_residue_signatures:
+            return False
 
     rep_ctx = _molecule_compatibility_context(rep_mol, mol_name=mol_name) if rep_mol is not None else {}
+    for key in (
+        "resp_profile",
+        "qm_recipe_signature",
+        "resp_constraints_signature",
+        "psiresp_constraints_signature",
+    ):
+        current_sig = str(current.get(key) or rep_ctx.get(key) or "").strip()
+        if current_sig:
+            cached_sig = str(meta.get(key) or "").strip()
+            if not cached_sig or cached_sig != current_sig:
+                return False
+
     current_atom_sig = str(rep_ctx.get("atom_order_signature") or "").strip()
     cached_atom_sig = str(meta.get("atom_order_signature") or "").strip()
     if current_atom_sig:
@@ -260,6 +353,7 @@ from .artifacts import (
     _charge_group_signature,
     _molecule_compatibility_context,
     _residue_signature,
+    _stable_signature,
     write_molecule_artifacts,
 )
 
@@ -581,16 +675,26 @@ def validate_exported_system_dir(out_dir: Path | str) -> list[str]:
         inc = (top_path.parent / rel).resolve()
         if not inc.exists():
             issues.append(f"missing include file: {inc}")
+            continue
+        try:
+            from .gromacs_molecule import invalid_bond_parameter_lines
+
+            bad_bonds = invalid_bond_parameter_lines(inc.read_text(encoding="utf-8", errors="replace"))
+            if bad_bonds:
+                preview = "; ".join(line.strip() for line in bad_bonds[:3])
+                issues.append(f"invalid zero/missing bond parameters in {inc}: {preview}")
+        except Exception as exc:
+            issues.append(f"could not validate bond parameters in {inc}: {exc}")
     return issues
 
 
 def _ensure_bonded_terms_from_types(mol, ff_name: str) -> None:
-    """Ensure mol.angles/mol.dihedrals exist by re-running GAFF-family angle/dihedral typing.
+    """Ensure bond/angle/dihedral terms exist by re-running GAFF-family typing.
 
     This is critical when a representative molecule is obtained via Chem.GetMolFrags on a combined
-    cell: RDKit fragment molecules preserve atom/bond properties (ff_type, ff_r0, ff_k, etc.) but
-    do not carry Python-level containers like mol.angles/mol.dihedrals. Without rebuilding these,
-    exported .itp files would contain only [ bonds ] and miss [ angles ]/[ dihedrals ].
+    cell or MolDB serialization: RDKit fragment molecules may preserve atom types but lose
+    bond-level parameters and Python-level containers like mol.angles/mol.dihedrals. Without
+    rebuilding these, exported .itp files can contain zero-force bonds or miss higher-order terms.
     """
     try:
         nat = int(mol.GetNumAtoms())
@@ -600,8 +704,29 @@ def _ensure_bonded_terms_from_types(mol, ff_name: str) -> None:
     # If angles/dihedrals are already present, do nothing.
     has_angles = bool(getattr(mol, "angles", {}) or {})
     has_dihedrals = bool(getattr(mol, "dihedrals", {}) or {})
+    has_valid_bonds = True
+    try:
+        for bond in mol.GetBonds():
+            if (not bond.HasProp("ff_r0")) or (not bond.HasProp("ff_k")):
+                has_valid_bonds = False
+                break
+            if float(bond.GetDoubleProp("ff_r0")) <= 0.0 or float(bond.GetDoubleProp("ff_k")) <= 0.0:
+                has_valid_bonds = False
+                break
+    except Exception:
+        has_valid_bonds = False
+    atoms_have_types = True
+    try:
+        for atom in mol.GetAtoms():
+            if not atom.HasProp("ff_type"):
+                atoms_have_types = False
+                break
+    except Exception:
+        atoms_have_types = False
 
-    if nat < 3 or (has_angles and (nat < 4 or has_dihedrals)):
+    if nat < 2:
+        return
+    if has_valid_bonds and (nat < 3 or (has_angles and (nat < 4 or has_dihedrals))):
         return
 
     try:
@@ -609,7 +734,17 @@ def _ensure_bonded_terms_from_types(mol, ff_name: str) -> None:
     except Exception:
         return
 
-    # Only (re)assign higher-order terms; do not redo ptypes/btypes (already present).
+    # Rebuild only missing force-field typing/bonded terms; keep charges untouched.
+    try:
+        if (not atoms_have_types) and hasattr(ff, "assign_ptypes"):
+            ff.assign_ptypes(mol)
+    except Exception:
+        pass
+    try:
+        if (not has_valid_bonds) and hasattr(ff, "assign_btypes"):
+            ff.assign_btypes(mol)
+    except Exception:
+        pass
     try:
         if nat >= 3 and not has_angles and hasattr(ff, "assign_atypes"):
             ff.assign_atypes(mol)
@@ -758,6 +893,24 @@ def _cell_box_origin_nm_from_rdkit(cell_mol) -> tuple[float, float, float] | Non
         )
     except Exception:
         return None
+
+
+def _wrap_fragment_center_into_box(coords_nm: np.ndarray, box_vec_nm: np.ndarray) -> np.ndarray:
+    """Wrap a whole fragment by its center, preserving bonded geometry.
+
+    Exporting packed fragments into ``system.gro`` must not wrap each atom
+    independently; otherwise small molecules near a periodic boundary get split
+    across the box and GROMACS sees spurious multi-nanometer bonded distances.
+    """
+    arr = np.asarray(coords_nm, dtype=float)
+    box = np.asarray(box_vec_nm, dtype=float)
+    if arr.ndim != 2 or arr.shape[1] != 3:
+        return arr.copy()
+    if box.shape != (3,) or np.any(~np.isfinite(box)) or np.any(box <= 0.0):
+        return arr.copy()
+    center = np.mean(arr, axis=0)
+    shift = box * np.floor(center / box)
+    return arr - shift
 
 
 def _read_gro_single_molecule(gro_path: Path) -> Tuple[List[str], np.ndarray]:
@@ -1544,6 +1697,8 @@ def export_system_from_cell_meta(
         frag_cursor += n
 
         species_ff_name = str(sp.get("ff_name") or ff_name).strip() or str(ff_name)
+        species_charge_policy = _species_charge_policy(sp, charge_method)
+        species_charge_method = str(species_charge_policy["charge_method"])
 
         natoms_meta = int(sp.get("natoms") or 0)
         formal_charge = _formal_charge_from_smiles(smiles)
@@ -1553,20 +1708,18 @@ def export_system_from_cell_meta(
         mol_name = str(sp.get('name') or sp.get('resname') or mol_id)
         mol_name_fs = _fs_safe_mol_name(mol_name)
         rep_mol = None
-        need_cache_validation = bool(_requires_charge_groups(sp) or kind == "polymer")
-        if need_cache_validation:
-            frag_list = _ensure_frag_mols()
-            if frag_list is not None and frag_start + n <= len(frag_list):
-                cand = frag_list[frag_start]
-                ok = True
-                for j in range(n):
-                    if frag_list[frag_start + j].GetNumAtoms() != cand.GetNumAtoms():
-                        ok = False
-                        break
-                if ok and (natoms_meta <= 0 or cand.GetNumAtoms() == natoms_meta):
-                    rep_mol = cand
+        frag_list = _ensure_frag_mols()
+        if frag_list is not None and frag_start + n <= len(frag_list):
+            cand = frag_list[frag_start]
+            ok = True
+            for j in range(n):
+                if frag_list[frag_start + j].GetNumAtoms() != cand.GetNumAtoms():
+                    ok = False
+                    break
+            if ok and (natoms_meta <= 0 or cand.GetNumAtoms() == natoms_meta):
+                rep_mol = cand
 
-        def _copy_from_src_dir(src_dir: Path | None) -> bool:
+        def _copy_from_src_dir(src_dir: Path | None, *, allow_missing_meta: bool = False) -> bool:
             if src_dir is None:
                 return False
             try:
@@ -1581,6 +1734,7 @@ def export_system_from_cell_meta(
                 kind=kind,
                 rep_mol=rep_mol,
                 mol_name=mol_name_fs,
+                allow_missing_meta=allow_missing_meta,
             ):
                 return False
 
@@ -1619,18 +1773,26 @@ def export_system_from_cell_meta(
                 src_itp = next(iter(sorted(src_dir.glob("*.itp"))), None)
                 src_gro = next(iter(sorted(src_dir.glob("*.gro"))), None)
             if src_itp is not None and src_gro is not None and src_itp.is_file() and src_gro.is_file():
-                species.append(
-                    _species_payload(
-                        sp,
-                        artifact_dir=src_dir,
-                        mol_id=mol_id,
-                        mol_name=mol_name,
-                        moltype=mol_name_fs,
-                        formal_charge=formal_charge,
-                        kind=kind,
+                if _cached_artifact_compatible(
+                    src_dir,
+                    species_payload=sp,
+                    kind=kind,
+                    rep_mol=rep_mol,
+                    mol_name=mol_name_fs,
+                    allow_missing_meta=True,
+                ):
+                    species.append(
+                        _species_payload(
+                            sp,
+                            artifact_dir=src_dir,
+                            mol_id=mol_id,
+                            mol_name=mol_name,
+                            moltype=mol_name_fs,
+                            formal_charge=formal_charge,
+                            kind=kind,
+                        )
                     )
-                )
-                continue
+                    continue
 
         art_dir = (molecules_dir / mol_name_fs)
         art_dir.mkdir(parents=True, exist_ok=True)
@@ -1681,6 +1843,7 @@ def export_system_from_cell_meta(
 
         rep_has_ff = False
         if rep_mol is not None:
+            _stamp_species_resp_metadata_on_mol(rep_mol, sp)
             try:
                 rep_has_ff = any(a.HasProp("ff_type") and a.GetProp("ff_type") for a in rep_mol.GetAtoms())
             except Exception:
@@ -1731,7 +1894,7 @@ def export_system_from_cell_meta(
                     art_dir,
                     smiles=smiles,
                     ff_name=species_ff_name,
-                    charge_method=charge_method,
+                    charge_method=species_charge_method,
                     total_charge=total_charge,
                     # Use the filesystem-safe moltype for filenames and the
                     # internal [ moleculetype ] name to keep GROMACS includes
@@ -1765,10 +1928,10 @@ def export_system_from_cell_meta(
                 rep_mol = ff_obj.__class__.mol_rdkit(
                     smiles,
                     name=mol_name,
-                    prefer_db=True,
-                    require_db=True,
-                    require_ready=(str(charge_method).strip().upper() == "RESP"),
-                    charge=charge_method,
+                    prefer_db=bool(species_charge_policy["prefer_db"]),
+                    require_db=bool(species_charge_policy["require_db"]),
+                    require_ready=bool(species_charge_policy["require_ready"]),
+                    charge=species_charge_method,
                 )
             else:
                 from ..core import utils
@@ -1790,15 +1953,16 @@ def export_system_from_cell_meta(
             raise RuntimeError(
                 f"Failed to resolve species[{i}] from MolDB. "
                 f"Please precompute it into MolDB first (see Examples 07/08). "
-                f"smiles={smiles} ff={species_ff_name} charge={charge_method}."
+                f"smiles={smiles} ff={species_ff_name} charge={species_charge_method}."
             ) from e
 
+        _stamp_species_resp_metadata_on_mol(rep_mol, sp)
         write_molecule_artifacts(
             rep_mol,
             art_dir,
             smiles=smiles,
             ff_name=species_ff_name,
-            charge_method=charge_method,
+            charge_method=species_charge_method,
             total_charge=total_charge,
             mol_name=mol_name_fs,
             write_mol2=False,
@@ -2131,13 +2295,17 @@ def export_system_from_cell_meta(
                             big_max = np.maximum(big_max, cur_max)
 
                     if frag_buckets and big_min is not None and big_max is not None:
-                        # Heuristic unit detection: amorphous_cell uses Angstrom-like thresholds (e.g. 2.0)
-                        # so coordinates are typically in Angstrom. Convert to nm for .gro.
-                        to_nm = 0.1 if max_abs > 20.0 else 1.0
+                        have_explicit_box = cell_origin_nm is not None and np.all(box_vec_nm > 0.0)
+                        # Packed amorphous_cell coordinates share the same Angstrom-like
+                        # unit system as the stored RDKit cell bounds. Once the cell box
+                        # is explicitly available we should convert with the same fixed
+                        # Angstrom -> nm factor instead of relying on a magnitude
+                        # heuristic, which breaks for small boxes whose coordinates stay
+                        # below 20 in absolute value.
+                        to_nm = 0.1 if have_explicit_box else (0.1 if max_abs > 20.0 else 1.0)
                         mn = big_min * to_nm
                         mx = big_max * to_nm
                         span = mx - mn
-                        have_explicit_box = cell_origin_nm is not None and np.all(box_vec_nm > 0.0)
                         span_safe = np.where(span > 1.0e-9, span, 1.0)
                         scale_vec = np.where(span > 1.0e-9, box_vec_nm / span_safe, 1.0)
 
@@ -2166,10 +2334,10 @@ def export_system_from_cell_meta(
                                         f"Packed cell coordinates mismatch for {name}: got {c.shape[0]} atoms, expect {nat_expect}."
                                     )
                                 if have_explicit_box:
-                                    coords = (c * to_nm) - np.asarray(cell_origin_nm, dtype=float)
+                                    coords = (0.1 * c) - np.asarray(cell_origin_nm, dtype=float)
                                 else:
                                     coords = (c * to_nm - mn) * scale_vec
-                                coords = np.mod(coords, box_vec_nm)
+                                coords = _wrap_fragment_center_into_box(coords, box_vec_nm)
                                 resname = (name[:5] if name else "MOL")
                                 for a_name, (x, y, z) in zip(tpl.atom_names, coords):
                                     _buffer_line(

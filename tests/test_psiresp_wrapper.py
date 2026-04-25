@@ -219,3 +219,61 @@ def test_run_psiresp_fit_resp2_mixes_solvated_and_gas_resp(monkeypatch, tmp_path
     assert len(calls) == 2
     assert {call["pcm_solvent"] for call in calls} == {None, "Water"}
     assert {call["run_dir"].name for call in calls if call["run_dir"] is not None} == {"vacuum", "solvated_water"}
+
+
+def test_charge_constraints_for_neutral_dec_use_explicit_equivalence(monkeypatch):
+    fake_psiresp = SimpleNamespace(ChargeConstraintOptions=_FakeConstraintOptions)
+    monkeypatch.setattr(wrapper, "psiresp", fake_psiresp)
+
+    mol = Chem.MolFromSmiles("CCOC(=O)OCC")
+    pmol = object()
+    options, meta = wrapper._charge_constraints_for_molecule(
+        mol,
+        pmol=pmol,
+        polyelectrolyte_mode=False,
+        polyelectrolyte_detection="auto",
+        resp_profile="adaptive",
+    )
+
+    assert [2, 5] in [indices for _molecule, indices in options.equiv]
+    assert meta is not None
+    assert meta["constraints"]["resp_profile"] == "adaptive"
+
+
+def test_charge_constraints_for_neutral_ec_use_explicit_equivalence(monkeypatch):
+    fake_psiresp = SimpleNamespace(ChargeConstraintOptions=_FakeConstraintOptions)
+    monkeypatch.setattr(wrapper, "psiresp", fake_psiresp)
+
+    mol = Chem.MolFromSmiles("O=C1OCCO1")
+    pmol = object()
+    options, meta = wrapper._charge_constraints_for_molecule(
+        mol,
+        pmol=pmol,
+        polyelectrolyte_mode=False,
+        polyelectrolyte_detection="auto",
+        resp_profile="adaptive",
+    )
+
+    assert [2, 5] in [indices for _molecule, indices in options.equiv]
+    assert meta is not None
+    assert meta["constraints"]["mode"] == "whole_molecule_scale"
+
+
+def test_charge_constraints_for_carboxylate_add_resonance_equivalence(monkeypatch):
+    fake_psiresp = SimpleNamespace(ChargeConstraintOptions=_FakeConstraintOptions)
+    monkeypatch.setattr(wrapper, "psiresp", fake_psiresp)
+
+    mol = Chem.MolFromSmiles("CC(=O)[O-]")
+    pmol = object()
+    options, meta = wrapper._charge_constraints_for_molecule(
+        mol,
+        pmol=pmol,
+        polyelectrolyte_mode=False,
+        polyelectrolyte_detection="auto",
+        resp_profile="adaptive",
+    )
+
+    assert [2, 3] in [indices for _molecule, indices in options.equiv]
+    assert any(charge == -1.0 for _molecule, charge, _indices in options.charge_sum)
+    assert meta is not None
+    assert meta["constraints"]["mode"] == "grouped"

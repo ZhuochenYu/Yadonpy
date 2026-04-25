@@ -30,6 +30,43 @@ def _format_gro_atom_line(*, resnr: int, resname: str, atomname: str, atomnr: in
     )
 
 
+def invalid_bond_parameter_lines(itp_text: str) -> list[str]:
+    """Return `[ bonds ]` rows with missing or non-positive harmonic parameters."""
+
+    invalid: list[str] = []
+    section: str | None = None
+    for raw in str(itp_text).splitlines():
+        line = raw.split(";", 1)[0].strip()
+        if not line:
+            continue
+        if line.startswith("[") and "]" in line:
+            section = line.strip("[]").strip().lower()
+            continue
+        if section != "bonds":
+            continue
+        toks = line.split()
+        if len(toks) < 5:
+            invalid.append(raw)
+            continue
+        try:
+            r0 = float(toks[3])
+            k = float(toks[4])
+        except Exception:
+            invalid.append(raw)
+            continue
+        if r0 <= 0.0 or k <= 0.0:
+            invalid.append(raw)
+    return invalid
+
+
+def itp_has_invalid_bond_parameters(itp_path: Path) -> bool:
+    try:
+        text = Path(itp_path).read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        return True
+    return bool(invalid_bond_parameter_lines(text))
+
+
 def _canon_angle_key(i: int, j: int, k: int) -> tuple[int, int, int]:
     """Canonicalize an angle key so that i-k ordering does not matter."""
     return (min(i, k), j, max(i, k))
@@ -287,6 +324,16 @@ def write_gromacs_single_molecule_topology(
     """
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    # Final safety pass: topology charges must reflect the same explicit RESP
+    # equivalence metadata used during fitting. This prevents old charge caches
+    # from leaking unsynchronized AtomicCharge/RESP values into GROMACS ITPs.
+    try:
+        from ..core.chem_utils import symmetrize_equivalent_charge_props
+
+        symmetrize_equivalent_charge_props(mol)
+    except Exception:
+        pass
+
     gro_path = out_dir / f"{mol_name}.gro"
     itp_path = out_dir / f"{mol_name}.itp"
     top_path = out_dir / f"{mol_name}.top"
@@ -326,16 +373,27 @@ def write_gromacs_single_molecule_topology(
 
     # Bonds
     bonds_lines: List[str] = []
+    invalid_bonds: list[tuple[int, int, str]] = []
     for b in mol.GetBonds():
         i = b.GetBeginAtomIdx() + 1
         j = b.GetEndAtomIdx() + 1
         # funct 1: harmonic
         r0 = float(b.GetDoubleProp("ff_r0")) if b.HasProp("ff_r0") else 0.0
         k = float(b.GetDoubleProp("ff_k")) if b.HasProp("ff_k") else 0.0
+        if r0 <= 0.0 or k <= 0.0:
+            invalid_bonds.append((i, j, f"r0={r0:g}, k={k:g}"))
         bonds_lines.append(
             f"{i:5d} {j:5d}  1  {float(r0): .6f}  {float(k): .2f}\n"
         )
 
+    if invalid_bonds:
+        preview = ", ".join(f"{i}-{j} ({why})" for i, j, why in invalid_bonds[:8])
+        if len(invalid_bonds) > 8:
+            preview += f", ... +{len(invalid_bonds) - 8} more"
+        raise ValueError(
+            "Cannot write GROMACS molecule topology with missing or zero harmonic bond parameters. "
+            f"Invalid bonds: {preview}. Re-run force-field bonded assignment before export."
+        )
 
     # Bonded terms (angles/dihedrals) are expected to be present on `mol`.
     # For mixed-system exports, ensure they are rebuilt *before* calling this writer.

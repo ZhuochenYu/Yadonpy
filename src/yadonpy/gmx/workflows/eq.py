@@ -33,7 +33,7 @@ from ..mdp_templates import (
     MdpSpec,
     default_mdp_params,
 )
-from ._util import RunResources, atomic_write_json, load_json, normalize_gro_molecules_inplace, pbc_mol_fix_inplace, safe_mkdir
+from ._util import RunResources, atomic_write_json, gro_topology_bond_geometry, load_json, normalize_gro_molecules_inplace, pbc_mol_fix_inplace, safe_mkdir
 
 
 def _file_signature(path: Path | None) -> dict | None:
@@ -92,6 +92,7 @@ class EqStage:
     mdp: MdpSpec
     lincs_retry: "StageLincsRetryPolicy | None" = None
     checkpoint_minutes: float | None = None
+    strict_constraints: bool = False
 
 
 @dataclass(frozen=True)
@@ -561,7 +562,18 @@ class EquilibrationJob:
             return True
 
         def _canonicalize_stage_gro(*, out_tpr: Path, out_gro: Path, stage_dir: Path) -> dict[str, object]:
-            pbc_gro = pbc_mol_fix_inplace(self.runner, tpr=out_tpr, traj_or_gro=out_gro, cwd=stage_dir)
+            raw_gro = stage_dir / f"{out_gro.stem}.raw_before_pbc.gro"
+            try:
+                if out_gro.exists() and not raw_gro.exists():
+                    shutil.copyfile(out_gro, raw_gro)
+            except Exception:
+                pass
+
+            # Handoff GRO files must be molecularly whole. `-pbc mol` is useful
+            # for visualization, but it can still leave bonded atoms on opposite
+            # sides of the box. That shows up as box-length LINCS failures at
+            # step 0 of the next stage, so use `-pbc whole` for simulation input.
+            pbc_gro = pbc_mol_fix_inplace(self.runner, tpr=out_tpr, traj_or_gro=out_gro, cwd=stage_dir, pbc="whole")
             whole_gro = normalize_gro_molecules_inplace(top=self.top, gro=out_gro)
             if whole_gro.get("applied"):
                 self._log(
@@ -569,7 +581,27 @@ class EquilibrationJob:
                 )
             elif whole_gro.get("error"):
                 self._log(f"[WARN] Whole-molecule canonicalization skipped for {out_gro.name}: {whole_gro.get('error')}")
-            return {"pbc_gro": pbc_gro, "whole_gro": whole_gro}
+            bond_check = gro_topology_bond_geometry(top=self.top, gro=out_gro)
+            if not bond_check.get("ok") and raw_gro.exists():
+                self._log(
+                    "[WARN] Handoff GRO bond check failed after PBC cleanup; retrying from raw mdrun output. "
+                    f"max_bond={bond_check.get('max_bond_nm')} nm | worst={bond_check.get('worst')}"
+                )
+                try:
+                    shutil.copyfile(raw_gro, out_gro)
+                    pbc_gro = pbc_mol_fix_inplace(self.runner, tpr=out_tpr, traj_or_gro=out_gro, cwd=stage_dir, pbc="whole")
+                    whole_gro = normalize_gro_molecules_inplace(top=self.top, gro=out_gro)
+                    bond_check = gro_topology_bond_geometry(top=self.top, gro=out_gro)
+                except Exception as exc:
+                    bond_check = {"ok": False, "error": str(exc), "previous": bond_check}
+            if (not bond_check.get("ok")) and int(bond_check.get("checked_bonds") or 0) > 0:
+                raise RuntimeError(
+                    "Handoff GRO has broken topology bonds after PBC cleanup; refusing to start the next stage. "
+                    f"gro={out_gro} | check={bond_check}"
+                )
+            if not bond_check.get("ok"):
+                self._log(f"[WARN] Handoff GRO bond geometry could not be verified: {bond_check}")
+            return {"pbc_gro": pbc_gro, "whole_gro": whole_gro, "bond_geometry": bond_check}
 
         def _mdrun_em_minimal(*, deffnm: str, cwd: Path, ntomp: int, gpu_id: Optional[str], use_gpu: bool = False) -> None:
             """Run energy minimization with a minimal, user-friendly mdrun command.
@@ -892,6 +924,11 @@ class EquilibrationJob:
                                     )
                                 except Exception as e:
                                     if _is_constraint_failure(e):
+                                        if bool(getattr(st, "strict_constraints", False)):
+                                            raise RuntimeError(
+                                                f"Strict constrained minimization failed in {st.name}; "
+                                                "refusing to relax production constraints automatically."
+                                            ) from e
                                         bridge_failed = True
                                         self._log("[WARN] Constraint-sensitive steep_hbonds bridge failed. Continuing from the unconstrained steep result.")
                                     else:
@@ -1113,6 +1150,11 @@ class EquilibrationJob:
                                 "[DONE] Production LINCS fallback completed | "
                                 f"appended remaining {remaining_time_ps:.3f} ps with dt={retry_dt_ps:.4f} ps"
                             )
+                        elif st.kind in ("minim", "em") and _is_constraint_failure(msg) and bool(getattr(st, "strict_constraints", False)):
+                            raise RuntimeError(
+                                f"Strict constrained minimization failed in {st.name}; "
+                                "refusing to fall back to unconstrained minimization."
+                            ) from e
                         elif st.kind in ("minim", "em") and _is_constraint_failure(msg):
                             self._log("[WARN] Constraint-sensitive minimization failed. Falling back to steep (constraints=none).")
                             fb_mdp = _write_stage_mdp(
@@ -1172,12 +1214,13 @@ class EquilibrationJob:
             # actually breaking in GROMACS, but downstream tools (mol2 viewers,
             # OpenBabel, etc.) may infer impossible bonding if coordinates are wrapped.
             #
-            # We therefore rewrite BOTH the final stage structure and trajectory with:
-            #   gmx trjconv -pbc mol
-            # in-place (md.gro/md.xtc). Best-effort only.
+            # We therefore rewrite the stage handoff structure with `-pbc whole`
+            # and validate topology bond lengths before the next stage can use it.
+            # The trajectory rewrite remains visualization-oriented and best-effort.
             canonical_gro = _canonicalize_stage_gro(out_tpr=stage_runtime_tpr, out_gro=out_gro, stage_dir=stage_dir)
             pbc_gro = canonical_gro["pbc_gro"]
             whole_gro = canonical_gro["whole_gro"]
+            bond_geometry = canonical_gro["bond_geometry"]
             pbc_xtc = {"applied": False, "error": None}
             out_xtc = stage_dir / f"{deffnm}.xtc"
             if out_xtc.exists():
@@ -1220,6 +1263,7 @@ class EquilibrationJob:
                     "xtc": pbc_xtc,
                 },
                 "whole_molecule_gro": whole_gro,
+                "handoff_bond_geometry": bond_geometry,
                 "auto_cutoff_adjustments": stage_cutoff_events,
                 "lincs_fallback": stage_lincs_fallback,
                 "checkpoint_handoff_fallback": stage_checkpoint_handoff_fallback,

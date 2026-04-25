@@ -270,6 +270,16 @@ def ensure_cached_artifacts(
         have_bonded = str(meta.get('bonded_signature', meta.get('_yadonpy_bonded_signature', 'plain'))).strip().lower() or 'plain'
         if want_bonded != have_bonded:
             valid_cache = False
+        if valid_cache:
+            try:
+                from .gromacs_molecule import itp_has_invalid_bond_parameters
+
+                for itp in sorted(out_dir.glob("*.itp")):
+                    if itp_has_invalid_bond_parameters(itp):
+                        valid_cache = False
+                        break
+            except Exception:
+                valid_cache = False
         try:
             nat = int(mol.GetNumAtoms())
         except Exception:
@@ -282,6 +292,18 @@ def ensure_cached_artifacts(
             valid_cache = False
 
         compat = _molecule_compatibility_context(mol, mol_name=mol_name)
+        for key in (
+            "resp_profile",
+            "qm_recipe_signature",
+            "resp_constraints_signature",
+            "psiresp_constraints_signature",
+        ):
+            current_sig = str(compat.get(key) or "").strip()
+            if current_sig:
+                cached_sig = str(meta.get(key) or "").strip()
+                if not cached_sig or cached_sig != current_sig:
+                    valid_cache = False
+                    break
         if _prefers_order_sensitive_artifact_cache(mol, mol_name=mol_name):
             for key in ("atom_order_signature", "charge_group_signature"):
                 current_sig = str(compat.get(key) or "").strip()

@@ -21,7 +21,11 @@ from yadonpy.interface.charge_audit import format_cell_charge_audit
 from yadonpy.io.artifacts import _artifact_meta_compatibility_fields, write_molecule_artifacts
 import yadonpy.io.artifacts as artifacts_mod
 from yadonpy.io.molecule_cache import _fingerprint_mol, ensure_cached_artifacts
-from yadonpy.io.gromacs_molecule import _format_gro_atom_line as format_single_gro_atom_line
+from yadonpy.io.gromacs_molecule import (
+    _format_gro_atom_line as format_single_gro_atom_line,
+    itp_has_invalid_bond_parameters,
+    write_gromacs_single_molecule_topology,
+)
 from yadonpy.io.gromacs_system import _format_gro_atom_line as format_system_gro_atom_line
 from yadonpy.io.gromacs_system import _load_gro_species_templates
 from yadonpy.io.gromacs_system import canonicalize_smiles
@@ -291,6 +295,22 @@ def test_write_molecule_artifacts_uses_best_available_charge_property(tmp_path: 
     meta = json.loads((out / "meta.json").read_text(encoding="utf-8"))
     assert meta["charge_abs_sum"] > 0.0
     assert meta["charge_signature"]
+    assert itp_has_invalid_bond_parameters(out / "EtOH.itp") is False
+
+
+def test_gromacs_writer_rejects_missing_bond_parameters(tmp_path: Path):
+    mol = Chem.AddHs(Chem.MolFromSmiles("CCO"))
+    assert mol is not None
+    AllChem.EmbedMolecule(mol, randomSeed=17)
+    AllChem.UFFOptimizeMolecule(mol)
+    for atom in mol.GetAtoms():
+        atom.SetProp("ff_type", atom.GetSymbol())
+        atom.SetDoubleProp("ff_sigma", 0.30)
+        atom.SetDoubleProp("ff_epsilon", 0.10)
+        atom.SetDoubleProp("AtomicCharge", 0.0)
+
+    with pytest.raises(ValueError, match="zero harmonic bond parameters"):
+        write_gromacs_single_molecule_topology(mol, tmp_path / "bad", mol_name="BAD")
 
 
 def test_write_molecule_artifacts_retargets_localized_polyelectrolyte_total_charge(tmp_path: Path, monkeypatch):
@@ -1270,6 +1290,108 @@ def test_export_system_resolves_mixed_forcefield_species_from_cell_metadata(tmp_
     assert 'solvent_A' in top_text
     assert 'lithium' in top_text
     assert (out.molecules_dir / 'lithium' / 'lithium.itp').exists()
+
+
+def test_export_system_keeps_fragment_whole_when_crossing_periodic_boundary(tmp_path: Path):
+    from yadonpy.io.gromacs_system import export_system_from_cell_meta
+
+    source_root = tmp_path / "source_molecules"
+    _write_minimal_species_artifacts(source_root, mol_name="ETH", charges=[0.0, 0.0])
+
+    cell = Chem.MolFromSmiles("CC")
+    assert cell is not None
+    conf = Chem.Conformer(cell.GetNumAtoms())
+    conf.SetAtomPosition(0, Geom.Point3D(19.8, 10.0, 10.0))
+    conf.SetAtomPosition(1, Geom.Point3D(20.9, 10.0, 10.0))
+    cell.RemoveAllConformers()
+    cell.AddConformer(conf, assignId=True)
+    setattr(cell, "cell", utils.Cell(20.0, 0.0, 20.0, 0.0, 20.0, 0.0))
+    cell.SetProp(
+        "_yadonpy_cell_meta",
+        json.dumps(
+            {
+                "density_g_cm3": 1.0,
+                "species": [
+                    {
+                        "smiles": "CC",
+                        "n": 1,
+                        "natoms": 2,
+                        "name": "ETH",
+                        "charge_scale": 1.0,
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+    )
+
+    out = export_system_from_cell_meta(
+        cell_mol=cell,
+        out_dir=tmp_path / "wrapped_fragment",
+        ff_name="gaff2_mod",
+        charge_method="RESP",
+        source_molecules_dir=source_root,
+        write_system_mol2=False,
+    )
+
+    lines = out.system_gro.read_text(encoding="utf-8").splitlines()
+    x1 = float(lines[2][20:28])
+    x2 = float(lines[3][20:28])
+    assert abs(x2 - x1) == pytest.approx(0.11, abs=1.0e-3)
+    assert min(x1, x2) < 0.0
+
+
+def test_export_system_uses_explicit_cell_units_for_small_packed_boxes(tmp_path: Path):
+    from yadonpy.io.gromacs_system import export_system_from_cell_meta
+
+    source_root = tmp_path / "source_molecules_smallbox"
+    _write_minimal_species_artifacts(source_root, mol_name="ETH", charges=[0.0, 0.0])
+
+    cell = Chem.MolFromSmiles("CC")
+    assert cell is not None
+    conf = Chem.Conformer(cell.GetNumAtoms())
+    conf.SetAtomPosition(0, Geom.Point3D(-7.092, 6.316, -10.062))
+    conf.SetAtomPosition(1, Geom.Point3D(-8.190, 5.970, -9.781))
+    cell.RemoveAllConformers()
+    cell.AddConformer(conf, assignId=True)
+    setattr(cell, "cell", utils.Cell(13.49785, -13.49785, 13.49785, -13.49785, 13.49785, -13.49785))
+    cell.SetProp(
+        "_yadonpy_cell_meta",
+        json.dumps(
+            {
+                "density_g_cm3": 1.0,
+                "species": [
+                    {
+                        "smiles": "CC",
+                        "n": 1,
+                        "natoms": 2,
+                        "name": "ETH",
+                        "charge_scale": 1.0,
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+    )
+
+    out = export_system_from_cell_meta(
+        cell_mol=cell,
+        out_dir=tmp_path / "wrapped_fragment_smallbox",
+        ff_name="gaff2_mod",
+        charge_method="RESP",
+        source_molecules_dir=source_root,
+        write_system_mol2=False,
+    )
+
+    lines = out.system_gro.read_text(encoding="utf-8").splitlines()
+    x1 = float(lines[2][20:28])
+    y1 = float(lines[2][28:36])
+    z1 = float(lines[2][36:44])
+    x2 = float(lines[3][20:28])
+    y2 = float(lines[3][28:36])
+    z2 = float(lines[3][36:44])
+    bond = ((x2 - x1) ** 2 + (y2 - y1) ** 2 + (z2 - z1) ** 2) ** 0.5
+    assert bond == pytest.approx(0.118, abs=2.0e-3)
 
 
 def test_export_system_recovers_localized_charge_groups_from_smiles_when_cached_metadata_are_incomplete(tmp_path: Path):

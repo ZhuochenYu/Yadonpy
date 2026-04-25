@@ -491,13 +491,57 @@ def build_msd_metric_catalog(top: SystemTopology, system_dir: Path) -> dict[str,
     return out
 
 
-def _infer_element(atomname: str, atomtype: str) -> str:
+_GENERIC_FF_NAME_PREFIXES = (
+    "opls",
+    "gaff",
+    "cgenff",
+    "merz",
+    "amber",
+    "type",
+    "atom",
+)
+
+
+def _mass_to_element_symbol(mass: float | None) -> str:
+    try:
+        value = float(mass)
+    except Exception:
+        return ""
+    if value <= 0.0:
+        return ""
+    reference = {
+        "H": 1.008,
+        "Li": 6.941,
+        "C": 12.011,
+        "N": 14.007,
+        "O": 15.999,
+        "F": 18.998,
+        "Na": 22.990,
+        "Mg": 24.305,
+        "P": 30.974,
+        "S": 32.067,
+        "Cl": 35.453,
+        "K": 39.098,
+        "Ca": 40.078,
+        "Br": 79.904,
+        "I": 126.904,
+    }
+    best = min(reference.items(), key=lambda item: abs(item[1] - value))
+    if abs(best[1] - value) <= 1.5:
+        return best[0]
+    return ""
+
+
+def _infer_element(atomname: str, atomtype: str, mass: float | None = None) -> str:
     token = str(atomname or "").strip()
     if not token:
         token = str(atomtype or "").strip()
     token = re.sub(r"[^A-Za-z]", "", token)
+    lowered = token.lower()
+    if lowered.startswith(_GENERIC_FF_NAME_PREFIXES):
+        token = ""
     if not token:
-        return ""
+        return _mass_to_element_symbol(mass)
     two = token[:2].capitalize()
     if two in {"Li", "Na", "Mg", "Al", "Si", "Cl", "Ca", "Fe", "Co", "Ni", "Cu", "Zn", "Br", "Rb", "Sr", "Ag", "Cd", "Sn", "Cs", "Ba", "Hg", "Pb"}:
         return two
@@ -526,11 +570,19 @@ def _site_label_for_atom(
 ) -> Optional[str]:
     atomname = str(mt.atomnames[atom_idx0] if atom_idx0 < len(mt.atomnames) else "")
     atomtype = str(mt.atomtypes[atom_idx0] if atom_idx0 < len(mt.atomtypes) else "")
-    elem = _infer_element(atomname, atomtype)
+    mass = float(mt.masses[atom_idx0]) if atom_idx0 < len(mt.masses) else None
+    elem = _infer_element(atomname, atomtype, mass)
     if not include_h and elem == "H":
         return None
     neigh = sorted(adj.get(atom_idx0, set()))
-    neigh_elems = [_infer_element(mt.atomnames[j], mt.atomtypes[j]) for j in neigh]
+    neigh_elems = [
+        _infer_element(
+            mt.atomnames[j],
+            mt.atomtypes[j],
+            float(mt.masses[j]) if j < len(mt.masses) else None,
+        )
+        for j in neigh
+    ]
     charge_group = charge_group_lookup.get(atom_idx0)
     formal_q = float(charge_group.get("formal_charge", 0.0)) if charge_group else 0.0
 
@@ -545,11 +597,19 @@ def _site_label_for_atom(
                 return "oxo_anion_oxygen"
             if _bonded_to("C"):
                 for cidx in neigh:
-                    if _infer_element(mt.atomnames[cidx], mt.atomtypes[cidx]) != "C":
+                    if _infer_element(
+                        mt.atomnames[cidx],
+                        mt.atomtypes[cidx],
+                        float(mt.masses[cidx]) if cidx < len(mt.masses) else None,
+                    ) != "C":
                         continue
                     hetero = 0
                     for nb in adj.get(cidx, set()):
-                        if nb != atom_idx0 and _infer_element(mt.atomnames[nb], mt.atomtypes[nb]) == "O":
+                        if nb != atom_idx0 and _infer_element(
+                            mt.atomnames[nb],
+                            mt.atomtypes[nb],
+                            float(mt.masses[nb]) if nb < len(mt.masses) else None,
+                        ) == "O":
                             hetero += 1
                     if hetero >= 1:
                         return "carboxylate_oxygen"
@@ -577,11 +637,19 @@ def _site_label_for_atom(
             return "ether_oxygen"
         if _bonded_to("C"):
             for cidx in neigh:
-                if _infer_element(mt.atomnames[cidx], mt.atomtypes[cidx]) != "C":
+                if _infer_element(
+                    mt.atomnames[cidx],
+                    mt.atomtypes[cidx],
+                    float(mt.masses[cidx]) if cidx < len(mt.masses) else None,
+                ) != "C":
                     continue
                 hetero = 0
                 for nb in adj.get(cidx, set()):
-                    if nb != atom_idx0 and _infer_element(mt.atomnames[nb], mt.atomtypes[nb]) == "O":
+                    if nb != atom_idx0 and _infer_element(
+                        mt.atomnames[nb],
+                        mt.atomtypes[nb],
+                        float(mt.masses[nb]) if nb < len(mt.masses) else None,
+                    ) == "O":
                         hetero += 1
                 if hetero >= 1:
                     return "carbonyl_oxygen"
@@ -1027,6 +1095,12 @@ def compute_msd_series(
         if not np.all(mask):
             t_ps = t_ps[mask]
             positions = positions[mask, :, :]
+    trajectory_time_start_ps = float(t_ps[0]) if t_ps.size else None
+    trajectory_time_end_ps = float(t_ps[-1]) if t_ps.size else None
+    # MSD is a function of lag time, not absolute simulation time. This matters
+    # for block/windowed analyses where the selected trajectory slice may start
+    # well after 0 ps.
+    lag_t_ps = np.asarray(t_ps - float(t_ps[0]), dtype=float) if t_ps.size else np.zeros(0, dtype=float)
     if t_ps.size == 0 or positions.size == 0:
         return {
             "t_ps": np.zeros(0, dtype=float),
@@ -1037,9 +1111,11 @@ def compute_msd_series(
             "component_metrics": {},
             "preprocessing": prepared.get("preprocessing") or {},
             "geometry": geometry,
+            "trajectory_time_start_ps": trajectory_time_start_ps,
+            "trajectory_time_end_ps": trajectory_time_end_ps,
         }
     msd = msd_from_positions_fft(positions)
-    fit = select_diffusive_window(t_ps, msd, geometry=geometry)
+    fit = select_diffusive_window(lag_t_ps, msd, geometry=geometry)
     frame_interval = float(np.median(np.diff(t_ps))) if t_ps.size >= 2 else None
     component_metrics: dict[str, Any] = {}
     component_map: dict[str, list[int]] = {}
@@ -1049,7 +1125,7 @@ def compute_msd_series(
     for key, idxs in component_map.items():
         comp_pos = positions[:, idxs, :]
         comp_msd = msd_from_positions_fft(comp_pos)
-        comp_fit = select_diffusive_window(t_ps, comp_msd, geometry=geometry)
+        comp_fit = select_diffusive_window(lag_t_ps, comp_msd, geometry=geometry)
         first = group_specs[idxs[0]]
         component_metrics[key] = {
             "component_key": key,
@@ -1057,12 +1133,12 @@ def compute_msd_series(
             "formal_charge_e": float(first.formal_charge_e),
             "charge_sign": "cation" if float(first.formal_charge_e) > 0.0 else "anion" if float(first.formal_charge_e) < 0.0 else "neutral",
             "n_groups": int(len(idxs)),
-            "t_ps": t_ps,
+            "t_ps": lag_t_ps,
             "msd_nm2": comp_msd,
             **comp_fit,
         }
     return {
-        "t_ps": t_ps,
+        "t_ps": lag_t_ps,
         "msd_nm2": msd,
         "fit": fit,
         "frame_interval_ps": frame_interval,
@@ -1070,6 +1146,8 @@ def compute_msd_series(
         "component_metrics": component_metrics,
         "preprocessing": prepared.get("preprocessing") or {},
         "geometry": geometry,
+        "trajectory_time_start_ps": trajectory_time_start_ps,
+        "trajectory_time_end_ps": trajectory_time_end_ps,
     }
 
 

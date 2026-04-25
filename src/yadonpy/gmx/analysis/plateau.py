@@ -19,6 +19,8 @@ class PlateauResult:
     mean: float
     rel_std: float
     window_start_time_ps: float
+    tail_span_ps: float = float("nan")
+    rel_drift: float = float("nan")
 
 
 def check_plateau(
@@ -28,6 +30,7 @@ def check_plateau(
     tail_frac: float = 0.2,
     slope_threshold_per_ps: float = 1e-7,
     rel_std_threshold: float = 0.02,
+    rel_drift_threshold: float | None = None,
 ) -> PlateauResult:
     """Check whether the last tail_frac of the series is on a plateau."""
     t_ps = np.asarray(t_ps, dtype=float)
@@ -66,8 +69,16 @@ def check_plateau(
     mean = float(np.mean(yy))
     std = float(np.std(yy))
     rel_std = float(std / abs(mean)) if mean != 0 else float("inf")
+    tail_span_ps = float(max(float(tt[-1] - tt[0]), 0.0)) if len(tt) else float("nan")
+    rel_drift = float(abs(float(slope)) * tail_span_ps / abs(mean)) if mean != 0 and math.isfinite(tail_span_ps) else float("inf")
 
-    ok = (abs(float(slope)) <= float(slope_threshold_per_ps))
+    slope_ok = abs(float(slope)) <= float(slope_threshold_per_ps)
+    if rel_drift_threshold is not None and mean != 0:
+        # For short, noisy liquid boxes, the instantaneous fitted slope can look
+        # large while the actual tail-window drift is only a few percent. Treat
+        # that as a plateau if the fluctuation gate also passes.
+        slope_ok = bool(slope_ok or (rel_drift <= float(rel_drift_threshold)))
+    ok = bool(slope_ok)
     if mean != 0:
         ok = ok and ((std / abs(mean)) <= float(rel_std_threshold))
 
@@ -78,6 +89,8 @@ def check_plateau(
         mean=float(mean),
         rel_std=float(rel_std),
         window_start_time_ps=float(tt[0]),
+        tail_span_ps=float(tail_span_ps),
+        rel_drift=float(rel_drift),
     )
 
 
@@ -89,6 +102,7 @@ def find_plateau_start(
     step_frac: float = 0.02,
     slope_threshold_per_ps: float = 1e-7,
     rel_std_threshold: float = 0.02,
+    rel_drift_threshold: float | None = None,
 ) -> PlateauResult:
     """Try to find the earliest time after which the series is on a plateau."""
     t_ps = np.asarray(t_ps, dtype=float)
@@ -113,10 +127,11 @@ def find_plateau_start(
             tail_frac=1.0,
             slope_threshold_per_ps=slope_threshold_per_ps,
             rel_std_threshold=rel_std_threshold,
+            rel_drift_threshold=rel_drift_threshold,
         )
-        # For short smoke / probe trajectories, the linear slope estimate is noisy.
-        # Treat the full-series relative fluctuation as the primary stability signal.
-        res.ok = bool(np.isfinite(res.mean) and np.isfinite(res.rel_std) and res.rel_std <= float(rel_std_threshold))
+        # Short trajectories do not have enough points to search for a later
+        # plateau window, so use the whole series. Still enforce the slope gate:
+        # a low-noise but steadily drifting density trace must not be accepted.
         res.window_start_time_ps = float(t_ps[0]) if len(t_ps) else float("nan")
         return res
 
@@ -129,6 +144,7 @@ def find_plateau_start(
         tail_frac=min_window / n,
         slope_threshold_per_ps=slope_threshold_per_ps,
         rel_std_threshold=rel_std_threshold,
+        rel_drift_threshold=rel_drift_threshold,
     )
     if best.ok:
         # Move start earlier if possible
@@ -143,6 +159,7 @@ def find_plateau_start(
                 tail_frac=1.0,
                 slope_threshold_per_ps=slope_threshold_per_ps,
                 rel_std_threshold=rel_std_threshold,
+                rel_drift_threshold=rel_drift_threshold,
             )
             if cand.ok:
                 cand.window_start_time_ps = float(tt[0])

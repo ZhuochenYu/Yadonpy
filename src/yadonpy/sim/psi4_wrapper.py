@@ -1031,13 +1031,15 @@ class Psi4w():
         import json
         from .psiresp_wrapper import run_psiresp_fit
 
+        fit_kind = str(kwargs.pop("fit_kind", "RESP") or "RESP").strip().upper()
+        resp_profile = str(kwargs.pop("resp_profile", "adaptive") or "adaptive").strip().lower()
         polyelectrolyte_mode = bool(kwargs.pop("polyelectrolyte_mode", False))
         polyelectrolyte_detection = str(kwargs.pop("polyelectrolyte_detection", "auto") or "auto")
 
         try:
             result = run_psiresp_fit(
                 self.mol,
-                fit_kind="RESP",
+                fit_kind=fit_kind,
                 method=str(self.method),
                 basis=str(self.basis),
                 total_charge=int(self.charge),
@@ -1046,6 +1048,7 @@ class Psi4w():
                 name=str(self.name),
                 polyelectrolyte_mode=polyelectrolyte_mode,
                 polyelectrolyte_detection=polyelectrolyte_detection,
+                resp_profile=resp_profile,
                 ncores=int(self.num_threads),
                 memory_mib=float(self.memory),
             )
@@ -1054,7 +1057,7 @@ class Psi4w():
             meta = result.get("constraint_meta")
         except BaseException as e:
             self.error_flag = True
-            utils.radon_print(f"Error termination of PsiRESP charge calculation. {e}", level=3)
+            utils.radon_print(f"Error termination of PsiRESP {fit_kind} charge calculation. {e}", level=3)
             nan_arr = np.asarray([np.nan for _ in range(self.mol.GetNumAtoms())], dtype=float)
             for atom in self.mol.GetAtoms():
                 atom.SetDoubleProp("ESP", float("nan"))
@@ -1067,6 +1070,7 @@ class Psi4w():
         try:
             if meta:
                 self.mol.SetProp("_yadonpy_psiresp_constraints", json.dumps(meta, ensure_ascii=False))
+                self.mol.SetProp("_yadonpy_resp_profile", str(resp_profile))
                 summary = meta.get("summary") if isinstance(meta, dict) else None
                 constraints = meta.get("constraints") if isinstance(meta, dict) else None
                 if isinstance(summary, dict):
@@ -1092,6 +1096,7 @@ class Psi4w():
         import json
         from .psiresp_wrapper import run_psiresp_fit
 
+        resp_profile = str(kwargs.pop("resp_profile", "adaptive") or "adaptive").strip().lower()
         polyelectrolyte_mode = bool(kwargs.pop("polyelectrolyte_mode", False))
         polyelectrolyte_detection = str(kwargs.pop("polyelectrolyte_detection", "auto") or "auto")
 
@@ -1107,6 +1112,7 @@ class Psi4w():
                 name=str(self.name),
                 polyelectrolyte_mode=polyelectrolyte_mode,
                 polyelectrolyte_detection=polyelectrolyte_detection,
+                resp_profile=resp_profile,
                 ncores=int(self.num_threads),
                 memory_mib=float(self.memory),
             )
@@ -1131,6 +1137,7 @@ class Psi4w():
         try:
             if meta:
                 self.mol.SetProp("_yadonpy_psiresp_constraints", json.dumps(meta, ensure_ascii=False))
+                self.mol.SetProp("_yadonpy_resp_profile", str(resp_profile))
                 summary = meta.get("summary") if isinstance(meta, dict) else None
                 constraints = meta.get("constraints") if isinstance(meta, dict) else None
                 if isinstance(summary, dict):

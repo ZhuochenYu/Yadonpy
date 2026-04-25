@@ -1,6 +1,7 @@
 """Chemistry-focused utilities (RDKit helpers, geometry, charge scaling)."""
 
 from __future__ import annotations
+import json
 import re
 import sys
 from itertools import permutations
@@ -1270,6 +1271,109 @@ def correct_total_charge(
         pass
 
     return info
+
+
+def resp_equivalence_groups_from_mol(mol) -> list[list[int]]:
+    """Return explicit RESP equivalence groups stored on an RDKit molecule."""
+
+    groups: list[list[int]] = []
+    for key in ("_yadonpy_psiresp_constraints", "_yadonpy_resp_constraints_json"):
+        try:
+            if not hasattr(mol, "HasProp") or not mol.HasProp(key):
+                continue
+            payload = json.loads(str(mol.GetProp(key)))
+        except Exception:
+            continue
+        constraints = payload.get("constraints") if key == "_yadonpy_psiresp_constraints" else payload
+        if not isinstance(constraints, dict):
+            continue
+        for group in constraints.get("equivalence_groups", []) or []:
+            try:
+                idxs = sorted({int(i) for i in group if i is not None})
+            except Exception:
+                continue
+            if len(idxs) > 1 and idxs not in groups:
+                groups.append(idxs)
+        if groups:
+            break
+    return groups
+
+
+def symmetrize_equivalent_charge_props(
+    mol,
+    *,
+    equivalence_groups: list[list[int]] | None = None,
+    props: tuple[str, ...] | None = None,
+    tol: float = 1.0e-12,
+) -> int:
+    """Average charge-like atom properties across explicit equivalence groups.
+
+    This is deliberately metadata-driven. It does not infer chemical symmetry on
+    its own; callers should first generate conservative RESP equivalence groups.
+    """
+
+    if equivalence_groups is None:
+        equivalence_groups = resp_equivalence_groups_from_mol(mol)
+    if not equivalence_groups:
+        return 0
+
+    if props is None:
+        bases = ("AtomicCharge", "RESP", "RESP2", "ESP")
+        prop_list: list[str] = []
+        for base in bases:
+            try:
+                if any(atom.HasProp(base) for atom in mol.GetAtoms()):
+                    prop_list.append(base)
+                raw_key = f"{base}_raw"
+                if any(atom.HasProp(raw_key) for atom in mol.GetAtoms()):
+                    prop_list.append(raw_key)
+            except Exception:
+                continue
+        props = tuple(prop_list)
+    if not props:
+        return 0
+
+    changed_groups = 0
+    n_atoms = int(mol.GetNumAtoms())
+    for group in equivalence_groups:
+        idx_set: set[int] = set()
+        for item in group:
+            try:
+                idx = int(item)
+            except Exception:
+                continue
+            if 0 <= idx < n_atoms:
+                idx_set.add(idx)
+        idxs = sorted(idx_set)
+        if len(idxs) <= 1:
+            continue
+        group_changed = False
+        for prop in props:
+            atoms = []
+            values = []
+            for idx in idxs:
+                atom = mol.GetAtomWithIdx(int(idx))
+                if not atom.HasProp(prop):
+                    atoms = []
+                    values = []
+                    break
+                try:
+                    values.append(float(atom.GetDoubleProp(prop)))
+                    atoms.append(atom)
+                except Exception:
+                    atoms = []
+                    values = []
+                    break
+            if len(values) != len(idxs):
+                continue
+            avg = float(sum(values) / len(values))
+            if any(abs(v - avg) > float(tol) for v in values):
+                group_changed = True
+            for atom in atoms:
+                atom.SetDoubleProp(prop, avg)
+        if group_changed:
+            changed_groups += 1
+    return changed_groups
 
 
 def mol_from_pdb(pdb_file, charge=False):

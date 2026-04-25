@@ -163,12 +163,13 @@ lincs_iter               = {lincs_iter}
 lincs_order              = {lincs_order}
 
 ; temperature coupling
-tcoupl                    = V-rescale
+tcoupl                    = {tcoupl}
 tc-grps                   = {tc_grps}
 tau_t                     = {tau_t}
 ref_t                     = {ref_t}
 
 ; velocity generation
+continuation              = {continuation}
 gen_vel                   = {gen_vel}
 gen_temp                  = {gen_temp}
 gen_seed                  = {gen_seed}
@@ -216,7 +217,7 @@ lincs_iter               = {lincs_iter}
 lincs_order              = {lincs_order}
 
 ; temperature coupling
-tcoupl                    = V-rescale
+tcoupl                    = {tcoupl}
 tc-grps                   = {tc_grps}
 tau_t                     = {tau_t}
 ref_t                     = {ref_t}
@@ -229,6 +230,7 @@ ref_p                     = {ref_p}
 compressibility           = {compressibility}
 
 ; velocity generation
+continuation              = {continuation}
 gen_vel                   = {gen_vel}
 gen_temp                  = {gen_temp}
 gen_seed                  = {gen_seed}
@@ -272,12 +274,13 @@ periodic-molecules       = {periodic_molecules}
 constraints              = none
 
 ; temperature coupling
-tcoupl                    = V-rescale
+tcoupl                    = {tcoupl}
 tc-grps                   = {tc_grps}
 tau_t                     = {tau_t}
 ref_t                     = {ref_t}
 
 ; velocity generation
+continuation              = {continuation}
 gen_vel                   = {gen_vel}
 gen_temp                  = {gen_temp}
 gen_seed                  = {gen_seed}
@@ -321,7 +324,7 @@ periodic-molecules       = {periodic_molecules}
 constraints              = none
 
 ; temperature coupling
-tcoupl                    = V-rescale
+tcoupl                    = {tcoupl}
 tc-grps                   = {tc_grps}
 tau_t                     = {tau_t}
 ref_t                     = {ref_t}
@@ -334,6 +337,7 @@ ref_p                     = {ref_p}
 compressibility           = {compressibility}
 
 ; velocity generation
+continuation              = {continuation}
 gen_vel                   = {gen_vel}
 gen_temp                  = {gen_temp}
 gen_seed                  = {gen_seed}
@@ -371,7 +375,7 @@ constraints               = h-bonds
 constraint_algorithm      = lincs
 
 ; temperature coupling
-tcoupl                    = V-rescale
+tcoupl                    = {tcoupl}
 tc-grps                   = System
 tau_t                     = {tau_t}
 ref_t                     = {ref_t}
@@ -459,19 +463,21 @@ def default_mdp_params() -> Dict[str, object]:
         "lincs_iter": 2,
         "lincs_order": 8,
         # thermostat
+        "tcoupl": "V-rescale",
         "tc_grps": "System",
         "tau_t": 0.5,
         "ref_t": 298.15,
         # barostat (default: C-rescale; PR is forbidden in MdpSpec.render())
         "pcoupl": "C-rescale",
         "pcoupltype": "isotropic",
-        "tau_p": 2.0,
+        "tau_p": 5.0,
         "ref_p": 1.0,
         "compressibility": 4.5e-5,
         "deform_x": 0.0,
         "deform_y": 0.0,
         "deform_z": 0.0,
         # velocity generation seed (for NVT when gen_vel=yes)
+        "continuation": "no",
         "gen_seed": -1,
         "gen_vel": "no",
         "gen_temp": 298.15,

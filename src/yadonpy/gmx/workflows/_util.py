@@ -25,6 +25,7 @@ class _GroAtomRecord:
     atomname: str
     atomnr: int
     xyz_nm: tuple[float, float, float]
+    vxyz_nm_ps: tuple[float, float, float] | None = None
 
 
 @dataclass
@@ -63,6 +64,15 @@ def _read_gro_frame(path: Path) -> _GroFrameRecord:
                 atomname=raw[10:15].strip() or f"A{idx + 1}",
                 atomnr=idx + 1,
                 xyz_nm=xyz,
+                vxyz_nm_ps=(
+                    (
+                        float(raw[44:52]),
+                        float(raw[52:60]),
+                        float(raw[60:68]),
+                    )
+                    if len(raw) >= 68 and raw[44:68].strip()
+                    else None
+                ),
             )
         )
     parts = lines[2 + natoms].split()
@@ -86,10 +96,14 @@ def _write_gro_frame(path: Path, frame: _GroFrameRecord) -> None:
     lines = [frame.title[:80], f"{len(frame.atoms):5d}"]
     for atom in frame.atoms:
         x, y, z = atom.xyz_nm
-        lines.append(
+        line = (
             f"{_gro_wrap_index(atom.resnr):5d}{str(atom.resname)[:5]:<5}{str(atom.atomname)[:5]:>5}{_gro_wrap_index(atom.atomnr):5d}"
             f"{float(x):8.3f}{float(y):8.3f}{float(z):8.3f}"
         )
+        if atom.vxyz_nm_ps is not None:
+            vx, vy, vz = atom.vxyz_nm_ps
+            line += f"{float(vx):8.4f}{float(vy):8.4f}{float(vz):8.4f}"
+        lines.append(line)
     lines.append(f"{frame.box_nm[0]:10.5f}{frame.box_nm[1]:10.5f}{frame.box_nm[2]:10.5f}")
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -131,7 +145,11 @@ def _unwrap_fragment_coords(
             for nxt in adjacency[idx]:
                 if seen[nxt]:
                     continue
-                delta = [coords[nxt][dim] - coords[idx][dim] for dim in range(3)]
+                # Anchor each new atom to the already-unwrapped coordinate of
+                # the current atom.  Using the original wrapped coordinate here
+                # works for a single crossing, but can re-split multi-bond
+                # molecules when the second/third bond also crosses PBC.
+                delta = [coords[nxt][dim] - out[idx][dim] for dim in range(3)]
                 for dim, box_len in enumerate(box_nm):
                     delta[dim] = _minimal_image_delta(delta[dim], float(box_len))
                 out[nxt] = [out[idx][dim] + delta[dim] for dim in range(3)]
@@ -211,6 +229,7 @@ def normalize_gro_molecules_inplace(
                             atomname=atom.atomname,
                             atomnr=atom.atomnr,
                             xyz_nm=(float(xyz[0]), float(xyz[1]), float(xyz[2])),
+                            vxyz_nm_ps=atom.vxyz_nm_ps,
                         )
                     )
                 cursor += natoms
@@ -223,6 +242,81 @@ def normalize_gro_molecules_inplace(
         return {"applied": bool(normalized_molecules > 0), "error": None, "normalized_molecules": int(normalized_molecules)}
     except Exception as exc:
         return {"applied": False, "error": str(exc), "normalized_molecules": 0}
+
+
+def gro_topology_bond_geometry(
+    *,
+    top: Path,
+    gro: Path,
+    max_bond_nm_threshold: float = 0.8,
+) -> dict[str, Any]:
+    """Check direct topology bond lengths in a GRO handoff structure.
+
+    GROMACS can fail at step 0 if a handoff GRO contains a molecule split across
+    the periodic boundary: LINCS then sees a normal X-H bond as a box-length
+    constraint. This lightweight check catches that before the next stage starts.
+    """
+
+    top = Path(top)
+    gro = Path(gro)
+    if (not top.exists()) or (not gro.exists()):
+        return {"ok": False, "error": "missing top or gro"}
+    try:
+        topo = parse_system_top(top)
+        frame = _read_gro_frame(gro)
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+    cursor = 0
+    max_bond_nm = 0.0
+    worst: dict[str, Any] | None = None
+    checked = 0
+    try:
+        for molname, count in topo.molecules:
+            moltype = topo.moleculetypes.get(str(molname))
+            if moltype is None:
+                raise KeyError(f"Molecule type '{molname}' not found in topology")
+            natoms = int(moltype.natoms)
+            for mol_idx in range(int(count)):
+                block = frame.atoms[cursor: cursor + natoms]
+                if len(block) != natoms:
+                    raise ValueError(
+                        f"Atom count mismatch while checking {molname}: expected {natoms}, got {len(block)}"
+                    )
+                for ai, aj in moltype.bonds:
+                    i = int(ai) - 1
+                    j = int(aj) - 1
+                    if i < 0 or j < 0 or i >= len(block) or j >= len(block):
+                        continue
+                    xi = block[i].xyz_nm
+                    xj = block[j].xyz_nm
+                    dist = math.sqrt(sum((float(xj[dim]) - float(xi[dim])) ** 2 for dim in range(3)))
+                    checked += 1
+                    if dist > max_bond_nm:
+                        max_bond_nm = float(dist)
+                        worst = {
+                            "molname": str(molname),
+                            "mol_index": int(mol_idx),
+                            "atom_i": int(cursor + i + 1),
+                            "atom_j": int(cursor + j + 1),
+                            "bond_i": int(ai),
+                            "bond_j": int(aj),
+                            "distance_nm": float(dist),
+                        }
+                cursor += natoms
+        if cursor != len(frame.atoms):
+            raise ValueError(f"Unparsed atoms remain in {gro}: parsed {cursor}, total {len(frame.atoms)}")
+    except Exception as exc:
+        return {"ok": False, "error": str(exc), "checked_bonds": int(checked), "max_bond_nm": float(max_bond_nm)}
+
+    threshold = float(max_bond_nm_threshold)
+    return {
+        "ok": bool(max_bond_nm <= threshold),
+        "checked_bonds": int(checked),
+        "max_bond_nm": float(max_bond_nm),
+        "threshold_nm": threshold,
+        "worst": worst,
+    }
 
 
 def pbc_mol_fix_inplace(

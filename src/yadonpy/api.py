@@ -250,11 +250,11 @@ def conformation_search(mol, **kwargs):
     return qm.conformation_search(mol, **kwargs)
 
 
-def assign_charges(mol, *, charge: str = 'RESP', **kwargs):
+def assign_charges(mol, *, charge: str = 'RESP', resp_profile: str = 'adaptive', **kwargs):
     """Thin wrapper around :func:`yadonpy.sim.qm.assign_charges`."""
     from .sim import qm
 
-    return qm.assign_charges(mol, charge=charge, **kwargs)
+    return qm.assign_charges(mol, charge=charge, resp_profile=resp_profile, **kwargs)
 
 
 def assign_forcefield(mol, *, ff_name: str = 'gaff2_mod', charge: str | None = None, **kwargs):
@@ -274,6 +274,7 @@ def load_from_moldb(
     return_record: bool = False,
     polyelectrolyte_mode: bool | None = None,
     polyelectrolyte_detection: str | None = None,
+    resp_profile: str | None = None,
 ):
     """Load a molecule from MolDB using the requested charge variant.
 
@@ -303,6 +304,7 @@ def load_from_moldb(
         method=method,
         polyelectrolyte_mode=polyelectrolyte_mode,
         polyelectrolyte_detection=polyelectrolyte_detection,
+        resp_profile=resp_profile,
     )
     if return_record:
         return mol, record
@@ -314,6 +316,7 @@ def parameterize_smiles(
     *,
     ff_name: str = 'gaff2_mod',
     charge_method: str = 'RESP',
+    resp_profile: str = 'adaptive',
     work_dir: str = './',
     total_charge: Optional[int] = None,
     total_multiplicity: Optional[int] = None,
@@ -349,6 +352,7 @@ def parameterize_smiles(
             total_multiplicity=total_multiplicity,
             polyelectrolyte_mode=polyelectrolyte_mode,
             polyelectrolyte_detection=polyelectrolyte_detection,
+            resp_profile=resp_profile,
         )
     except Exception as exc:
         msg = (

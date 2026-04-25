@@ -164,13 +164,48 @@ def _molecule_compatibility_context(mol, *, mol_name: str | None = None) -> Dict
     except Exception:
         context["_localized_charge_groups"] = False
 
+    try:
+        if mol.HasProp("_yadonpy_resp_profile"):
+            profile = str(mol.GetProp("_yadonpy_resp_profile")).strip().lower()
+            if profile:
+                context["resp_profile"] = profile
+    except Exception:
+        pass
+
+    for prop, context_key in (
+        ("_yadonpy_qm_recipe_json", "qm_recipe_signature"),
+        ("_yadonpy_resp_constraints_json", "resp_constraints_signature"),
+        ("_yadonpy_psiresp_constraints", "psiresp_constraints_signature"),
+    ):
+        try:
+            if not mol.HasProp(prop):
+                continue
+            raw = str(mol.GetProp(prop)).strip()
+            if not raw:
+                continue
+            try:
+                payload = json.loads(raw)
+            except Exception:
+                payload = raw
+            context[context_key] = _stable_signature(payload)
+        except Exception:
+            continue
+
     return context
 
 
 def _artifact_meta_compatibility_fields(mol, *, mol_name: str | None = None) -> Dict[str, str]:
     context = _molecule_compatibility_context(mol, mol_name=mol_name)
     meta: Dict[str, str] = {}
-    for key in ("atom_order_signature", "charge_group_signature", "residue_signature"):
+    for key in (
+        "atom_order_signature",
+        "charge_group_signature",
+        "residue_signature",
+        "resp_profile",
+        "qm_recipe_signature",
+        "resp_constraints_signature",
+        "psiresp_constraints_signature",
+    ):
         value = context.get(key)
         if value:
             meta[key] = str(value)
@@ -236,12 +271,12 @@ def _reapply_bonded_patch_to_mol(mol) -> None:
 
 
 def _ensure_bonded_terms_for_export(mol, ff_name: str) -> None:
-    """Ensure mol.angles/mol.dihedrals exist before writing .itp.
+    """Ensure bond/angle/dihedral parameters exist before writing .itp.
 
     In some workflows (notably mixed-system exports), molecules may be obtained via RDKit fragment
-    extraction or serialization that drops Python-level attributes (mol.angles/mol.dihedrals) even
-    though ff_type/ff_r0/ff_k are still present. This helper rebuilds higher-order bonded terms
-    using the requested force-field name.
+    extraction or serialization that drops Python-level attributes and sometimes bond-level
+    properties. This helper rebuilds the missing GAFF-family bonded terms using the requested
+    force-field name, without changing charges.
     """
     try:
         nat = int(mol.GetNumAtoms())
@@ -252,8 +287,28 @@ def _ensure_bonded_terms_for_export(mol, ff_name: str) -> None:
 
     has_angles = bool(getattr(mol, "angles", {}) or {})
     has_dihedrals = bool(getattr(mol, "dihedrals", {}) or {})
+    has_valid_bonds = True
+    try:
+        for bond in mol.GetBonds():
+            if (not bond.HasProp("ff_r0")) or (not bond.HasProp("ff_k")):
+                has_valid_bonds = False
+                break
+            if float(bond.GetDoubleProp("ff_r0")) <= 0.0 or float(bond.GetDoubleProp("ff_k")) <= 0.0:
+                has_valid_bonds = False
+                break
+    except Exception:
+        has_valid_bonds = False
 
-    if has_angles and (nat < 4 or has_dihedrals):
+    atoms_have_types = True
+    try:
+        for atom in mol.GetAtoms():
+            if not atom.HasProp("ff_type"):
+                atoms_have_types = False
+                break
+    except Exception:
+        atoms_have_types = False
+
+    if has_valid_bonds and has_angles and (nat < 4 or has_dihedrals):
         return
 
     ff_name_l = str(ff_name).lower().strip()
@@ -280,7 +335,17 @@ def _ensure_bonded_terms_for_export(mol, ff_name: str) -> None:
     if ff_obj is None:
         return
 
-    # Only (re)assign higher-order terms; do not redo ptypes/btypes or charges here.
+    # Rebuild only missing force-field typing/bonded terms; keep charges untouched.
+    try:
+        if (not atoms_have_types) and hasattr(ff_obj, "assign_ptypes"):
+            ff_obj.assign_ptypes(mol)
+    except Exception:
+        pass
+    try:
+        if (not has_valid_bonds) and hasattr(ff_obj, "assign_btypes"):
+            ff_obj.assign_btypes(mol)
+    except Exception:
+        pass
     try:
         if nat >= 3 and (not has_angles) and hasattr(ff_obj, "assign_atypes"):
             ff_obj.assign_atypes(mol)
@@ -321,6 +386,14 @@ def write_molecule_artifacts(
         out_dir
     """
     out_dir.mkdir(parents=True, exist_ok=True)
+
+    # Repair charge properties before fingerprinting or writing topology. This is
+    # a safety net for old charge caches that carry adaptive RESP metadata but
+    # predate explicit post-fit property synchronization.
+    try:
+        core_utils.symmetrize_equivalent_charge_props(mol)
+    except Exception:
+        pass
 
     # ------------------------------------------------------------------
     # Charge fingerprinting (cache validation)
@@ -446,6 +519,13 @@ def write_molecule_artifacts(
             corr = correct_total_charge(mol, target_q=target_q)
             if corr is not None:
                 meta["charge_correction"] = corr
+                try:
+                    # Uniform net-charge correction should preserve equality, but
+                    # run the same metadata-driven repair after any charge mutation
+                    # so future strategies cannot desynchronize equivalent atoms.
+                    core_utils.symmetrize_equivalent_charge_props(mol)
+                except Exception:
+                    pass
                 # Update charge fingerprint after correction
                 ch_abs2, ch_sig2 = _mol_charge_abs_and_sig(mol)
                 meta["charge_abs_sum"] = float(ch_abs2)

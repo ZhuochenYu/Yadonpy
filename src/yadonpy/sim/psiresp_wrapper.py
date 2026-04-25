@@ -9,6 +9,7 @@ from rdkit import Chem
 
 from ..core import utils
 from ..core.polyelectrolyte import annotate_polyelectrolyte_metadata
+from ..core.polyelectrolyte import _normalize_resp_profile
 from ..core.polyelectrolyte import uses_localized_charge_groups
 from ..diagnostics import _psiresp_hint
 
@@ -68,30 +69,39 @@ def _charge_constraints_for_molecule(
     pmol,
     polyelectrolyte_mode: bool,
     polyelectrolyte_detection: str,
+    resp_profile: str,
 ) -> tuple[Any, dict[str, Any] | None]:
-    annotated = annotate_polyelectrolyte_metadata(mol, detection=polyelectrolyte_detection)
+    profile = _normalize_resp_profile(resp_profile)
+    annotated = annotate_polyelectrolyte_metadata(
+        mol,
+        detection=polyelectrolyte_detection,
+        resp_profile=profile,
+    )
     summary = annotated["summary"]
     constraints_meta = annotated["constraints"]
-    if not (bool(polyelectrolyte_mode) or uses_localized_charge_groups(summary)):
-        return psiresp.ChargeConstraintOptions(), None
     options = psiresp.ChargeConstraintOptions(
         symmetric_methyls=False,
         symmetric_methylenes=False,
         symmetric_atoms_are_equivalent=False,
     )
-    for grp in constraints_meta.get("charged_group_constraints", []):
-        options.add_charge_sum_constraint_for_molecule(
-            pmol,
-            charge=float(grp["target_charge"]),
-            indices=[int(i) for i in grp["atom_indices"]],
-        )
-    neutral = [int(i) for i in constraints_meta.get("neutral_remainder_indices", [])]
-    if neutral:
-        options.add_charge_sum_constraint_for_molecule(
-            pmol,
-            charge=float(constraints_meta.get("neutral_remainder_charge", 0.0)),
-            indices=neutral,
-        )
+    use_group_charge_constraints = bool(polyelectrolyte_mode) or (
+        str(constraints_meta.get("mode") or "").strip().lower() == "grouped"
+        or uses_localized_charge_groups(summary)
+    )
+    if use_group_charge_constraints:
+        for grp in constraints_meta.get("charged_group_constraints", []):
+            options.add_charge_sum_constraint_for_molecule(
+                pmol,
+                charge=float(grp["target_charge"]),
+                indices=[int(i) for i in grp["atom_indices"]],
+            )
+        neutral = [int(i) for i in constraints_meta.get("neutral_remainder_indices", [])]
+        if neutral:
+            options.add_charge_sum_constraint_for_molecule(
+                pmol,
+                charge=float(constraints_meta.get("neutral_remainder_charge", 0.0)),
+                indices=neutral,
+            )
     for eq in constraints_meta.get("equivalence_groups", []):
         indices = [int(i) for i in eq]
         if len(indices) > 1:
@@ -99,7 +109,7 @@ def _charge_constraints_for_molecule(
     if not summary.get("groups"):
         summary["fallback"] = summary.get("fallback") or "whole_molecule_scale"
         constraints_meta["fallback"] = summary["fallback"]
-    return options, {"summary": summary, "constraints": constraints_meta}
+    return options, {"summary": summary, "constraints": constraints_meta, "resp_profile": profile}
 
 
 def _build_psiresp_job(
@@ -279,6 +289,7 @@ def _run_precomputed_psiresp_job(
     basis: str,
     polyelectrolyte_mode: bool,
     polyelectrolyte_detection: str,
+    resp_profile: str,
     ncores: int | None,
     memory_mib: int | float | None,
     pcm_solvent: str | None = None,
@@ -293,7 +304,10 @@ def _run_precomputed_psiresp_job(
         pmol=pmol,
         polyelectrolyte_mode=bool(polyelectrolyte_mode),
         polyelectrolyte_detection=str(polyelectrolyte_detection or "auto"),
+        resp_profile=str(resp_profile or "adaptive"),
     )
+    if isinstance(constraint_meta, dict):
+        constraint_meta["fit_kind"] = str(fit_kind).strip().upper()
     job = _build_psiresp_job(
         pmol=pmol,
         fit_kind=str(fit_kind).strip().upper(),
@@ -334,6 +348,7 @@ def run_psiresp_fit(
     name: str = "yadonpy",
     polyelectrolyte_mode: bool = False,
     polyelectrolyte_detection: str = "auto",
+    resp_profile: str = "adaptive",
     ncores: int | None = None,
     memory_mib: int | float | None = None,
 ) -> dict[str, Any]:
@@ -346,6 +361,7 @@ def run_psiresp_fit(
     _require_psiresp()
     _ensure_psiresp_numpy_compat()
     fit_kind_up = str(fit_kind).strip().upper()
+    profile = _normalize_resp_profile(resp_profile)
     if fit_kind_up not in {"RESP", "RESP2", "ESP"}:
         raise ValueError(f"Unsupported psiresp fit kind: {fit_kind}")
 
@@ -371,6 +387,7 @@ def run_psiresp_fit(
             basis=str(basis),
             polyelectrolyte_mode=bool(polyelectrolyte_mode),
             polyelectrolyte_detection=str(polyelectrolyte_detection or "auto"),
+            resp_profile=profile,
             ncores=ncores,
             memory_mib=memory_mib,
             pcm_solvent=None,
@@ -385,6 +402,7 @@ def run_psiresp_fit(
             basis=str(basis),
             polyelectrolyte_mode=bool(polyelectrolyte_mode),
             polyelectrolyte_detection=str(polyelectrolyte_detection or "auto"),
+            resp_profile=profile,
             ncores=ncores,
             memory_mib=memory_mib,
             pcm_solvent="Water",
@@ -403,6 +421,7 @@ def run_psiresp_fit(
             basis=str(basis),
             polyelectrolyte_mode=bool(polyelectrolyte_mode),
             polyelectrolyte_detection=str(polyelectrolyte_detection or "auto"),
+            resp_profile=profile,
             ncores=ncores,
             memory_mib=memory_mib,
             pcm_solvent=None,

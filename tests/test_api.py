@@ -39,6 +39,7 @@ def test_load_from_moldb_returns_molecule_by_default(monkeypatch):
                 'method': 'wb97m-d3bj',
                 'polyelectrolyte_mode': None,
                 'polyelectrolyte_detection': None,
+                'resp_profile': None,
             },
         )
     ]
@@ -55,6 +56,22 @@ def test_load_from_moldb_can_return_record(monkeypatch):
     assert db.calls[0][1]['require_ready'] is False
     assert db.calls[0][1]['polyelectrolyte_mode'] is None
     assert db.calls[0][1]['polyelectrolyte_detection'] is None
+    assert db.calls[0][1]['resp_profile'] is None
+
+
+def test_top_level_assign_charges_passes_resp_profile(monkeypatch):
+    calls = []
+
+    class DummyQM:
+        @staticmethod
+        def assign_charges(*args, **kwargs):
+            calls.append(kwargs)
+            return True
+
+    monkeypatch.setattr(__import__('yadonpy.sim', fromlist=['qm']), 'qm', DummyQM)
+
+    assert api.assign_charges("mol-object", charge="RESP", resp_profile="legacy") is True
+    assert calls[0]["resp_profile"] == "legacy"
 
 
 def test_assign_forcefield_returns_ff_instance_and_status(monkeypatch):
@@ -404,3 +421,77 @@ def test_moldb_load_can_select_resp2_variant_without_explicit_level(tmp_path: Pa
     assert all(atom.HasProp("RESP2") for atom in loaded.GetAtoms())
     got = [atom.GetDoubleProp("RESP2") for atom in loaded.GetAtoms()]
     assert got == pytest.approx(charges)
+
+
+def test_moldb_resp_profile_variants_are_distinguished(tmp_path: Path):
+    db = moldb.MolDB(db_dir=tmp_path / "moldb")
+    smiles = "O=C1OCCO1"
+
+    mol_adaptive = api.mol_from_smiles(smiles, coord=True, name="EC")
+    for atom, charge in zip(mol_adaptive.GetAtoms(), [-0.6, 0.9, -0.4, 0.1, 0.1, -0.4, 0.1, 0.1, 0.1, 0.1]):
+        atom.SetDoubleProp("AtomicCharge", float(charge))
+    mol_adaptive.SetProp("_yadonpy_resp_profile", "adaptive")
+    mol_adaptive.SetProp(
+        "_yadonpy_qm_recipe_json",
+        json.dumps({"resp_profile": "adaptive", "opt_method": "wb97m-v", "charge_method": "wb97m-v"}),
+    )
+    rec = db.update_from_mol(mol_adaptive, smiles_or_psmiles=smiles, name="EC", charge="RESP", method="Default", basis_set="Default")
+
+    mol_legacy = api.mol_from_smiles(smiles, coord=True, name="EC")
+    for atom, charge in zip(mol_legacy.GetAtoms(), [-0.5, 0.8, -0.35, 0.1, 0.1, -0.35, 0.1, 0.1, 0.1, 0.1]):
+        atom.SetDoubleProp("AtomicCharge", float(charge))
+    mol_legacy.SetProp("_yadonpy_resp_profile", "legacy")
+    mol_legacy.SetProp(
+        "_yadonpy_qm_recipe_json",
+        json.dumps({"resp_profile": "legacy", "opt_method": "wb97m-d3bj", "charge_method": "wb97m-d3bj"}),
+    )
+    rec = db.update_from_mol(mol_legacy, smiles_or_psmiles=smiles, name="EC", charge="RESP", method="Default", basis_set="Default")
+
+    metas = list(rec.variants.values())
+    assert len(metas) >= 2
+    assert {meta.get("resp_profile") for meta in metas} >= {"adaptive", "legacy"}
+
+    loaded_adaptive, _ = db.load_mol(smiles, require_ready=True, charge="RESP", resp_profile="adaptive")
+    loaded_legacy, _ = db.load_mol(smiles, require_ready=True, charge="RESP", resp_profile="legacy")
+
+    assert loaded_adaptive.GetProp("_yadonpy_resp_profile") == "adaptive"
+    assert loaded_legacy.GetProp("_yadonpy_resp_profile") == "legacy"
+    assert loaded_adaptive.GetProp("_YADONPY_VARIANT_ID") != loaded_legacy.GetProp("_YADONPY_VARIANT_ID")
+
+
+def test_moldb_loads_old_legacy_style_variant_without_rewriting_profile_metadata(tmp_path: Path):
+    db = moldb.MolDB(db_dir=tmp_path / "moldb")
+    smiles = "O=C1OCCO1"
+    mol = api.mol_from_smiles(smiles, coord=True, name="EC")
+    charges = [-0.55, 0.85, -0.38, 0.1, 0.1, -0.38, 0.08, 0.08, 0.05, 0.05]
+    for atom, charge in zip(mol.GetAtoms(), charges):
+        atom.SetDoubleProp("AtomicCharge", float(charge))
+
+    rec = db.update_from_mol(mol, smiles_or_psmiles=smiles, name="EC", charge="RESP")
+    vid = next(iter(rec.variants))
+    rec.variants[vid].pop("resp_profile", None)
+    rec.variants[vid].pop("qm_recipe", None)
+    rec.variants[vid].pop("resp_constraints", None)
+    rec.variants[vid].pop("polyelectrolyte_summary", None)
+    rec.variants[vid].pop("charge_groups", None)
+    rec.variants[vid].pop("psiresp_constraints", None)
+    db.save_record(rec)
+
+    payload_path = db.charges_variant_path(rec.key, vid)
+    payload = json.loads(payload_path.read_text(encoding="utf-8"))
+    payload.pop("resp_profile", None)
+    payload.pop("qm_recipe", None)
+    payload.pop("resp_constraints", None)
+    payload.pop("polyelectrolyte_summary", None)
+    payload.pop("charge_groups", None)
+    payload.pop("psiresp_constraints", None)
+    payload_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+    loaded, _ = db.load_mol(smiles, require_ready=True, charge="RESP", resp_profile="legacy")
+
+    assert [atom.GetDoubleProp("AtomicCharge") for atom in loaded.GetAtoms()] == pytest.approx(charges)
+    assert not loaded.HasProp("_yadonpy_resp_profile")
+
+    reloaded_rec = db.load_record(rec.key)
+    assert reloaded_rec is not None
+    assert "resp_profile" not in reloaded_rec.variants[vid]

@@ -1,8 +1,8 @@
 {
-  "key": "57fa7686df4bec7d",
+  "key": "b216bf8c7a3d0da0",
   "kind": "psmiles",
-  "canonical": "*OC1OC(COCC(=O)[O-])C(*)C(OCC(=O)[O-])C1O",
-  "name": "glucose_36",
+  "canonical": "*OC1OC(COCC(=O)[O-])C(*)C(OCC(=O)[O-])C1OCC(=O)[O-]",
+  "name": "glucose_236",
   "charge_method": "RESP",
   "charge_unit": "e",
   "ready": true,
@@ -17,32 +17,15 @@
     }
   ],
   "variants": {
-    "8a687c87f3af": {
-      "variant_id": "8a687c87f3af",
+    "b259130aca52": {
+      "variant_id": "b259130aca52",
       "charge": "RESP",
       "basis_set": "Default",
       "method": "Default",
       "ready": true,
       "polyelectrolyte_mode": true,
       "polyelectrolyte_detection": "auto",
-      "constraint_signature": null,
-      "charge_groups": [],
-      "resp_constraints": {},
-      "polyelectrolyte_summary": {},
-      "is_polyelectrolyte": false,
-      "is_polymer": false,
-      "charge_group_count": 0,
-      "source_kind": "psmiles"
-    },
-    "2af8ac21c4a7": {
-      "variant_id": "2af8ac21c4a7",
-      "charge": "RESP",
-      "basis_set": "Default",
-      "method": "Default",
-      "ready": true,
-      "polyelectrolyte_mode": true,
-      "polyelectrolyte_detection": "auto",
-      "constraint_signature": "f32dc833f88e",
+      "constraint_signature": "f3a19cf26777",
       "charge_groups": [
         {
           "group_id": "group_1",
@@ -66,6 +49,19 @@
             16,
             17,
             18
+          ],
+          "formal_charge": -1,
+          "source": "template"
+        },
+        {
+          "group_id": "group_3",
+          "label": "cmc_carboxylate",
+          "atom_indices": [
+            20,
+            21,
+            22,
+            23,
+            24
           ],
           "formal_charge": -1,
           "source": "template"
@@ -97,6 +93,18 @@
             ],
             "target_charge": -1,
             "source": "template"
+          },
+          {
+            "group_id": "group_3",
+            "atom_indices": [
+              20,
+              21,
+              22,
+              23,
+              24
+            ],
+            "target_charge": -1,
+            "source": "template"
           }
         ],
         "neutral_remainder_charge": 0,
@@ -111,11 +119,6 @@
           12,
           13,
           19,
-          20,
-          21,
-          22,
-          23,
-          24,
           25,
           26,
           27,
@@ -123,7 +126,12 @@
           29,
           30,
           31,
-          32
+          32,
+          33,
+          34,
+          35,
+          36,
+          37
         ],
         "equivalence_groups": [
           [
@@ -139,20 +147,28 @@
             24
           ],
           [
-            25,
-            26
+            27,
+            28
           ],
           [
             29,
             30
+          ],
+          [
+            33,
+            34
+          ],
+          [
+            36,
+            37
           ]
         ],
         "fallback": null,
         "resp_profile": "adaptive"
       },
       "polyelectrolyte_summary": {
-        "is_polymer": false,
-        "is_polyelectrolyte": false,
+        "is_polymer": true,
+        "is_polyelectrolyte": true,
         "detection": "auto",
         "fallback": null,
         "groups": [
@@ -181,6 +197,19 @@
             ],
             "formal_charge": -1,
             "source": "template"
+          },
+          {
+            "group_id": "group_3",
+            "label": "cmc_carboxylate",
+            "atom_indices": [
+              20,
+              21,
+              22,
+              23,
+              24
+            ],
+            "formal_charge": -1,
+            "source": "template"
           }
         ],
         "neutral_remainder": [
@@ -194,11 +223,6 @@
           12,
           13,
           19,
-          20,
-          21,
-          22,
-          23,
-          24,
           25,
           26,
           27,
@@ -206,9 +230,14 @@
           29,
           30,
           31,
-          32
+          32,
+          33,
+          34,
+          35,
+          36,
+          37
         ],
-        "molecule_formal_charge": -2,
+        "molecule_formal_charge": -3,
         "resp_profile": "adaptive",
         "equivalence_groups": [
           [
@@ -224,19 +253,27 @@
             24
           ],
           [
-            25,
-            26
+            27,
+            28
           ],
           [
             29,
             30
+          ],
+          [
+            33,
+            34
+          ],
+          [
+            36,
+            37
           ]
         ]
       },
       "psiresp_constraints": {
         "summary": {
-          "is_polymer": false,
-          "is_polyelectrolyte": false,
+          "is_polymer": true,
+          "is_polyelectrolyte": true,
           "detection": "auto",
           "fallback": null,
           "groups": [
@@ -265,6 +302,19 @@
               ],
               "formal_charge": -1,
               "source": "template"
+            },
+            {
+              "group_id": "group_3",
+              "label": "cmc_carboxylate",
+              "atom_indices": [
+                20,
+                21,
+                22,
+                23,
+                24
+              ],
+              "formal_charge": -1,
+              "source": "template"
             }
           ],
           "neutral_remainder": [
@@ -278,11 +328,6 @@
             12,
             13,
             19,
-            20,
-            21,
-            22,
-            23,
-            24,
             25,
             26,
             27,
@@ -290,9 +335,14 @@
             29,
             30,
             31,
-            32
+            32,
+            33,
+            34,
+            35,
+            36,
+            37
           ],
-          "molecule_formal_charge": -2,
+          "molecule_formal_charge": -3,
           "resp_profile": "adaptive",
           "equivalence_groups": [
             [
@@ -308,12 +358,20 @@
               24
             ],
             [
-              25,
-              26
+              27,
+              28
             ],
             [
               29,
               30
+            ],
+            [
+              33,
+              34
+            ],
+            [
+              36,
+              37
             ]
           ]
         },
@@ -343,6 +401,18 @@
               ],
               "target_charge": -1,
               "source": "template"
+            },
+            {
+              "group_id": "group_3",
+              "atom_indices": [
+                20,
+                21,
+                22,
+                23,
+                24
+              ],
+              "target_charge": -1,
+              "source": "template"
             }
           ],
           "neutral_remainder_charge": 0,
@@ -357,11 +427,6 @@
             12,
             13,
             19,
-            20,
-            21,
-            22,
-            23,
-            24,
             25,
             26,
             27,
@@ -369,7 +434,12 @@
             29,
             30,
             31,
-            32
+            32,
+            33,
+            34,
+            35,
+            36,
+            37
           ],
           "equivalence_groups": [
             [
@@ -385,12 +455,20 @@
               24
             ],
             [
-              25,
-              26
+              27,
+              28
             ],
             [
               29,
               30
+            ],
+            [
+              33,
+              34
+            ],
+            [
+              36,
+              37
             ]
           ],
           "fallback": null,
@@ -420,9 +498,9 @@
         "adaptive_carbonate_recipe": false,
         "carbonate_like": false
       },
-      "is_polyelectrolyte": false,
-      "is_polymer": false,
-      "charge_group_count": 2,
+      "is_polyelectrolyte": true,
+      "is_polymer": true,
+      "charge_group_count": 3,
       "source_kind": "psmiles"
     }
   }

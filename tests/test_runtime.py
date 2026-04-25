@@ -4,9 +4,12 @@ import importlib
 import json
 from pathlib import Path
 
+import pandas as pd
+
 import yadonpy.runtime as runtime
 import yadonpy.core.const as const
 from yadonpy.gmx.engine import GromacsRunner
+import yadonpy.sim.analyzer as analyzer_mod
 from yadonpy.sim.analyzer import AnalyzeResult
 from yadonpy.workflow.resume import ResumeManager, StepSpec
 
@@ -200,6 +203,94 @@ def test_polymer_density_gate_is_more_relaxed_than_liquid_gate(tmp_path: Path):
 
     assert polymer_kwargs['slope_threshold_per_ps'] > liquid_kwargs['slope_threshold_per_ps']
     assert polymer_kwargs['rel_std_threshold'] > liquid_kwargs['rel_std_threshold']
+
+
+def test_density_gate_accepts_low_absolute_density_when_curve_plateaus(tmp_path: Path, monkeypatch):
+    class _FakeRunner:
+        def list_energy_terms(self, edr):
+            return {"Density": 1}
+
+        def energy_xvg(self, *, edr, out_xvg, terms):
+            Path(out_xvg).parent.mkdir(parents=True, exist_ok=True)
+            Path(out_xvg).write_text("fake\n", encoding="utf-8")
+
+    class _FakeXvg:
+        df = pd.DataFrame({"x": list(range(100)), "Density": [50.0] * 100})
+
+    monkeypatch.setattr(analyzer_mod, "GromacsRunner", _FakeRunner)
+    monkeypatch.setattr(analyzer_mod, "read_xvg", lambda path: _FakeXvg())
+
+    analyzer = AnalyzeResult(
+        work_dir=tmp_path,
+        tpr=Path(tmp_path / 'md.tpr'),
+        xtc=Path(tmp_path / 'md.xtc'),
+        edr=Path(tmp_path / 'md.edr'),
+        top=Path(tmp_path / 'system.top'),
+        ndx=Path(tmp_path / 'system.ndx'),
+    )
+
+    assert analyzer.check_eq() is True
+    payload = json.loads((tmp_path / "06_analysis" / "equilibrium.json").read_text(encoding="utf-8"))
+    density_gate = payload["density_gate"]
+    assert density_gate["plateau_ok"] is True
+    assert density_gate["ok"] is True
+    assert density_gate["severity"] == "none"
+
+
+def test_density_gate_fails_when_box_volume_still_compresses(tmp_path: Path, monkeypatch):
+    class _FakeRunner:
+        def list_energy_terms(self, edr):
+            return {"Density": 1, "Volume": 2}
+
+        def energy_xvg(self, *, edr, out_xvg, terms, allow_missing=True):
+            Path(out_xvg).parent.mkdir(parents=True, exist_ok=True)
+            Path(out_xvg).write_text("fake\n", encoding="utf-8")
+
+    t = list(range(100))
+
+    class _FakeXvg:
+        df = pd.DataFrame({"x": t, "Density": [1100.0] * 100, "Volume": [100.0 - 0.1 * x for x in t]})
+
+    monkeypatch.setattr(analyzer_mod, "GromacsRunner", _FakeRunner)
+    monkeypatch.setattr(analyzer_mod, "read_xvg", lambda path: _FakeXvg())
+
+    analyzer = AnalyzeResult(
+        work_dir=tmp_path,
+        tpr=Path(tmp_path / 'md.tpr'),
+        xtc=Path(tmp_path / 'md.xtc'),
+        edr=Path(tmp_path / 'md.edr'),
+        top=Path(tmp_path / 'system.top'),
+        ndx=Path(tmp_path / 'system.ndx'),
+    )
+
+    assert analyzer.check_eq() is False
+    payload = json.loads((tmp_path / "06_analysis" / "equilibrium.json").read_text(encoding="utf-8"))
+    assert payload["density_gate"]["plateau_ok"] is True
+    assert payload["density_gate"]["ok"] is False
+    assert payload["density_gate"]["trend_ok"] is False
+    assert payload["relaxation_state"]["recommended_next_strategy"] == "liquid_density_recovery"
+
+
+def test_density_gate_fails_when_density_term_missing(tmp_path: Path, monkeypatch):
+    class _FakeRunner:
+        def list_energy_terms(self, edr):
+            return {"Temperature": 1}
+
+    monkeypatch.setattr(analyzer_mod, "GromacsRunner", _FakeRunner)
+
+    analyzer = AnalyzeResult(
+        work_dir=tmp_path,
+        tpr=Path(tmp_path / 'md.tpr'),
+        xtc=Path(tmp_path / 'md.xtc'),
+        edr=Path(tmp_path / 'md.edr'),
+        top=Path(tmp_path / 'system.top'),
+        ndx=Path(tmp_path / 'system.ndx'),
+    )
+
+    assert analyzer.check_eq() is False
+    payload = json.loads((tmp_path / "06_analysis" / "equilibrium.json").read_text(encoding="utf-8"))
+    assert payload["density_gate"]["ok"] is False
+    assert payload["density_gate"]["severity"] == "high"
 
 
 def test_system_dir_can_be_resolved_from_parent_work_root(tmp_path: Path):

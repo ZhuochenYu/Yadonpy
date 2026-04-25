@@ -102,7 +102,7 @@ def parse_itp(itp_path: Path) -> Optional[MoleculeType]:
             except Exception:
                 m = 0.0
             masses.append(m)
-        elif section == 'bonds':
+        elif section in {'bonds', 'constraints'}:
             parts = line.split()
             if len(parts) < 2:
                 continue
@@ -111,7 +111,7 @@ def parse_itp(itp_path: Path) -> Optional[MoleculeType]:
                 aj = int(parts[1])
             except Exception:
                 continue
-            if ai >= 1 and aj >= 1:
+            if ai >= 1 and aj >= 1 and (ai, aj) not in bonds and (aj, ai) not in bonds:
                 bonds.append((ai, aj))
 
     if mol_name is None or not atomtypes:

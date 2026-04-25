@@ -24,11 +24,25 @@ from pathlib import Path
 from typing import Optional, Dict, Any, List
 from rdkit import Chem
 from rdkit import Geometry as Geom
+from ..core import chem_utils as core_utils
 from ..core import utils, const, calc
 from ..core.logging_utils import format_elapsed as _fmt_elapsed
 from ..runtime import resolve_restart
 from .qm_wrapper import QMw
 from . import seminario
+
+
+_RESP_PROFILES = {"adaptive", "legacy"}
+_DEFAULT_OPT_METHOD = "wb97m-d3bj"
+_DEFAULT_OPT_BASIS = "def2-SVP"
+_DEFAULT_CHARGE_METHOD = "wb97m-d3bj"
+_DEFAULT_CHARGE_BASIS = "def2-TZVP"
+_CARBONATE_RECIPE = {
+    "opt_method": "wb97m-v",
+    "charge_method": "wb97m-v",
+    "opt_basis": "def2-TZVP",
+    "charge_basis": "def2-TZVP",
+}
 
 
 def _qm_log(message: str, *, level: int = 1) -> None:
@@ -121,6 +135,158 @@ def apply_placeholder_zero_charges(mol, *, charge_label: str = "RESP") -> None:
             atom.SetDoubleProp("MullikenCharge", 0.0)
         elif label == "LOWDIN":
             atom.SetDoubleProp("LowdinCharge", 0.0)
+
+
+def _normalize_resp_profile(resp_profile: str | None) -> str:
+    profile = str(resp_profile or "adaptive").strip().lower()
+    if profile in {"default", "current"}:
+        profile = "adaptive"
+    if profile not in _RESP_PROFILES:
+        raise ValueError(f"Unsupported RESP profile: {resp_profile!r}")
+    return profile
+
+
+def _json_prop(mol, key: str) -> dict[str, Any] | None:
+    try:
+        if mol.HasProp(key):
+            value = json.loads(mol.GetProp(key))
+            if isinstance(value, dict):
+                return value
+    except Exception:
+        pass
+    return None
+
+
+def _atom_heavy_neighbor_count(atom, *, exclude_idx: int | None = None) -> int:
+    count = 0
+    for nb in atom.GetNeighbors():
+        if exclude_idx is not None and int(nb.GetIdx()) == int(exclude_idx):
+            continue
+        if nb.GetAtomicNum() > 1:
+            count += 1
+    return count
+
+
+def _is_neutral_carbonate_like(mol) -> bool:
+    try:
+        total_q = sum(int(atom.GetFormalCharge()) for atom in mol.GetAtoms())
+    except Exception:
+        return False
+    if int(total_q) != 0:
+        return False
+    for atom in mol.GetAtoms():
+        if atom.GetSymbol() != "C":
+            continue
+        oxygen_double = []
+        oxygen_single = []
+        for bond in atom.GetBonds():
+            other = bond.GetOtherAtom(atom)
+            if other.GetSymbol() != "O":
+                continue
+            if bond.GetBondTypeAsDouble() >= 1.5:
+                oxygen_double.append(other)
+            elif abs(float(bond.GetBondTypeAsDouble()) - 1.0) < 1.0e-8:
+                oxygen_single.append(other)
+        if len(oxygen_double) != 1 or len(oxygen_single) != 2:
+            continue
+        if any(_atom_heavy_neighbor_count(oxygen, exclude_idx=atom.GetIdx()) < 1 for oxygen in oxygen_single):
+            continue
+        return True
+    return False
+
+
+def _basis_gen_with_override(base: dict[str, str] | None, basis: str) -> dict[str, str]:
+    out = dict(base or {})
+    out.update({"Br": str(basis), "I": str(basis)})
+    return out
+
+
+def _resolve_resp_qm_recipe(
+    mol,
+    *,
+    resp_profile: str,
+    charge_model: str,
+    opt_method: str,
+    opt_basis: str,
+    opt_basis_gen: dict[str, str] | None,
+    charge_method: str,
+    charge_basis: str,
+    charge_basis_gen: dict[str, str] | None,
+    auto_level: bool,
+    total_charge: int,
+) -> dict[str, Any]:
+    profile = _normalize_resp_profile(resp_profile)
+    charge_model_up = str(charge_model or "").strip().upper()
+    recipe = {
+        "resp_profile": profile,
+        "charge_model": charge_model_up,
+        "opt_method": str(opt_method),
+        "opt_basis": str(opt_basis),
+        "charge_method": str(charge_method),
+        "charge_basis": str(charge_basis),
+        "opt_basis_gen": dict(opt_basis_gen or {}),
+        "charge_basis_gen": dict(charge_basis_gen or {}),
+        "auto_level": bool(auto_level),
+        "anion_diffuse_upgrade": False,
+        "adaptive_carbonate_recipe": False,
+        "carbonate_like": False,
+    }
+
+    if bool(auto_level) and int(total_charge) < 0:
+        if str(recipe["opt_basis"]).strip().lower() == "def2-svp":
+            recipe["opt_basis"] = "def2-SVPD"
+            recipe["opt_basis_gen"] = _basis_gen_with_override(recipe.get("opt_basis_gen"), "def2-SVPD")
+            recipe["anion_diffuse_upgrade"] = True
+        if str(recipe["charge_basis"]).strip().lower() == "def2-tzvp":
+            recipe["charge_basis"] = "def2-TZVPD"
+            recipe["charge_basis_gen"] = _basis_gen_with_override(recipe.get("charge_basis_gen"), "def2-TZVPD")
+            recipe["anion_diffuse_upgrade"] = True
+
+    carbonate_like = False
+    if charge_model_up in {"RESP", "RESP2", "ESP"}:
+        carbonate_like = _is_neutral_carbonate_like(mol)
+    recipe["carbonate_like"] = bool(carbonate_like)
+    if profile == "adaptive" and carbonate_like and int(total_charge) == 0:
+        if str(recipe["opt_method"]).strip().lower() == _DEFAULT_OPT_METHOD:
+            recipe["opt_method"] = _CARBONATE_RECIPE["opt_method"]
+        if str(recipe["charge_method"]).strip().lower() == _DEFAULT_CHARGE_METHOD:
+            recipe["charge_method"] = _CARBONATE_RECIPE["charge_method"]
+        if str(recipe["opt_basis"]).strip().lower() == _DEFAULT_OPT_BASIS.lower():
+            recipe["opt_basis"] = _CARBONATE_RECIPE["opt_basis"]
+            recipe["opt_basis_gen"] = _basis_gen_with_override(recipe.get("opt_basis_gen"), _CARBONATE_RECIPE["opt_basis"])
+        if str(recipe["charge_basis"]).strip().lower() == _DEFAULT_CHARGE_BASIS.lower():
+            recipe["charge_basis"] = _CARBONATE_RECIPE["charge_basis"]
+            recipe["charge_basis_gen"] = _basis_gen_with_override(recipe.get("charge_basis_gen"), _CARBONATE_RECIPE["charge_basis"])
+        recipe["adaptive_carbonate_recipe"] = True
+
+    return recipe
+
+
+def _stamp_resp_recipe_metadata(mol, *, resp_profile: str, recipe: dict[str, Any]) -> None:
+    try:
+        mol.SetProp("_yadonpy_resp_profile", str(resp_profile))
+        mol.SetProp("_yadonpy_qm_recipe_json", json.dumps(dict(recipe), ensure_ascii=False))
+    except Exception:
+        pass
+
+
+def _get_psiresp_equivalence_groups(mol) -> list[list[int]]:
+    return core_utils.resp_equivalence_groups_from_mol(mol)
+
+
+def _symmetry_repair_props(mol) -> list[str]:
+    props = []
+    for base in ("AtomicCharge", "RESP", "RESP2", "ESP"):
+        if any(atom.HasProp(base) for atom in mol.GetAtoms()):
+            props.append(base)
+        raw_key = f"{base}_raw"
+        if any(atom.HasProp(raw_key) for atom in mol.GetAtoms()):
+            props.append(raw_key)
+    return props
+
+
+def _symmetrize_charge_properties(mol, *, equivalence_groups: list[list[int]]) -> int:
+    return core_utils.symmetrize_equivalent_charge_props(mol, equivalence_groups=equivalence_groups)
 
 
 def _sanitize_dirname(name: str) -> str:
@@ -261,8 +427,19 @@ def load_atomic_charges_json(mol, path, *, strict: bool = True, expected_meta: d
                 if meta.get(key) != value:
                     return False
         n = min(len(charges), mol.GetNumAtoms())
+        charge_label = None
+        if isinstance(meta, dict):
+            raw_label = str(meta.get("charge") or "").strip().upper()
+            if raw_label in {"RESP", "RESP2", "ESP", "MULLIKEN", "LOWDIN"}:
+                charge_label = raw_label
         for i in range(n):
             mol.GetAtomWithIdx(i).SetDoubleProp('AtomicCharge', float(charges[i]))
+            if charge_label in {"RESP", "RESP2", "ESP"}:
+                mol.GetAtomWithIdx(i).SetDoubleProp(charge_label, float(charges[i]))
+            elif charge_label == "MULLIKEN":
+                mol.GetAtomWithIdx(i).SetDoubleProp("MullikenCharge", float(charges[i]))
+            elif charge_label == "LOWDIN":
+                mol.GetAtomWithIdx(i).SetDoubleProp("LowdinCharge", float(charges[i]))
 
         # Restore QM patch metadata (e.g. (m)Seminario bond/angle fragment) so
         # downstream topology writers can inject it.
@@ -287,6 +464,8 @@ def load_atomic_charges_json(mol, path, *, strict: bool = True, expected_meta: d
                     "_yadonpy_resp_constraints_json",
                     "_yadonpy_polyelectrolyte_summary_json",
                     "_yadonpy_psiresp_constraints",
+                    "_yadonpy_resp_profile",
+                    "_yadonpy_qm_recipe_json",
                 ):
                     v = meta.get(k)
                     if isinstance(v, str) and v.strip():
@@ -489,6 +668,7 @@ def assign_charges(
     total_multiplicity=None,
     polyelectrolyte_mode: bool = False,
     polyelectrolyte_detection: str = 'auto',
+    resp_profile: str = 'adaptive',
     symmetrize=True,
     symmetrize_geometry: bool = True,
     restart: Optional[bool] = None,
@@ -536,13 +716,14 @@ def assign_charges(
         return s in ("default", "none", "nan", "null", "")
 
     if _is_default_token(opt_method):
-        opt_method = 'wb97m-d3bj'
+        opt_method = _DEFAULT_OPT_METHOD
     if _is_default_token(opt_basis):
-        opt_basis = 'def2-SVP'
+        opt_basis = _DEFAULT_OPT_BASIS
     if _is_default_token(charge_method):
-        charge_method = 'wb97m-d3bj'
+        charge_method = _DEFAULT_CHARGE_METHOD
     if _is_default_token(charge_basis):
-        charge_basis = 'def2-TZVP'
+        charge_basis = _DEFAULT_CHARGE_BASIS
+    resp_profile = _normalize_resp_profile(resp_profile)
 
     # If the caller didn't provide an explicit name, use (and persist) a stable
     # molecule name. If no name was set, we infer the caller's Python variable
@@ -578,26 +759,59 @@ def assign_charges(
     charged_sdf = None
     charges_json = None
     cached_charge_hit = False
-    charge_cache_meta = {
-        "charge_model": str(charge),
-        "polyelectrolyte_mode": bool(polyelectrolyte_mode),
-        "polyelectrolyte_detection": str(polyelectrolyte_detection or "auto"),
-    }
     if work_dir_root is not None:
         charged_sdf = Path(work_dir) / f"{log_name}.charged.sdf"
         charges_json = Path(work_dir_root) / "01_qm" / "90_charged_mol2" / f"{log_name}.charges.json"
-        if restart_flag and charges_json.exists() and ((not bool(opt)) or charged_sdf.exists()):
-            try:
-                if charged_sdf.exists():
-                    cached = _read_sdf_one(charged_sdf)
-                    _copy_geometry_inplace(mol, cached)
-                if not load_atomic_charges_json(mol, charges_json, strict=True, expected_meta=charge_cache_meta):
-                    raise RuntimeError(f"Failed to load cached charges from {charges_json}")
-                _reattach_bonded_patch_metadata(mol, work_dir_root=work_dir_root, log_name=str(log_name))
-                cached_charge_hit = True
-                _qm_log(f"[SKIP] Reused cached charges | file={charges_json.name}", level=1)
-            except Exception as e:
-                utils.yadon_print(f"QM restart warning: cached assign_charges restore failed for {log_name}: {e}; recomputing.", level=2)
+
+    smiles_hint = _smi if isinstance(_smi, str) and _smi not in ("?", "") else None
+    is_inorganic = False
+    is_poly_ion = False
+    fc = 0
+    n_rad = 0
+    try:
+        is_inorganic = utils.is_inorganic_ion_like(mol, smiles_hint=smiles_hint)
+        is_poly_ion = utils.is_inorganic_polyatomic_ion(mol, smiles_hint=smiles_hint)
+        for a in mol.GetAtoms():
+            fc += int(a.GetFormalCharge())
+            n_rad += int(a.GetNumRadicalElectrons())
+    except Exception:
+        pass
+
+    eff_charge = int(total_charge) if type(total_charge) is int else int(fc)
+    if (total_multiplicity is None) and (type(total_multiplicity) is not int) and n_rad > 0:
+        total_multiplicity = int(n_rad + 1)
+
+    resolved_recipe = _resolve_resp_qm_recipe(
+        mol,
+        resp_profile=resp_profile,
+        charge_model=str(charge),
+        opt_method=str(opt_method),
+        opt_basis=str(opt_basis),
+        opt_basis_gen=opt_basis_gen,
+        charge_method=str(charge_method),
+        charge_basis=str(charge_basis),
+        charge_basis_gen=charge_basis_gen,
+        auto_level=bool(auto_level),
+        total_charge=int(eff_charge),
+    )
+    opt_method = str(resolved_recipe["opt_method"])
+    opt_basis = str(resolved_recipe["opt_basis"])
+    opt_basis_gen = dict(resolved_recipe.get("opt_basis_gen") or {})
+    charge_method = str(resolved_recipe["charge_method"])
+    charge_basis = str(resolved_recipe["charge_basis"])
+    charge_basis_gen = dict(resolved_recipe.get("charge_basis_gen") or {})
+    _stamp_resp_recipe_metadata(mol, resp_profile=resp_profile, recipe=resolved_recipe)
+
+    def _build_charge_cache_meta(recipe: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "charge_model": str(charge),
+            "polyelectrolyte_mode": bool(polyelectrolyte_mode),
+            "polyelectrolyte_detection": str(polyelectrolyte_detection or "auto"),
+            "resp_profile": str(resp_profile),
+            "resolved_qm_recipe": dict(recipe),
+        }
+
+    charge_cache_meta = _build_charge_cache_meta(resolved_recipe)
 
     if is_h_terminator_placeholder(mol, smiles_hint=_smi):
         apply_placeholder_zero_charges(mol, charge_label=str(charge))
@@ -621,72 +835,34 @@ def assign_charges(
         _qm_done("QM charge assignment", t_qm, detail=f"charge_model={charge} | shortcut=h_terminator")
         return True
 
-    # ------------------------------------------------------------------
-    # For small inorganic ions (PF6-, BF4-, ClO4-...) RDKit/MMFF can be
-    # unstable. Prefer OpenBabel-based 3D building when possible.
-    # This enables skipping conformer search for anions in example workflows.
-    # ------------------------------------------------------------------
-    try:
-        smiles_hint = None
-        if isinstance(_smi, str) and _smi not in ("?", ""):
-            smiles_hint = _smi
-        if mol.GetNumConformers() == 0 or utils.is_inorganic_ion_like(mol, smiles_hint=smiles_hint):
-            utils.ensure_3d_coords(mol, smiles_hint=smiles_hint, engine='openbabel')
-    except Exception:
-        pass
-
-    # ------------------------------------------------------------------
-    # Auto-level selection for small inorganic ions (yzc-gmx-gen style)
-    #
-    # Rationale:
-    # - RESP via HF/6-31G(d) is no longer recommended for typical electrolyte
-    #   systems; use a modern dispersion-corrected functional and a larger,
-    #   diffuse basis at the ESP level.
-    # - For small, high-symmetry anions like PF6-, use a robust OPT level
-    #   (SVPD, preferably ma-*) and a larger single-point basis.
-    #
-    # Users can still fully override by passing auto_level=False or explicit
-    # method/basis arguments.
-    # ------------------------------------------------------------------
-    is_inorganic = False
-    is_poly_ion = False
-    fc = 0
-    n_rad = 0
-    try:
-        is_inorganic = utils.is_inorganic_ion_like(mol, smiles_hint=smiles_hint)
-        is_poly_ion = utils.is_inorganic_polyatomic_ion(mol, smiles_hint=smiles_hint)
-        for a in mol.GetAtoms():
-            fc += int(a.GetFormalCharge())
-            n_rad += int(a.GetNumRadicalElectrons())
-    except Exception:
-        pass
-
-    # Auto-infer charge/multiplicity (best-effort) if not explicitly provided.
-    eff_charge = int(total_charge) if type(total_charge) is int else int(fc)
-    if (total_multiplicity is None) and (type(total_multiplicity) is not int):
-        if n_rad > 0:
-            total_multiplicity = int(n_rad + 1)
-
-    # Default level policy (2026-03): switch diffuse basis for anions.
-    #   anions : OPT def2-SVPD ; ESP def2-TZVPD
-    #   others : OPT def2-SVP  ; ESP def2-TZVP
-    if auto_level and eff_charge < 0:
+    if work_dir_root is not None and restart_flag and charges_json.exists() and ((not bool(opt)) or charged_sdf.exists()):
         try:
-            if str(opt_basis).strip().lower() == 'def2-svp':
-                opt_basis = 'def2-SVPD'
-                opt_basis_gen = {'Br': 'def2-SVPD', 'I': 'def2-SVPD', **(opt_basis_gen or {})}
-        except Exception:
-            pass
+            if charged_sdf.exists():
+                cached = _read_sdf_one(charged_sdf)
+                _copy_geometry_inplace(mol, cached)
+            if not load_atomic_charges_json(mol, charges_json, strict=True, expected_meta=charge_cache_meta):
+                raise RuntimeError(f"Failed to load cached charges from {charges_json}")
+            _reattach_bonded_patch_metadata(mol, work_dir_root=work_dir_root, log_name=str(log_name))
+            cached_charge_hit = True
+            _qm_log(f"[SKIP] Reused cached charges | file={charges_json.name}", level=1)
+        except Exception as e:
+            utils.yadon_print(f"QM restart warning: cached assign_charges restore failed for {log_name}: {e}; recomputing.", level=2)
+
+    if not cached_charge_hit:
+        # ------------------------------------------------------------------
+        # For small inorganic ions (PF6-, BF4-, ClO4-...) RDKit/MMFF can be
+        # unstable. Prefer OpenBabel-based 3D building when possible.
+        # This enables skipping conformer search for anions in example workflows.
+        # ------------------------------------------------------------------
         try:
-            if str(charge_basis).strip().lower() == 'def2-tzvp':
-                charge_basis = 'def2-TZVPD'
-                charge_basis_gen = {'Br': 'def2-TZVPD', 'I': 'def2-TZVPD', **(charge_basis_gen or {})}
+            if mol.GetNumConformers() == 0 or utils.is_inorganic_ion_like(mol, smiles_hint=smiles_hint):
+                utils.ensure_3d_coords(mol, smiles_hint=smiles_hint, engine='openbabel')
         except Exception:
             pass
 
     # Echo the chosen levels to screen
     _qm_log(
-        f"[ITEM] levels            : OPT={str(opt_method)}/{str(opt_basis)} | RESP(ESP)={str(charge_method)}/{str(charge_basis)}",
+        f"[ITEM] levels            : OPT={str(opt_method)}/{str(opt_basis)} | RESP(ESP)={str(charge_method)}/{str(charge_basis)} | profile={resp_profile}",
         level=1,
     )
 
@@ -730,6 +906,7 @@ def assign_charges(
             total_multiplicity=total_multiplicity,
             polyelectrolyte_mode=bool(polyelectrolyte_mode),
             polyelectrolyte_detection=str(polyelectrolyte_detection or 'auto'),
+            resp_profile=str(resp_profile),
             **kwargs,
         )
 
@@ -750,6 +927,12 @@ def assign_charges(
             utils.yadon_print(f"QM retry with basis: OPT={ob} | RESP(ESP)={cb}", level=2)
             if _attempt_levels(ob, cb):
                 opt_basis, charge_basis, flag = ob, cb, True
+                resolved_recipe["opt_basis"] = str(ob)
+                resolved_recipe["charge_basis"] = str(cb)
+                resolved_recipe["opt_basis_gen"] = _basis_gen_with_override(opt_basis_gen, ob)
+                resolved_recipe["charge_basis_gen"] = _basis_gen_with_override(charge_basis_gen, cb)
+                _stamp_resp_recipe_metadata(mol, resp_profile=resp_profile, recipe=resolved_recipe)
+                charge_cache_meta = _build_charge_cache_meta(resolved_recipe)
                 break
 
     # Re-apply geometry symmetrization after QM optimization (if any).
@@ -760,34 +943,10 @@ def assign_charges(
         except Exception:
             pass
 
-    # Optionally symmetrize charges across topologically equivalent atoms.
-    # This makes highly symmetric ions (e.g., PF6-) assign identical charges to symmetry-equivalent atoms.
     if flag and symmetrize:
         try:
-            ranks = Chem.CanonicalRankAtoms(mol, breakTies=False)
-            groups = {}
-            for i, r in enumerate(ranks):
-                groups.setdefault(int(r), []).append(i)
-            # collect charges
-            charges = []
-            for a in mol.GetAtoms():
-                if a.HasProp('AtomicCharge'):
-                    charges.append(float(a.GetDoubleProp('AtomicCharge')))
-                elif a.HasProp('atom_charge'):
-                    charges.append(float(a.GetDoubleProp('atom_charge')))
-                else:
-                    charges.append(None)
-            if any(c is None for c in charges):
-                raise RuntimeError('AtomicCharge not found')
-            n_symm = 0
-            for _, idxs in groups.items():
-                if len(idxs) <= 1:
-                    continue
-                qavg = float(sum(charges[i] for i in idxs) / len(idxs))
-                for i in idxs:
-                    mol.GetAtomWithIdx(i).SetDoubleProp('AtomicCharge', qavg)
-                    charges[i] = qavg
-                n_symm += 1
+            eq_groups = _get_psiresp_equivalence_groups(mol)
+            n_symm = _symmetrize_charge_properties(mol, equivalence_groups=eq_groups)
             if n_symm:
                 utils.yadon_print(f"QM task: symmetrize_charges groups={n_symm} purpose={log_name}", level=1)
         except Exception:
@@ -940,6 +1099,8 @@ def assign_charges(
                     "_yadonpy_resp_constraints_json",
                     "_yadonpy_polyelectrolyte_summary_json",
                     "_yadonpy_psiresp_constraints",
+                    "_yadonpy_resp_profile",
+                    "_yadonpy_qm_recipe_json",
                 ):
                     try:
                         if mol.HasProp(key):
@@ -969,7 +1130,7 @@ def assign_charges(
     except Exception as e:
         utils.yadon_print(f"QM restart warning: failed to save charged SDF for {log_name}: {e}", level=2)
 
-    _qm_done("QM charge assignment", t_qm, detail=f"charge_model={charge}")
+    _qm_done("QM charge assignment", t_qm, detail=f"charge_model={charge} | profile={resp_profile}")
     return flag
         
 

@@ -639,6 +639,7 @@ def assign_charges(mol, charge='gasteiger', confId=0, opt=True, work_dir=None, t
     total_charge=None, total_multiplicity=None,
     polyelectrolyte_mode: bool = False,
     polyelectrolyte_detection: str = 'auto',
+    resp_profile: str = 'adaptive',
     **kwargs):
     """
     calc.assign_charges
@@ -792,21 +793,39 @@ def assign_charges(mol, charge='gasteiger', confId=0, opt=True, work_dir=None, t
         psi4mol.basis = charge_basis
         psi4mol.basis_gen = charge_basis_gen
 
+        def _copy_resp_metadata_to_target():
+            for prop in (
+                "_yadonpy_psiresp_constraints",
+                "_yadonpy_charge_groups_json",
+                "_yadonpy_resp_constraints_json",
+                "_yadonpy_polyelectrolyte_summary_json",
+                "_yadonpy_resp_profile",
+                "_yadonpy_qm_recipe_json",
+            ):
+                try:
+                    if psi4mol.mol.HasProp(prop):
+                        mol.SetProp(prop, str(psi4mol.mol.GetProp(prop)))
+                except Exception:
+                    continue
+
         if charge == 'RESP':
             psi4mol.resp(
                 polyelectrolyte_mode=bool(polyelectrolyte_mode),
                 polyelectrolyte_detection=str(polyelectrolyte_detection or 'auto'),
+                resp_profile=str(resp_profile or 'adaptive'),
             )
             if psi4mol.error_flag: return False
             for i, atom in enumerate(psi4mol.mol.GetAtoms()):
                 mol.GetAtomWithIdx(i).SetDoubleProp('RESP', atom.GetDoubleProp('RESP'))
                 mol.GetAtomWithIdx(i).SetDoubleProp('ESP', atom.GetDoubleProp('ESP'))
                 mol.GetAtomWithIdx(i).SetDoubleProp('AtomicCharge', atom.GetDoubleProp('RESP'))
+            _copy_resp_metadata_to_target()
 
         elif charge == 'RESP2':
             psi4mol.resp2(
                 polyelectrolyte_mode=bool(polyelectrolyte_mode),
                 polyelectrolyte_detection=str(polyelectrolyte_detection or 'auto'),
+                resp_profile=str(resp_profile or 'adaptive'),
             )
             if psi4mol.error_flag: return False
             for i, atom in enumerate(psi4mol.mol.GetAtoms()):
@@ -816,17 +835,21 @@ def assign_charges(mol, charge='gasteiger', confId=0, opt=True, work_dir=None, t
                     mol.GetAtomWithIdx(i).SetDoubleProp('ESP', atom.GetDoubleProp('ESP'))
                 mol.GetAtomWithIdx(i).SetDoubleProp('RESP2', atom.GetDoubleProp('RESP2'))
                 mol.GetAtomWithIdx(i).SetDoubleProp('AtomicCharge', atom.GetDoubleProp('RESP2'))
+            _copy_resp_metadata_to_target()
 
         elif charge == 'ESP':
             psi4mol.resp(
+                fit_kind='ESP',
                 polyelectrolyte_mode=bool(polyelectrolyte_mode),
                 polyelectrolyte_detection=str(polyelectrolyte_detection or 'auto'),
+                resp_profile=str(resp_profile or 'adaptive'),
             )
             if psi4mol.error_flag: return False
             for i, atom in enumerate(psi4mol.mol.GetAtoms()):
                 mol.GetAtomWithIdx(i).SetDoubleProp('RESP', atom.GetDoubleProp('RESP'))
                 mol.GetAtomWithIdx(i).SetDoubleProp('ESP', atom.GetDoubleProp('ESP'))
                 mol.GetAtomWithIdx(i).SetDoubleProp('AtomicCharge', atom.GetDoubleProp('ESP'))
+            _copy_resp_metadata_to_target()
 
         elif charge == 'Mulliken':
             psi4mol.mulliken_charge(recalc=True)
