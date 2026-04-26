@@ -148,7 +148,7 @@ def _load_ready_opls_species(
 ):
     last_exc: Exception | None = None
     db_charge = "RESP2" if charge_mode == "resp2" else "RESP"
-    for db_dir, db_label in ((None, "default"), (repo_db_dir, "repo")):
+    for db_dir, db_label in ((repo_db_dir, "repo"), (None, "default")):
         try:
             mol = ff.mol_rdkit(
                 smiles,
@@ -188,7 +188,7 @@ def _load_pf6_with_builtin_charges(*, ion_ff: OPLSAA, repo_db_dir: Path):
     if not ion_ff.assign_ptypes(opls_probe, charge="opls"):
         raise RuntimeError("Cannot build the PF6 OPLS-AA atom-type probe from SMILES.")
 
-    for db_dir, db_label in ((None, "default"), (repo_db_dir, "repo")):
+    for db_dir, db_label in ((repo_db_dir, "repo"), (None, "default")):
         try:
             pf6 = gaff_ff.mol_rdkit(
                 PF6_SMILES,

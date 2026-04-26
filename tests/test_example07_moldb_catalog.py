@@ -55,6 +55,22 @@ def _load_example07_ffcheck_module():
     return module
 
 
+def _load_example07_refresh_module():
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "examples"
+        / "07_moldb_precompute_and_reuse"
+        / "04_refresh_adaptive_resp_moldb.py"
+    )
+    spec = importlib.util.spec_from_file_location("example07_refresh_adaptive_resp", path)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
 def test_example07_catalog_includes_new_polymer_and_salt_entries():
     mod = _load_example07_module()
     items = mod._read_species_csv(mod.CATALOG_CSV)
@@ -175,6 +191,53 @@ def test_example07_qm_policy_uses_diffuse_route_for_bob_family():
     assert qm_bob.charge_basis == "def2-TZVPD"
     assert qm_dfob.opt_basis == "def2-SVPD"
     assert qm_dfob.charge_basis == "def2-TZVPD"
+
+
+def test_example07_adaptive_refresh_readiness_honors_requested_profile():
+    mod = _load_example07_refresh_module()
+    spec = mod.SpeciesSpec(
+        name="EC",
+        smiles="O=C1OCCO1",
+        kind="smiles",
+        charge="RESP",
+        bonded=None,
+        polyelectrolyte_mode=False,
+    )
+    db = SimpleNamespace(
+        load_record=lambda _key: SimpleNamespace(
+            variants={
+                "legacy": {
+                    "charge": "RESP",
+                    "resp_profile": "legacy",
+                    "polyelectrolyte_mode": False,
+                    "ready": True,
+                },
+                "adaptive": {
+                    "charge": "RESP",
+                    "resp_profile": "adaptive",
+                    "polyelectrolyte_mode": False,
+                    "ready": True,
+                },
+            }
+        )
+    )
+
+    assert mod._profile_variant_ready(db, spec, resp_profile="adaptive") is True
+    assert mod._profile_variant_ready(db, spec, resp_profile="legacy") is True
+
+    db_missing_legacy = SimpleNamespace(
+        load_record=lambda _key: SimpleNamespace(
+            variants={
+                "adaptive": {
+                    "charge": "RESP",
+                    "resp_profile": "adaptive",
+                    "polyelectrolyte_mode": False,
+                    "ready": True,
+                }
+            }
+        )
+    )
+    assert mod._profile_variant_ready(db_missing_legacy, spec, resp_profile="legacy") is False
 
 
 def test_example07_parallel_planner_assigns_profiles_and_core_budgets():

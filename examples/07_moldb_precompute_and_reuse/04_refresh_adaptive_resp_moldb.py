@@ -111,7 +111,8 @@ def _formal_charge(mol) -> int:
     return int(sum(int(atom.GetFormalCharge()) for atom in mol.GetAtoms()))
 
 
-def _adaptive_variant_ready(db: MolDB, spec: SpeciesSpec) -> bool:
+def _profile_variant_ready(db: MolDB, spec: SpeciesSpec, *, resp_profile: str) -> bool:
+    profile = str(resp_profile or "adaptive").strip().lower()
     try:
         _kind, _canonical, key = canonical_key(spec.smiles)
         rec = db.load_record(key)
@@ -124,7 +125,7 @@ def _adaptive_variant_ready(db: MolDB, spec: SpeciesSpec) -> bool:
             continue
         if str(meta.get("charge") or "RESP").upper() != "RESP":
             continue
-        if str(meta.get("resp_profile") or "").strip().lower() != "adaptive":
+        if str(meta.get("resp_profile") or "").strip().lower() != profile:
             continue
         if bool(meta.get("polyelectrolyte_mode", False)) != bool(spec.polyelectrolyte_mode):
             continue
@@ -237,7 +238,7 @@ def _write_to_dbs(mol, spec: SpeciesSpec, *, dbs: list[tuple[str, MolDB]], resp_
             polyelectrolyte_detection="auto",
             resp_profile=resp_profile,
         )
-        adaptive_vids = [
+        matching_vids = [
             vid
             for vid, meta in sorted((rec.variants or {}).items())
             if isinstance(meta, dict)
@@ -249,7 +250,9 @@ def _write_to_dbs(mol, spec: SpeciesSpec, *, dbs: list[tuple[str, MolDB]], resp_
                 "db": label,
                 "db_dir": str(db.db_dir),
                 "key": rec.key,
-                "adaptive_variant_ids": adaptive_vids,
+                "matching_variant_ids": matching_vids,
+                # Backward-compatible name used by early adaptive refresh summaries.
+                "adaptive_variant_ids": matching_vids if resp_profile == "adaptive" else [],
             }
         )
     return records
@@ -267,7 +270,7 @@ def refresh_one(
     if default_db is not None:
         dbs.insert(0, ("default", default_db))
 
-    if (not args.force) and all(_adaptive_variant_ready(db, spec) for _label, db in dbs):
+    if (not args.force) and all(_profile_variant_ready(db, spec, resp_profile=args.resp_profile) for _label, db in dbs):
         return {
             "name": spec.name,
             "smiles": spec.smiles,
