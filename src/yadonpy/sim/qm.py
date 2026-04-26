@@ -2397,6 +2397,12 @@ def _psi4_basis_exists(basis: str, elements: Optional[List[str]] = None) -> bool
         return False
 
 def _pick_first_available_basis(candidates: List[str], elements: Optional[List[str]] = None) -> str:
+    try:
+        import psi4  # noqa: F401
+    except Exception:
+        # In lightweight/test environments without Psi4, keep the requested policy
+        # route rather than silently downgrading anions away from diffuse bases.
+        return candidates[0]
     for b in candidates:
         if _psi4_basis_exists(b, elements=elements):
             return b

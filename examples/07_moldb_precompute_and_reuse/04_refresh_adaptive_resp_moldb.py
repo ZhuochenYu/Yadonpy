@@ -276,11 +276,6 @@ def refresh_one(
         }
 
     mol, geometry_source, fresh = _load_geometry(spec, dbs=dbs, resp_profile=args.resp_profile)
-    if fresh:
-        try:
-            mol.SetProp("_Name", spec.name)
-        except Exception:
-            pass
 
     formal_charge = _formal_charge(mol)
     charge_groups = detect_charged_groups(mol, detection="auto", resp_profile=args.resp_profile)

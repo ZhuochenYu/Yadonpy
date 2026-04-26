@@ -1623,7 +1623,17 @@ def test_eq21_exec_invalidates_downstream_resume_steps_when_rebuilding(tmp_path:
 
     eq21.exec(temp=300.0, press=1.0, mpi=1, omp=1, gpu=0, time=0.1)
 
-    assert invalidations == [(("npt_production", "nvt_production"), ("equilibration_additional_",))]
+    assert invalidations == [
+        (
+            ("npt_production", "nvt_production"),
+            (
+                "equilibration_additional_",
+                "equilibration_liquid_density_recovery_",
+                "equilibration_polymer_density_recovery_",
+                "equilibration_polymer_chain_relaxation_",
+            ),
+        )
+    ]
 
 
 def test_additional_exec_applies_mdp_overrides_to_relaxation_stages(tmp_path: Path, monkeypatch):
@@ -2061,7 +2071,9 @@ def test_npt_exec_explicit_constraints_restore_lincs_path(tmp_path: Path, monkey
         lincs_order=10,
     )
 
-    stage = captured["stages"][0]
+    stages = captured["stages"]
+    assert stages[0].name == "01_settle_constraints"
+    stage = stages[-1]
     mdp_text = stage.mdp.render()
     assert "constraints              = h-bonds" in mdp_text
     assert "constraint_algorithm     = lincs" in mdp_text
@@ -2164,7 +2176,9 @@ def test_nvt_exec_applies_mdp_overrides_and_constraint_selection(tmp_path: Path,
         mdp_overrides={"dt": 0.0015},
     )
 
-    stage = captured["stages"][0]
+    stages = captured["stages"]
+    assert stages[0].name == "01_settle_constraints"
+    stage = stages[-1]
     mdp_text = stage.mdp.render()
     assert "dt                       = 0.0015" in mdp_text
     assert "constraints              = all-bonds" in mdp_text

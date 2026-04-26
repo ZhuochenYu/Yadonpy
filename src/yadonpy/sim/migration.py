@@ -467,7 +467,7 @@ def summarize_role_residence(
         ac_norm = np.zeros_like(ac_mean, dtype=float)
     positive = np.where(ac_norm > 0.0)[0]
     stop = int(positive[-1]) if positive.size else 0
-    intermittent_ps = float(np.trapz(ac_norm[: stop + 1], t[: stop + 1])) if stop > 0 else 0.0
+    intermittent_ps = float(np.trapezoid(ac_norm[: stop + 1], t[: stop + 1])) if stop > 0 else 0.0
 
     csv_path = out_dir / f"{role}_contact_autocorrelation.csv"
     with csv_path.open("w", encoding="utf-8", newline="") as fh:
