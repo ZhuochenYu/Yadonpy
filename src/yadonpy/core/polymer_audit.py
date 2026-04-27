@@ -1,3 +1,11 @@
+"""Sanity audits for polymer charge groups and exported bonded topology.
+
+These helpers compare RDKit-side polymer metadata with exported GROMACS
+artifacts. They are used as defensive diagnostics before trusting transport
+simulations, especially for charged repeat units where missing bonds, missing
+nonbonded parameters, or inconsistent charge groups can silently bias MD.
+"""
+
 from __future__ import annotations
 
 import json

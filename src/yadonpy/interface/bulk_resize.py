@@ -1,3 +1,11 @@
+"""Bulk phase resizing helpers for interface preparation.
+
+Interface construction often needs a previously equilibrated bulk phase to be
+matched to a target lateral area or molecule count. These functions derive safe
+resizing plans from composition, density, and box metadata before the phase is
+used as a slab source.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass

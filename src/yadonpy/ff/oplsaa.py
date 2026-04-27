@@ -257,6 +257,7 @@ class OPLSAA(GAFF):
         prefer_db: bool = True,
         polyelectrolyte_mode: bool | None = None,
         polyelectrolyte_detection: str | None = None,
+        resp_profile: str | None = None,
     ):
         """Create a lightweight MolSpec handle for OPLS-AA workflows.
 
@@ -300,6 +301,7 @@ class OPLSAA(GAFF):
                 charge=charge,
                 basis_set=basis_set,
                 method=method,
+                resp_profile=resp_profile,
                 polyelectrolyte_mode=polyelectrolyte_mode,
                 polyelectrolyte_detection=polyelectrolyte_detection,
             )
@@ -321,6 +323,7 @@ class OPLSAA(GAFF):
                 charge="opls",
                 basis_set=basis_set,
                 method=method,
+                resp_profile=resp_profile,
                 polyelectrolyte_mode=polyelectrolyte_mode,
                 polyelectrolyte_detection=polyelectrolyte_detection,
             )
@@ -776,6 +779,7 @@ class OPLSAA(GAFF):
                     charge=spec.charge,
                     basis_set=spec.basis_set,
                     method=spec.method,
+                    resp_profile=spec.resp_profile,
                 )
             except Exception as exc:
                 charge_token = str(getattr(spec, "charge", "") or "").strip().upper()
@@ -793,6 +797,7 @@ class OPLSAA(GAFF):
                         charge="opls",
                         basis_set=spec.basis_set,
                         method=spec.method,
+                        resp_profile=spec.resp_profile,
                     )
                     try:
                         resolved.SetProp("_yadonpy_charge_fallback", "opls")

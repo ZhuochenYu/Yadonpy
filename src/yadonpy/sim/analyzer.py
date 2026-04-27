@@ -499,6 +499,127 @@ class AnalyzeResult:
         return max(1, int(resolved))
 
     @staticmethod
+    def _normalize_analysis_profile(profile: Optional[str]) -> str:
+        token = str(profile or "full").strip().lower()
+        if token in {"auto", "default"}:
+            return "auto"
+        if token in {"fast", "screening", "transport", "transport-fast", "transport_fast"}:
+            return "transport_fast"
+        if token in {"minimal", "min"}:
+            return "minimal"
+        return "full"
+
+    def _read_performance_policy(self) -> dict[str, Any] | None:
+        candidates = [
+            self.work_dir / "05_npt_production" / "summary.json",
+            self.work_dir / "05_nvt_production" / "summary.json",
+        ]
+        existing = [path for path in candidates if path.exists()]
+        existing.sort(key=lambda path: path.stat().st_mtime if path.exists() else 0.0, reverse=True)
+        for path in existing:
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            if not isinstance(payload, dict):
+                continue
+            policy = payload.get("performance_policy")
+            if isinstance(policy, dict):
+                return policy
+        return None
+
+    def _resolve_analysis_profile(self, profile: Optional[str]) -> str:
+        normalized = self._normalize_analysis_profile(profile)
+        if normalized != "auto":
+            return normalized
+        policy = self._read_performance_policy()
+        if isinstance(policy, dict):
+            resolved = self._normalize_analysis_profile(str(policy.get("analysis_profile") or "transport_fast"))
+            if resolved != "auto":
+                return resolved
+        return "transport_fast"
+
+    def _analysis_policy_cache_meta(self) -> dict[str, Any]:
+        policy = self._read_performance_policy()
+        if not isinstance(policy, dict):
+            return {}
+        return {
+            "performance_policy_level": policy.get("policy_level"),
+            "performance_profile": policy.get("performance_profile"),
+            "output_traj_ps": policy.get("traj_ps"),
+        }
+
+    @staticmethod
+    def _normalize_site_filter(site_filter: object) -> Optional[list[object]]:
+        if site_filter is None:
+            return None
+        if isinstance(site_filter, (str, bytes)):
+            items = [str(site_filter)]
+        else:
+            try:
+                items = list(site_filter)  # type: ignore[arg-type]
+            except TypeError:
+                items = [site_filter]
+        return [item for item in items if item is not None]
+
+    @staticmethod
+    def _site_matches_filter(site: dict[str, Any], filters: Optional[Sequence[object]]) -> bool:
+        if not filters:
+            return True
+        site_id = str(site.get("site_id") or "")
+        site_label = str(site.get("site_label") or "")
+        moltype = str(site.get("moltype") or "")
+        for item in filters:
+            if isinstance(item, dict):
+                want_id = item.get("site_id")
+                want_label = item.get("site_label")
+                want_moltype = item.get("moltype")
+                if want_id is not None and str(want_id) != site_id:
+                    continue
+                if want_label is not None and str(want_label) != site_label:
+                    continue
+                if want_moltype is not None and str(want_moltype) != moltype:
+                    continue
+                return True
+            token = str(item or "").strip()
+            if not token:
+                continue
+            if token in {site_id, site_label, f"{moltype}:{site_label}", moltype}:
+                return True
+        return False
+
+    @staticmethod
+    def _artifact_is_fresh(out_path: Path, dependencies: Sequence[Path]) -> bool:
+        try:
+            out = Path(out_path)
+            if not out.exists() or out.stat().st_size <= 0:
+                return False
+            out_mtime = out.stat().st_mtime
+            dep_mtimes = [Path(dep).stat().st_mtime for dep in dependencies if Path(dep).exists()]
+            return bool(dep_mtimes) and out_mtime >= max(dep_mtimes)
+        except Exception:
+            return False
+
+    @staticmethod
+    def _analysis_cache_metadata_matches(payload: dict[str, Any], expected: dict[str, Any]) -> bool:
+        meta = payload.get("_analysis") if isinstance(payload, dict) else None
+        if not isinstance(meta, dict):
+            return False
+        for key, value in expected.items():
+            if key not in meta:
+                return False
+            if isinstance(value, float):
+                try:
+                    if abs(float(meta.get(key)) - float(value)) > 1.0e-12:
+                        return False
+                except Exception:
+                    return False
+            else:
+                if meta.get(key) != value:
+                    return False
+        return True
+
+    @staticmethod
     def _rdf_shell_detail(shell: dict[str, Any]) -> Optional[str]:
         detail = None
         if shell.get("r_shell_nm") is not None:
@@ -519,6 +640,7 @@ class AnalyzeResult:
         r_max_nm: float,
         region_mode: str,
         workers: int,
+        frame_stride: int = 1,
     ) -> list[dict[str, Any]]:
         jobs: list[dict[str, Any]] = []
         total = int(len(site_groups))
@@ -545,6 +667,7 @@ class AnalyzeResult:
                     bin_nm=float(bin_nm),
                     r_max_nm=float(r_max_nm),
                     region=region_mode,
+                    frame_stride=int(frame_stride),
                 )
                 shell = dict(rdf_data.get("shell") or {})
                 self._step_done(job["title"], t0, detail=self._rdf_shell_detail(shell))
@@ -568,6 +691,7 @@ class AnalyzeResult:
                     bin_nm=float(bin_nm),
                     r_max_nm=float(r_max_nm),
                     region=region_mode,
+                    frame_stride=int(frame_stride),
                 )
                 future_map[future] = (job, t0)
 
@@ -653,11 +777,23 @@ class AnalyzeResult:
             return out
         return obj
 
-    def get_all_prop(self, *, temp: float, press: float, save: bool = True) -> Dict[str, Any]:
+    def get_all_prop(
+        self,
+        *,
+        temp: float,
+        press: float,
+        save: bool = True,
+        include_polymer_metrics: bool = True,
+        analysis_profile: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """Compute core thermo + polymer metrics and save them into analysis outputs."""
+        profile = self._resolve_analysis_profile(analysis_profile)
         t_all = self._section_begin(
             "Post-analysis workflow",
-            detail=f"target_T={float(temp):.2f} K | target_P={float(press):.2f} bar",
+            detail=(
+                f"target_T={float(temp):.2f} K | target_P={float(press):.2f} bar"
+                f" | profile={profile} | polymer_metrics={bool(include_polymer_metrics)}"
+            ),
         )
         runner = GromacsRunner()
         out = self._analysis_dir() / "thermo.xvg"
@@ -835,7 +971,7 @@ class AnalyzeResult:
 
         polymer_all: Dict[str, Any] = {}
         poly_mts = self._polymer_moltypes_from_meta()
-        if poly_mts:
+        if poly_mts and bool(include_polymer_metrics):
             t0 = self._step_begin("Step 4/5 polymer metrics", detail="Rg / end-to-end distance / persistence length")
             try:
                 polymer_raw = compute_polymer_metrics(
@@ -851,6 +987,11 @@ class AnalyzeResult:
             except Exception as e:
                 polymer_all = {"warning": str(e)}
             self._step_done("Step 4/5 polymer metrics", t0, detail=f"polymer_moltypes={len(polymer_all)}")
+        elif poly_mts:
+            self._step_skip(
+                "Step 4/5 polymer metrics",
+                detail="disabled by include_polymer_metrics=False / fast transport profile",
+            )
         else:
             self._step_skip("Step 4/5 polymer metrics", detail="no polymer moltypes in system_meta.json")
         polymer_rg = {k: v.get("radius_of_gyration_nm") for k, v in polymer_all.items() if isinstance(v, dict) and "radius_of_gyration_nm" in v}
@@ -878,6 +1019,10 @@ class AnalyzeResult:
             "polymer_end_to_end_distance": polymer_e2e,
             "polymer_persistence_length": polymer_pl,
             "polymer_metrics": polymer_all,
+            "_analysis": {
+                "analysis_profile": profile,
+                "include_polymer_metrics": bool(include_polymer_metrics),
+            },
         }
 
         if save:
@@ -898,6 +1043,10 @@ class AnalyzeResult:
                 polymer_end_to_end_distance=polymer_e2e,
                 polymer_persistence_length=polymer_pl,
                 polymer_metrics=polymer_all,
+                post_analysis={
+                    "analysis_profile": profile,
+                    "include_polymer_metrics": bool(include_polymer_metrics),
+                },
             )
             self._step_done("Step 5/5 save analysis summary", t0)
             self._item("summary_json", self._compact_path(self._analysis_dir() / "summary.json"))
@@ -1694,6 +1843,11 @@ class AnalyzeResult:
         center_mol: Optional[object] = None,
         include_h: bool = False,
         bin_nm: float = 0.002,
+        r_max_nm: Optional[float] = None,
+        frame_stride: int = 1,
+        site_filter: object = None,
+        analysis_profile: Optional[str] = None,
+        resume: bool = False,
         granularity: str = "site",
         exhaustive_atomtypes: bool = False,
         strict_center: bool = True,
@@ -1704,8 +1858,30 @@ class AnalyzeResult:
         """Compute RDF/CN with site-level analysis by default."""
         if mol_or_mols is None and center_mol is None:
             raise ValueError("rdf() requires at least one species target or center_mol.")
+        profile = self._resolve_analysis_profile(analysis_profile)
+        filters = self._normalize_site_filter(site_filter)
+        if profile in {"transport_fast", "minimal"}:
+            default_bin = 0.01 if profile == "minimal" else 0.005
+            default_rmax = 1.2 if profile == "minimal" else 1.5
+            default_stride = 20 if profile == "minimal" else 5
+            if abs(float(bin_nm) - 0.002) < 1.0e-12:
+                bin_nm = default_bin
+            if r_max_nm is None:
+                r_max_nm = default_rmax
+            if int(frame_stride or 1) <= 1:
+                frame_stride = default_stride
+            if filters is None:
+                filters = ["ether_oxygen", "sulfonyl_oxygen", "anion_nitrogen"]
+        frame_stride = max(1, int(frame_stride or 1))
         region_mode = self._transport_rdf_region(region)
-        t_all = self._section_begin("RDF/CN analysis", detail=f"granularity={granularity} | bin={float(bin_nm):.4f} nm | region={region_mode}")
+        t_all = self._section_begin(
+            "RDF/CN analysis",
+            detail=(
+                f"granularity={granularity} | profile={profile} | bin={float(bin_nm):.4f} nm"
+                f" | r_max={r_max_nm if r_max_nm is not None else 'auto'} nm"
+                f" | stride={frame_stride} | region={region_mode}"
+            ),
+        )
         topo = parse_system_top(self.top)
         system_dir = self._system_dir()
         center_input = center_mol if center_mol is not None else mol_or_mols
@@ -1752,23 +1928,57 @@ class AnalyzeResult:
         site_map = build_site_map(topo, system_dir, include_h=include_h, selected_moltypes=target_moltypes)
         (analysis_dir / "site_map.json").write_text(json.dumps(site_map, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
-        r_max_nm = 1.5
-        try:
-            meta = json.loads((system_dir / "system_meta.json").read_text(encoding="utf-8"))
-            box_lengths = meta.get("box_lengths_nm") or []
-            if isinstance(box_lengths, list) and len(box_lengths) >= 3:
-                r_max_nm = max(0.5, 0.49 * float(min(float(x) for x in box_lengths[:3])))
-        except Exception:
-            pass
+        if r_max_nm is None:
+            r_max_nm = 1.5
+            try:
+                meta = json.loads((system_dir / "system_meta.json").read_text(encoding="utf-8"))
+                box_lengths = meta.get("box_lengths_nm") or []
+                if isinstance(box_lengths, list) and len(box_lengths) >= 3:
+                    r_max_nm = max(0.5, 0.49 * float(min(float(x) for x in box_lengths[:3])))
+            except Exception:
+                pass
 
         out_summary: Dict[str, Any] = {}
         rdf_series: Dict[str, tuple[np.ndarray, np.ndarray]] = {}
         cn_series: Dict[str, tuple[np.ndarray, np.ndarray]] = {}
-        site_groups = list(site_map.get("site_groups", []) or [])
+        site_groups = [
+            dict(site)
+            for site in list(site_map.get("site_groups", []) or [])
+            if self._site_matches_filter(dict(site), filters)
+        ]
+        expected_cache_meta = {
+            "analysis_profile": profile,
+            "center_group": center_group,
+            "bin_nm": float(bin_nm),
+            "r_max_nm": float(r_max_nm),
+            "frame_stride": int(frame_stride),
+            "site_filter": [str(item) for item in filters] if filters is not None else None,
+            "region": region_mode,
+        }
+        expected_cache_meta.update(self._analysis_policy_cache_meta())
+        summary_path = self._analysis_dir() / "rdf_first_shell.json"
+        xtc_for_rdf = self._analysis_xtc_path()
+        if bool(resume) and self._artifact_is_fresh(
+            summary_path,
+            [xtc_for_rdf, system_dir / "system.gro", self.top, system_dir / "system_meta.json"],
+        ):
+            try:
+                cached = json.loads(summary_path.read_text(encoding="utf-8"))
+            except Exception:
+                cached = None
+            if isinstance(cached, dict) and self._analysis_cache_metadata_matches(cached, expected_cache_meta):
+                self._item("rdf_cache", f"reuse {self._compact_path(summary_path)}")
+                self._update_summary_sections(rdf_first_shell=cached)
+                self._section_done("RDF/CN analysis", t_all, detail=f"cache=reused | targets={len(site_groups)}")
+                return cached
+
         self._item("rdf_targets", len(site_groups))
+        if filters is not None:
+            self._item("rdf_site_filter", ", ".join(str(item) for item in filters))
+        self._item("rdf_r_max_nm", f"{float(r_max_nm):.4f}")
+        self._item("rdf_frame_stride", frame_stride)
         rdf_workers = self._resolve_analysis_workers(workers, total_tasks=len(site_groups))
         self._item("rdf_workers", rdf_workers)
-        xtc_for_rdf = self._analysis_xtc_path()
 
         rdf_records = self._compute_site_rdf_records(
             site_groups=site_groups,
@@ -1780,6 +1990,7 @@ class AnalyzeResult:
             r_max_nm=float(r_max_nm),
             region_mode=region_mode,
             workers=rdf_workers,
+            frame_stride=int(frame_stride),
         )
 
         for record in rdf_records:
@@ -1840,6 +2051,7 @@ class AnalyzeResult:
         )
         if overlay is not None:
             out_summary["_overlay"] = {"rdf_cn_all_sites_svg": str(overlay)}
+        out_summary["_analysis"] = expected_cache_meta
 
         self._update_summary_sections(rdf_first_shell=out_summary)
         (self._analysis_dir() / "rdf_first_shell.json").write_text(
@@ -1861,8 +2073,11 @@ class AnalyzeResult:
         unwrap: str = "auto",
         drift: str = "auto",
         selection_mode: str = "default",
+        analysis_profile: Optional[str] = None,
+        resume: bool = False,
     ) -> Dict[str, Any]:
         """Compute adaptive MSD metrics with physically explicit semantics."""
+        profile = self._resolve_analysis_profile(analysis_profile)
         if str(policy).strip().lower() == "legacy":
             self._analysis_log("MSD policy=legacy requested; falling back to per-moltype atom-group MSD.", level=2)
             return self.msd(
@@ -1875,6 +2090,8 @@ class AnalyzeResult:
                 unwrap=unwrap,
                 drift=drift,
                 selection_mode=selection_mode,
+                analysis_profile=profile,
+                resume=resume,
             )
 
         geometry_mode = self._transport_geometry_mode(geometry)
@@ -1882,6 +2099,7 @@ class AnalyzeResult:
             "MSD analysis",
             detail=(
                 "adaptive ion/molecule/polymer MSD metrics"
+                f" | profile={profile}"
                 f" | geometry={geometry_mode} | unwrap={str(unwrap).strip().lower() or 'auto'}"
                 f" | drift={str(drift).strip().lower() or 'auto'} | selection_mode={selection_mode}"
             ),
@@ -1897,6 +2115,46 @@ class AnalyzeResult:
 
         metric_catalog = build_msd_metric_catalog(topo, self._system_dir())
         selected_moltypes = set(self._resolve_species_moltypes(mols)) if mols is not None else None
+        if profile in {"transport_fast", "minimal"} and selected_moltypes is None:
+            transport_moltypes = {
+                str(moltype)
+                for moltype, entry in metric_catalog.items()
+                if str(entry.get("kind") or "").strip().lower() in {"polymer", "ion", "cation", "anion"}
+                or abs(float(entry.get("formal_charge_e") or 0.0)) > 1.0e-12
+            }
+            selected_moltypes = transport_moltypes or None
+        expected_cache_meta = {
+            "analysis_profile": profile,
+            "selected_moltypes": sorted(selected_moltypes) if selected_moltypes is not None else None,
+            "begin_ps": float(begin_ps) if begin_ps is not None else None,
+            "end_ps": float(end_ps) if end_ps is not None else None,
+            "geometry": geometry_mode,
+            "unwrap": str(unwrap).strip().lower() or "auto",
+            "drift": str(drift).strip().lower() or "auto",
+            "selection_mode": str(selection_mode or "default"),
+        }
+        expected_cache_meta.update(self._analysis_policy_cache_meta())
+        msd_json = self._analysis_dir() / "msd.json"
+        if bool(resume) and self._artifact_is_fresh(
+            msd_json,
+            [
+                xtc_for_msd,
+                self.top,
+                self._system_dir() / "system.gro",
+                self._system_dir() / "system_meta.json",
+                self._system_dir() / "residue_map.json",
+                self._system_dir() / "charge_groups.json",
+            ],
+        ):
+            try:
+                cached = json.loads(msd_json.read_text(encoding="utf-8"))
+            except Exception:
+                cached = None
+            if isinstance(cached, dict) and self._analysis_cache_metadata_matches(cached, expected_cache_meta):
+                self._item("msd_cache", f"reuse {self._compact_path(msd_json)}")
+                self._update_summary_sections(msd=cached)
+                self._section_done("MSD analysis", t_all, detail="cache=reused")
+                return cached
 
         res: Dict[str, Any] = {}
         overlay_series: Dict[str, tuple[np.ndarray, np.ndarray]] = {}
@@ -1925,6 +2183,10 @@ class AnalyzeResult:
                 "metrics": {},
             }
             metrics = dict(entry.get("metrics") or {})
+            if profile in {"transport_fast", "minimal"}:
+                default_metric = str(entry.get("default_metric") or "")
+                if default_metric and default_metric in metrics:
+                    metrics = {default_metric: metrics[default_metric]}
             if include_legacy_atom_msd:
                 mt = topo.moleculetypes.get(str(moltype))
                 if mt is not None:
@@ -2124,11 +2386,176 @@ class AnalyzeResult:
                 "selection_mode": str(selection_mode or "default"),
             }
         )
+        res["_analysis"] = expected_cache_meta
         self._update_summary_sections(msd=res)
         (self._analysis_dir() / "msd.json").write_text(json.dumps(res, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
         self._item("msd_outputs", self._compact_path(outdir))
         self._section_done("MSD analysis", t_all, detail=f"species={len([k for k in res.keys() if not str(k).startswith('_')])} | outputs={self._compact_path(outdir)}")
         return res
+
+    def _analysis_temperature_from_cache(self) -> Optional[float]:
+        try:
+            basic_path = self._analysis_dir() / "basic_properties.json"
+            if basic_path.exists():
+                payload = json.loads(basic_path.read_text(encoding="utf-8"))
+                for key in ("temperature_K", "target_temperature_K"):
+                    val = payload.get(key)
+                    if val is not None:
+                        return float(val)
+                conditions = payload.get("input_conditions")
+                if isinstance(conditions, dict) and conditions.get("target_temperature_K") is not None:
+                    return float(conditions["target_temperature_K"])
+        except Exception:
+            pass
+        try:
+            summary = self._load_summary()
+            basic = summary.get("basic_properties")
+            if isinstance(basic, dict):
+                val = basic.get("temperature_K")
+                if val is not None:
+                    return float(val)
+                conditions = basic.get("input_conditions")
+                if isinstance(conditions, dict) and conditions.get("target_temperature_K") is not None:
+                    return float(conditions["target_temperature_K"])
+        except Exception:
+            pass
+        return None
+
+    @staticmethod
+    def _parse_dielectric_epsilon_xvg(path: Path) -> dict[str, Any]:
+        data = read_xvg(path)
+        df = data.df
+        if df.empty or len(df.columns) < 2:
+            raise ValueError(f"No dielectric data found in XVG: {path}")
+        row = df.iloc[-1]
+        ycols = [c for c in df.columns if c != "x"]
+
+        def _col(idx: int) -> Optional[float]:
+            if idx >= len(ycols):
+                return None
+            try:
+                return float(row[ycols[idx]])
+            except Exception:
+                return None
+
+        return {
+            "time_ps": float(row["x"]),
+            "epsilon_static": _col(0),
+            "finite_system_kirkwood_g": _col(1),
+            "infinite_system_kirkwood_g": _col(2),
+            "columns": [str(c) for c in df.columns],
+            "n_points": int(len(df)),
+        }
+
+    def dielectric(
+        self,
+        *,
+        temp_k: Optional[float] = None,
+        group: str = "System",
+        begin_ps: Optional[float] = None,
+        end_ps: Optional[float] = None,
+        dt_ps: Optional[float] = None,
+        epsilon_rf: float = 0.0,
+        resume: bool = False,
+    ) -> Dict[str, Any]:
+        """Compute the static dielectric constant from total dipole fluctuations."""
+        t_all = self._section_begin("Dielectric analysis", detail=f"group={group}")
+        analysis_dir = self._analysis_dir() / "dielectric"
+        analysis_dir.mkdir(parents=True, exist_ok=True)
+        mtot_xvg = analysis_dir / "Mtot.xvg"
+        epsilon_xvg = analysis_dir / "epsilon.xvg"
+        average_xvg = analysis_dir / "aver.xvg"
+        distribution_xvg = analysis_dir / "dipdist.xvg"
+        summary_path = self._analysis_dir() / "dielectric.json"
+        log_path = analysis_dir / "gmx_dipoles.log"
+
+        resolved_temp = float(temp_k) if temp_k is not None else self._analysis_temperature_from_cache()
+        temperature_source = "argument" if temp_k is not None else "analysis_cache"
+        if resolved_temp is None:
+            resolved_temp = 300.0
+            temperature_source = "fallback_300K"
+
+        expected_cache_meta = {
+            "group": str(group),
+            "temperature_K": float(resolved_temp),
+            "begin_ps": float(begin_ps) if begin_ps is not None else None,
+            "end_ps": float(end_ps) if end_ps is not None else None,
+            "dt_ps": float(dt_ps) if dt_ps is not None else None,
+            "epsilon_rf": float(epsilon_rf),
+        }
+        if bool(resume) and self._artifact_is_fresh(
+            summary_path,
+            [self.xtc, self.tpr, self.ndx, self._system_dir() / "system_meta.json"],
+        ):
+            try:
+                cached = json.loads(summary_path.read_text(encoding="utf-8"))
+            except Exception:
+                cached = None
+            if isinstance(cached, dict) and self._analysis_cache_metadata_matches(cached, expected_cache_meta):
+                self._item("dielectric_cache", f"reuse {self._compact_path(summary_path)}")
+                self._update_summary_sections(dielectric=cached)
+                self._section_done("Dielectric analysis", t_all, detail="cache=reused")
+                return cached
+
+        t0 = self._step_begin("gmx dipoles", detail=f"temp={float(resolved_temp):.3f} K")
+        runner = GromacsRunner()
+        proc = runner.dipoles(
+            tpr=self.tpr,
+            xtc=self._analysis_xtc_path(),
+            ndx=self.ndx,
+            group=str(group),
+            out_mtot_xvg=mtot_xvg,
+            out_epsilon_xvg=epsilon_xvg,
+            out_average_xvg=average_xvg,
+            out_distribution_xvg=distribution_xvg,
+            temp_k=float(resolved_temp),
+            begin_ps=begin_ps,
+            end_ps=end_ps,
+            dt_ps=dt_ps,
+            epsilon_rf=float(epsilon_rf),
+            pairs=False,
+            cwd=analysis_dir,
+        )
+        log_path.write_text(
+            ((proc.stdout or b"").decode("utf-8", errors="replace"))
+            + "\n"
+            + ((proc.stderr or b"").decode("utf-8", errors="replace")),
+            encoding="utf-8",
+        )
+        parsed = self._parse_dielectric_epsilon_xvg(epsilon_xvg)
+        self._step_done(
+            "gmx dipoles",
+            t0,
+            detail=f"epsilon={parsed.get('epsilon_static')}",
+        )
+
+        out = {
+            **parsed,
+            "group": str(group),
+            "temperature_K": float(resolved_temp),
+            "temperature_source": temperature_source,
+            "epsilon_rf": float(epsilon_rf),
+            "begin_ps": float(begin_ps) if begin_ps is not None else None,
+            "end_ps": float(end_ps) if end_ps is not None else None,
+            "dt_ps": float(dt_ps) if dt_ps is not None else None,
+            "method": "gmx dipoles total dipole fluctuation",
+            "interpretation_note": (
+                "Static dielectric estimates from total dipole fluctuations are slow to converge; "
+                "treat short production trajectories as screening diagnostics."
+            ),
+            "outputs": {
+                "Mtot_xvg": str(mtot_xvg),
+                "epsilon_xvg": str(epsilon_xvg),
+                "average_xvg": str(average_xvg),
+                "distribution_xvg": str(distribution_xvg),
+                "gmx_log": str(log_path),
+            },
+            "_analysis": expected_cache_meta,
+        }
+        summary_path.write_text(json.dumps(out, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        self._update_summary_sections(dielectric=out)
+        self._section_done("Dielectric analysis", t_all, detail=f"epsilon={out.get('epsilon_static')}")
+        return out
 
     def migration(
         self,

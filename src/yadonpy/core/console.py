@@ -1,3 +1,11 @@
+"""Small ASCII formatting helpers for terminal-facing workflow reports.
+
+The functions here intentionally return plain strings instead of printing
+directly. Callers can route the formatted banners/tables through YadonPy's
+normal logging layer, tests can compare exact output, and examples can stay
+readable without depending on a rich terminal renderer.
+"""
+
 from __future__ import annotations
 
 from typing import Iterable, Sequence

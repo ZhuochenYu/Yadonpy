@@ -1,3 +1,10 @@
+"""Persistent molecule database used by YadonPy workflows.
+
+The store keeps JSON metadata, molecule files, charge variants, and generated
+artifacts under a deterministic key derived from chemical identity and
+preparation options. It is deliberately file-backed so users can inspect,
+version, copy, and seed molecule assets without running a service.
+"""
 
 from __future__ import annotations
 

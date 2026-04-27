@@ -22,6 +22,7 @@ from yadonpy.interface.sandwich import (
     ElectrolyteSlabSpec,
     GraphitePolymerElectrolyteSandwichResult,
     GraphiteSubstrateSpec,
+    InterfaceBuildPolicy,
     MoleculeSpec,
     PolymerSlabSpec,
     SandwichPhaseReport,
@@ -40,6 +41,8 @@ from yadonpy.interface.sandwich import (
     _graphite_counts_for_required_xy,
     _graphite_repeat_factors_for_required_xy,
     _expand_graphite_to_meet_required_xy,
+    _resolve_interface_build_policy,
+    _select_stack_rescue_strategy,
     _molecule_atom_blocks,
     _needs_confined_rescue,
     _normalize_confined_block_for_stack,
@@ -58,6 +61,7 @@ from yadonpy.interface.sandwich import (
     _sandwich_relaxation_stages,
     _stack_master_xy_nm,
     build_graphite_polymer_interphase,
+    build_cmcna_graphite_electrolyte_stack,
     build_graphite_cmcna_glucose6_periodic_case,
     build_graphite_polymer_electrolyte_sandwich,
     print_interface_result_summary,
@@ -152,11 +156,41 @@ def test_sandwich_relaxation_stages_freeze_graphite_and_keep_xy_fixed():
         relax=SandwichRelaxationSpec(stacked_pre_nvt_ps=10.0, stacked_z_relax_ps=20.0, stacked_exchange_ps=30.0),
         freeze_group="GRAPHITE",
     )
-    assert [stage.name for stage in stages] == ["01_em", "02_pre_nvt", "03_z_relax", "04_exchange"]
+    assert [stage.name for stage in stages] == [
+        "01_em",
+        "02_pre_nvt",
+        "03_z_relax",
+        "04_contact_release",
+        "05_natural_exchange",
+    ]
     assert "freezegrps               = GRAPHITE" in stages[0].mdp.params["extra_mdp"]
     assert "freezegrps               = GRAPHITE" in stages[2].mdp.params["extra_mdp"]
+    assert "constraints              = none" in stages[1].mdp.render()
+    assert "constraints              = none" in stages[3].mdp.render()
+    assert stages[-1].mdp.params["constraints"] == "h-bonds"
+    assert stages[-1].mdp.params["lincs_iter"] == 4
+    assert stages[-1].mdp.params["lincs_order"] == 12
     assert stages[2].mdp.params["pcoupltype"] == "semiisotropic"
     assert stages[2].mdp.params["compressibility"] == "0 4.5e-05"
+
+
+def test_interface_build_policy_defaults_to_natural_contact():
+    policy = _resolve_interface_build_policy()
+    assert policy.phase_preparation == "final_xy_walled"
+    assert policy.stack_relaxation == "natural_contact"
+    assert policy.acceptance_required is True
+    assert policy.retry_profile == "conservative"
+    assert policy.max_stack_rescue_rounds == 1
+
+
+def test_select_stack_rescue_strategy_prefers_gap_rebuild_for_overlap():
+    rescue = _select_stack_rescue_strategy(
+        {
+            "accepted": False,
+            "failed_checks": ["core_gaps_ok", "min_atom_distance_ok"],
+        }
+    )
+    assert rescue["strategy"] == "increase_stack_gaps_and_repeat_natural_contact"
 
 
 def test_phase_confined_relaxation_stages_use_xy_walls_and_fixed_xy_npt():
@@ -1104,6 +1138,10 @@ def test_prepare_polymer_phase_species_uses_effective_chain_charge_for_counterio
     )
 
     assert out["counts"] == [32, 608]
+    assert out["charge_balance"]["polymer_total_charge_e"] == -608
+    assert out["charge_balance"]["counterion_total_charge_e"] == 608
+    assert out["charge_balance"]["net_charge_e"] == 0
+    assert out["charge_balance"]["neutralized"] is True
     assert any("effective charge per chain=-19" in note for note in out["notes"])
 
 
@@ -1800,6 +1838,55 @@ def test_build_sandwich_acceptance_uses_phase_target_density_ranges():
     assert acceptance["electrolyte_density_ok"] is True
 
 
+def test_build_sandwich_acceptance_flags_charge_and_close_contacts():
+    from yadonpy.interface.sandwich_metrics import build_sandwich_acceptance
+
+    acceptance = build_sandwich_acceptance(
+        polymer_summary={
+            "center_bulk_like_density_g_cm3": 1.50,
+            "target_density_g_cm3": 1.50,
+            "wrapped_across_z_boundary": False,
+        },
+        electrolyte_summary={
+            "center_bulk_like_density_g_cm3": 1.32,
+            "target_density_g_cm3": 1.32,
+            "wrapped_across_z_boundary": False,
+        },
+        stack_checks={
+            "observed_order": ["GRAPHITE", "POLYMER", "ELECTROLYTE"],
+            "graphite_polymer_core_gap_nm": 0.2,
+            "polymer_electrolyte_core_gap_nm": 0.2,
+            "min_atom_distance_nm": 0.02,
+        },
+        charge_summary={"net_charge_scaled": 1.0, "charge_tolerance": 1.0e-3},
+        min_atom_distance_nm=0.055,
+    )
+
+    assert acceptance["accepted"] is False
+    assert "min_atom_distance_ok" in acceptance["failed_checks"]
+    assert "charge_ok" in acceptance["failed_checks"]
+
+
+def test_build_stack_checks_reports_min_atom_distance(tmp_path: Path):
+    gro = tmp_path / "close.gro"
+    gro.write_text(
+        "\n".join(
+            [
+                "dummy",
+                "2",
+                "    1GRA  C    1   0.000   0.000   0.000",
+                "    1POL  C    2   0.010   0.000   0.000",
+                "2.0 2.0 2.0",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    checks = _build_stack_checks(gro_path=gro, ndx_groups={"GRAPHITE": [1], "POLYMER": [2], "ELECTROLYTE": []})
+
+    assert checks["min_atom_distance_nm"] == pytest.approx(0.01)
+
+
 def test_build_graphite_polymer_electrolyte_sandwich_orchestrates_bulk_then_slab_prep(tmp_path: Path, monkeypatch):
     import yadonpy.interface.sandwich as sandwich
 
@@ -1950,7 +2037,12 @@ def test_build_graphite_polymer_electrolyte_sandwich_orchestrates_bulk_then_slab
     assert result.polymer_phase.target_density_g_cm3 == 1.05
     assert result.electrolyte_phase.target_density_g_cm3 == 1.15
     assert result.manifest_path.exists()
+    assert (tmp_path / "sandwich" / "00_interface_design" / "interface_design.json").exists()
     manifest = result.manifest_path.read_text(encoding="utf-8")
+    assert '"interface_design_summary"' in manifest
+    assert '"policy"' in manifest
+    assert '"stack_attempts"' in manifest
+    assert '"charge_balance"' in manifest
     assert '"polymer_phase"' in manifest
     assert '"electrolyte_phase"' in manifest
     assert '"polymer_phase_confined"' in manifest
@@ -1963,6 +2055,39 @@ def test_build_graphite_polymer_electrolyte_sandwich_orchestrates_bulk_then_slab
     assert '"ndx_groups"' in manifest
     assert (tmp_path / "sandwich" / "06_full_stack_release" / "interface_progress.json").exists()
     assert result.stack_checks["is_expected_order"] is True
+
+
+def test_build_cmcna_graphite_electrolyte_stack_wraps_cmc_defaults(monkeypatch, tmp_path: Path):
+    import yadonpy.interface.sandwich as sandwich
+
+    calls: list[dict[str, object]] = []
+
+    def _fake_generic(**kwargs):
+        calls.append(dict(kwargs))
+        return GraphitePolymerElectrolyteSandwichResult(
+            graphite=SimpleNamespace(),
+            polymer_phase=SandwichPhaseReport("polymer", (1, 1, 1), 1.5, ("CMC",), (1,)),
+            electrolyte_phase=SandwichPhaseReport("electrolyte", (1, 1, 1), 1.3, ("EC",), (1,)),
+            stack_export=SimpleNamespace(),
+            relaxed_gro=tmp_path / "md.gro",
+            manifest_path=tmp_path / "interface_manifest.json",
+        )
+
+    monkeypatch.setattr(sandwich, "build_graphite_polymer_electrolyte_sandwich", _fake_generic)
+    policy = InterfaceBuildPolicy(max_stack_rescue_rounds=0)
+
+    result = build_cmcna_graphite_electrolyte_stack(
+        work_dir=tmp_path,
+        ff=SimpleNamespace(name="gaff2_mod"),
+        ion_ff=SimpleNamespace(),
+        policy=policy,
+    )
+
+    assert result.manifest_path.name == "interface_manifest.json"
+    assert calls
+    assert calls[0]["polymer"].name == "CMC"
+    assert calls[0]["electrolyte"].salt_anion.name == "PF6"
+    assert calls[0]["policy"] == policy
 
 
 def test_build_graphite_polymer_electrolyte_sandwich_uses_preflight_graphite_negotiation_for_walled_phases(tmp_path: Path, monkeypatch):

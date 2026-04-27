@@ -1,3 +1,11 @@
+"""General-purpose slab/interface assembly and route-planning utilities.
+
+This module owns the low-level mechanics of selecting bulk sources, checking
+area compatibility, resizing lateral dimensions, and composing prepared slabs
+into interface systems. Higher-level sandwich workflows call into these helpers
+so packing and charge-audit rules are shared instead of duplicated.
+"""
+
 from __future__ import annotations
 
 import json

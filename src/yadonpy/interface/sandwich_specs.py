@@ -1,3 +1,11 @@
+"""Typed input and output specifications for sandwich workflows.
+
+These dataclasses define the public configuration surface for graphite,
+polymer, electrolyte, relaxation, and final stack objects. Keeping the schema
+centralized makes the high-level sandwich API easier to document and safer to
+extend without changing user scripts unexpectedly.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
@@ -105,6 +113,19 @@ class SandwichRelaxationSpec:
     stacked_pre_nvt_ps: float = 20.0
     stacked_z_relax_ps: float = 80.0
     stacked_exchange_ps: float = 120.0
+
+
+@dataclass(frozen=True)
+class InterfaceBuildPolicy:
+    """Policy knobs for robust graphite/polymer/electrolyte stack assembly."""
+
+    phase_preparation: str = "final_xy_walled"
+    stack_relaxation: str = "natural_contact"
+    acceptance_required: bool = True
+    retry_profile: str = "conservative"
+    max_stack_rescue_rounds: int = 1
+    min_atom_distance_nm: float = 0.055
+    charge_tolerance_e: float = 1.0e-3
 
 
 @dataclass(frozen=True)

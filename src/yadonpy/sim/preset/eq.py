@@ -30,6 +30,7 @@ from ...runtime import resolve_restart
 from ...workflow import ResumeManager, StepSpec
 from ...workflow.resume import file_signature
 from ..analyzer import AnalyzeResult
+from ..performance import IOAnalysisPolicy, resolve_io_analysis_policy
 
 
 _EXPORT_SYSTEM_SCHEMA_VERSION = "0.8.61-export-v2"
@@ -564,6 +565,56 @@ def _apply_production_output_cadence(
     params["nstlog"] = _interval_ps_to_nsteps(dt_ps, float(log_ps) if log_ps is not None else float(energy_ps))
     params["nstxout_trr"] = _interval_ps_to_nsteps(dt_ps, trr_ps, disabled_value=0)
     params["nstvout"] = _interval_ps_to_nsteps(dt_ps, velocity_ps, disabled_value=0)
+
+
+def _estimate_atom_count_for_policy(ac: object, exp: SystemExportResult | None = None) -> int | None:
+    try:
+        n = int(ac.GetNumAtoms())  # type: ignore[attr-defined]
+        if n > 0:
+            return n
+    except Exception:
+        pass
+    if exp is not None:
+        try:
+            lines = Path(exp.system_gro).read_text(encoding="utf-8", errors="replace").splitlines()
+            if len(lines) >= 2:
+                n = int(lines[1].strip())
+                if n > 0:
+                    return n
+        except Exception:
+            pass
+        try:
+            payload = json.loads(Path(exp.system_meta).read_text(encoding="utf-8"))
+            species = payload.get("species") if isinstance(payload, dict) else None
+            total = 0
+            if isinstance(species, list):
+                for row in species:
+                    if not isinstance(row, dict):
+                        continue
+                    count = int(row.get("count") or row.get("n_molecules") or 0)
+                    natoms = int(row.get("natoms") or row.get("num_atoms") or 0)
+                    total += count * natoms
+            if total > 0:
+                return total
+        except Exception:
+            pass
+    return None
+
+
+def _write_production_policy_summary(run_dir: Path, policy: IOAnalysisPolicy) -> None:
+    summary_path = Path(run_dir) / "summary.json"
+    try:
+        payload = json.loads(summary_path.read_text(encoding="utf-8")) if summary_path.exists() else {}
+        if not isinstance(payload, dict):
+            payload = {}
+    except Exception:
+        payload = {}
+    payload["performance_policy"] = policy.to_dict()
+    try:
+        summary_path.parent.mkdir(parents=True, exist_ok=True)
+        summary_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    except Exception:
+        pass
 
 
 def _prepare_production_mdp_params(
@@ -4214,17 +4265,21 @@ class NPT(EQ21step):
         gpu: int = 1,
         gpu_id: Optional[int] = None,
         time: float = 5.0,
-        traj_ps: float = 2.0,
-        energy_ps: float = 2.0,
-        log_ps: Optional[float] = None,
-        trr_ps: Optional[float] = None,
-        velocity_ps: Optional[float] = None,
+        traj_ps: Union[float, str, None] = "auto",
+        energy_ps: Union[float, str, None] = "auto",
+        log_ps: Union[float, str, None] = "auto",
+        trr_ps: Union[float, str, None] = None,
+        velocity_ps: Union[float, str, None] = None,
         checkpoint_min: float = 5.0,
         dt_ps: float = 0.001,
         constraints: str = "none",
         lincs_iter: Optional[int] = None,
         lincs_order: Optional[int] = None,
         gpu_offload_mode: str = "auto",
+        performance_profile: str = "auto",
+        analysis_profile: str = "auto",
+        max_trajectory_frames: Optional[int] = None,
+        max_atom_frames: Optional[float] = None,
         bridge_ps: Optional[float] = None,
         bridge_dt_fs: float = 1.0,
         bridge_lincs_iter: int = 4,
@@ -4241,6 +4296,19 @@ class NPT(EQ21step):
         run_dir = self.work_dir / "05_npt_production"
         # Production must restart from upstream equilibration, not from its own prior output.
         start_gro = Path(start_gro) if start_gro is not None else (_find_latest_equilibrated_gro(self.work_dir, exclude_dirs=[run_dir]) or exp.system_gro)
+        policy = resolve_io_analysis_policy(
+            prod_ns=float(time),
+            atom_count=_estimate_atom_count_for_policy(self.ac, exp),
+            performance_profile=performance_profile,
+            analysis_profile=analysis_profile,
+            traj_ps=traj_ps,
+            energy_ps=energy_ps,
+            log_ps=log_ps,
+            trr_ps=trr_ps,
+            velocity_ps=velocity_ps,
+            max_trajectory_frames=max_trajectory_frames,
+            max_atom_frames=max_atom_frames,
+        )
         _preset_item("run_dir", run_dir)
         _preset_item("start_gro", start_gro)
         _preset_item("temperature_K", float(temp))
@@ -4253,11 +4321,16 @@ class NPT(EQ21step):
         resolved_gpu_offload_mode = _resolve_production_gpu_offload_mode(self.ac, gpu_offload_mode)
         resolved_bridge_ps = _resolve_production_bridge_ps(self.ac, bridge_ps)
         _preset_item(
+            "performance_policy",
+            f"{policy.policy_level} | profile={policy.performance_profile} | "
+            f"analysis={policy.analysis_profile} | frames~{policy.estimated_frames}",
+        )
+        _preset_item(
             "output_cadence",
-            f"xtc={float(traj_ps):.3f} ps | energy={float(energy_ps):.3f} ps | "
-            f"log={float(log_ps if log_ps is not None else energy_ps):.3f} ps | "
-            f"trr={'off' if trr_ps is None else f'{float(trr_ps):.3f} ps'} | "
-            f"vel={'off' if velocity_ps is None else f'{float(velocity_ps):.3f} ps'} | "
+            f"xtc={policy.traj_ps:.3f} ps | energy={policy.energy_ps:.3f} ps | "
+            f"log={policy.log_ps:.3f} ps | "
+            f"trr={'off' if policy.trr_ps is None else f'{policy.trr_ps:.3f} ps'} | "
+            f"vel={'off' if policy.velocity_ps is None else f'{policy.velocity_ps:.3f} ps'} | "
             f"cpt={float(checkpoint_min):.2f} min"
         )
         _preset_item("gpu_offload_mode", resolved_gpu_offload_mode)
@@ -4290,11 +4363,11 @@ class NPT(EQ21step):
             constraints=constraints,
             lincs_iter=lincs_iter,
             lincs_order=lincs_order,
-            traj_ps=float(traj_ps),
-            energy_ps=float(energy_ps),
-            log_ps=log_ps,
-            trr_ps=trr_ps,
-            velocity_ps=velocity_ps,
+            traj_ps=policy.traj_ps,
+            energy_ps=policy.energy_ps,
+            log_ps=policy.log_ps,
+            trr_ps=policy.trr_ps,
+            velocity_ps=policy.velocity_ps,
             mdp_overrides=mdp_overrides,
         )
         template = NPT_NO_CONSTRAINTS_MDP if not _constraints_use_lincs(constraints_mode) else NPT_MDP
@@ -4340,11 +4413,12 @@ class NPT(EQ21step):
                 "constraints": constraints_mode,
                 "lincs_iter": int(effective_lincs_iter) if effective_lincs_iter is not None else None,
                 "lincs_order": int(effective_lincs_order) if effective_lincs_order is not None else None,
-                "traj_ps": float(traj_ps),
-                "energy_ps": float(energy_ps),
-                "log_ps": float(log_ps) if log_ps is not None else None,
-                "trr_ps": float(trr_ps) if trr_ps is not None else None,
-                "velocity_ps": float(velocity_ps) if velocity_ps is not None else None,
+                "traj_ps": float(policy.traj_ps),
+                "energy_ps": float(policy.energy_ps),
+                "log_ps": float(policy.log_ps),
+                "trr_ps": float(policy.trr_ps) if policy.trr_ps is not None else None,
+                "velocity_ps": float(policy.velocity_ps) if policy.velocity_ps is not None else None,
+                "performance_policy": json.dumps(policy.to_dict(), sort_keys=True, default=str),
                 "checkpoint_min": float(checkpoint_min),
                 "gpu_offload_mode": resolved_gpu_offload_mode,
                 "bridge_ps": float(resolved_bridge_ps),
@@ -4405,6 +4479,7 @@ class NPT(EQ21step):
         if not job_restart and run_dir.exists():
             shutil.rmtree(run_dir, ignore_errors=True)
         self._resume.run(spec, lambda: job.run(restart=job_restart))
+        _write_production_policy_summary(run_dir, policy)
         self._job = job
         _preset_done("NPT production preset", t_all, detail=f"output={run_dir}")
         return self.ac
@@ -4442,17 +4517,21 @@ class NVT(EQ21step):
         gpu: int = 1,
         gpu_id: Optional[int] = None,
         time: float = 5.0,
-        traj_ps: float = 2.0,
-        energy_ps: float = 2.0,
-        log_ps: Optional[float] = None,
-        trr_ps: Optional[float] = None,
-        velocity_ps: Optional[float] = None,
+        traj_ps: Union[float, str, None] = "auto",
+        energy_ps: Union[float, str, None] = "auto",
+        log_ps: Union[float, str, None] = "auto",
+        trr_ps: Union[float, str, None] = None,
+        velocity_ps: Union[float, str, None] = None,
         checkpoint_min: float = 5.0,
         dt_ps: float = 0.001,
         constraints: str = "none",
         lincs_iter: Optional[int] = None,
         lincs_order: Optional[int] = None,
         gpu_offload_mode: str = "auto",
+        performance_profile: str = "auto",
+        analysis_profile: str = "auto",
+        max_trajectory_frames: Optional[int] = None,
+        max_atom_frames: Optional[float] = None,
         bridge_ps: Optional[float] = None,
         bridge_dt_fs: float = 1.0,
         bridge_lincs_iter: int = 4,
@@ -4471,6 +4550,19 @@ class NVT(EQ21step):
         # NVT production can reuse upstream NPT production, but must never point at
         # its own stale output when a rebuild is required.
         start_gro = _find_latest_equilibrated_gro(self.work_dir, exclude_dirs=[run_dir]) or exp.system_gro
+        policy = resolve_io_analysis_policy(
+            prod_ns=float(time),
+            atom_count=_estimate_atom_count_for_policy(self.ac, exp),
+            performance_profile=performance_profile,
+            analysis_profile=analysis_profile,
+            traj_ps=traj_ps,
+            energy_ps=energy_ps,
+            log_ps=log_ps,
+            trr_ps=trr_ps,
+            velocity_ps=velocity_ps,
+            max_trajectory_frames=max_trajectory_frames,
+            max_atom_frames=max_atom_frames,
+        )
         _preset_item("run_dir", run_dir)
         _preset_item("start_gro", start_gro)
         _preset_item("temperature_K", float(temp))
@@ -4485,11 +4577,16 @@ class NVT(EQ21step):
         _preset_item("density_control", bool(resolved_density_control))
         _preset_item("density_frac_last", float(density_frac_last))
         _preset_item(
+            "performance_policy",
+            f"{policy.policy_level} | profile={policy.performance_profile} | "
+            f"analysis={policy.analysis_profile} | frames~{policy.estimated_frames}",
+        )
+        _preset_item(
             "output_cadence",
-            f"xtc={float(traj_ps):.3f} ps | energy={float(energy_ps):.3f} ps | "
-            f"log={float(log_ps if log_ps is not None else energy_ps):.3f} ps | "
-            f"trr={'off' if trr_ps is None else f'{float(trr_ps):.3f} ps'} | "
-            f"vel={'off' if velocity_ps is None else f'{float(velocity_ps):.3f} ps'} | "
+            f"xtc={policy.traj_ps:.3f} ps | energy={policy.energy_ps:.3f} ps | "
+            f"log={policy.log_ps:.3f} ps | "
+            f"trr={'off' if policy.trr_ps is None else f'{policy.trr_ps:.3f} ps'} | "
+            f"vel={'off' if policy.velocity_ps is None else f'{policy.velocity_ps:.3f} ps'} | "
             f"cpt={float(checkpoint_min):.2f} min"
         )
         _preset_item("gpu_offload_mode", resolved_gpu_offload_mode)
@@ -4512,7 +4609,6 @@ class NVT(EQ21step):
             from ...gmx.analysis.thermo import stats_from_xvg
             import numpy as np
             import uuid
-            import json
 
             runner = GromacsRunner()
             tmp = None
@@ -4636,11 +4732,11 @@ class NVT(EQ21step):
             constraints=constraints,
             lincs_iter=lincs_iter,
             lincs_order=lincs_order,
-            traj_ps=float(traj_ps),
-            energy_ps=float(energy_ps),
-            log_ps=log_ps,
-            trr_ps=trr_ps,
-            velocity_ps=velocity_ps,
+            traj_ps=policy.traj_ps,
+            energy_ps=policy.energy_ps,
+            log_ps=policy.log_ps,
+            trr_ps=policy.trr_ps,
+            velocity_ps=policy.velocity_ps,
             mdp_overrides=mdp_overrides,
         )
         template = NVT_NO_CONSTRAINTS_MDP if not _constraints_use_lincs(constraints_mode) else NVT_MDP
@@ -4684,11 +4780,12 @@ class NVT(EQ21step):
                 "constraints": constraints_mode,
                 "lincs_iter": int(effective_lincs_iter) if effective_lincs_iter is not None else None,
                 "lincs_order": int(effective_lincs_order) if effective_lincs_order is not None else None,
-                "traj_ps": float(traj_ps),
-                "energy_ps": float(energy_ps),
-                "log_ps": float(log_ps) if log_ps is not None else None,
-                "trr_ps": float(trr_ps) if trr_ps is not None else None,
-                "velocity_ps": float(velocity_ps) if velocity_ps is not None else None,
+                "traj_ps": float(policy.traj_ps),
+                "energy_ps": float(policy.energy_ps),
+                "log_ps": float(policy.log_ps),
+                "trr_ps": float(policy.trr_ps) if policy.trr_ps is not None else None,
+                "velocity_ps": float(policy.velocity_ps) if policy.velocity_ps is not None else None,
+                "performance_policy": json.dumps(policy.to_dict(), sort_keys=True, default=str),
                 "checkpoint_min": float(checkpoint_min),
                 "gpu_offload_mode": resolved_gpu_offload_mode,
                 "bridge_ps": float(resolved_bridge_ps),
@@ -4749,6 +4846,7 @@ class NVT(EQ21step):
         if not job_restart and run_dir.exists():
             shutil.rmtree(run_dir, ignore_errors=True)
         self._resume.run(spec, lambda: job.run(restart=job_restart))
+        _write_production_policy_summary(run_dir, policy)
         self._job = job
         _preset_done("NVT production preset", t_all, detail=f"output={run_dir}")
         return self.ac

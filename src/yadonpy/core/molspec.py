@@ -1,3 +1,12 @@
+"""Declarative molecule specifications used by MolDB-backed workflows.
+
+`MolSpec` is a lightweight handle, not an RDKit molecule. It records the user's
+intent: which SMILES/PSMILES should be loaded, which force field and charge
+variant are expected, and whether a ready MolDB artifact is required. This lets
+high-level scripts describe systems without eagerly rebuilding expensive QM or
+force-field assets.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -22,6 +31,7 @@ class MolSpec:
     charge: str = "RESP"              # charge scheme label, e.g. RESP
     basis_set: Optional[str] = None   # RESP/ESP basis set (None = default)
     method: Optional[str] = None      # RESP/ESP method/functional (None = default)
+    resp_profile: Optional[str] = None  # RESP profile selector, e.g. adaptive/legacy
 
     # Optional strictness controls
     require_ready: bool = True        # require charges present for the selected variant
@@ -61,12 +71,13 @@ class MolSpec:
         """Human-readable label for logging."""
         b = self.basis_set or "Default"
         m = self.method or "Default"
+        rp = f" resp_profile={self.resp_profile}" if self.resp_profile else ""
         pe = ""
         if self.polyelectrolyte_mode is not None:
             pe = f" polyelectrolyte_mode={bool(self.polyelectrolyte_mode)}"
         if self.polyelectrolyte_detection:
             pe += f" polyelectrolyte_detection={self.polyelectrolyte_detection}"
-        return f"charge={self.charge} basis={b} method={m}{pe}"
+        return f"charge={self.charge} basis={b} method={m}{rp}{pe}"
 
 
 def as_rdkit_mol(mol: Any, strict: bool = False) -> Any:

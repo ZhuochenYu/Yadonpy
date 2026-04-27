@@ -15,10 +15,12 @@ from yadonpy.gmx.engine import GromacsError
 from yadonpy.gmx.analysis.auto_plot import plot_msd_series, plot_rdf_cn_series
 from yadonpy.gmx.analysis.structured import (
     _compute_mobile_drift_series,
+    GroupSpec,
     build_ne_conductivity_from_msd,
     build_site_map,
     compute_msd_series,
     detect_first_shell,
+    preprocess_group_positions,
     resolve_moltypes_from_mols,
     select_diffusive_window,
 )
@@ -97,6 +99,47 @@ def test_compute_msd_series_respects_begin_end_window(monkeypatch):
     assert out["trajectory_time_start_ps"] == pytest.approx(3.0)
     assert out["trajectory_time_end_ps"] == pytest.approx(7.0)
     assert out["n_groups"] == 0
+
+
+def test_preprocess_group_positions_makes_small_molecule_com_whole_across_pbc(monkeypatch, tmp_path: Path):
+    class _FakeTrajectory:
+        time = np.asarray([0.0, 1.0], dtype=float)
+        unitcell_lengths = np.asarray([[10.0, 10.0, 10.0], [10.0, 10.0, 10.0]], dtype=float)
+        xyz = np.asarray(
+            [
+                [[9.8, 0.0, 0.0], [0.2, 0.0, 0.0]],
+                [[0.1, 0.0, 0.0], [0.5, 0.0, 0.0]],
+            ],
+            dtype=float,
+        )
+
+    fake_md = types.SimpleNamespace(iterload=lambda *args, **kwargs: iter([_FakeTrajectory()]))
+    monkeypatch.setitem(sys.modules, "mdtraj", fake_md)
+
+    spec = GroupSpec(
+        group_id="tfsi:0",
+        label="tfsi",
+        moltype="tfsi",
+        species_kind="ion",
+        atom_indices_0=np.asarray([0, 1], dtype=int),
+        masses=np.asarray([1.0, 1.0], dtype=float),
+        formal_charge_e=-1.0,
+    )
+
+    out = preprocess_group_positions(
+        gro_path=tmp_path / "system.gro",
+        xtc_path=tmp_path / "md.xtc",
+        top_path=tmp_path / "system.top",
+        system_dir=tmp_path / "02_system",
+        group_specs=[spec],
+        unwrap="auto",
+        drift="off",
+    )
+
+    x = np.asarray(out["positions_nm"], dtype=float)[:, 0, 0]
+    assert x[0] == pytest.approx(10.0)
+    assert x[1] == pytest.approx(10.3)
+    assert x[1] - x[0] == pytest.approx(0.3)
 
 
 def test_detect_first_shell_returns_confident_minimum():
@@ -584,6 +627,7 @@ def test_rdf_defaults_site_workers_to_analyzer_omp(tmp_path: Path, monkeypatch):
         r_max_nm,
         region_mode,
         workers,
+        frame_stride=1,
     ):
         calls["workers"] = workers
         out = []
@@ -617,6 +661,389 @@ def test_rdf_defaults_site_workers_to_analyzer_omp(tmp_path: Path, monkeypatch):
     assert calls["workers"] == 2
     assert "EC:carbonyl_oxygen" in out
     assert "PF6:fluorine" in out
+
+
+def test_rdf_transport_fast_filters_sites_and_coarsens_defaults(tmp_path: Path, monkeypatch):
+    work_dir = tmp_path
+    system_dir = work_dir / "02_system"
+    system_dir.mkdir(parents=True, exist_ok=True)
+
+    analyzer = AnalyzeResult(
+        work_dir=work_dir,
+        tpr=work_dir / "md.tpr",
+        xtc=work_dir / "md.xtc",
+        edr=work_dir / "md.edr",
+        top=work_dir / "system.top",
+        ndx=work_dir / "system.ndx",
+        omp=8,
+    )
+
+    monkeypatch.setattr(analyzer, "_transport_rdf_region", lambda region="auto": "global")
+    monkeypatch.setattr(analyzer, "_strict_center_moltypes", lambda center_input, strict_center=True: ["Li"])
+    monkeypatch.setattr(analyzer, "_system_dir", lambda: system_dir)
+    monkeypatch.setattr(analyzer, "_analysis_xtc_path", lambda: work_dir / "md.xtc")
+    monkeypatch.setattr(
+        __import__("yadonpy.sim.analyzer", fromlist=["parse_system_top"]),
+        "parse_system_top",
+        lambda top: object(),
+    )
+    monkeypatch.setattr(
+        __import__("yadonpy.sim.analyzer", fromlist=["build_species_catalog"]),
+        "build_species_catalog",
+        lambda topo, system_dir: {"Li": {"instances": [{"atom_indices_0": [0]}]}},
+    )
+    monkeypatch.setattr(
+        __import__("yadonpy.sim.analyzer", fromlist=["build_site_map"]),
+        "build_site_map",
+        lambda topo, system_dir, include_h=False, selected_moltypes=None: {
+            "site_groups": [
+                {"site_id": "PEO:ether_oxygen", "moltype": "PEO", "site_label": "ether_oxygen", "count": 20, "atom_indices": [1, 2]},
+                {"site_id": "TFSI:sulfonyl_oxygen", "moltype": "TFSI", "site_label": "sulfonyl_oxygen", "count": 8, "atom_indices": [3, 4]},
+                {"site_id": "TFSI:anion_nitrogen", "moltype": "TFSI", "site_label": "anion_nitrogen", "count": 2, "atom_indices": [5]},
+                {"site_id": "TFSI:fluorine_site", "moltype": "TFSI", "site_label": "fluorine_site", "count": 12, "atom_indices": [6, 7]},
+            ]
+        },
+    )
+
+    calls: dict[str, object] = {}
+
+    def _fake_compute_records(
+        self,
+        *,
+        site_groups,
+        center_group,
+        center_indices,
+        gro_path,
+        xtc_path,
+        bin_nm,
+        r_max_nm,
+        region_mode,
+        workers,
+        frame_stride=1,
+    ):
+        calls["site_ids"] = [str(site["site_id"]) for site in site_groups]
+        calls["bin_nm"] = bin_nm
+        calls["r_max_nm"] = r_max_nm
+        calls["frame_stride"] = frame_stride
+        calls["workers"] = workers
+        out = []
+        for idx, site in enumerate(site_groups, start=1):
+            out.append(
+                {
+                    "idx": idx,
+                    "site": dict(site),
+                    "site_id": str(site["site_id"]),
+                    "rdf_data": {
+                        "r_nm": np.asarray([0.10, 0.20, 0.30], dtype=float),
+                        "g_r": np.asarray([0.0, 2.0, 0.8], dtype=float),
+                        "cn_curve": np.asarray([0.0, 1.2, 1.8], dtype=float),
+                        "rho_target_nm3": 5.0,
+                        "shell": {"r_shell_nm": 0.30, "cn_shell": 1.8, "confidence": "high"},
+                    },
+                }
+            )
+        return out
+
+    monkeypatch.setattr(AnalyzeResult, "_compute_site_rdf_records", _fake_compute_records)
+
+    out = analyzer.rdf(center_mol=Chem.MolFromSmiles("[Li+]"), analysis_profile="transport_fast")
+
+    assert calls["site_ids"] == ["PEO:ether_oxygen", "TFSI:sulfonyl_oxygen", "TFSI:anion_nitrogen"]
+    assert calls["bin_nm"] == pytest.approx(0.005)
+    assert calls["r_max_nm"] == pytest.approx(1.5)
+    assert calls["frame_stride"] == 5
+    assert calls["workers"] == 3
+    assert "TFSI:fluorine_site" not in out
+    assert out["_analysis"]["analysis_profile"] == "transport_fast"
+
+
+def test_rdf_resume_reuses_matching_fresh_cache(tmp_path: Path, monkeypatch):
+    work_dir = tmp_path
+    system_dir = work_dir / "02_system"
+    analysis_dir = work_dir / "06_analysis"
+    system_dir.mkdir(parents=True, exist_ok=True)
+    analysis_dir.mkdir(parents=True, exist_ok=True)
+    xtc = work_dir / "md.xtc"
+    top = work_dir / "system.top"
+    gro = system_dir / "system.gro"
+    meta = system_dir / "system_meta.json"
+    for path in (xtc, top, gro, meta):
+        path.write_text("x\n", encoding="utf-8")
+
+    cached = {
+        "PEO:ether_oxygen": {"center_group": "Li", "moltype": "PEO", "site_label": "ether_oxygen", "formal_cn_shell": 2.0},
+        "_analysis": {
+            "analysis_profile": "transport_fast",
+            "center_group": "Li",
+            "bin_nm": 0.005,
+            "r_max_nm": 1.5,
+            "frame_stride": 5,
+            "site_filter": ["ether_oxygen", "sulfonyl_oxygen", "anion_nitrogen"],
+            "region": "global",
+        },
+    }
+    (analysis_dir / "rdf_first_shell.json").write_text(json.dumps(cached), encoding="utf-8")
+
+    analyzer = AnalyzeResult(work_dir=work_dir, tpr=work_dir / "md.tpr", xtc=xtc, edr=work_dir / "md.edr", top=top, ndx=work_dir / "system.ndx")
+    monkeypatch.setattr(analyzer, "_transport_rdf_region", lambda region="auto": "global")
+    monkeypatch.setattr(analyzer, "_strict_center_moltypes", lambda center_input, strict_center=True: ["Li"])
+    monkeypatch.setattr(analyzer, "_system_dir", lambda: system_dir)
+    monkeypatch.setattr(analyzer, "_analysis_xtc_path", lambda: xtc)
+    monkeypatch.setattr(
+        __import__("yadonpy.sim.analyzer", fromlist=["parse_system_top"]),
+        "parse_system_top",
+        lambda top: object(),
+    )
+    monkeypatch.setattr(
+        __import__("yadonpy.sim.analyzer", fromlist=["build_species_catalog"]),
+        "build_species_catalog",
+        lambda topo, system_dir: {"Li": {"instances": [{"atom_indices_0": [0]}]}},
+    )
+    monkeypatch.setattr(
+        __import__("yadonpy.sim.analyzer", fromlist=["build_site_map"]),
+        "build_site_map",
+        lambda topo, system_dir, include_h=False, selected_moltypes=None: {
+            "site_groups": [
+                {"site_id": "PEO:ether_oxygen", "moltype": "PEO", "site_label": "ether_oxygen", "count": 20, "atom_indices": [1, 2]},
+            ]
+        },
+    )
+
+    def _should_not_compute(*args, **kwargs):
+        raise AssertionError("RDF cache should have been reused")
+
+    monkeypatch.setattr(AnalyzeResult, "_compute_site_rdf_records", _should_not_compute)
+
+    out = analyzer.rdf(center_mol=Chem.MolFromSmiles("[Li+]"), analysis_profile="transport_fast", resume=True)
+    assert out["PEO:ether_oxygen"]["formal_cn_shell"] == pytest.approx(2.0)
+
+
+def test_get_all_prop_can_skip_polymer_metrics(tmp_path: Path, monkeypatch):
+    work_dir = tmp_path
+    system_dir = work_dir / "02_system"
+    system_dir.mkdir(parents=True, exist_ok=True)
+    (system_dir / "system.gro").write_text("test\n0\n1.0 1.0 1.0\n", encoding="utf-8")
+
+    class _FakeRunner:
+        def energy_xvg(self, *, edr, out_xvg, terms, allow_missing=True):
+            Path(out_xvg).write_text(
+                '@ s0 legend "Temperature"\n'
+                '@ s1 legend "Pressure"\n'
+                '@ s2 legend "Density"\n'
+                '@ s3 legend "Volume"\n'
+                "0 300 1 1000 10\n"
+                "1 301 1 1001 10\n",
+                encoding="utf-8",
+            )
+            return {"resolved_terms": ["Temperature", "Pressure", "Density", "Volume"], "missing_terms": []}
+
+    analyzer_mod = __import__("yadonpy.sim.analyzer", fromlist=["GromacsRunner"])
+    monkeypatch.setattr(analyzer_mod, "GromacsRunner", _FakeRunner)
+    monkeypatch.setattr(analyzer_mod, "compute_cell_summary", lambda **kwargs: {"lengths_nm": {}, "volume_nm3": {"mean": 10.0, "std": 0.0}})
+    called = {"polymer_metrics": False}
+
+    def _fake_polymer_metrics(**kwargs):
+        called["polymer_metrics"] = True
+        raise AssertionError("polymer metrics should be skipped")
+
+    monkeypatch.setattr(analyzer_mod, "compute_polymer_metrics", _fake_polymer_metrics)
+
+    analyzer = AnalyzeResult(work_dir=work_dir, tpr=work_dir / "md.tpr", xtc=work_dir / "md.xtc", edr=work_dir / "md.edr", top=work_dir / "system.top", ndx=work_dir / "system.ndx")
+    monkeypatch.setattr(analyzer, "_system_dir", lambda: system_dir)
+    monkeypatch.setattr(analyzer, "_polymer_moltypes_from_meta", lambda: ["PEO"])
+
+    out = analyzer.get_all_prop(temp=300.0, press=1.0, include_polymer_metrics=False, analysis_profile="transport_fast")
+    assert called["polymer_metrics"] is False
+    assert out["polymer_metrics"] == {}
+    assert out["_analysis"]["include_polymer_metrics"] is False
+
+
+def test_msd_transport_fast_selects_transport_species_and_default_metrics(tmp_path: Path, monkeypatch):
+    work_dir = tmp_path
+    system_dir = work_dir / "02_system"
+    system_dir.mkdir(parents=True, exist_ok=True)
+    for name in ("system.gro", "system_meta.json", "residue_map.json", "charge_groups.json"):
+        (system_dir / name).write_text("{}\n", encoding="utf-8")
+    xtc = work_dir / "md.xtc"
+    xtc.write_text("x\n", encoding="utf-8")
+
+    analyzer = AnalyzeResult(work_dir=work_dir, tpr=work_dir / "md.tpr", xtc=xtc, edr=work_dir / "md.edr", top=work_dir / "system.top", ndx=work_dir / "system.ndx")
+    monkeypatch.setattr(analyzer, "_system_dir", lambda: system_dir)
+    monkeypatch.setattr(analyzer, "_analysis_xtc_path", lambda: xtc)
+    monkeypatch.setattr(analyzer, "_transport_geometry_mode", lambda geometry="auto": "3d")
+
+    analyzer_mod = __import__("yadonpy.sim.analyzer", fromlist=["parse_system_top"])
+    monkeypatch.setattr(analyzer_mod, "parse_system_top", lambda top: object())
+    monkeypatch.setattr(
+        analyzer_mod,
+        "build_msd_metric_catalog",
+        lambda topo, system_dir: {
+            "PEO": {
+                "kind": "polymer",
+                "smiles": "*CCO*",
+                "n_molecules": 1,
+                "natoms": 10,
+                "formal_charge_e": 0.0,
+                "default_metric": "chain_com_msd",
+                "metrics": {"chain_com_msd": {"groups": [object()]}, "residue_com_msd": {"groups": [object()]}},
+            },
+            "Li": {
+                "kind": "ion",
+                "smiles": "[Li+]",
+                "n_molecules": 2,
+                "natoms": 1,
+                "formal_charge_e": 1.0,
+                "default_metric": "ion_atomic_msd",
+                "metrics": {"ion_atomic_msd": {"groups": [object()]}},
+            },
+            "SOL": {
+                "kind": "solvent",
+                "smiles": "CO",
+                "n_molecules": 3,
+                "natoms": 6,
+                "formal_charge_e": 0.0,
+                "default_metric": "molecule_com_msd",
+                "metrics": {"molecule_com_msd": {"groups": [object()]}},
+            },
+        },
+    )
+    calls: list[tuple[str, int]] = []
+
+    def _fake_compute_msd_series(*, group_specs, **kwargs):
+        calls.append((kwargs.get("geometry_mode"), len(group_specs)))
+        return {
+            "t_ps": np.asarray([0.0, 1.0, 2.0]),
+            "msd_nm2": np.asarray([0.0, 0.1, 0.2]),
+            "geometry": "3d",
+            "n_groups": len(group_specs),
+            "fit": {"D_m2_s": 1.0e-10, "D_nm2_ps": 1.0e-4, "status": "ok", "confidence": "high"},
+            "preprocessing": {},
+        }
+
+    monkeypatch.setattr(analyzer_mod, "compute_msd_series", _fake_compute_msd_series)
+    monkeypatch.setattr(analyzer_mod, "plot_msd_series", lambda **kwargs: {})
+    monkeypatch.setattr(analyzer_mod, "plot_msd_series_summary", lambda **kwargs: None)
+
+    out = analyzer.msd(analysis_profile="transport_fast")
+    assert set(k for k in out if not k.startswith("_")) == {"PEO", "Li"}
+    assert set(out["PEO"]["metrics"]) == {"chain_com_msd"}
+    assert len(calls) == 2
+    assert out["_analysis"]["analysis_profile"] == "transport_fast"
+
+
+def test_dielectric_runs_gmx_dipoles_and_writes_summary(tmp_path: Path, monkeypatch):
+    work_dir = tmp_path
+    system_dir = work_dir / "02_system"
+    analysis_dir = work_dir / "06_analysis"
+    system_dir.mkdir(parents=True, exist_ok=True)
+    analysis_dir.mkdir(parents=True, exist_ok=True)
+    for path in (
+        system_dir / "system_meta.json",
+        system_dir / "system.gro",
+        work_dir / "md.tpr",
+        work_dir / "md.xtc",
+        work_dir / "md.edr",
+        work_dir / "system.ndx",
+        work_dir / "system.top",
+    ):
+        path.write_text("x\n", encoding="utf-8")
+    (analysis_dir / "basic_properties.json").write_text(
+        json.dumps({"temperature_K": 333.15}, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+    class _FakeProc:
+        stdout = b"Epsilon = 12.34\n"
+        stderr = b""
+
+    class _FakeRunner:
+        def dipoles(self, **kwargs):
+            Path(kwargs["out_epsilon_xvg"]).write_text(
+                "0 10.0 1.0 0.9\n"
+                "100 12.34 1.5 1.2\n",
+                encoding="utf-8",
+            )
+            Path(kwargs["out_mtot_xvg"]).write_text("0 0 0 0 0\n", encoding="utf-8")
+            Path(kwargs["out_average_xvg"]).write_text("0 0 0\n", encoding="utf-8")
+            Path(kwargs["out_distribution_xvg"]).write_text("0 0\n", encoding="utf-8")
+            assert kwargs["temp_k"] == pytest.approx(333.15)
+            assert kwargs["group"] == "System"
+            return _FakeProc()
+
+    analyzer_mod = __import__("yadonpy.sim.analyzer", fromlist=["GromacsRunner"])
+    monkeypatch.setattr(analyzer_mod, "GromacsRunner", lambda: _FakeRunner())
+
+    analyzer = AnalyzeResult(
+        work_dir=work_dir,
+        tpr=work_dir / "md.tpr",
+        xtc=work_dir / "md.xtc",
+        edr=work_dir / "md.edr",
+        top=work_dir / "system.top",
+        ndx=work_dir / "system.ndx",
+    )
+    monkeypatch.setattr(analyzer, "_analysis_dir", lambda: analysis_dir)
+    monkeypatch.setattr(analyzer, "_system_dir", lambda: system_dir)
+    monkeypatch.setattr(analyzer, "_analysis_xtc_path", lambda: work_dir / "md.xtc")
+
+    out = analyzer.dielectric(resume=False)
+
+    assert out["epsilon_static"] == pytest.approx(12.34)
+    assert out["finite_system_kirkwood_g"] == pytest.approx(1.5)
+    assert out["infinite_system_kirkwood_g"] == pytest.approx(1.2)
+    assert out["temperature_source"] == "analysis_cache"
+    assert (analysis_dir / "dielectric.json").exists()
+    assert (analysis_dir / "dielectric" / "gmx_dipoles.log").exists()
+
+
+def test_dielectric_resume_reuses_matching_cache(tmp_path: Path, monkeypatch):
+    work_dir = tmp_path
+    system_dir = work_dir / "02_system"
+    analysis_dir = work_dir / "06_analysis"
+    system_dir.mkdir(parents=True, exist_ok=True)
+    analysis_dir.mkdir(parents=True, exist_ok=True)
+    deps = [
+        system_dir / "system_meta.json",
+        work_dir / "md.tpr",
+        work_dir / "md.xtc",
+        work_dir / "system.ndx",
+    ]
+    for path in deps:
+        path.write_text("x\n", encoding="utf-8")
+    cached = {
+        "epsilon_static": 8.8,
+        "_analysis": {
+            "group": "System",
+            "temperature_K": 300.0,
+            "begin_ps": None,
+            "end_ps": None,
+            "dt_ps": None,
+            "epsilon_rf": 0.0,
+        },
+    }
+    (analysis_dir / "dielectric.json").write_text(json.dumps(cached), encoding="utf-8")
+
+    analyzer_mod = __import__("yadonpy.sim.analyzer", fromlist=["GromacsRunner"])
+
+    class _UnexpectedRunner:
+        def dipoles(self, **kwargs):
+            raise AssertionError("dielectric cache should have been reused")
+
+    monkeypatch.setattr(analyzer_mod, "GromacsRunner", lambda: _UnexpectedRunner())
+
+    analyzer = AnalyzeResult(
+        work_dir=work_dir,
+        tpr=work_dir / "md.tpr",
+        xtc=work_dir / "md.xtc",
+        edr=work_dir / "md.edr",
+        top=work_dir / "system.top",
+        ndx=work_dir / "system.ndx",
+    )
+    monkeypatch.setattr(analyzer, "_analysis_dir", lambda: analysis_dir)
+    monkeypatch.setattr(analyzer, "_system_dir", lambda: system_dir)
+    monkeypatch.setattr(analyzer, "_analysis_xtc_path", lambda: work_dir / "md.xtc")
+
+    out = analyzer.dielectric(temp_k=300.0, resume=True)
+    assert out["epsilon_static"] == pytest.approx(8.8)
 
 
 def test_sigma_falls_back_to_position_helfand_when_gmx_current_fails(tmp_path: Path, monkeypatch):

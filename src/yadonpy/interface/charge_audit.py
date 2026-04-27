@@ -1,3 +1,11 @@
+"""Charge-audit summaries for cells, slabs, and assembled interfaces.
+
+The routines here provide small JSON-friendly reports that make net charge,
+species charge balance, and metadata consistency visible before running MD.
+They are intentionally lightweight so examples can print or persist them during
+preflight checks.
+"""
+
 from __future__ import annotations
 
 import json

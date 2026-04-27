@@ -1,3 +1,11 @@
+"""Restart-aware filesystem helpers for script-first workflows.
+
+`WorkDir` wraps a root directory and provides predictable child-directory
+creation, restart cleanup, and JSON bookkeeping. The goal is to let examples
+express scientific steps in order while keeping file operations idempotent and
+safe across reruns.
+"""
+
 from __future__ import annotations
 
 import json

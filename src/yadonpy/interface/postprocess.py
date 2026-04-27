@@ -1,3 +1,11 @@
+"""Post-processing helpers for interface-specific GROMACS artifacts.
+
+This module collects small parsers and data reshapers used after interface
+construction, such as reading index groups and extracting role-specific
+diagnostics. Keeping these utilities separate avoids bloating the builders with
+analysis-oriented file handling.
+"""
+
 from __future__ import annotations
 
 import json

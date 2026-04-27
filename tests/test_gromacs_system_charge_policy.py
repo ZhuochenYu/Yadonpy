@@ -48,9 +48,23 @@ def test_species_charge_policy_prefers_species_specific_route():
     )
 
     assert policy["charge_method"] == "opls"
+    assert policy["resp_profile"] is None
     assert policy["prefer_db"] is False
     assert policy["require_db"] is False
     assert policy["require_ready"] is False
+
+
+def test_species_charge_policy_keeps_resp_profile_variant():
+    policy = _species_charge_policy(
+        {
+            "charge_method": "RESP",
+            "resp_profile": "Adaptive",
+        },
+        "RESP",
+    )
+
+    assert policy["charge_method"] == "RESP"
+    assert policy["resp_profile"] == "adaptive"
 
 
 def _ec_with_exportable_ff_props() -> Chem.Mol:
@@ -177,3 +191,88 @@ def test_export_system_uses_species_specific_charge_policy_for_built_in_opls_ion
     assert calls["prefer_db"] is False
     assert calls["require_db"] is False
     assert calls["require_ready"] is False
+
+
+def test_export_system_forwards_resp_profile_to_moldb_fallback(tmp_path, monkeypatch):
+    from yadonpy.ff import GAFF2_mod
+
+    calls: dict[str, object] = {}
+    cell = Chem.MolFromSmiles("CCO")
+    conf = Chem.Conformer(cell.GetNumAtoms())
+    for idx in range(cell.GetNumAtoms()):
+        conf.SetAtomPosition(idx, Geom.Point3D(float(idx) * 0.1, 0.0, 0.0))
+    cell.AddConformer(conf)
+    payload = {
+        "schema_version": "test",
+        "density_g_cm3": 0.5,
+        "species": [
+            {
+                "smiles": "CCO",
+                "n": 1,
+                "natoms": 3,
+                "name": "ETH",
+                "ff_name": "gaff2_mod",
+                "charge_method": "RESP",
+                "resp_profile": "adaptive",
+                "prefer_db": True,
+                "require_db": True,
+                "require_ready": True,
+            }
+        ],
+    }
+    cell.SetProp("_yadonpy_cell_meta", json.dumps(payload))
+
+    def _fake_mol_rdkit(
+        smiles,
+        *,
+        name=None,
+        prefer_db=True,
+        require_db=False,
+        require_ready=False,
+        charge=None,
+        resp_profile=None,
+        **kwargs,
+    ):
+        calls["smiles"] = smiles
+        calls["prefer_db"] = prefer_db
+        calls["require_db"] = require_db
+        calls["require_ready"] = require_ready
+        calls["charge"] = charge
+        calls["resp_profile"] = resp_profile
+        mol = Chem.MolFromSmiles(smiles)
+        conf = Chem.Conformer(mol.GetNumAtoms())
+        for idx in range(mol.GetNumAtoms()):
+            conf.SetAtomPosition(idx, Geom.Point3D(float(idx) * 0.1, 0.0, 0.0))
+        mol.AddConformer(conf)
+        mol.SetProp("_Name", str(name or "ETH"))
+        return mol
+
+    def _fake_ff_assign(self, mol, *args, **kwargs):
+        for atom in mol.GetAtoms():
+            atom.SetProp("ff_type", atom.GetSymbol().lower())
+            atom.SetDoubleProp("ff_sigma", 0.3)
+            atom.SetDoubleProp("ff_epsilon", 0.2)
+            atom.SetDoubleProp("AtomicCharge", 0.0)
+        for bond in mol.GetBonds():
+            bond.SetDoubleProp("ff_r0", 0.15)
+            bond.SetDoubleProp("ff_k", 1000.0)
+        return True
+
+    monkeypatch.setattr(GAFF2_mod, "mol_rdkit", staticmethod(_fake_mol_rdkit))
+    monkeypatch.setattr(GAFF2_mod, "ff_assign", _fake_ff_assign)
+
+    out = export_system_from_cell_meta(
+        cell_mol=cell,
+        out_dir=tmp_path / "sys",
+        ff_name="gaff2_mod",
+        charge_method="RESP",
+        write_system_mol2=False,
+    )
+
+    assert out.system_top.exists()
+    assert calls["smiles"] == "CCO"
+    assert calls["charge"] == "RESP"
+    assert calls["resp_profile"] == "adaptive"
+    assert calls["prefer_db"] is True
+    assert calls["require_db"] is True
+    assert calls["require_ready"] is True

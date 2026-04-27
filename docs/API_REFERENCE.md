@@ -30,6 +30,7 @@ Package root exports include:
 - `yp.build_graphite_polymer_interphase`
 - `yp.build_polymer_electrolyte_interphase`
 - `yp.release_graphite_polymer_electrolyte_stack`
+- `yp.build_cmcna_graphite_electrolyte_stack`
 - `yp.build_graphite_polymer_electrolyte_sandwich`
 - `yp.build_graphite_peo_electrolyte_sandwich`
 - `yp.build_graphite_cmcna_electrolyte_sandwich`
@@ -37,6 +38,9 @@ Package root exports include:
 - `yp.run_tg_scan_gmx`
 - `yp.run_elongation_gmx`
 - `yp.AnalyzeResult`
+- `yp.IOAnalysisPolicy`
+- `yp.resolve_io_analysis_policy`
+- `yp.InterfaceBuildPolicy`
 - `yp.print_mechanics_result_summary`
 - `yp.InterfaceBuilder`
 - `yp.InterfaceProtocol`
@@ -62,6 +66,7 @@ yp.calibrate_electrolyte_bulk_phase(**kwargs)
 yp.build_graphite_polymer_interphase(**kwargs)
 yp.build_polymer_electrolyte_interphase(**kwargs)
 yp.release_graphite_polymer_electrolyte_stack(**kwargs)
+yp.build_cmcna_graphite_electrolyte_stack(**kwargs)
 yp.build_graphite_polymer_electrolyte_sandwich(**kwargs)
 yp.build_graphite_peo_electrolyte_sandwich(**kwargs)
 yp.build_graphite_cmcna_electrolyte_sandwich(**kwargs)
@@ -137,16 +142,32 @@ AnalyzeResult.rdf(
     mol_or_mols=None,
     *,
     center_mol=None,
+    analysis_profile: str | None = None,
+    site_filter=None,
+    r_max_nm: float | None = None,
+    frame_stride: int = 1,
+    resume: bool = False,
     region: str = "auto",
     ...
 )
 
 AnalyzeResult.msd(
     *,
+    analysis_profile: str | None = None,
+    resume: bool = False,
     geometry: str = "auto",
     unwrap: str = "auto",
     drift: str = "auto",
     selection_mode: str = "default",
+    ...
+)
+
+AnalyzeResult.get_all_prop(
+    *,
+    temp: float,
+    press: float,
+    include_polymer_metrics: bool = True,
+    analysis_profile: str | None = None,
     ...
 )
 
@@ -158,6 +179,15 @@ AnalyzeResult.sigma(
     unwrap: str = "auto",
     drift: str = "auto",
     eh_mode: str = "auto",
+)
+
+AnalyzeResult.dielectric(
+    *,
+    temp_k: float | None = None,
+    group: str = "System",
+    dt_ps: float | None = None,
+    resume: bool = False,
+    ...
 )
 
 AnalyzeResult.migration(
@@ -185,6 +215,19 @@ Transport semantics:
 
 - `RDF` remains an independent analysis because it is the only routine method
   that requires a center species.
+- `analysis_profile="transport_fast"` filters RDF to the main Li coordination
+  sites, uses coarser RDF defaults, can resume cached RDF/MSD JSON, and is meant
+  for screening many cases.
+- `analysis_profile="auto"` reads the production performance policy when present
+  and resolves to `transport_fast` or `minimal` for large/long runs.
+- `analysis_profile="minimal"` is the most aggressive screening mode: necessary
+  transport species only, coarser RDF, and default MSD metrics only.
+- `analysis_profile="full"` keeps the historical all-site RDF/MSD behavior.
+- `get_all_prop(..., include_polymer_metrics=False)` skips expensive Rg,
+  end-to-end, and persistence-length post-processing while preserving thermo and
+  cell summaries.
+- `dielectric()` wraps `gmx dipoles`; set `YADONPY_GMX_CMD` when the default
+  `gmx` binary cannot read the production `.tpr`.
 - bulk systems default to drift-corrected `3D` diffusion.
 - slab and sandwich systems default to drift-corrected `xy` diffusion.
 - `sigma_ne_upper_bound_S_m` is reported explicitly as an upper bound.
@@ -197,6 +240,25 @@ Transport semantics:
 - charged-polymer self terms are retained as
   `polymer_charged_group_self_ne_contribution_S_m` and component diagnostics;
   they are not labeled as total polymer ionic conductivity.
+
+Production presets accept adaptive output cadence:
+
+```python
+eq.NPT(...).exec(
+    temp=300.0,
+    press=1.0,
+    time=300.0,
+    traj_ps="auto",
+    energy_ps="auto",
+    performance_profile="auto",
+)
+```
+
+`performance_profile="auto"` estimates trajectory and atom-frame cost from the
+production length and system size, then records the resolved cadence and analysis
+policy in `05_*_production/summary.json`. Explicit numeric `traj_ps`,
+`energy_ps`, `log_ps`, `trr_ps`, or `velocity_ps` always override the policy.
+
 - `migration()` is the preferred high-level migration workflow for:
   - pure electrolytes,
   - polymer-electrolyte composites,
@@ -840,6 +902,16 @@ SandwichRelaxationSpec(
     stacked_exchange_ps: float = 120.0,
 )
 
+InterfaceBuildPolicy(
+    phase_preparation: str = "final_xy_walled",
+    stack_relaxation: str = "natural_contact",
+    acceptance_required: bool = True,
+    retry_profile: str = "conservative",
+    max_stack_rescue_rounds: int = 1,
+    min_atom_distance_nm: float = 0.055,
+    charge_tolerance_e: float = 1.0e-3,
+)
+
 SandwichPhaseReport(...)
 GraphitePolymerElectrolyteSandwichResult(...)
 ```
@@ -862,14 +934,15 @@ calibrate_electrolyte_bulk_phase(**kwargs)
 build_graphite_polymer_interphase(**kwargs)
 build_polymer_electrolyte_interphase(**kwargs)
 release_graphite_polymer_electrolyte_stack(**kwargs)
+build_cmcna_graphite_electrolyte_stack(**kwargs)
 build_graphite_polymer_electrolyte_sandwich(**kwargs)
 build_graphite_peo_electrolyte_sandwich(**kwargs)
 build_graphite_cmcna_electrolyte_sandwich(**kwargs)
 ```
 
-Use the staged functions when you want Example-02-style explicit scripts and
-clean restart points. Keep the convenience builders for short scripts or
-backward-compatible helper flows.
+Use `build_cmcna_graphite_electrolyte_stack` for the recommended CMC-Na
+graphite/electrolyte workflow. Use the staged functions when you need explicit
+restart points or to debug one phase at a time.
 
 ## 10. Internal Modules
 

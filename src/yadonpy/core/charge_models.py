@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """Lightweight non-DFT charge-model backends.
 
 Supported families:
@@ -9,6 +7,8 @@ Supported families:
 These backends are intentionally thin wrappers around external tools instead of
 re-implementing the original semiempirical methods inside YadonPy.
 """
+
+from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path

@@ -1,0 +1,300 @@
+{
+  "key": "b561ac4285777dff",
+  "kind": "smiles",
+  "canonical": "O=S(=O)([N-]S(=O)(=O)C(F)(F)F)C(F)(F)F",
+  "name": "TFSI",
+  "charge_method": "RESP",
+  "charge_unit": "e",
+  "ready": true,
+  "connectors": null,
+  "variants": {
+    "7fd491c29452": {
+      "variant_id": "7fd491c29452",
+      "charge": "RESP",
+      "basis_set": "Default",
+      "method": "Default",
+      "ready": true,
+      "polyelectrolyte_mode": false,
+      "polyelectrolyte_detection": "auto",
+      "constraint_signature": "a345ebbd5953",
+      "charge_groups": [
+        {
+          "atom_indices": [
+            1,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11
+          ],
+          "formal_charge": -1,
+          "group_id": "group_1",
+          "label": "graph_group_1",
+          "source": "graph"
+        }
+      ],
+      "resp_constraints": {
+        "charged_group_constraints": [
+          {
+            "atom_indices": [
+              1,
+              4,
+              5,
+              6,
+              7,
+              8,
+              9,
+              10,
+              11
+            ],
+            "group_id": "group_1",
+            "source": "graph",
+            "target_charge": -1
+          }
+        ],
+        "equivalence_groups": [
+          [
+            0,
+            2,
+            3,
+            12,
+            13,
+            14
+          ],
+          [
+            1,
+            11
+          ],
+          [
+            4,
+            8
+          ],
+          [
+            5,
+            6,
+            9,
+            10
+          ]
+        ],
+        "fallback": "whole_molecule_scale",
+        "mode": "whole_molecule_scale",
+        "neutral_remainder_charge": 0,
+        "neutral_remainder_indices": [
+          0,
+          2,
+          3,
+          12,
+          13,
+          14
+        ],
+        "resp_profile": "adaptive"
+      },
+      "polyelectrolyte_summary": {
+        "detection": "auto",
+        "equivalence_groups": [
+          [
+            0,
+            2,
+            3,
+            12,
+            13,
+            14
+          ],
+          [
+            1,
+            11
+          ],
+          [
+            4,
+            8
+          ],
+          [
+            5,
+            6,
+            9,
+            10
+          ]
+        ],
+        "fallback": "whole_molecule_scale",
+        "groups": [
+          {
+            "atom_indices": [
+              1,
+              4,
+              5,
+              6,
+              7,
+              8,
+              9,
+              10,
+              11
+            ],
+            "formal_charge": -1,
+            "group_id": "group_1",
+            "label": "graph_group_1",
+            "source": "graph"
+          }
+        ],
+        "is_polyelectrolyte": false,
+        "is_polymer": false,
+        "molecule_formal_charge": -1,
+        "neutral_remainder": [
+          0,
+          2,
+          3,
+          12,
+          13,
+          14
+        ],
+        "resp_profile": "adaptive"
+      },
+      "psiresp_constraints": {
+        "constraints": {
+          "charged_group_constraints": [
+            {
+              "atom_indices": [
+                1,
+                4,
+                5,
+                6,
+                7,
+                8,
+                9,
+                10,
+                11
+              ],
+              "group_id": "group_1",
+              "source": "graph",
+              "target_charge": -1
+            }
+          ],
+          "equivalence_groups": [
+            [
+              0,
+              2,
+              3,
+              12,
+              13,
+              14
+            ],
+            [
+              1,
+              11
+            ],
+            [
+              4,
+              8
+            ],
+            [
+              5,
+              6,
+              9,
+              10
+            ]
+          ],
+          "fallback": "whole_molecule_scale",
+          "mode": "whole_molecule_scale",
+          "neutral_remainder_charge": 0,
+          "neutral_remainder_indices": [
+            0,
+            2,
+            3,
+            12,
+            13,
+            14
+          ],
+          "resp_profile": "adaptive"
+        },
+        "fit_kind": "RESP",
+        "resp_profile": "adaptive",
+        "summary": {
+          "detection": "auto",
+          "equivalence_groups": [
+            [
+              0,
+              2,
+              3,
+              12,
+              13,
+              14
+            ],
+            [
+              1,
+              11
+            ],
+            [
+              4,
+              8
+            ],
+            [
+              5,
+              6,
+              9,
+              10
+            ]
+          ],
+          "fallback": "whole_molecule_scale",
+          "groups": [
+            {
+              "atom_indices": [
+                1,
+                4,
+                5,
+                6,
+                7,
+                8,
+                9,
+                10,
+                11
+              ],
+              "formal_charge": -1,
+              "group_id": "group_1",
+              "label": "graph_group_1",
+              "source": "graph"
+            }
+          ],
+          "is_polyelectrolyte": false,
+          "is_polymer": false,
+          "molecule_formal_charge": -1,
+          "neutral_remainder": [
+            0,
+            2,
+            3,
+            12,
+            13,
+            14
+          ],
+          "resp_profile": "adaptive"
+        }
+      },
+      "resp_profile": "adaptive",
+      "qm_recipe": {
+        "adaptive_carbonate_recipe": false,
+        "anion_diffuse_upgrade": true,
+        "auto_level": true,
+        "carbonate_like": false,
+        "charge_basis": "def2-TZVPD",
+        "charge_basis_gen": {
+          "Br": "def2-TZVPD",
+          "I": "def2-TZVPD"
+        },
+        "charge_method": "wb97m-d3bj",
+        "charge_model": "RESP",
+        "opt_basis": "def2-SVPD",
+        "opt_basis_gen": {
+          "Br": "def2-SVPD",
+          "I": "def2-SVPD"
+        },
+        "opt_method": "wb97m-d3bj",
+        "resp_profile": "adaptive"
+      },
+      "is_polyelectrolyte": false,
+      "is_polymer": false,
+      "charge_group_count": 1,
+      "source_kind": "smiles"
+    }
+  }
+}

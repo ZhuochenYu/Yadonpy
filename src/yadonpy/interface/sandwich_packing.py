@@ -1,3 +1,10 @@
+"""Packing policies and retry plans for sandwich phase construction.
+
+Dense interface stacks are sensitive to initial placement failures. This module
+encodes the backoff rules used to retry packing with safer densities, spacing,
+or molecule counts while keeping the selected policy visible in metadata.
+"""
+
 from __future__ import annotations
 
 import json

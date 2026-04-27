@@ -1,3 +1,11 @@
+"""High-level graphite/polymer/electrolyte sandwich workflow orchestration.
+
+The sandwich workflow combines bulk calibration, slab extraction, interphase
+packing, stack release, and transport analysis. This module is intentionally
+script-facing: it assembles lower-level interface pieces into complete example
+workflows while preserving provenance metadata at each phase boundary.
+"""
+
 from __future__ import annotations
 
 import json
@@ -27,6 +35,7 @@ from ..sim import qm
 from ..sim.preset.eq import _find_latest_equilibrated_gro
 from .bulk_resize import build_bulk_equilibrium_profile, fixed_xy_semiisotropic_npt_overrides, read_equilibrated_box_nm
 from . import builder as interface_builder
+from .charge_audit import summarize_cell_charge
 from .postprocess import read_ndx_groups
 from .prep import equilibrate_bulk_with_eq21, make_orthorhombic_pack_cell, plan_fixed_xy_direct_electrolyte_preparation
 from .sandwich_metrics import (
@@ -57,6 +66,7 @@ from .sandwich_specs import (
     GraphitePreparationResult,
     GraphitePolymerElectrolyteSandwichResult,
     GraphiteSubstrateSpec,
+    InterfaceBuildPolicy,
     InterfaceTransportResult,
     InterphaseBuildResult,
     MoleculeSpec,
@@ -99,12 +109,68 @@ class _BulkCalibrationResult:
     notes: tuple[str, ...]
 
 
+def _resolve_interface_build_policy(policy: InterfaceBuildPolicy | None = None) -> InterfaceBuildPolicy:
+    return policy if policy is not None else InterfaceBuildPolicy()
+
+
+def _policy_requires_acceptance(*, policy: InterfaceBuildPolicy, route: str) -> bool:
+    return bool(policy.acceptance_required and str(route).strip().lower() == "production")
+
+
 def _write_sandwich_progress(progress_path: Path, payload: dict[str, object]) -> None:
     progress_path.parent.mkdir(parents=True, exist_ok=True)
     progress_path.write_text(
         json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
         encoding="utf-8",
     )
+
+
+def _write_interface_design_summary(
+    *,
+    work_dir: Path,
+    route: str,
+    graphite: GraphitePreparationResult,
+    polymer: PolymerSlabSpec,
+    electrolyte: ElectrolyteSlabSpec,
+    relax: SandwichRelaxationSpec,
+    policy: InterfaceBuildPolicy,
+) -> Path:
+    """Persist the design-level decisions before expensive phase rebuilding."""
+
+    design_dir = Path(work_dir) / "00_interface_design"
+    design_dir.mkdir(parents=True, exist_ok=True)
+    negotiations = [dict(x) for x in graphite.footprint_negotiations]
+    latest = negotiations[-1] if negotiations else {}
+    payload = {
+        "route": str(route),
+        "interface_kind": "graphite_polymer_electrolyte_single_sided",
+        "expected_phase_order": ["GRAPHITE", "POLYMER", "ELECTROLYTE"],
+        "policy": asdict(policy),
+        "graphite_spec": asdict(graphite.graphite_spec),
+        "polymer_spec": asdict(polymer),
+        "electrolyte_spec": asdict(electrolyte),
+        "relaxation_spec": asdict(relax),
+        "master_xy_nm": [float(graphite.master_xy_nm[0]), float(graphite.master_xy_nm[1])],
+        "graphite_box_nm": [float(x) for x in graphite.box_nm],
+        "target_phase_thickness_nm": {
+            "polymer": float(polymer.slab_z_nm),
+            "electrolyte": float(electrolyte.slab_z_nm),
+        },
+        "target_density_g_cm3": {
+            "polymer": float(polymer.target_density_g_cm3),
+            "electrolyte": float(electrolyte.target_density_g_cm3),
+        },
+        "graphite_footprint_negotiations": negotiations,
+        "latest_graphite_footprint_negotiation": latest or None,
+    }
+    if latest:
+        payload["required_xy_nm"] = latest.get("required_xy_nm")
+        payload["target_area_nm2"] = latest.get("target_area_nm2")
+        payload["polymer_target_area_nm2"] = latest.get("polymer_target_area_nm2")
+        payload["electrolyte_target_area_nm2"] = latest.get("electrolyte_target_area_nm2")
+    path = design_dir / "interface_design.json"
+    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    return path
 
 
 def build_graphite_cmcna_glucose6_periodic_case(
@@ -539,6 +605,45 @@ def build_cmc_electrolyte_interphase(**kwargs) -> InterphaseBuildResult:
     return build_polymer_electrolyte_interphase(**kwargs)
 
 
+def _select_stack_rescue_strategy(acceptance: dict[str, object]) -> dict[str, object]:
+    failed = set(str(x) for x in list(acceptance.get("failed_checks") or []))
+    if {"core_gaps_ok", "min_atom_distance_ok"} & failed:
+        strategy = "increase_stack_gaps_and_repeat_natural_contact"
+    elif {"polymer_density_ok", "electrolyte_density_ok"} & failed:
+        strategy = "extend_z_relax_and_repeat_natural_contact"
+    elif {"wrapped_ok", "order_ok"} & failed:
+        strategy = "rebuild_stack_with_larger_gaps"
+    elif "charge_ok" in failed:
+        strategy = "stop_charge_imbalance"
+    else:
+        strategy = "extend_natural_contact"
+    return {
+        "strategy": strategy,
+        "failed_checks": sorted(failed),
+        "recommended_action": strategy,
+    }
+
+
+def _stack_rescue_gap_multiplier(*, attempt: int, strategy: str) -> float:
+    if int(attempt) <= 0:
+        return 1.0
+    if str(strategy) in {"increase_stack_gaps_and_repeat_natural_contact", "rebuild_stack_with_larger_gaps"}:
+        return 1.0 + 0.35 * float(attempt)
+    return 1.0
+
+
+def _stack_rescue_relaxation(*, relax: SandwichRelaxationSpec, attempt: int, strategy: str) -> SandwichRelaxationSpec:
+    if int(attempt) <= 0:
+        return relax
+    if str(strategy) in {"extend_z_relax_and_repeat_natural_contact", "extend_natural_contact"}:
+        return replace(
+            relax,
+            stacked_z_relax_ps=float(relax.stacked_z_relax_ps) * (1.0 + 0.5 * float(attempt)),
+            stacked_exchange_ps=float(relax.stacked_exchange_ps) * (1.0 + 0.35 * float(attempt)),
+        )
+    return replace(relax, stacked_pre_nvt_ps=float(relax.stacked_pre_nvt_ps) * (1.0 + 0.25 * float(attempt)))
+
+
 def release_graphite_polymer_electrolyte_stack(
     *,
     work_dir,
@@ -547,9 +652,11 @@ def release_graphite_polymer_electrolyte_stack(
     polymer_interphase: InterphaseBuildResult,
     electrolyte_interphase: InterphaseBuildResult,
     relax: SandwichRelaxationSpec = SandwichRelaxationSpec(),
+    policy: InterfaceBuildPolicy | None = None,
     route: str = "screening",
     restart: bool | None = None,
 ) -> StackReleaseResult:
+    build_policy = _resolve_interface_build_policy(policy)
     wd = Path(work_dir)
     release_dir = wd / "06_full_stack_release"
     stack_dir = release_dir / "00_stack"
@@ -592,12 +699,6 @@ def release_graphite_polymer_electrolyte_stack(
         electrolyte_summary=electrolyte_confined.summary,
         electrolyte_target_density_g_cm3=float(electrolyte_interphase.report.target_density_g_cm3 or 0.0),
     )
-    stacked = stack_cell_blocks(
-        [graphite.graphite.cell, polymer_stack_block, electrolyte_stack_block],
-        z_gaps_ang=[float(graphite_polymer_gap_ang), float(polymer_electrolyte_gap_ang)],
-        top_padding_ang=float(relax.top_padding_ang),
-        fixed_xy_ang=(float(stack_master_xy_nm[0]) * 10.0, float(stack_master_xy_nm[1]) * 10.0),
-    )
     stacked_mols = [graphite.graphite.layer_mol]
     stacked_counts = [int(graphite.graphite.layer_count)]
     stacked_charge_scale = [1.0]
@@ -613,20 +714,6 @@ def release_graphite_polymer_electrolyte_stack(
         stacked_mols.append(mol)
         stacked_counts.append(int(count))
         stacked_charge_scale.append(float(scale))
-    register_cell_species_metadata(
-        stacked.cell,
-        stacked_mols,
-        stacked_counts,
-        charge_scale=stacked_charge_scale,
-        pack_mode="graphite_polymer_electrolyte_sandwich",
-    )
-    export = export_system_from_cell_meta(
-        cell_mol=stacked.cell,
-        out_dir=stack_dir,
-        ff_name=str(ff.name),
-        charge_method="RESP",
-        write_system_mol2=False,
-    )
 
     graphite_group_name = str(get_name(graphite.graphite.layer_mol, default=graphite.graphite_spec.name))
     polymer_group_name = str(
@@ -636,31 +723,108 @@ def release_graphite_polymer_electrolyte_stack(
         )
     )
     electrolyte_group_names = [str(name) for name in electrolyte_interphase.report.species_names]
-    ndx_groups = _augment_sandwich_ndx(
-        ndx_path=export.system_ndx,
-        graphite_name=graphite_group_name,
-        polymer_name=polymer_group_name,
-        electrolyte_names=electrolyte_group_names,
-    )
-    relaxed_gro = _run_stacked_relaxation(
-        export=export,
-        work_dir=relax_dir,
-        relax=relax,
-        freeze_group="GRAPHITE",
-        restart=restart,
-    )
-    stack_checks = _build_stack_checks(gro_path=relaxed_gro, ndx_groups=ndx_groups)
-    acceptance = _build_sandwich_acceptance(
-        polymer_summary=polymer_confined.summary,
-        electrolyte_summary=electrolyte_confined.summary,
-        stack_checks=stack_checks,
-    )
+
+    attempts: list[dict[str, object]] = []
+    rescue_strategy = "initial_natural_contact"
+    export = None
+    ndx_groups: dict[str, list[int]] = {}
+    relaxed_gro = relax_dir / "05_natural_exchange" / "md.gro"
+    stack_checks: dict[str, object] = {}
+    acceptance: dict[str, object] = {}
+    charge_summary: dict[str, object] = {}
+    stack_box_nm: tuple[float, float, float] | None = None
+    max_attempts = max(0, int(build_policy.max_stack_rescue_rounds)) + 1
+    for attempt in range(max_attempts):
+        attempt_strategy = rescue_strategy
+        gap_multiplier = _stack_rescue_gap_multiplier(attempt=attempt, strategy=attempt_strategy)
+        attempt_stack_dir = stack_dir if attempt == 0 else release_dir / f"00_stack_rescue_{attempt:02d}"
+        attempt_relax_dir = relax_dir if attempt == 0 else release_dir / f"01_relax_rescue_{attempt:02d}"
+        attempt_stack_dir.mkdir(parents=True, exist_ok=True)
+        attempt_relax_dir.mkdir(parents=True, exist_ok=True)
+        stacked = stack_cell_blocks(
+            [graphite.graphite.cell, polymer_stack_block, electrolyte_stack_block],
+            z_gaps_ang=[
+                float(graphite_polymer_gap_ang) * float(gap_multiplier),
+                float(polymer_electrolyte_gap_ang) * float(gap_multiplier),
+            ],
+            top_padding_ang=float(relax.top_padding_ang),
+            fixed_xy_ang=(float(stack_master_xy_nm[0]) * 10.0, float(stack_master_xy_nm[1]) * 10.0),
+        )
+        stack_box_nm = tuple(float(x) for x in stacked.box_nm)
+        register_cell_species_metadata(
+            stacked.cell,
+            stacked_mols,
+            stacked_counts,
+            charge_scale=stacked_charge_scale,
+            pack_mode="graphite_polymer_electrolyte_sandwich",
+        )
+        charge_summary = summarize_cell_charge(stacked.cell)
+        if "net_charge_scaled" in charge_summary:
+            charge_summary["charge_tolerance"] = float(build_policy.charge_tolerance_e)
+            charge_summary["net_charge_ok"] = bool(
+                abs(float(charge_summary.get("net_charge_scaled", 0.0))) <= float(build_policy.charge_tolerance_e)
+            )
+        export = export_system_from_cell_meta(
+            cell_mol=stacked.cell,
+            out_dir=attempt_stack_dir,
+            ff_name=str(ff.name),
+            charge_method="RESP",
+            write_system_mol2=False,
+        )
+        ndx_groups = _augment_sandwich_ndx(
+            ndx_path=export.system_ndx,
+            graphite_name=graphite_group_name,
+            polymer_name=polymer_group_name,
+            electrolyte_names=electrolyte_group_names,
+        )
+        attempt_relax = _stack_rescue_relaxation(relax=relax, attempt=attempt, strategy=attempt_strategy)
+        relaxed_gro = _run_stacked_relaxation(
+            export=export,
+            work_dir=attempt_relax_dir,
+            relax=attempt_relax,
+            freeze_group="GRAPHITE",
+            restart=restart,
+        )
+        stack_checks = _build_stack_checks(gro_path=relaxed_gro, ndx_groups=ndx_groups)
+        acceptance = _build_sandwich_acceptance(
+            polymer_summary=polymer_confined.summary,
+            electrolyte_summary=electrolyte_confined.summary,
+            stack_checks=stack_checks,
+            charge_summary=charge_summary,
+            min_atom_distance_nm=float(build_policy.min_atom_distance_nm),
+        )
+        attempt_record = {
+            "attempt": int(attempt),
+            "strategy": str(attempt_strategy),
+            "gap_multiplier": float(gap_multiplier),
+            "stack_dir": str(attempt_stack_dir),
+            "relax_dir": str(attempt_relax_dir),
+            "relaxed_gro": str(relaxed_gro),
+            "accepted": bool(acceptance.get("accepted", False)),
+            "failed_checks": list(acceptance.get("failed_checks") or []),
+        }
+        attempts.append(attempt_record)
+        if bool(acceptance.get("accepted", False)):
+            break
+        rescue = _select_stack_rescue_strategy(acceptance)
+        rescue_strategy = str(rescue["strategy"])
+        attempt_record["next_rescue"] = rescue
+        if rescue_strategy == "stop_charge_imbalance":
+            break
 
     polymer_bulk = polymer_ctx["bulk_calibration_result"]
     electrolyte_bulk = electrolyte_ctx["bulk_calibration_result"]
     manifest_path = release_dir / "interface_manifest.json"
+    accepted = bool(acceptance.get("accepted", False))
+    acceptance_required = _policy_requires_acceptance(policy=build_policy, route=route)
+    interface_build_status = (
+        "accepted"
+        if accepted
+        else ("failed_acceptance_hard_stop" if acceptance_required else "failed_acceptance_low_confidence")
+    )
     notes = (
         f"route={str(route)}",
+        f"interface_build_status={interface_build_status}",
         f"graphite_preparation_summary={graphite.summary_path}",
         f"polymer_bulk_calibration_summary={polymer_bulk.summary_path}",
         f"electrolyte_bulk_calibration_summary={electrolyte_bulk.summary_path}",
@@ -675,6 +839,9 @@ def release_graphite_polymer_electrolyte_stack(
         json.dumps(
             {
                 "route": str(route),
+                "interface_build_status": interface_build_status,
+                "policy": asdict(build_policy),
+                "interface_design_summary": graphite.context.get("interface_design_summary"),
                 "phase_preparation_mode": str(polymer_ctx.get("phase_preparation_mode", "bulk_calibrate_walled_phase")),
                 "graphite_preparation_summary": str(graphite.summary_path),
                 "graphite_spec": asdict(graphite.graphite_spec),
@@ -698,13 +865,19 @@ def release_graphite_polymer_electrolyte_stack(
                 "electrolyte_phase_confined_summary": str(electrolyte_interphase.summary_path),
                 "polymer_walled_phase_build_summary": polymer_ctx.get("walled_build_summary_path"),
                 "electrolyte_walled_phase_build_summary": electrolyte_ctx.get("walled_build_summary_path"),
+                "charge_balance": {
+                    "polymer": dict(polymer_phase_build.get("charge_balance", {})),
+                    "electrolyte": dict(electrolyte_inputs.get("charge_balance", {})),
+                    "stack": dict(charge_summary),
+                },
                 "stack_master_xy_nm": [float(stack_master_xy_nm[0]), float(stack_master_xy_nm[1])],
                 "stack_gap_ang": {
                     "graphite_to_polymer": float(graphite_polymer_gap_ang),
                     "polymer_to_electrolyte": float(polymer_electrolyte_gap_ang),
                 },
-                "stack_box_nm": [float(x) for x in stacked.box_nm],
-                "stack_export_dir": str(stack_dir),
+                "stack_box_nm": ([] if stack_box_nm is None else [float(x) for x in stack_box_nm]),
+                "stack_export_dir": str(Path(export.system_gro).parent if export is not None else stack_dir),
+                "stack_attempts": attempts,
                 "relaxed_gro": str(relaxed_gro),
                 "ndx_groups": {name: len(idxs) for name, idxs in ndx_groups.items()},
                 "stack_checks": stack_checks,
@@ -722,6 +895,8 @@ def release_graphite_polymer_electrolyte_stack(
         {
             "stage": "completed",
             "route": str(route),
+            "interface_build_status": interface_build_status,
+            "policy": asdict(build_policy),
             "phase_preparation_mode": str(polymer_ctx.get("phase_preparation_mode", "bulk_calibrate_walled_phase")),
             "graphite_preparation_summary": str(graphite.summary_path),
             "graphite_footprint_negotiations": [dict(x) for x in graphite.footprint_negotiations],
@@ -734,10 +909,16 @@ def release_graphite_polymer_electrolyte_stack(
             "electrolyte_phase_confined_summary": str(electrolyte_interphase.summary_path),
             "manifest_path": str(manifest_path),
             "relaxed_gro": str(relaxed_gro),
+            "stack_attempts": attempts,
             "stack_checks": stack_checks,
             "acceptance": acceptance,
         },
     )
+    if not accepted and acceptance_required:
+        raise RuntimeError(
+            "Graphite/polymer/electrolyte interface failed acceptance gates in production route. "
+            f"manifest={manifest_path} failed_checks={list(acceptance.get('failed_checks') or [])}"
+        )
 
     sandwich_result = GraphitePolymerElectrolyteSandwichResult(
         graphite=graphite.graphite,
@@ -1028,6 +1209,19 @@ def _prepare_polymer_phase_species(*, ff, ion_ff, polymer: PolymerSlabSpec, rela
     notes: list[str] = []
 
     chain_charge, chain_charge_meta = _polymer_chain_effective_charge(polymer_chain)
+    charge_balance = {
+        "chain_charge_e": int(chain_charge),
+        "chain_count": int(chain_count),
+        "polymer_total_charge_e": int(chain_charge * chain_count),
+        "counterion_name": None,
+        "counterion_charge_e": 0,
+        "counterion_count": 0,
+        "counterion_total_charge_e": 0,
+        "net_charge_e": int(chain_charge * chain_count),
+        "neutralized": bool(chain_charge == 0),
+        "charge_source": str(chain_charge_meta.get("source", "unknown")),
+        "raw_chain_charge_e": float(chain_charge_meta.get("raw_total_charge", chain_charge)),
+    }
     if chain_charge != 0:
         if polymer.counterion is None:
             raise RuntimeError(
@@ -1051,6 +1245,17 @@ def _prepare_polymer_phase_species(*, ff, ion_ff, polymer: PolymerSlabSpec, rela
             species.append(counterion)
             counts.append(counterion_count)
             charge_scale.append(float(polymer.counterion.charge_scale))
+            counterion_total = int(counterion_count * ion_charge)
+            charge_balance.update(
+                {
+                    "counterion_name": str(polymer.counterion.name),
+                    "counterion_charge_e": int(ion_charge),
+                    "counterion_count": int(counterion_count),
+                    "counterion_total_charge_e": int(counterion_total),
+                    "net_charge_e": int(total_polymer_charge + counterion_total),
+                    "neutralized": bool(total_polymer_charge + counterion_total == 0),
+                }
+            )
             notes.append(
                 f"polymer effective charge per chain={chain_charge} via {chain_charge_meta['source']}; "
                 f"added {counterion_count} {polymer.counterion.name} counterions to neutralize the slab"
@@ -1076,6 +1281,7 @@ def _prepare_polymer_phase_species(*, ff, ion_ff, polymer: PolymerSlabSpec, rela
         "counts": counts,
         "charge_scale": charge_scale,
         "charged_phase": bool(chain_charge != 0),
+        "charge_balance": charge_balance,
         "notes": tuple(notes),
     }
 
@@ -1367,10 +1573,29 @@ def _prepare_electrolyte_phase_inputs(
         float(electrolyte.salt_cation.charge_scale),
         float(electrolyte.salt_anion.charge_scale),
     ]
+    cation_count = int(prep.direct_plan.target_counts[-2])
+    anion_count = int(prep.direct_plan.target_counts[-1])
+    cation_charge = int(_smiles_formal_charge(electrolyte.salt_cation.smiles))
+    anion_charge = int(_smiles_formal_charge(electrolyte.salt_anion.smiles))
+    charge_balance = {
+        "salt_cation": str(electrolyte.salt_cation.name),
+        "salt_anion": str(electrolyte.salt_anion.name),
+        "cation_count": int(cation_count),
+        "anion_count": int(anion_count),
+        "cation_charge_e": int(cation_charge),
+        "anion_charge_e": int(anion_charge),
+        "salt_net_charge_e": int(cation_count * cation_charge + anion_count * anion_charge),
+        "neutralized": bool(cation_count * cation_charge + anion_count * anion_charge == 0),
+        "charge_scale": {
+            str(electrolyte.salt_cation.name): float(electrolyte.salt_cation.charge_scale),
+            str(electrolyte.salt_anion.name): float(electrolyte.salt_anion.charge_scale),
+        },
+    }
     return {
         "mols": mols,
         "charge_scale": charge_scale,
         "prep": prep,
+        "charge_balance": charge_balance,
     }
 
 
@@ -1797,6 +2022,8 @@ def _sandwich_relaxation_stages(*, relax: SandwichRelaxationSpec, freeze_group: 
     base = default_mdp_params()
     freeze = _freeze_block(freeze_group)
     fixed_xy = fixed_xy_semiisotropic_npt_overrides(pressure_bar=float(relax.pressure_bar))
+    contact_ps = max(float(relax.stacked_exchange_ps) * 0.40, 1.0)
+    natural_ps = max(float(relax.stacked_exchange_ps) * 0.60, 1.0)
     return [
         EqStage(
             "01_em",
@@ -1816,7 +2043,7 @@ def _sandwich_relaxation_stages(*, relax: SandwichRelaxationSpec, freeze_group: 
             "02_pre_nvt",
             "nvt",
             MdpSpec(
-                NVT_MDP,
+                NVT_NO_CONSTRAINTS_MDP,
                 {
                     **base,
                     "dt": 0.001,
@@ -1832,7 +2059,7 @@ def _sandwich_relaxation_stages(*, relax: SandwichRelaxationSpec, freeze_group: 
             "03_z_relax",
             "npt",
             MdpSpec(
-                NPT_MDP,
+                NPT_NO_CONSTRAINTS_MDP,
                 {
                     **base,
                     **fixed_xy,
@@ -1849,7 +2076,27 @@ def _sandwich_relaxation_stages(*, relax: SandwichRelaxationSpec, freeze_group: 
             ),
         ),
         EqStage(
-            "04_exchange",
+            "04_contact_release",
+            "npt",
+            MdpSpec(
+                NPT_NO_CONSTRAINTS_MDP,
+                {
+                    **base,
+                    **fixed_xy,
+                    "dt": 0.001,
+                    "nsteps": max(int(round(float(contact_ps) / 0.001)), 1000),
+                    "ref_t": float(relax.temperature_k),
+                    "gen_temp": float(relax.temperature_k),
+                    "gen_vel": "no",
+                    "ref_p": fixed_xy["ref_p"],
+                    "compressibility": fixed_xy["compressibility"],
+                    "pcoupltype": fixed_xy["pcoupltype"],
+                    "extra_mdp": freeze,
+                },
+            ),
+        ),
+        EqStage(
+            "05_natural_exchange",
             "npt",
             MdpSpec(
                 NPT_MDP,
@@ -1857,10 +2104,14 @@ def _sandwich_relaxation_stages(*, relax: SandwichRelaxationSpec, freeze_group: 
                     **base,
                     **fixed_xy,
                     "dt": 0.002,
-                    "nsteps": max(int(round(float(relax.stacked_exchange_ps) / 0.002)), 1000),
+                    "nsteps": max(int(round(float(natural_ps) / 0.002)), 1000),
                     "ref_t": float(relax.temperature_k),
                     "gen_temp": float(relax.temperature_k),
                     "gen_vel": "no",
+                    "continuation": "yes",
+                    "constraints": "h-bonds",
+                    "lincs_iter": 4,
+                    "lincs_order": 12,
                     "ref_p": fixed_xy["ref_p"],
                     "compressibility": fixed_xy["compressibility"],
                     "pcoupltype": fixed_xy["pcoupltype"],
@@ -3500,9 +3751,11 @@ def build_graphite_polymer_electrolyte_sandwich(
     polymer: PolymerSlabSpec,
     electrolyte: ElectrolyteSlabSpec,
     relax: SandwichRelaxationSpec = SandwichRelaxationSpec(),
+    policy: InterfaceBuildPolicy | None = None,
     route: str = "screening",
     restart: bool | None = None,
 ) -> GraphitePolymerElectrolyteSandwichResult:
+    build_policy = _resolve_interface_build_policy(policy)
     if len(electrolyte.solvents) != len(electrolyte.solvent_mass_ratio):
         raise ValueError("electrolyte.solvents and electrolyte.solvent_mass_ratio must have the same length")
     graphite_stage = prepare_graphite_substrate(
@@ -3516,6 +3769,16 @@ def build_graphite_polymer_electrolyte_sandwich(
         route=route,
         restart=restart,
     )
+    design_path = _write_interface_design_summary(
+        work_dir=graphite_stage.work_dir,
+        route=route,
+        graphite=graphite_stage,
+        polymer=polymer,
+        electrolyte=electrolyte,
+        relax=relax,
+        policy=build_policy,
+    )
+    graphite_stage.context["interface_design_summary"] = str(design_path)
     polymer_bulk = calibrate_polymer_bulk_phase(
         work_dir=graphite_stage.work_dir,
         ff=ff,
@@ -3563,6 +3826,7 @@ def build_graphite_polymer_electrolyte_sandwich(
         polymer_interphase=polymer_interphase,
         electrolyte_interphase=electrolyte_interphase,
         relax=relax,
+        policy=build_policy,
         route=route,
         restart=restart,
     )
@@ -3580,6 +3844,7 @@ def build_graphite_peo_electrolyte_sandwich(
     polymer: PolymerSlabSpec = PolymerSlabSpec(),
     electrolyte: ElectrolyteSlabSpec = ElectrolyteSlabSpec(),
     relax: SandwichRelaxationSpec = SandwichRelaxationSpec(),
+    policy: InterfaceBuildPolicy | None = None,
     route: str = "screening",
     restart: bool | None = None,
 ) -> GraphitePolymerElectrolyteSandwichResult:
@@ -3591,6 +3856,7 @@ def build_graphite_peo_electrolyte_sandwich(
         polymer=polymer,
         electrolyte=electrolyte,
         relax=relax,
+        policy=policy,
         route=route,
         restart=restart,
     )
@@ -3605,6 +3871,34 @@ def build_graphite_cmcna_electrolyte_sandwich(
     polymer: PolymerSlabSpec | None = None,
     electrolyte: ElectrolyteSlabSpec | None = None,
     relax: SandwichRelaxationSpec = SandwichRelaxationSpec(),
+    policy: InterfaceBuildPolicy | None = None,
+    route: str = "screening",
+    restart: bool | None = None,
+) -> GraphitePolymerElectrolyteSandwichResult:
+    return build_cmcna_graphite_electrolyte_stack(
+        work_dir=work_dir,
+        ff=ff,
+        ion_ff=ion_ff,
+        graphite=graphite,
+        polymer=polymer,
+        electrolyte=electrolyte,
+        relax=relax,
+        policy=policy,
+        route=route,
+        restart=restart,
+    )
+
+
+def build_cmcna_graphite_electrolyte_stack(
+    *,
+    work_dir,
+    ff,
+    ion_ff,
+    graphite: GraphiteSubstrateSpec = GraphiteSubstrateSpec(),
+    polymer: PolymerSlabSpec | None = None,
+    electrolyte: ElectrolyteSlabSpec | None = None,
+    relax: SandwichRelaxationSpec = SandwichRelaxationSpec(),
+    policy: InterfaceBuildPolicy | None = None,
     route: str = "screening",
     restart: bool | None = None,
 ) -> GraphitePolymerElectrolyteSandwichResult:
@@ -3616,6 +3910,7 @@ def build_graphite_cmcna_electrolyte_sandwich(
         polymer=(polymer if polymer is not None else default_cmcna_polymer_spec()),
         electrolyte=(electrolyte if electrolyte is not None else default_carbonate_lipf6_electrolyte_spec()),
         relax=relax,
+        policy=_resolve_interface_build_policy(policy),
         route=route,
         restart=restart,
     )
@@ -3627,6 +3922,7 @@ __all__ = [
     "GraphitePreparationResult",
     "GraphitePolymerElectrolyteSandwichResult",
     "GraphiteSubstrateSpec",
+    "InterfaceBuildPolicy",
     "InterfaceTransportResult",
     "InterphaseBuildResult",
     "MoleculeSpec",
@@ -3636,6 +3932,7 @@ __all__ = [
     "StackReleaseResult",
     "analyze_interface_transport",
     "build_cmc_electrolyte_interphase",
+    "build_cmcna_graphite_electrolyte_stack",
     "build_graphite_cmc_interphase",
     "build_graphite_cmcna_glucose6_periodic_case",
     "build_graphite_cmcna_electrolyte_sandwich",

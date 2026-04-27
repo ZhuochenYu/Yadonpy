@@ -93,65 +93,26 @@ if __name__ == "__main__":
         stacked_exchange_ps=(12.0 if MATRIX_FAST else (60.0 if SMOKE else 160.0)),
     )
 
-    graphite_stage = yp.prepare_graphite_substrate(
+    result = yp.build_cmcna_graphite_electrolyte_stack(
         work_dir=work_dir,
         ff=ff,
         ion_ff=ion_ff,
         graphite=graphite,
         polymer=polymer,
         electrolyte=electrolyte,
-        relax=relax,
-        route=ROUTE,
-        restart=restart,
-    )
-    polymer_bulk = yp.calibrate_polymer_bulk_phase(
-        work_dir=work_dir,
-        ff=ff,
-        ion_ff=ion_ff,
-        graphite=graphite_stage,
-        polymer=polymer,
-        relax=relax,
-        restart=restart,
-    )
-    electrolyte_bulk = yp.calibrate_electrolyte_bulk_phase(
-        work_dir=work_dir,
-        ff=ff,
-        ion_ff=ion_ff,
-        graphite=graphite_stage,
-        electrolyte=electrolyte,
-        relax=relax,
-        restart=restart,
-    )
-    cmc_interphase = yp.build_graphite_cmc_interphase(
-        work_dir=work_dir,
-        ff=ff,
-        ion_ff=ion_ff,
-        graphite=graphite_stage,
-        polymer=polymer,
-        polymer_bulk=polymer_bulk,
-        relax=relax,
-        route=ROUTE,
-        restart=restart,
-    )
-    top_interphase = yp.build_cmc_electrolyte_interphase(
-        work_dir=work_dir,
-        ff=ff,
-        ion_ff=ion_ff,
-        graphite=graphite_stage,
-        electrolyte=electrolyte,
-        electrolyte_bulk=electrolyte_bulk,
-        relax=relax,
-        route=ROUTE,
-        restart=restart,
-    )
-    result = yp.release_graphite_cmc_electrolyte_stack(
-        work_dir=work_dir,
-        ff=ff,
-        graphite=graphite_stage,
-        polymer_interphase=cmc_interphase,
-        electrolyte_interphase=top_interphase,
+        policy=yp.InterfaceBuildPolicy(
+            phase_preparation="final_xy_walled",
+            stack_relaxation="natural_contact",
+            acceptance_required=True,
+            retry_profile="conservative",
+            max_stack_rescue_rounds=(0 if MATRIX_FAST else 1),
+        ),
         relax=relax,
         route=ROUTE,
         restart=restart,
     )
     yp.print_interface_result_summary(result, profile=PROFILE)
+
+    # Advanced/debug users can still run the explicit stage API manually:
+    # prepare_graphite_substrate -> calibrate_*_bulk_phase ->
+    # build_*_interphase -> release_graphite_*_electrolyte_stack.

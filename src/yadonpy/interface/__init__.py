@@ -1,3 +1,11 @@
+"""Public interface-building API for graphite/polymer/electrolyte workflows.
+
+The interface package exposes the higher-level route planners, slab builders,
+bulk calibration helpers, and sandwich convenience constructors. Importing from
+this module keeps user scripts short while implementation details remain split
+across focused submodules.
+"""
+
 from __future__ import annotations
 
 from .builder import (
@@ -56,6 +64,7 @@ from .sandwich import (
     GraphitePreparationResult,
     GraphitePolymerElectrolyteSandwichResult,
     GraphiteSubstrateSpec,
+    InterfaceBuildPolicy,
     InterfaceTransportResult,
     InterphaseBuildResult,
     MoleculeSpec,
@@ -65,6 +74,7 @@ from .sandwich import (
     StackReleaseResult,
     analyze_interface_transport,
     build_cmc_electrolyte_interphase,
+    build_cmcna_graphite_electrolyte_stack,
     build_graphite_cmc_interphase,
     build_graphite_cmcna_glucose6_periodic_case,
     build_graphite_cmcna_electrolyte_sandwich,
@@ -137,6 +147,7 @@ __all__ = [
     "InterfaceStageSpec",
     "GraphiteSubstrateSpec",
     "GraphitePreparationResult",
+    "InterfaceBuildPolicy",
     "PolymerSlabSpec",
     "ElectrolyteSlabSpec",
     "InterphaseBuildResult",
@@ -152,6 +163,7 @@ __all__ = [
     "build_graphite_cmc_interphase",
     "build_polymer_electrolyte_interphase",
     "build_cmc_electrolyte_interphase",
+    "build_cmcna_graphite_electrolyte_stack",
     "release_graphite_polymer_electrolyte_stack",
     "release_graphite_cmc_electrolyte_stack",
     "analyze_interface_transport",

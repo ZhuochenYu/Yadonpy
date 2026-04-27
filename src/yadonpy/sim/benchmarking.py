@@ -1,3 +1,11 @@
+"""Benchmark-reference data extraction and comparison helpers.
+
+This module converts simulation outputs into compact benchmark summaries and
+literature-alignment diagnostics. It intentionally stays JSON-friendly so case
+scripts can write auditable comparison artifacts without embedding plotting or
+MD execution logic.
+"""
+
 from __future__ import annotations
 
 import json
@@ -338,7 +346,7 @@ def summarize_rdkit_species_forcefield(
         atype = atom.GetProp("ff_type") if atom.HasProp("ff_type") else atom.GetSymbol()
         atomtypes[str(atype)] = int(atomtypes.get(str(atype), 0)) + 1
     total_charge = float(sum(charges))
-    return {
+    summary = {
         "label": str(label),
         "moltype_hint": str(moltype_hint or label),
         "natoms": int(natoms),
@@ -349,6 +357,21 @@ def summarize_rdkit_species_forcefield(
         "charge_min_e": float(min(charges)) if charges else 0.0,
         "charge_max_e": float(max(charges)) if charges else 0.0,
     }
+    try:
+        if mol.HasProp("_yadonpy_resp_profile"):
+            summary["resp_profile"] = str(mol.GetProp("_yadonpy_resp_profile")).strip().lower()
+        if mol.HasProp("_yadonpy_qm_recipe_json"):
+            summary["qm_recipe"] = json.loads(mol.GetProp("_yadonpy_qm_recipe_json"))
+        if mol.HasProp("_yadonpy_resp_constraints_json"):
+            constraints = json.loads(mol.GetProp("_yadonpy_resp_constraints_json"))
+            if isinstance(constraints, dict):
+                summary["resp_constraints"] = constraints
+                groups = constraints.get("equivalence_groups") or constraints.get("atom_equivalence_groups")
+                if isinstance(groups, list):
+                    summary["resp_equivalence_group_count"] = len(groups)
+    except Exception:
+        pass
+    return summary
 
 
 def _representative_site_rows(
@@ -688,6 +711,7 @@ def build_transport_summary(
     anion_moltype: Optional[str] = None,
     thermo_xvg: Optional[Path] = None,
     literature_band: Optional[Mapping[str, Any]] = None,
+    analysis_metadata: Optional[Mapping[str, Any]] = None,
 ) -> dict[str, Any]:
     li_record = None
     for moltype, rec in (msd or {}).items():
@@ -777,6 +801,7 @@ def build_transport_summary(
         "literature_band": literature,
         "within_literature_band": within_band,
         "factor_below_literature_min": factor_below_min,
+        "analysis_metadata": dict(analysis_metadata or {}),
     }
 
 
