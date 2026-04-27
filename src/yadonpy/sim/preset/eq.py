@@ -491,7 +491,10 @@ def _resolve_production_gpu_offload_mode(ac, requested_mode: object) -> str:
     token = _normalize_gpu_offload_mode(requested_mode)
     if token != "auto":
         return token
-    return "conservative" if _cell_meta_contains_polymer(ac) else "full"
+    # Public YadonPy default: every non-EM MD stage should use full GPU offload
+    # when GPU execution is enabled.  The conservative CPU bonded/update path is
+    # still available, but only when explicitly requested by the caller.
+    return "full"
 
 
 def _resolve_production_bridge_ps(ac, bridge_ps: float | None) -> float:

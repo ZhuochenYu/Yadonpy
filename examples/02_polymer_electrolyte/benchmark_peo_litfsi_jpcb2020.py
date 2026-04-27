@@ -47,6 +47,13 @@ def _env_float(name: str, default: float) -> float:
     return float(raw)
 
 
+def _env_text(name: str, default: str) -> str:
+    raw = os.environ.get(name)
+    if raw is None or not str(raw).strip():
+        return str(default)
+    return str(raw).strip()
+
+
 def _env_list(name: str, default: str) -> list[str]:
     raw = os.environ.get(name, default)
     return [item.strip() for item in str(raw).split(",") if item.strip()]
@@ -84,9 +91,10 @@ max_atoms = _env_int("MAX_ATOMS", 30000 if not paper_size else 60000)
 min_atoms = _env_int("MIN_ATOMS", 10000 if not _env_bool("SMOKE", False) else 1)
 
 mpi = _env_int("MPI", 1)
-omp = _env_int("OMP", 16)
+omp = _env_int("OMP", 14)
 gpu = _env_int("GPU", 1)
 gpu_id = _env_int("GPU_ID", 0)
+gpu_offload_mode = _env_text("GPU_OFFLOAD_MODE", "auto")
 omp_psi4 = _env_int("OMP_PSI4", 32)
 mem_mb = _env_int("MEM_MB", 20000)
 
@@ -253,20 +261,45 @@ def _run_case(root, case: dict, peo, li, tfsi, ff_variant: str) -> dict:
             break
         additional_rounds += 1
         eq_more = eq.Additional(ac, work_dir=case_root)
-        ac = eq_more.exec(temp=equil_temp_k, press=press_bar, mpi=mpi, omp=omp, gpu=gpu, gpu_id=gpu_id)
+        ac = eq_more.exec(
+            temp=equil_temp_k,
+            press=press_bar,
+            mpi=mpi,
+            omp=omp,
+            gpu=gpu,
+            gpu_id=gpu_id,
+            gpu_offload_mode=gpu_offload_mode,
+        )
         analy_hot = eq_more.analyze()
         analy_hot.get_all_prop(temp=equil_temp_k, press=press_bar, save=True)
         melt_ok = analy_hot.check_eq()
 
     if abs(equil_temp_k - float(case["target_temp_k"])) > 1.0e-6:
         eq_target = eq.Additional(ac, work_dir=case_root)
-        ac = eq_target.exec(temp=float(case["target_temp_k"]), press=press_bar, mpi=mpi, omp=omp, gpu=gpu, gpu_id=gpu_id)
+        ac = eq_target.exec(
+            temp=float(case["target_temp_k"]),
+            press=press_bar,
+            mpi=mpi,
+            omp=omp,
+            gpu=gpu,
+            gpu_id=gpu_id,
+            gpu_offload_mode=gpu_offload_mode,
+        )
         analy_target = eq_target.analyze()
         analy_target.get_all_prop(temp=float(case["target_temp_k"]), press=press_bar, save=True)
         analy_target.check_eq()
 
     npt = eq.NPT(ac, work_dir=case_root)
-    ac = npt.exec(temp=float(case["target_temp_k"]), press=press_bar, mpi=mpi, omp=omp, gpu=gpu, gpu_id=gpu_id, time=float(case["production_ns"]))
+    ac = npt.exec(
+        temp=float(case["target_temp_k"]),
+        press=press_bar,
+        mpi=mpi,
+        omp=omp,
+        gpu=gpu,
+        gpu_id=gpu_id,
+        time=float(case["production_ns"]),
+        gpu_offload_mode=gpu_offload_mode,
+    )
 
     analy = npt.analyze()
     prop_data = analy.get_all_prop(temp=float(case["target_temp_k"]), press=press_bar, save=True)
@@ -325,6 +358,7 @@ def _run_case(root, case: dict, peo, li, tfsi, ff_variant: str) -> dict:
         "additional_rounds": int(additional_rounds),
         "gpu": gpu,
         "gpu_id": gpu_id,
+        "gpu_offload_mode": gpu_offload_mode,
     }
 
     _dump_json(analysis_dir / "force_balance_report.json", force_balance)
