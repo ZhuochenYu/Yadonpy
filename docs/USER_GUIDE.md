@@ -261,7 +261,24 @@ graphite_stage = yp.prepare_graphite_substrate(
 CMC-Na uses the same workflow family, but its polymer specification is more constrained
 because the charged groups and counterions matter chemically.
 
-## 7. Restart, Resume, and Work Directories
+## 7. Literature Benchmarks
+
+Example 02 includes a dedicated PEO-LiTFSI charge-scaling reproduction entry for
+Gudla/Zhang/Brandell, J. Phys. Chem. B 2020 (`10.1021/acs.jpcb.0c05108`):
+
+```bash
+cd examples/02_polymer_electrolyte
+DRY_RUN=1 python benchmark_peo_litfsi_jpcb2020.py
+```
+
+The workflow uses GAFF2 + MERZ + RESP, keeps the paper's EO:Li ratio
+(`12.5:1`), and stores the selected charge-scaling case, Tg, target
+normalized inverse temperature, and production-time provenance in the benchmark
+metadata.  Use `JPCB_CASES=P1.00S1.00,P1.00S0.75,P1.20S0.75` to choose cases,
+`PAPER_SIZE=1` for the original 200-chain system, and `PROD_NS=...` for
+long-production validation.
+
+## 8. Restart, Resume, and Work Directories
 
 Restart behavior is a first-class feature.
 
@@ -289,7 +306,7 @@ with run_options(restart=False):
     ...
 ```
 
-## 8. Local vs Remote Execution
+## 9. Local vs Remote Execution
 
 Not every task belongs on the remote GPU node.
 
@@ -309,7 +326,7 @@ Prefer the remote machine for:
 - heavier Psi4 jobs,
 - anything that needs both sustained CPU and GPU time.
 
-## 9. Thermomechanical Studies
+## 10. Thermomechanical Studies
 
 For `Tg` and elongation, the recommended pattern is now:
 
@@ -349,7 +366,7 @@ yp.print_mechanics_result_summary(tg_result)
 - `stress_strain.svg`
 - material summary fields such as Young's modulus and peak stress
 
-## 10. Common Problems
+## 11. Common Problems
 
 ### `doctor()` says `psiresp` is missing or broken
 
@@ -389,7 +406,7 @@ specification still matter.
 Do not trust the final stacked system until the phase-level bulk densities are already close
 to expectation. Bulk-first equilibration is the safest starting point.
 
-## 10. Where to Go Next
+## 12. Where to Go Next
 
 - Read [API Reference](API_REFERENCE.md) for the full public API surface.
 - Read [Architecture](ARCHITECTURE.md) for the design rules behind MolDB, restart behavior,

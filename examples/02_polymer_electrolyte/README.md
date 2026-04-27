@@ -25,6 +25,20 @@ cd examples/02_polymer_electrolyte
 python benchmark_peo_litfsi_60c.py
 ```
 
+JPCB 2020 PEO-LiTFSI charge-scaling reproduction workflow:
+
+```bash
+cd examples/02_polymer_electrolyte
+DRY_RUN=1 python benchmark_peo_litfsi_jpcb2020.py
+```
+
+The JPCB workflow targets Gudla/Zhang/Brandell, J. Phys. Chem. B 2020
+(`10.1021/acs.jpcb.0c05108`).  It uses GAFF2 + MERZ + RESP by default and
+resolves the paper's Figure 3 comparison temperature from
+`1000/(T - Tg + 50) = 5.4`, rather than reusing the 60 C experimental benchmark
+temperature.  The default cases are `P1.00S1.00`, `P1.00S0.75`, and
+`P1.20S0.75`; override them with `JPCB_CASES=...`.
+
 The benchmark also accepts optional screening variables to match the JPCB 2020 charge-scaling study more closely:
 
 - `POLYMER_CHARGE_SCALE`

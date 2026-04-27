@@ -299,17 +299,18 @@ if __name__ == "__main__":
         production_ns=prod_ns,
     )
 
+    effective_eo_li_ratio = float(chain_dp * chain_count) / max(float(salt_pairs), 1.0)
     metadata = {
         "benchmark_name": "PEO/LiTFSI 60C",
         "literature_preset": dict(literature_preset) if literature_preset is not None else None,
-        "eo_li_ratio": "20:1",
+        "eo_li_ratio": f"{effective_eo_li_ratio:.3g}:1",
         "melt_temp_k": melt_temp_k,
         "target_temp_k": target_temp_k,
         "prod_ns": prod_ns,
         "chain_dp": chain_dp,
         "chain_count": chain_count,
         "salt_pairs": salt_pairs,
-        "effective_eo_li_ratio": float(chain_dp * chain_count) / max(float(salt_pairs), 1.0),
+        "effective_eo_li_ratio": effective_eo_li_ratio,
         "estimated_total_atoms": estimated_atoms,
         "charge_scale": {"polymer": polymer_charge_scale, "li": li_charge_scale, "tfsi": anion_charge_scale},
         "gpu": gpu,
