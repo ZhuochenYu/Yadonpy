@@ -14,6 +14,14 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from ..core import chem_utils as core_utils
+from ..core.metadata import (
+    PSIRESP_CONSTRAINTS_PROP,
+    QM_RECIPE_PROP,
+    RESP_CONSTRAINTS_PROP,
+    RESP_PROFILE_PROP,
+    read_json_prop,
+    read_text_prop,
+)
 
 
 def _stable_signature(payload: Any) -> str:
@@ -164,29 +172,21 @@ def _molecule_compatibility_context(mol, *, mol_name: str | None = None) -> Dict
     except Exception:
         context["_localized_charge_groups"] = False
 
-    try:
-        if mol.HasProp("_yadonpy_resp_profile"):
-            profile = str(mol.GetProp("_yadonpy_resp_profile")).strip().lower()
-            if profile:
-                context["resp_profile"] = profile
-    except Exception:
-        pass
+    profile = read_text_prop(mol, RESP_PROFILE_PROP)
+    if profile:
+        context["resp_profile"] = str(profile).strip().lower()
 
     for prop, context_key in (
-        ("_yadonpy_qm_recipe_json", "qm_recipe_signature"),
-        ("_yadonpy_resp_constraints_json", "resp_constraints_signature"),
-        ("_yadonpy_psiresp_constraints", "psiresp_constraints_signature"),
+        (QM_RECIPE_PROP, "qm_recipe_signature"),
+        (RESP_CONSTRAINTS_PROP, "resp_constraints_signature"),
+        (PSIRESP_CONSTRAINTS_PROP, "psiresp_constraints_signature"),
     ):
         try:
-            if not mol.HasProp(prop):
+            payload = read_json_prop(mol, prop)
+            if payload is None:
+                payload = read_text_prop(mol, prop)
+            if payload is None:
                 continue
-            raw = str(mol.GetProp(prop)).strip()
-            if not raw:
-                continue
-            try:
-                payload = json.loads(raw)
-            except Exception:
-                payload = raw
             context[context_key] = _stable_signature(payload)
         except Exception:
             continue

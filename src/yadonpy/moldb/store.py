@@ -17,6 +17,7 @@ except Exception:  # pragma: no cover - optional on some stripped RDKit builds
     RDLogger = None
 
 from ..core import chem_utils as utils
+from ..core.metadata import read_json_prop, write_json_prop, write_text_prop
 from ..core.polyelectrolyte import annotate_polyelectrolyte_metadata, uses_localized_charge_groups
 from ..io.mol2 import write_mol2
 
@@ -64,13 +65,7 @@ def _bonded_meta_from_mol(mol: Chem.Mol) -> Dict[str, str]:
 
 
 def _json_prop(mol: Chem.Mol, key: str):
-    try:
-        if hasattr(mol, "HasProp") and mol.HasProp(key):
-            raw = json.loads(mol.GetProp(key))
-            return raw
-    except Exception:
-        pass
-    return None
+    return read_json_prop(mol, key, default=None)
 
 
 def _variant_default_token(value: str | None, *, default: str) -> str:
@@ -776,7 +771,7 @@ def _restore_polyelectrolyte_variant(mol: Chem.Mol, meta: dict[str, Any] | None)
         try:
             value = meta.get(key)
             if value is not None:
-                mol.SetProp(prop, json.dumps(value, ensure_ascii=False))
+                write_json_prop(mol, prop, value)
         except Exception:
             continue
     try:
@@ -787,9 +782,9 @@ def _restore_polyelectrolyte_variant(mol: Chem.Mol, meta: dict[str, Any] | None)
         if meta.get("constraint_signature"):
             mol.SetProp("_YADONPY_CONSTRAINT_SIGNATURE", str(meta.get("constraint_signature")))
         if meta.get("resp_profile"):
-            mol.SetProp("_yadonpy_resp_profile", str(meta.get("resp_profile")))
+            write_text_prop(mol, "_yadonpy_resp_profile", str(meta.get("resp_profile")))
         if isinstance(meta.get("qm_recipe"), dict):
-            mol.SetProp("_yadonpy_qm_recipe_json", json.dumps(meta.get("qm_recipe"), ensure_ascii=False))
+            write_json_prop(mol, "_yadonpy_qm_recipe_json", meta.get("qm_recipe"))
     except Exception:
         pass
 
@@ -806,11 +801,11 @@ def _restore_polyelectrolyte_variant(mol: Chem.Mol, meta: dict[str, Any] | None)
             charge_groups = summary.get("groups") if isinstance(summary, dict) else None
             resp_constraints = regenerated.get("constraints")
             if isinstance(charge_groups, list):
-                mol.SetProp("_yadonpy_charge_groups_json", json.dumps(charge_groups, ensure_ascii=False))
+                write_json_prop(mol, "_yadonpy_charge_groups_json", charge_groups)
             if isinstance(resp_constraints, dict):
-                mol.SetProp("_yadonpy_resp_constraints_json", json.dumps(resp_constraints, ensure_ascii=False))
+                write_json_prop(mol, "_yadonpy_resp_constraints_json", resp_constraints)
             if isinstance(summary, dict):
-                mol.SetProp("_yadonpy_polyelectrolyte_summary_json", json.dumps(summary, ensure_ascii=False))
+                write_json_prop(mol, "_yadonpy_polyelectrolyte_summary_json", summary)
                 mol.SetProp("_YADONPY_POLYELECTROLYTE_MODE", "1" if uses_localized_charge_groups(summary) else "0")
     except Exception:
         pass
@@ -1149,10 +1144,10 @@ class MolDB:
                     regen_groups = regen_summary.get("groups") if isinstance(regen_summary, dict) else None
                     if isinstance(regen_summary, dict) and uses_localized_charge_groups(regen_summary):
                         if isinstance(regen_groups, list):
-                            mol.SetProp("_yadonpy_charge_groups_json", json.dumps(regen_groups, ensure_ascii=False))
+                            write_json_prop(mol, "_yadonpy_charge_groups_json", regen_groups)
                         if isinstance(regen_constraints, dict):
-                            mol.SetProp("_yadonpy_resp_constraints_json", json.dumps(regen_constraints, ensure_ascii=False))
-                        mol.SetProp("_yadonpy_polyelectrolyte_summary_json", json.dumps(regen_summary, ensure_ascii=False))
+                            write_json_prop(mol, "_yadonpy_resp_constraints_json", regen_constraints)
+                        write_json_prop(mol, "_yadonpy_polyelectrolyte_summary_json", regen_summary)
                         mol.SetProp("_YADONPY_POLYELECTROLYTE_MODE", "1")
             except Exception:
                 pass

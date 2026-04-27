@@ -148,6 +148,33 @@ This keeps the defaults physically aligned:
   - role states: `polymer / solvent / anion / none`
   - site states: specific donor anchors with sparse states lumped into `OTHER`
 
+### Segment-first branched polymers
+
+For large repeat units, long block architectures, or branchable polymers, build reusable
+segments first and then polymerize those segments:
+
+```python
+from yadonpy.core import poly
+
+segment1 = poly.seg_gen([monomer_A, monomer_A, monomer_B])
+segment2 = poly.seg_gen([branchable_unit, branchable_unit, monomer_A])
+side = poly.seg_gen([side_unit], cap_tail="[H][*]")
+
+prebranched = poly.branch_segment_rw(
+    segment2,
+    [side],
+    mode="pre",
+    position=2,
+    exact_map={"position": 2, "site_index": 0, "branch": 0},
+)
+block = poly.block_segment_rw([segment1, prebranched], [3, 2])
+branched = poly.branch_segment_rw(block, [side], mode="post", position=2, ds=[1.0])
+```
+
+Use `*` or `[1*]` for the main-chain head/tail and `[2*]`, `[3*]`, ... for branch
+attachment sites. Segment generation preserves existing atom charges; it does not
+automatically rerun QM/RESP.
+
 ### Interface systems
 
 For interface work, the recommended pattern is:
@@ -178,6 +205,7 @@ resumed or audited without guessing which intermediate files are authoritative.
 - `examples/07_moldb_precompute_and_reuse`: one-shot MolDB catalog build and MolDB-backed reuse scripts.
 - `examples/08_graphite_polymer_electrolyte_sandwich`: graphite-polymer-electrolyte sandwich workflows for PEO and CMC-Na.
 - `examples/09_oplsaa_assignment`: compact OPLS-AA assignment workflows written in the same script-first style as the main examples.
+- `examples/11_segment_branch_polymer`: segment-first long-block and branched-polymer construction.
 
 ## Documentation
 

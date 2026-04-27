@@ -128,6 +128,7 @@ pf6 = yp.load_from_moldb(
 
 Use Example 07 when you want to precompute a broader catalog of reusable species first.
 Use Example 09 when the task is specifically OPLS-AA typing or OPLS-AA export rather than MolDB catalog construction.
+Use Example 11 for segment-first long-block and branched-polymer construction.
 
 ## 5. Build Polymer-Electrolyte Systems
 
@@ -155,6 +156,35 @@ qm.assign_charges(
 ```
 
 This keeps later scaling and analysis tied to explicit charged-group metadata.
+
+### Segment-first and branched polymers
+
+For branchable repeat units or large pre-optimized repeat motifs, use segment-first
+construction instead of forcing every atom into one monomer definition:
+
+```python
+from yadonpy.core import poly
+
+segment_a = poly.seg_gen([monomer_A, monomer_A, monomer_B])
+segment_b = poly.seg_gen([branchable_unit, branchable_unit, monomer_A])
+side_segment = poly.seg_gen([side_unit], cap_tail="[H][*]")
+
+prebranched_segment = poly.branch_segment_rw(
+    segment_b,
+    [side_segment],
+    mode="pre",
+    position=2,
+    exact_map={"position": 2, "site_index": 0, "branch": 0},
+)
+polymer = poly.block_segment_rw([segment_a, prebranched_segment], [3, 2])
+polymer = poly.branch_segment_rw(polymer, [side_segment], mode="post", position=2, ds=[1.0])
+```
+
+Connection labels are explicit:
+
+- `*` or `[1*]` is the main-chain head/tail label consumed by `seg_gen` and segment polymerization.
+- `[2*]`, `[3*]`, ... are preserved branch sites consumed by `branch_segment_rw`.
+- Existing per-atom charges are preserved and merged across consumed linker atoms; segment building does not automatically rerun QM/RESP.
 
 ## 5A. Analyze Transport Carefully
 

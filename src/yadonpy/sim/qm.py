@@ -26,6 +26,7 @@ from rdkit import Chem
 from rdkit import Geometry as Geom
 from ..core import chem_utils as core_utils
 from ..core import utils, const, calc
+from ..core.metadata import QM_RECIPE_PROP, RESP_PROFILE_PROP, write_json_prop, write_text_prop
 from ..core.logging_utils import format_elapsed as _fmt_elapsed
 from ..runtime import resolve_restart
 from .qm_wrapper import QMw
@@ -264,8 +265,8 @@ def _resolve_resp_qm_recipe(
 
 def _stamp_resp_recipe_metadata(mol, *, resp_profile: str, recipe: dict[str, Any]) -> None:
     try:
-        mol.SetProp("_yadonpy_resp_profile", str(resp_profile))
-        mol.SetProp("_yadonpy_qm_recipe_json", json.dumps(dict(recipe), ensure_ascii=False))
+        write_text_prop(mol, RESP_PROFILE_PROP, str(resp_profile))
+        write_json_prop(mol, QM_RECIPE_PROP, dict(recipe))
     except Exception:
         pass
 

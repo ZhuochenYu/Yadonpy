@@ -104,7 +104,7 @@ def remove_atom(mol, idx, angle_fix=False):
     # Properties we must preserve for downstream export/analysis.
     _SAFE_FLOAT_PROPS = [
         'AtomicCharge', 'AtomicCharge_raw',
-        'RESP', 'RESP_raw',
+        'RESP', 'RESP_raw', 'RESP2', 'RESP2_raw',
         'ESP', 'MullikenCharge', 'LowdinCharge',
         '_GasteigerCharge',
         'ff_sigma', 'ff_epsilon',

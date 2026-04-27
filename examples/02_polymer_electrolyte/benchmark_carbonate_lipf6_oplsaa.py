@@ -7,6 +7,13 @@ from typing import Any
 
 from yadonpy.core import poly, workdir
 from yadonpy.core.data_dir import ensure_initialized
+from yadonpy.core.metadata import (
+    QM_RECIPE_PROP,
+    RESP_CONSTRAINTS_PROP,
+    RESP_PROFILE_PROP,
+    read_json_prop,
+    read_text_prop,
+)
 from yadonpy.diagnostics import doctor
 from yadonpy.ff import GAFF2_mod, OPLSAA
 from yadonpy.gmx.analysis.structured import build_msd_metric_catalog, compute_msd_series
@@ -15,35 +22,26 @@ from yadonpy.runtime import set_run_options
 from yadonpy.sim.analyzer import AnalyzeResult
 from yadonpy.sim.benchmarking import _dump_json, summarize_rdkit_species_forcefield
 from yadonpy.sim.preset import eq
+from yadonpy.workflow import EnvReader
+
+
+_ENV = EnvReader()
 
 
 def _env_bool(name: str, default: bool) -> bool:
-    raw = os.environ.get(name)
-    if raw is None:
-        return bool(default)
-    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+    return _ENV.bool(name, default)
 
 
 def _env_int(name: str, default: int) -> int:
-    raw = os.environ.get(name)
-    if raw is None or not str(raw).strip():
-        return int(default)
-    return int(raw)
+    return _ENV.int(name, default)
 
 
 def _env_float(name: str, default: float) -> float:
-    raw = os.environ.get(name)
-    if raw is None or not str(raw).strip():
-        return float(default)
-    return float(raw)
+    return _ENV.float(name, default)
 
 
 def _env_text(name: str, default: str) -> str:
-    raw = os.environ.get(name)
-    if raw is None:
-        return str(default)
-    text = str(raw).strip()
-    return text if text else str(default)
+    return _ENV.text(name, default)
 
 
 def _normalize_constraints(raw: str | None, default: str = "h-bonds") -> str:
@@ -72,14 +70,8 @@ def _normalize_charge_mode(raw: str | None) -> str:
 
 
 def _json_prop(mol, key: str) -> dict[str, Any] | None:
-    try:
-        if mol.HasProp(key):
-            value = json.loads(mol.GetProp(key))
-            if isinstance(value, dict):
-                return value
-    except Exception:
-        pass
-    return None
+    value = read_json_prop(mol, key)
+    return value if isinstance(value, dict) else None
 
 
 def _extract_resp_route(mol, *, label: str) -> dict[str, Any]:
@@ -90,17 +82,13 @@ def _extract_resp_route(mol, *, label: str) -> dict[str, Any]:
         "constraint_mode": None,
         "equivalence_group_count": 0,
     }
-    try:
-        if mol.HasProp("_yadonpy_resp_profile"):
-            route["resp_profile"] = str(mol.GetProp("_yadonpy_resp_profile"))
-    except Exception:
-        pass
-    qm_recipe = _json_prop(mol, "_yadonpy_qm_recipe_json")
+    route["resp_profile"] = read_text_prop(mol, RESP_PROFILE_PROP)
+    qm_recipe = _json_prop(mol, QM_RECIPE_PROP)
     if isinstance(qm_recipe, dict):
         route["qm_recipe"] = qm_recipe
         if route["resp_profile"] is None:
             route["resp_profile"] = qm_recipe.get("resp_profile")
-    constraints = _json_prop(mol, "_yadonpy_resp_constraints_json")
+    constraints = _json_prop(mol, RESP_CONSTRAINTS_PROP)
     if isinstance(constraints, dict):
         route["constraint_mode"] = constraints.get("mode")
         route["equivalence_group_count"] = int(len(constraints.get("equivalence_groups") or []))
@@ -110,7 +98,7 @@ def _extract_resp_route(mol, *, label: str) -> dict[str, Any]:
 
 
 def _equivalence_spread_diagnostic(mol, *, label: str) -> dict[str, Any]:
-    constraints = _json_prop(mol, "_yadonpy_resp_constraints_json") or {}
+    constraints = _json_prop(mol, RESP_CONSTRAINTS_PROP) or {}
     groups = list(constraints.get("equivalence_groups") or [])
     diagnostics = []
     for group in groups:

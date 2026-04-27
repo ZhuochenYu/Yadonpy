@@ -61,7 +61,25 @@ When editing or extending the code, avoid:
 The runtime API exists so users can explicitly control restart defaults instead of
 each script inventing its own convention.
 
-## 4. QM and RESP Model
+## 4. Typed Metadata and Schema Boundaries
+
+YadonPy stores provenance in RDKit molecule properties and JSON artifacts. New code should
+not hand-roll `HasProp/GetProp/json.loads` or schema stamping. Use the central helpers in
+`yadonpy.core.metadata` for:
+
+- RESP/PsiRESP constraint metadata;
+- charge-model provenance and QM recipes;
+- equilibrium-state summaries;
+- benchmark/species-forcefield summaries;
+- stable JSON writing with schema versions.
+
+This keeps old MolDB records loadable while making new artifacts auditable and harder to
+silently mix across charge recipes, RESP profiles, and benchmark variants.
+
+Example scripts should keep their script-first shape, but shared parsing and runtime
+defaults should move into small workflow helpers such as `yadonpy.workflow.EnvReader`.
+
+## 5. QM and RESP Model
 
 The intended RESP path is:
 
@@ -77,7 +95,7 @@ That means:
 - later scaling can remain local to the charged groups,
 - MolDB can distinguish a grouped-polyelectrolyte variant from an ordinary RESP fit.
 
-## 5. Polymer Construction Rules
+## 6. Polymer Construction Rules
 
 Polymer workflows rely on PSMILES, explicit terminal groups, and a random-walk builder.
 
@@ -90,7 +108,7 @@ Important implications:
 
 The current builder logic prefers minimum-correct robustness over brittle short-budget defaults.
 
-## 6. Bulk-First Interface Logic
+## 7. Bulk-First Interface Logic
 
 YadonPy’s current interface philosophy is bulk first, but not bulk-direct-to-stack:
 
@@ -99,8 +117,8 @@ YadonPy’s current interface philosophy is bulk first, but not bulk-direct-to-s
 3. negotiate the graphite master footprint once in `XY`;
 4. rebuild each soft phase directly on that final `XY` footprint with repulsive-only Z walls and explicit vacuum;
 5. for graphite-assisted sandwich systems, pre-relax each rebuilt soft phase in a confined `pbc=xy` box before final assembly;
-5. assemble the interface or sandwich structure;
-6. run staged relaxation.
+6. assemble the interface or sandwich structure;
+7. run staged relaxation.
 
 This avoids a common failure mode where an interface is assembled from unrealistic
 unrelaxed packed phases and then expected to fix itself during MD. It also avoids
@@ -109,7 +127,7 @@ letting a periodic cut-slab artifact drive the graphite footprint.
 The graphite-polymer-electrolyte sandwich builder follows the same rule.
 It is meant to be the cleanest high-level expression of this architecture.
 
-## 7. Export Artifacts Are Contractual
+## 8. Export Artifacts Are Contractual
 
 Generated files and manifests are part of the behavior:
 
@@ -126,7 +144,7 @@ Generated files and manifests are part of the behavior:
 
 Changing the build logic without checking the exported metadata is incomplete maintenance.
 
-## 8. Force-Field Strategy
+## 9. Force-Field Strategy
 
 YadonPy deliberately supports multiple force-field families because different subproblems
 need different defaults:
@@ -139,7 +157,7 @@ need different defaults:
 The force-field registry is designed so the user can select one canonical family name
 without needing to know the import path of the implementation class.
 
-## 9. Analysis Strategy
+## 10. Analysis Strategy
 
 Analysis is not limited to one-size-fits-all whole-molecule metrics.
 The package distinguishes between:
@@ -153,7 +171,22 @@ The package distinguishes between:
 That distinction is especially important in polymer electrolytes and charged polymers,
 where whole-chain net-charge diffusion can hide the behavior that actually matters physically.
 
-## 10. Guidance for Future Changes
+## 11. Refactor Roadmap
+
+The preferred migration path is incremental rather than a big rewrite:
+
+- Phase 1: consolidate metadata accessors, workflow config, MolDB/RESP provenance checks,
+  and schema round-trip tests without changing simulation physics.
+- Phase 2: split EQ21, LiquidAnneal, recovery, production, gates, and MDP policy into
+  smaller internal stage/strategy modules while preserving the public `eq` facade.
+- Phase 3: split export and MolDB responsibilities so molecule compatibility, charge
+  scaling, system metadata, and topology assembly are independently testable.
+- Phase 4: move repeated benchmark-script infrastructure into library helpers so examples
+  remain readable scientific protocols instead of hidden product logic.
+- Phase 5: add developer-facing checks such as `doctor --full`, MolDB audit, workflow
+  dry-run, schema validation, and smoke matrices for common workflows.
+
+## 12. Guidance for Future Changes
 
 When modifying YadonPy, keep these checks in mind:
 
