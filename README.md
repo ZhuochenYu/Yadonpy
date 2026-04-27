@@ -197,7 +197,7 @@ resumed or audited without guessing which intermediate files are authoritative.
 ## Included Examples
 
 - `examples/01_Li_salt`: prepare and store a reference salt species in MolDB.
-- `examples/02_polymer_electrolyte`: end-to-end polymer-electrolyte workflow from PSMILES.
+- `examples/02_polymer_electrolyte`: end-to-end polymer-electrolyte workflow from PSMILES, including PEO-LiTFSI charge-scaling benchmarks.
 - `examples/03_tg_gmx`: high-level `Tg` scan workflow for an equilibrated system.
 - `examples/04_elongation_gmx`: high-level elongation and stress-strain workflow for an equilibrated system.
 - `examples/05_cmcna_electrolyte`: CMC-Na polymer-electrolyte construction.

@@ -14,6 +14,156 @@ from ..interface.charge_audit import summarize_cell_charge, summarize_charge_met
 
 
 _COULOMB_KJMOL_NM_E2 = 138.935456
+_JPCB2020_EO_LI_RATIO = 12.5
+_JPCB2020_NORMALIZED_INVERSE_TARGET = 5.4
+_JPCB2020_SOURCE = {
+    "citation": "Gudla, Zhang, and Brandell, J. Phys. Chem. B 2020, 124, 8124-8131",
+    "doi": "10.1021/acs.jpcb.0c05108",
+    "system": "hydroxyl-terminated PEO25/LiTFSI",
+    "paper_chain_count": 200,
+    "paper_chain_dp": 25,
+    "paper_salt_pairs": 400,
+    "paper_eo_li_ratio": "12.5:1",
+    "notes": (
+        "The paper scanned PEO and salt charge scaling. Transport simulations were 300-600 ns; "
+        "Figure 3 compares cases at 1000/(T - Tg + 50) = 5.4 (+/-0.1)."
+    ),
+}
+
+_JPCB2020_CASES = {
+    "P1.50S1.00": {
+        "paper_label": "P1.50S1.00",
+        "polymer_charge_scale": 1.50,
+        "salt_charge_scale": 1.00,
+        "paper_production_ns": 600.0,
+        "paper_box_volume_nm3": 430.0,
+        "tg_k": 317.0,
+        "tg_uncertainty_k": 4.0,
+        "expected_regime": "high_polarity_intrachain_or_polymer_coupled",
+        "qualitative_target": "high polarity: polymer coordination dominates; D_TFSI >> D_Li > D_PEO is expected.",
+    },
+    "P1.20S1.00": {
+        "paper_label": "P1.20S1.00",
+        "polymer_charge_scale": 1.20,
+        "salt_charge_scale": 1.00,
+        "paper_production_ns": 400.0,
+        "paper_box_volume_nm3": 437.0,
+        "tg_k": 308.0,
+        "tg_uncertainty_k": 2.0,
+        "expected_regime": "intermediate_polarity",
+        "qualitative_target": "intermediate polarity: Li diffusion is near the broad maximum for S1.00.",
+    },
+    "P1.00S1.00": {
+        "paper_label": "P1.00S1.00",
+        "polymer_charge_scale": 1.00,
+        "salt_charge_scale": 1.00,
+        "paper_production_ns": 400.0,
+        "paper_box_volume_nm3": 444.0,
+        "tg_k": 304.0,
+        "tg_uncertainty_k": 4.0,
+        "expected_regime": "reference",
+        "qualitative_target": "reference case: best apparent agreement with experimental D_Li line, but likely fortuitous due to molecular-weight effects.",
+    },
+    "P0.75S1.00": {
+        "paper_label": "P0.75S1.00",
+        "polymer_charge_scale": 0.75,
+        "salt_charge_scale": 1.00,
+        "paper_production_ns": 550.0,
+        "paper_box_volume_nm3": 452.0,
+        "tg_k": 295.0,
+        "tg_uncertainty_k": 4.0,
+        "expected_regime": "low_to_intermediate_polarity",
+        "qualitative_target": "lower polarity: ion pairing becomes more important; D_PEO may approach or exceed ion diffusion.",
+    },
+    "P0.50S1.00": {
+        "paper_label": "P0.50S1.00",
+        "polymer_charge_scale": 0.50,
+        "salt_charge_scale": 1.00,
+        "paper_production_ns": 550.0,
+        "paper_box_volume_nm3": 460.0,
+        "tg_k": 283.0,
+        "tg_uncertainty_k": 3.0,
+        "expected_regime": "low_polarity_ion_paired",
+        "qualitative_target": "low polarity: strong ion pairing; D_PEO >> D_TFSI ~ D_Li is reported.",
+    },
+    "P1.50S0.75": {
+        "paper_label": "P1.50S0.75",
+        "polymer_charge_scale": 1.50,
+        "salt_charge_scale": 0.75,
+        "paper_production_ns": 300.0,
+        "paper_box_volume_nm3": 441.0,
+        "tg_k": 310.0,
+        "tg_uncertainty_k": 4.0,
+        "expected_regime": "high_polarity_intrachain_or_polymer_coupled",
+        "qualitative_target": "high polarity with screened salt: polymer coordination dominates; D_TFSI >> D_Li > D_PEO is expected.",
+    },
+    "P1.33S0.75": {
+        "paper_label": "P1.33S0.75",
+        "polymer_charge_scale": 1.34,
+        "salt_charge_scale": 0.75,
+        "paper_production_ns": 300.0,
+        "paper_box_volume_nm3": 443.0,
+        "tg_k": 304.0,
+        "tg_uncertainty_k": 4.0,
+        "expected_regime": "intermediate_to_high_polarity",
+        "qualitative_target": "intermediate-high polarity with screened salt; Li transport should be polymer-coupled.",
+    },
+    "P1.20S0.75": {
+        "paper_label": "P1.20S0.75",
+        "polymer_charge_scale": 1.20,
+        "salt_charge_scale": 0.75,
+        "paper_production_ns": 300.0,
+        "paper_box_volume_nm3": 447.0,
+        "tg_k": 299.0,
+        "tg_uncertainty_k": 4.0,
+        "expected_regime": "intermediate_polarity_fast_hopping",
+        "qualitative_target": "intermediate polarity with screened salt: near the shifted D_Li maximum in the paper.",
+    },
+    "P1.00S0.75": {
+        "paper_label": "P1.00S0.75",
+        "polymer_charge_scale": 1.00,
+        "salt_charge_scale": 0.75,
+        "paper_production_ns": 300.0,
+        "paper_box_volume_nm3": 450.0,
+        "tg_k": 294.0,
+        "tg_uncertainty_k": 5.0,
+        "expected_regime": "screened_reference",
+        "qualitative_target": "screened-salt reference: electronic screening should reduce overbinding and often improves transport realism.",
+    },
+    "P0.75S0.75": {
+        "paper_label": "P0.75S0.75",
+        "polymer_charge_scale": 0.75,
+        "salt_charge_scale": 0.75,
+        "paper_production_ns": 300.0,
+        "paper_box_volume_nm3": 454.0,
+        "tg_k": 284.0,
+        "tg_uncertainty_k": 4.0,
+        "expected_regime": "low_to_intermediate_polarity",
+        "qualitative_target": "lower polarity with screened salt; ion pairing remains an important diagnostic.",
+    },
+    "P0.56S0.75": {
+        "paper_label": "P0.56S0.75",
+        "polymer_charge_scale": 0.56,
+        "salt_charge_scale": 0.75,
+        "paper_production_ns": 300.0,
+        "paper_box_volume_nm3": 457.0,
+        "tg_k": 277.0,
+        "tg_uncertainty_k": 2.0,
+        "expected_regime": "low_polarity_ion_paired",
+        "qualitative_target": "low polarity with screened salt: strong ion-pair contribution is expected.",
+    },
+    "P0.45S0.75": {
+        "paper_label": "P0.45S0.75",
+        "polymer_charge_scale": 0.45,
+        "salt_charge_scale": 0.75,
+        "paper_production_ns": 300.0,
+        "paper_box_volume_nm3": 460.0,
+        "tg_k": 269.0,
+        "tg_uncertainty_k": 3.0,
+        "expected_regime": "low_polarity_ion_paired",
+        "qualitative_target": "lowest polarity with screened salt: D_PEO >> D_TFSI ~ D_Li is the qualitative target.",
+    },
+}
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -35,6 +185,121 @@ def _safe_float(value: Any) -> Optional[float]:
         return float(value)
     except Exception:
         return None
+
+
+def _normalize_jpcb2020_label(label: str) -> str:
+    token = str(label or "").strip()
+    if token.upper().startswith("JPCB2020_"):
+        token = token.split("_", 1)[1]
+    token = token.replace("{", "").replace("}", "").replace("_", "")
+    token = token.replace(" ", "").replace("-", "")
+    token = token.replace("P.", "P").replace("S.", "S")
+    return token.upper()
+
+
+def jpcb2020_peo_litfsi_cases() -> dict[str, dict[str, Any]]:
+    """Return the PEO/LiTFSI charge-scaling cases from JPCB 2020 Table 1."""
+
+    return {label: dict(case, source=dict(_JPCB2020_SOURCE)) for label, case in _JPCB2020_CASES.items()}
+
+
+def resolve_jpcb2020_peo_litfsi_case(
+    label: str,
+    *,
+    chain_count: int = 96,
+    target_mode: str = "normalized_inverse",
+    normalized_inverse: float = _JPCB2020_NORMALIZED_INVERSE_TARGET,
+    target_temp_k: float | None = None,
+    production_ns: float | None = None,
+    paper_size: bool = False,
+) -> dict[str, Any]:
+    """Resolve a paper case into a YadonPy-sized benchmark configuration.
+
+    The original paper used 200 PEO25 chains and 400 LiTFSI pairs.  The default
+    YadonPy run size keeps the same EO:Li ratio but uses 96 chains and 192 salt
+    pairs so the system stays in the existing 10k-30k atom benchmark envelope.
+    """
+
+    norm = _normalize_jpcb2020_label(label)
+    lookup = {_normalize_jpcb2020_label(k): k for k in _JPCB2020_CASES}
+    if norm not in lookup:
+        expected = ", ".join(sorted(_JPCB2020_CASES))
+        raise ValueError(f"Unsupported JPCB2020 PEO/LiTFSI case {label!r}. Expected one of: {expected}")
+    key = lookup[norm]
+    case = dict(_JPCB2020_CASES[key])
+    paper_chain_dp = int(_JPCB2020_SOURCE["paper_chain_dp"])
+    if paper_size:
+        resolved_chain_count = int(_JPCB2020_SOURCE["paper_chain_count"])
+        salt_pairs = int(_JPCB2020_SOURCE["paper_salt_pairs"])
+    else:
+        resolved_chain_count = int(chain_count)
+        salt_pairs = int(round(float(paper_chain_dp * resolved_chain_count) / _JPCB2020_EO_LI_RATIO))
+    effective_ratio = float(paper_chain_dp * resolved_chain_count) / max(float(salt_pairs), 1.0)
+
+    mode = str(target_mode or "normalized_inverse").strip().lower()
+    if target_temp_k is not None:
+        resolved_temp = float(target_temp_k)
+        mode = "fixed_temperature"
+    elif mode in {"normalized", "normalized_inverse", "figure3", "jpcb2020"}:
+        resolved_temp = float(case["tg_k"]) - 50.0 + (1000.0 / float(normalized_inverse))
+    elif mode in {"60c", "333k", "fixed_60c"}:
+        resolved_temp = 333.15
+    else:
+        raise ValueError(
+            f"Unsupported target_mode={target_mode!r}. Use normalized_inverse, fixed_60c, or pass target_temp_k."
+        )
+    resolved_inverse = 1000.0 / max(float(resolved_temp) - float(case["tg_k"]) + 50.0, 1.0e-12)
+
+    out = {
+        **case,
+        "case_key": key,
+        "source": dict(_JPCB2020_SOURCE),
+        "chain_dp": paper_chain_dp,
+        "chain_count": resolved_chain_count,
+        "salt_pairs": salt_pairs,
+        "effective_eo_li_ratio": effective_ratio,
+        "paper_eo_li_ratio": float(_JPCB2020_EO_LI_RATIO),
+        "target_mode": mode,
+        "target_temp_k": resolved_temp,
+        "normalized_inverse_temperature": resolved_inverse,
+        "normalized_inverse_target": float(normalized_inverse),
+        "production_ns": float(production_ns) if production_ns is not None else min(float(case["paper_production_ns"]), 20.0),
+        "paper_size": bool(paper_size),
+        "size_scale_vs_paper": float(resolved_chain_count) / float(_JPCB2020_SOURCE["paper_chain_count"]),
+        "li_charge_scale": float(case["salt_charge_scale"]),
+        "anion_charge_scale": float(case["salt_charge_scale"]),
+    }
+    return out
+
+
+def literature_band_peo_litfsi_jpcb2020(case_label: str = "P1.00S1.00") -> dict[str, Any]:
+    """Return qualitative JPCB 2020 targets for a PEO/LiTFSI charge-scaling case."""
+
+    case = resolve_jpcb2020_peo_litfsi_case(case_label)
+    return {
+        "system": "PEO25/LiTFSI",
+        "source": dict(_JPCB2020_SOURCE),
+        "case": {
+            "paper_label": case["paper_label"],
+            "polymer_charge_scale": case["polymer_charge_scale"],
+            "salt_charge_scale": case["salt_charge_scale"],
+            "tg_k": case["tg_k"],
+            "paper_box_volume_nm3": case["paper_box_volume_nm3"],
+            "paper_production_ns": case["paper_production_ns"],
+        },
+        "eo_li_ratio": "12.5:1",
+        "target_normalized_inverse_temperature": {
+            "value": _JPCB2020_NORMALIZED_INVERSE_TARGET,
+            "tolerance": 0.1,
+        },
+        "target_temp_k_for_case": case["target_temp_k"],
+        "qualitative_target": case["qualitative_target"],
+        "expected_regime": case["expected_regime"],
+        "note": (
+            "The paper reports D_Li trends primarily in figures rather than a numeric data table; "
+            "use this object for qualitative/diagnostic checks unless digitized figure data are supplied."
+        ),
+    }
 
 
 def literature_band_peo_litfsi_60c() -> dict[str, Any]:
@@ -390,6 +655,30 @@ def estimate_density_drift_fraction(thermo_xvg: Path) -> Optional[float]:
     return float((end - start) / denom)
 
 
+def _extract_default_diffusion(msd: Mapping[str, Any], moltype: str | None) -> Optional[float]:
+    if not moltype:
+        return None
+    wanted = str(moltype).strip().lower()
+    record = None
+    for key, rec in (msd or {}).items():
+        if str(key).startswith("_") or not isinstance(rec, Mapping):
+            continue
+        if str(key).strip().lower() == wanted:
+            record = rec
+            break
+    if not isinstance(record, Mapping):
+        return None
+    direct = _safe_float(record.get("D_m2_s"))
+    if direct is not None:
+        return direct
+    metric_name = str(record.get("default_metric") or "").strip()
+    metrics = record.get("metrics") if isinstance(record.get("metrics"), Mapping) else {}
+    metric = metrics.get(metric_name) if metric_name else None
+    if isinstance(metric, Mapping):
+        return _safe_float(metric.get("D_m2_s"))
+    return None
+
+
 def build_transport_summary(
     *,
     msd: Mapping[str, Any],
@@ -444,11 +733,36 @@ def build_transport_summary(
         "haven_gt_one": bool((sigma.get("haven_ratio") or 0.0) > 1.0),
     }
     sampling_mature = not any(bool(v) for k, v in sampling_flags.items() if k != "li_alpha_mean" and k != "density_drift_fraction")
+    component_diffusion = {
+        "Li": _extract_default_diffusion(msd, "Li"),
+    }
+    if polymer_moltype:
+        component_diffusion[str(polymer_moltype)] = _extract_default_diffusion(msd, polymer_moltype)
+    if anion_moltype:
+        component_diffusion[str(anion_moltype)] = _extract_default_diffusion(msd, anion_moltype)
+    finite_components = {
+        key: float(value)
+        for key, value in component_diffusion.items()
+        if value is not None and np.isfinite(float(value))
+    }
+    diffusion_order = [
+        key for key, _ in sorted(finite_components.items(), key=lambda item: float(item[1]), reverse=True)
+    ]
+    li_d = finite_components.get("Li")
+    polymer_d = finite_components.get(str(polymer_moltype)) if polymer_moltype else None
+    anion_d = finite_components.get(str(anion_moltype)) if anion_moltype else None
+    diffusion_ratios = {
+        "D_anion_over_D_Li": (float(anion_d) / max(float(li_d), 1.0e-30)) if anion_d is not None and li_d is not None else None,
+        "D_Li_over_D_polymer": (float(li_d) / max(float(polymer_d), 1.0e-30)) if li_d is not None and polymer_d is not None else None,
+    }
 
     return {
         "li_diffusion_default_m2_s": li_metric.get("D_m2_s"),
         "li_status": li_metric.get("status"),
         "li_alpha_mean": li_alpha,
+        "component_diffusion_m2_s": component_diffusion,
+        "diffusion_order": diffusion_order,
+        "diffusion_ratios": diffusion_ratios,
         "sigma_ne_upper_bound_S_m": sigma.get("sigma_ne_upper_bound_S_m"),
         "sigma_ne_upper_bound_display": sigma.get("sigma_ne_upper_bound_display"),
         "sigma_eh_total_S_m": eh_value,
@@ -690,8 +1004,11 @@ __all__ = [
     "build_screening_compare",
     "collect_force_balance_report",
     "estimate_density_drift_fraction",
+    "jpcb2020_peo_litfsi_cases",
     "literature_band_peo_litfsi_60c",
+    "literature_band_peo_litfsi_jpcb2020",
     "load_benchmark_analysis_dir",
+    "resolve_jpcb2020_peo_litfsi_case",
     "summarize_rdkit_species_forcefield",
     "_dump_json",
 ]

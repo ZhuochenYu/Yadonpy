@@ -11,8 +11,11 @@ from yadonpy.sim.benchmarking import (
     build_screening_compare,
     build_transport_summary,
     collect_force_balance_report,
+    jpcb2020_peo_litfsi_cases,
     literature_band_peo_litfsi_60c,
+    literature_band_peo_litfsi_jpcb2020,
     load_benchmark_analysis_dir,
+    resolve_jpcb2020_peo_litfsi_case,
 )
 
 
@@ -95,6 +98,8 @@ def test_build_transport_summary_marks_sampling_flags_and_compares_to_band(tmp_p
     assert out["sampling_flags"]["density_drift_exceeds_2pct"] is True
     assert out["within_literature_band"] is False
     assert out["factor_below_literature_min"] > 1.0
+    assert out["component_diffusion_m2_s"]["Li"] == pytest.approx(8.0e-13)
+    assert out["diffusion_order"] == ["Li"]
 
 
 def test_collect_force_balance_report_reads_charge_and_lj_params(tmp_path: Path):
@@ -311,3 +316,51 @@ def test_jpcb_screening_metadata_shape():
     salt_pairs = 192
     effective_eo_li_ratio = float(chain_dp * chain_count) / float(salt_pairs)
     assert effective_eo_li_ratio == pytest.approx(12.5)
+
+
+def test_jpcb2020_case_resolver_uses_table_and_normalized_temperature():
+    cases = jpcb2020_peo_litfsi_cases()
+    assert cases["P1.00S1.00"]["tg_k"] == pytest.approx(304.0)
+    assert cases["P1.00S0.75"]["salt_charge_scale"] == pytest.approx(0.75)
+
+    out = resolve_jpcb2020_peo_litfsi_case("JPCB2020_P1.00S1.00", chain_count=96)
+    assert out["chain_dp"] == 25
+    assert out["chain_count"] == 96
+    assert out["salt_pairs"] == 192
+    assert out["effective_eo_li_ratio"] == pytest.approx(12.5)
+    assert out["target_temp_k"] == pytest.approx(304.0 - 50.0 + 1000.0 / 5.4)
+    assert out["normalized_inverse_temperature"] == pytest.approx(5.4)
+
+    fixed = resolve_jpcb2020_peo_litfsi_case("P_{1.00}S_{0.75}", target_mode="fixed_60c")
+    assert fixed["target_temp_k"] == pytest.approx(333.15)
+    assert fixed["normalized_inverse_temperature"] != pytest.approx(5.4)
+
+
+def test_literature_band_peo_litfsi_jpcb2020_is_qualitative_not_60c_conductivity_band():
+    band = literature_band_peo_litfsi_jpcb2020("P1.20S0.75")
+    assert band["eo_li_ratio"] == "12.5:1"
+    assert band["case"]["polymer_charge_scale"] == pytest.approx(1.20)
+    assert "sigma_band_S_m" not in band
+    assert band["target_normalized_inverse_temperature"]["value"] == pytest.approx(5.4)
+
+
+def test_transport_summary_reports_peo_litfsi_diffusion_order_and_ratios():
+    msd = {
+        "Li": {"default_metric": "ion_atomic_msd", "metrics": {"ion_atomic_msd": {"D_m2_s": 2.0e-12}}},
+        "TFSI": {"default_metric": "molecule_com_msd", "metrics": {"molecule_com_msd": {"D_m2_s": 8.0e-12}}},
+        "PEO": {"default_metric": "chain_com_msd", "metrics": {"chain_com_msd": {"D_m2_s": 5.0e-13}}},
+    }
+    out = build_transport_summary(
+        msd=msd,
+        sigma={},
+        rdf={},
+        polymer_moltype="PEO",
+        anion_moltype="TFSI",
+        literature_band=literature_band_peo_litfsi_jpcb2020("P1.50S1.00"),
+    )
+    assert out["component_diffusion_m2_s"]["Li"] == pytest.approx(2.0e-12)
+    assert out["component_diffusion_m2_s"]["TFSI"] == pytest.approx(8.0e-12)
+    assert out["component_diffusion_m2_s"]["PEO"] == pytest.approx(5.0e-13)
+    assert out["diffusion_order"] == ["TFSI", "Li", "PEO"]
+    assert out["diffusion_ratios"]["D_anion_over_D_Li"] == pytest.approx(4.0)
+    assert out["diffusion_ratios"]["D_Li_over_D_polymer"] == pytest.approx(4.0)
