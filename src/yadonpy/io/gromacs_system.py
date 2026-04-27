@@ -35,6 +35,13 @@ from ..core.polyelectrolyte import (
     get_resp_constraints,
     uses_localized_charge_groups,
 )
+from ..core.metadata import (
+    QM_RECIPE_PROP,
+    RESP_CONSTRAINTS_PROP,
+    RESP_PROFILE_PROP,
+    write_json_prop,
+    write_text_prop,
+)
 from ..gmx.topology import parse_system_top
 from ..gmx.analysis.structured import build_site_map
 from .gromacs_top import defaults_block_from_spec, defaults_for_ff_name
@@ -257,13 +264,13 @@ def _stamp_species_resp_metadata_on_mol(mol, species_payload: Mapping[str, Any])
     try:
         resp_constraints = species_payload.get("resp_constraints")
         if isinstance(resp_constraints, Mapping) and resp_constraints:
-            mol.SetProp("_yadonpy_resp_constraints_json", json.dumps(dict(resp_constraints), ensure_ascii=False))
+            write_json_prop(mol, RESP_CONSTRAINTS_PROP, dict(resp_constraints))
         resp_profile = str(species_payload.get("resp_profile") or "").strip().lower()
         if resp_profile:
-            mol.SetProp("_yadonpy_resp_profile", resp_profile)
+            write_text_prop(mol, RESP_PROFILE_PROP, resp_profile)
         qm_recipe = species_payload.get("qm_recipe")
         if qm_recipe:
-            mol.SetProp("_yadonpy_qm_recipe_json", json.dumps(qm_recipe, ensure_ascii=False))
+            write_json_prop(mol, QM_RECIPE_PROP, qm_recipe)
     except Exception:
         pass
 

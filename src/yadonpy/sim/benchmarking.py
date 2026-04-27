@@ -9,6 +9,7 @@ import numpy as np
 from ..gmx.analysis.structured import build_site_map
 from ..gmx.analysis.xvg import read_xvg
 from ..gmx.topology import AtomTypeParam, MoleculeType, parse_system_atomtype_params, parse_system_top
+from ..core.metadata import BenchmarkSummary
 from ..interface.charge_audit import summarize_cell_charge, summarize_charge_meta
 
 
@@ -22,7 +23,8 @@ def _load_json(path: Path) -> dict[str, Any]:
 def _dump_json(path: Path, payload: Mapping[str, Any]) -> Path:
     out = Path(path)
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps(dict(payload), indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    stamped = BenchmarkSummary.for_path(out, dict(payload)).to_dict()
+    out.write_text(json.dumps(stamped, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     return out
 
 

@@ -45,6 +45,13 @@ except Exception as e:  # pragma: no cover
     psi4 = None
 
 from ..core import const, calc, utils
+from ..core.metadata import (
+    PSIRESP_CONSTRAINTS_PROP,
+    RESP_CONSTRAINTS_PROP,
+    RESP_PROFILE_PROP,
+    write_json_prop,
+    write_text_prop,
+)
 
 
 def _version_key(raw: object):
@@ -1028,7 +1035,6 @@ class Psi4w():
         Returns:
             RESP charge (float, array)
         """
-        import json
         from .psiresp_wrapper import run_psiresp_fit
 
         fit_kind = str(kwargs.pop("fit_kind", "RESP") or "RESP").strip().upper()
@@ -1069,16 +1075,16 @@ class Psi4w():
             atom.SetDoubleProp("RESP", float(resp_q[i]))
         try:
             if meta:
-                self.mol.SetProp("_yadonpy_psiresp_constraints", json.dumps(meta, ensure_ascii=False))
-                self.mol.SetProp("_yadonpy_resp_profile", str(resp_profile))
+                write_json_prop(self.mol, PSIRESP_CONSTRAINTS_PROP, meta)
+                write_text_prop(self.mol, RESP_PROFILE_PROP, str(resp_profile))
                 summary = meta.get("summary") if isinstance(meta, dict) else None
                 constraints = meta.get("constraints") if isinstance(meta, dict) else None
                 if isinstance(summary, dict):
-                    self.mol.SetProp("_yadonpy_polyelectrolyte_summary_json", json.dumps(summary, ensure_ascii=False))
+                    write_json_prop(self.mol, "_yadonpy_polyelectrolyte_summary_json", summary)
                     if isinstance(summary.get("groups"), list):
-                        self.mol.SetProp("_yadonpy_charge_groups_json", json.dumps(summary.get("groups"), ensure_ascii=False))
+                        write_json_prop(self.mol, "_yadonpy_charge_groups_json", summary.get("groups"))
                 if isinstance(constraints, dict):
-                    self.mol.SetProp("_yadonpy_resp_constraints_json", json.dumps(constraints, ensure_ascii=False))
+                    write_json_prop(self.mol, RESP_CONSTRAINTS_PROP, constraints)
         except Exception:
             pass
         return resp_q
@@ -1093,7 +1099,6 @@ class Psi4w():
         Returns:
             RESP2 charge (float, array)
         """
-        import json
         from .psiresp_wrapper import run_psiresp_fit
 
         resp_profile = str(kwargs.pop("resp_profile", "adaptive") or "adaptive").strip().lower()
@@ -1136,16 +1141,16 @@ class Psi4w():
             atom.SetDoubleProp("RESP2", float(resp2_q[i]))
         try:
             if meta:
-                self.mol.SetProp("_yadonpy_psiresp_constraints", json.dumps(meta, ensure_ascii=False))
-                self.mol.SetProp("_yadonpy_resp_profile", str(resp_profile))
+                write_json_prop(self.mol, PSIRESP_CONSTRAINTS_PROP, meta)
+                write_text_prop(self.mol, RESP_PROFILE_PROP, str(resp_profile))
                 summary = meta.get("summary") if isinstance(meta, dict) else None
                 constraints = meta.get("constraints") if isinstance(meta, dict) else None
                 if isinstance(summary, dict):
-                    self.mol.SetProp("_yadonpy_polyelectrolyte_summary_json", json.dumps(summary, ensure_ascii=False))
+                    write_json_prop(self.mol, "_yadonpy_polyelectrolyte_summary_json", summary)
                     if isinstance(summary.get("groups"), list):
-                        self.mol.SetProp("_yadonpy_charge_groups_json", json.dumps(summary.get("groups"), ensure_ascii=False))
+                        write_json_prop(self.mol, "_yadonpy_charge_groups_json", summary.get("groups"))
                 if isinstance(constraints, dict):
-                    self.mol.SetProp("_yadonpy_resp_constraints_json", json.dumps(constraints, ensure_ascii=False))
+                    write_json_prop(self.mol, RESP_CONSTRAINTS_PROP, constraints)
         except Exception:
             pass
         return resp2_q

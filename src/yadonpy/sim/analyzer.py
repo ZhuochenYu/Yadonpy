@@ -58,6 +58,7 @@ from ..gmx.analysis.structured import (
 )
 from ..gmx.analysis.rg_convergence import find_rg_convergence, plot_rg_convergence_svg
 from ..gmx.topology import parse_system_top, SystemTopology
+from ..core.metadata import EquilibrationState
 from .polymer_metrics import compute_cell_summary, compute_polymer_metrics
 
 
@@ -1643,7 +1644,8 @@ class AnalyzeResult:
                 payload["rg_gate"] = rg_gate
             payload["relaxation_state"] = relaxation_state
             (self._analysis_dir() / "equilibrium.json").write_text(
-                json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+                json.dumps(EquilibrationState.from_dict(payload).to_dict(), indent=2, ensure_ascii=False) + "\n",
+                encoding="utf-8",
             )
         except Exception:
             pass
