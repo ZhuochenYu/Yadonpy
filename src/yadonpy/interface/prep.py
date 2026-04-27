@@ -1,3 +1,11 @@
+"""Preparation routines for reusable bulk phases and interface inputs.
+
+The functions in this module turn user-facing specifications into equilibrated,
+validated GROMACS-ready phases. They bridge molecule preparation, system export,
+bulk equilibration, and restart-friendly artifact discovery for later slab or
+sandwich assembly.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass

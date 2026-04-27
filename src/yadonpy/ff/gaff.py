@@ -161,6 +161,7 @@ class GAFF():
                 charge=spec.charge,
                 basis_set=spec.basis_set,
                 method=spec.method,
+                resp_profile=spec.resp_profile,
                 polyelectrolyte_mode=(
                     charge_kwargs.get("polyelectrolyte_mode")
                     if "polyelectrolyte_mode" in charge_kwargs
@@ -1587,6 +1588,7 @@ class GAFF():
         prefer_db: bool = True,
         polyelectrolyte_mode: bool | None = None,
         polyelectrolyte_detection: str | None = None,
+        resp_profile: str | None = None,
     ):
         """Create a lightweight MolSpec handle.
 
@@ -1600,6 +1602,7 @@ class GAFF():
             charge=str(charge).strip() if charge else "RESP",
             basis_set=(str(basis_set).strip() if basis_set else None),
             method=(str(method).strip() if method else None),
+            resp_profile=(str(resp_profile).strip() if resp_profile else None),
             require_ready=bool(require_ready),
             prefer_db=bool(prefer_db),
             polyelectrolyte_mode=polyelectrolyte_mode,
@@ -1622,6 +1625,7 @@ class GAFF():
         charge: str = "RESP",
         basis_set: str | None = None,
         method: str | None = None,
+        resp_profile: str | None = None,
         polyelectrolyte_mode: bool | None = None,
         polyelectrolyte_detection: str | None = None,
     ):
@@ -1658,6 +1662,7 @@ class GAFF():
                 charge=charge,
                 basis_set=basis_set,
                 method=method,
+                resp_profile=resp_profile,
                 polyelectrolyte_mode=polyelectrolyte_mode,
                 polyelectrolyte_detection=polyelectrolyte_detection,
             )
@@ -1668,6 +1673,7 @@ class GAFF():
                 charge=charge,
                 basis_set=basis_set,
                 method=method,
+                resp_profile=resp_profile,
                 polyelectrolyte_mode=polyelectrolyte_mode,
                 polyelectrolyte_detection=polyelectrolyte_detection,
             )

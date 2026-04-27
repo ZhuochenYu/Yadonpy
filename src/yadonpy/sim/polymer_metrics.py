@@ -1,3 +1,10 @@
+"""Polymer conformation metrics computed from GROMACS trajectories.
+
+The routines here evaluate radius of gyration, end-to-end distance, persistence
+length, and related chain diagnostics. They are separated from `AnalyzeResult`
+so expensive polymer-only analysis can be skipped in fast transport workflows.
+"""
+
 from __future__ import annotations
 
 import json

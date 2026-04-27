@@ -195,8 +195,46 @@ analy = production.analyze()
 rdf = analy.rdf(center_mol=li_mol)
 msd = analy.msd()
 sigma = analy.sigma(msd=msd, temp_k=300.0)
+dielectric = analy.dielectric(temp_k=300.0)
 migration = analy.migration(center_mol=li_mol)
 ```
+
+For screening many electrolyte cases, switch to the fast transport profile:
+
+```python
+prop = analy.get_all_prop(
+    temp=300.0,
+    press=1.0,
+    include_polymer_metrics=False,
+    analysis_profile="transport_fast",
+)
+rdf = analy.rdf(center_mol=li_mol, analysis_profile="transport_fast", resume=True)
+msd = analy.msd(analysis_profile="transport_fast", resume=True)
+```
+
+This profile computes the coordination sites needed for Li transport diagnosis
+with coarser RDF settings and skips expensive full-chain conformation metrics.
+Use `analysis_profile="full"` for publication-style all-site RDF and polymer
+metric reports.
+
+For long production runs or large boxes, let YadonPy choose output and analysis
+resolution automatically:
+
+```bash
+PERFORMANCE_PROFILE=auto ANALYSIS_PROFILE=auto PROD_NS=300 python benchmark_peo_litfsi_jpcb2020.py
+```
+
+The auto policy keeps short/small jobs close to 2 ps trajectory output, but moves
+large or long jobs to coarser 10-50 ps output and matching RDF/MSD settings. Use
+`PERFORMANCE_PROFILE=full` or explicit `TRAJ_PS`, `ENERGY_PS`, and `LOG_PS`
+when you need dense trajectories for short-time dynamics or final publication
+audits.
+
+Dielectric constants are available through `dielectric()`, which calls
+`gmx dipoles` and reads the final static dielectric estimate from
+`06_analysis/dielectric.json`. On remote machines with more than one GROMACS,
+set `YADONPY_GMX_CMD` to the same major version used for production; otherwise
+post-processing can fail on newer `.tpr` files.
 
 This keeps the defaults physically aligned:
 
@@ -228,38 +266,51 @@ Practical interpretation:
 
 ## 6. Build Graphite-Polymer-Electrolyte Sandwich Systems
 
-YadonPy now exposes both a convenience sandwich builder and a staged sandwich API.
-For Example-02-style scripts, the staged path is the recommended one:
+YadonPy exposes a one-shot interface builder for the common
+`graphite -> CMC-Na -> electrolyte` stack, plus the older staged API for
+debugging individual steps. For routine CMC-Na/graphite/electrolyte work, prefer
+the one-shot path:
 
 - equilibrate each phase independently,
 - treat those bulk runs as calibration for density, chain count, solvent counts, and packing backoff,
 - preserve the graphite footprint as the one lateral reference,
 - rebuild each soft phase directly on that shared XY footprint with repulsive-only Z walls and explicit vacuum,
 - assemble the stack by direct Z translation instead of relying on cut-slab periodic healing,
-- relax the combined system in stages.
+- relax the combined system with a natural-contact protocol and acceptance gate.
 
-PEO-based smoke-scale example:
+CMC-Na smoke-scale example:
 
 ```python
 import yadonpy as yp
 graphite = yp.GraphiteSubstrateSpec(nx=4, ny=4, n_layers=2)
-polymer = yp.default_peo_polymer_spec(dp=20)
+polymer = yp.default_cmcna_polymer_spec(dp=20)
 electrolyte = yp.default_carbonate_lipf6_electrolyte_spec()
 relax = yp.SandwichRelaxationSpec(omp=8, gpu=1, psi4_omp=8)
+policy = yp.InterfaceBuildPolicy(
+    phase_preparation="final_xy_walled",
+    stack_relaxation="natural_contact",
+    retry_profile="conservative",
+)
 
-graphite_stage = yp.prepare_graphite_substrate(
-    work_dir="./work_peo_sandwich",
+result = yp.build_cmcna_graphite_electrolyte_stack(
+    work_dir="./work_cmcna_sandwich",
     ff=yp.get_ff("gaff2_mod"),
     ion_ff=yp.get_ff("merz"),
     graphite=graphite,
     polymer=polymer,
     electrolyte=electrolyte,
     relax=relax,
+    policy=policy,
 )
 ```
 
-CMC-Na uses the same workflow family, but its polymer specification is more constrained
-because the charged groups and counterions matter chemically.
+The builder writes `00_interface_design/interface_design.json` before expensive
+phase rebuilding, then records stack attempts, charge balance, minimum-distance
+checks, phase order, density windows, and acceptance status in
+`06_full_stack_release/interface_manifest.json`. The staged functions
+`prepare_graphite_substrate`, `calibrate_*_bulk_phase`, `build_*_interphase`,
+and `release_graphite_*_electrolyte_stack` remain available when you need to
+inspect or resume a specific step manually.
 
 ## 7. Literature Benchmarks
 

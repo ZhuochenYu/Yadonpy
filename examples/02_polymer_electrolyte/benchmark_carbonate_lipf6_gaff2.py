@@ -25,6 +25,7 @@ from yadonpy.runtime import set_run_options
 from yadonpy.sim.analyzer import AnalyzeResult
 from yadonpy.sim import qm
 from yadonpy.sim.benchmarking import _dump_json, summarize_rdkit_species_forcefield
+from yadonpy.sim.performance import resolve_io_analysis_policy
 from yadonpy.sim.preset import eq
 from yadonpy.workflow import EnvReader
 
@@ -1072,6 +1073,18 @@ max_additional_rounds = _env_int("MAX_ADDITIONAL_ROUNDS", 4)
 equilibration_mode = _normalize_equilibration_mode(os.environ.get("EQUILIBRATION_MODE"))
 prod_constraints = _normalize_constraints(os.environ.get("PROD_CONSTRAINTS"), default="h-bonds")
 prod_dt_ps = _env_float("PROD_DT_PS", 0.002)
+performance_profile = _env_text("PERFORMANCE_PROFILE", "auto")
+analysis_profile_requested = _env_text("ANALYSIS_PROFILE", "auto")
+traj_ps_setting = _env_text("TRAJ_PS", os.environ.get("YADONPY_PROD_TRAJ_PS", "auto"))
+energy_ps_setting = _env_text("ENERGY_PS", os.environ.get("YADONPY_PROD_ENERGY_PS", "auto"))
+log_ps_setting = _env_text("LOG_PS", os.environ.get("YADONPY_PROD_LOG_PS", "auto"))
+trr_ps_setting = os.environ.get("TRR_PS")
+velocity_ps_setting = os.environ.get("VELOCITY_PS")
+max_trajectory_frames = _env_int("MAX_TRAJECTORY_FRAMES", 50000)
+max_atom_frames = _env_float("MAX_ATOM_FRAMES", 5.0e9)
+rdf_frame_stride_setting = _env_text("RDF_FRAME_STRIDE", "auto")
+rdf_bin_nm_setting = _env_text("RDF_BIN_NM", "auto")
+rdf_rmax_nm_setting = _env_text("RDF_RMAX_NM", "auto")
 msd_blocks = _env_int("MSD_BLOCKS", 4)
 msd_block_min_ps = _env_float("MSD_BLOCK_MIN_PS", 500.0)
 liquid_recovery_constraints = _normalize_constraints(os.environ.get("LIQUID_RECOVERY_CONSTRAINTS"), default="none")
@@ -1366,6 +1379,24 @@ if __name__ == "__main__":
         charge_scale.extend([li_charge_scale, pf6_charge_scale])
     if not cell_mols:
         raise ValueError("At least one molecule count must be positive.")
+    estimated_atoms = int(sum(int(count) * int(mol.GetNumAtoms()) for mol, count in zip(cell_mols, counts)))
+    io_policy = resolve_io_analysis_policy(
+        prod_ns=float(prod_ns),
+        atom_count=estimated_atoms,
+        performance_profile=performance_profile,
+        analysis_profile=analysis_profile_requested,
+        traj_ps=traj_ps_setting,
+        energy_ps=energy_ps_setting,
+        log_ps=log_ps_setting,
+        trr_ps=trr_ps_setting,
+        velocity_ps=velocity_ps_setting,
+        rdf_frame_stride=rdf_frame_stride_setting,
+        rdf_rmax_nm=rdf_rmax_nm_setting,
+        rdf_bin_nm=rdf_bin_nm_setting,
+        msd_selected_species=["EC", "EMC", "DEC", "Li", "PF6"],
+        max_trajectory_frames=max_trajectory_frames,
+        max_atom_frames=max_atom_frames,
+    )
 
     ac = poly.amorphous_cell(
         cell_mols,
@@ -1385,6 +1416,8 @@ if __name__ == "__main__":
         selected_equilibration_mode = "eq21" if has_polymer else "liquid_anneal"
     species_summary["metadata"]["has_polymer"] = bool(has_polymer)
     species_summary["metadata"]["equilibration_mode"] = selected_equilibration_mode
+    species_summary["metadata"]["estimated_total_atoms"] = int(estimated_atoms)
+    species_summary["metadata"]["performance_policy"] = io_policy.to_dict()
     _dump_json(analysis_dir / "species_forcefield_summary.json", species_summary)
 
     eqmd = eq.EQ21step(ac, work_dir=work_root) if selected_equilibration_mode == "eq21" else eq.LiquidAnneal(ac, work_dir=work_root)
@@ -1542,6 +1575,10 @@ if __name__ == "__main__":
     if not result:
         fail_summary = {
             "metadata": species_summary["metadata"],
+            "analysis": {
+                "analysis_profile": io_policy.analysis_profile,
+                "performance_policy": io_policy.to_dict(),
+            },
             "equilibration_ok": False,
             "density_warning_severity": equilibrium_status["density_warning_severity"],
             "transport_confidence": equilibrium_status["transport_confidence"],
@@ -1583,12 +1620,27 @@ if __name__ == "__main__":
         time=prod_ns,
         dt_ps=prod_dt_ps,
         constraints=prod_constraints,
+        traj_ps=io_policy.traj_ps,
+        energy_ps=io_policy.energy_ps,
+        log_ps=io_policy.log_ps,
+        trr_ps=io_policy.trr_ps,
+        velocity_ps=io_policy.velocity_ps,
+        performance_profile=io_policy.performance_profile,
+        analysis_profile=io_policy.analysis_profile,
+        max_trajectory_frames=io_policy.max_trajectory_frames,
+        max_atom_frames=io_policy.max_atom_frames,
         start_gro=latest_equilibrated_gro,
     )
 
     analy = npt.analyze()
-    basic = analy.get_all_prop(temp=temp_k, press=press_bar, save=True)
-    msd = analy.msd()
+    basic = analy.get_all_prop(
+        temp=temp_k,
+        press=press_bar,
+        save=True,
+        include_polymer_metrics=bool(io_policy.include_polymer_metrics),
+        analysis_profile=io_policy.analysis_profile,
+    )
+    msd = analy.msd(analysis_profile=io_policy.analysis_profile)
     msd_block_diagnostic = _msd_block_diffusion_diagnostic(
         analy,
         full_msd=msd,
@@ -1597,7 +1649,13 @@ if __name__ == "__main__":
     )
     _dump_json(analysis_dir / "msd_block_diffusion.json", msd_block_diagnostic)
     if salt_pairs > 0:
-        rdf = analy.rdf(center_mol=li)
+        rdf = analy.rdf(
+            center_mol=li,
+            analysis_profile=io_policy.analysis_profile,
+            bin_nm=float(io_policy.rdf_bin_nm),
+            r_max_nm=io_policy.rdf_rmax_nm,
+            frame_stride=int(io_policy.rdf_frame_stride),
+        )
         sigma = analy.sigma(msd=msd, temp_k=temp_k, eh_mode="gmx_current_only")
         coordination = {
             "EC_carbonyl_oxygen": _extract_primary_oxygen_site(rdf, "ec"),
@@ -1646,6 +1704,20 @@ if __name__ == "__main__":
             "relaxation_state": equilibrium_payload.get("relaxation_state") if isinstance(equilibrium_payload, dict) else None,
         },
         "basic_properties": basic.get("basic_properties", {}),
+        "analysis": {
+            "analysis_profile": io_policy.analysis_profile,
+            "performance_policy": io_policy.to_dict(),
+            "include_polymer_metrics": bool(io_policy.include_polymer_metrics),
+            "rdf": {
+                "bin_nm": float(io_policy.rdf_bin_nm),
+                "r_max_nm": io_policy.rdf_rmax_nm,
+                "frame_stride": int(io_policy.rdf_frame_stride),
+            },
+            "msd": {
+                "selected_species": io_policy.msd_selected_species,
+                "default_metric_only": bool(io_policy.msd_default_metric_only),
+            },
+        },
         "diffusion_m2_s": diffusion_m2_s,
         "solvent_diffusion_diagnostic": _solvent_diffusion_diagnostic(diffusion_m2_s),
         "msd_block_diffusion_diagnostic": msd_block_diagnostic,

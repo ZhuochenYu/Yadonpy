@@ -172,6 +172,42 @@ def _unwrap_position_series(positions_nm: np.ndarray, box_lengths_nm: np.ndarray
     return out
 
 
+def _make_group_coordinates_whole(coords_nm: np.ndarray, box_lengths_nm: np.ndarray) -> np.ndarray:
+    """Make a compact atom group whole before computing its COM.
+
+    MDTraj returns wrapped coordinates.  If a small molecule crosses the box
+    boundary, averaging wrapped atom positions first can put the COM near the
+    box center and create an artificial box-length jump in the MSD.  We repair
+    each frame by minimum-imaging atoms relative to the first atom in the group.
+    """
+    coords = np.asarray(coords_nm, dtype=float)
+    box = np.asarray(box_lengths_nm, dtype=float)
+    if coords.ndim != 3 or coords.shape[1] < 2:
+        return np.asarray(coords, dtype=float)
+    if box.ndim != 2 or box.shape[0] != coords.shape[0] or box.shape[1] < 3:
+        return np.asarray(coords, dtype=float)
+    ref = coords[:, :1, :]
+    delta = coords - ref
+    box3 = box[:, None, :3]
+    valid = np.isfinite(box3) & (box3 > 1.0e-12)
+    box_safe = np.where(valid, box3, 1.0)
+    shift = box3 * np.round(delta / box_safe)
+    corrected = delta - np.where(valid, shift, 0.0)
+    return ref + corrected
+
+
+def _should_make_group_whole_for_com(spec: GroupSpec) -> bool:
+    idx = np.asarray(spec.atom_indices_0, dtype=int)
+    if idx.size < 2:
+        return False
+    kind = str(spec.species_kind or "").strip().lower()
+    # Compact molecules and residue/charged-group fragments are safe to repair
+    # by direct minimum image to an anchor atom.  Very long polymer chains can
+    # span more than half the box; those need graph-based unwrapping and are
+    # intentionally left on the legacy path in this lightweight fix.
+    return kind != "polymer" or idx.size <= 64
+
+
 def _compute_mobile_drift_series(
     *,
     gro_path: Path,
@@ -791,6 +827,8 @@ def load_group_positions(
                 w = np.ones(idx.size, dtype=float)
             w = w / float(np.sum(w))
             coords = xyz[:, idx, :]
+            if _should_make_group_whole_for_com(spec):
+                coords = _make_group_coordinates_whole(coords, box[:, :3])
             chunk_pos[:, gi, :] = np.tensordot(coords, w, axes=(1, 0))
         times.append(np.asarray(trj.time, dtype=float))
         pos_chunks.append(chunk_pos)
@@ -1224,6 +1262,7 @@ def compute_site_rdf(
     r_max_nm: float,
     chunk: int = 10,
     region: str = "global",
+    frame_stride: int = 1,
 ) -> dict[str, Any]:
     try:
         import mdtraj as md
@@ -1259,7 +1298,19 @@ def compute_site_rdf(
     block_size = max(1, int(max_pairs // max(1, center.size)))
     target_blocks = [target[i : i + block_size] for i in range(0, target.size, block_size)]
 
-    for trj in md.iterload(str(xtc_path), top=str(gro_path), chunk=int(max(1, chunk))):
+    stride = max(1, int(frame_stride or 1))
+    frame_offset = 0
+    for trj_raw in md.iterload(str(xtc_path), top=str(gro_path), chunk=int(max(1, chunk))):
+        raw_n_frames = int(trj_raw.n_frames)
+        if stride > 1:
+            keep = [i for i in range(raw_n_frames) if ((frame_offset + i) % stride) == 0]
+            frame_offset += raw_n_frames
+            if not keep:
+                continue
+            trj = trj_raw[keep]
+        else:
+            frame_offset += raw_n_frames
+            trj = trj_raw
         frame_count += int(trj.n_frames)
         box_lengths = np.asarray(getattr(trj, "unitcell_lengths", None), dtype=float)
         if box_lengths.ndim == 2 and box_lengths.shape[0] == int(trj.n_frames) and box_lengths.shape[1] >= 3:
@@ -1336,6 +1387,7 @@ def compute_site_rdf(
         "n_ref": int(center.size),
         "n_target": int(target.size),
         "region": region_token,
+        "frame_stride": int(stride),
         "shell": shell,
     }
 

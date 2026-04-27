@@ -105,6 +105,7 @@ def _species_charge_policy(species_payload: Mapping[str, Any], default_charge_me
     charge_method = str(species_payload.get("charge_method") or default_charge_method or "RESP").strip() or str(
         default_charge_method or "RESP"
     )
+    resp_profile = str(species_payload.get("resp_profile") or "").strip().lower() or None
     prefer_db = _coerce_optional_bool(species_payload.get("prefer_db"))
     if prefer_db is None:
         prefer_db = True
@@ -119,6 +120,7 @@ def _species_charge_policy(species_payload: Mapping[str, Any], default_charge_me
         "prefer_db": bool(prefer_db),
         "require_db": bool(require_db),
         "require_ready": bool(require_ready),
+        "resp_profile": resp_profile,
     }
 
 
@@ -1939,6 +1941,7 @@ def export_system_from_cell_meta(
                     require_db=bool(species_charge_policy["require_db"]),
                     require_ready=bool(species_charge_policy["require_ready"]),
                     charge=species_charge_method,
+                    resp_profile=species_charge_policy.get("resp_profile"),
                 )
             else:
                 from ..core import utils

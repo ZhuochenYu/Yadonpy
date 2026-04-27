@@ -294,6 +294,26 @@ def test_oplsaa_mol_defaults_to_resp_then_falls_back_to_builtin_path(monkeypatch
     assert mol.GetProp("_yadonpy_charge_fallback") == "opls"
 
 
+def test_molspec_resp_profile_is_forwarded_to_moldb_loader(monkeypatch):
+    ff = GAFF2_mod()
+    calls = []
+
+    def fake_mol_rdkit(smiles, **kwargs):
+        calls.append((smiles, dict(kwargs)))
+        raise RuntimeError("stop after loader dispatch")
+
+    monkeypatch.setattr(ff, "mol_rdkit", fake_mol_rdkit)
+    spec = ff.mol("CCO", resp_profile="adaptive", require_ready=True)
+
+    with pytest.raises(RuntimeError, match="stop after loader dispatch"):
+        ff.ff_assign(spec, report=False)
+
+    assert spec.resp_profile == "adaptive"
+    assert calls[0][0] == "CCO"
+    assert calls[0][1]["resp_profile"] == "adaptive"
+    assert "resp_profile=adaptive" in spec.resolved_label()
+
+
 def test_oplsaa_default_resp_handle_falls_back_to_builtin_charges_when_resp_is_unavailable():
     ff = OPLSAA()
 

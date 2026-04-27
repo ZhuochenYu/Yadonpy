@@ -23,6 +23,7 @@ from yadonpy.sim.benchmarking import (
     resolve_jpcb2020_peo_litfsi_case,
     summarize_rdkit_species_forcefield,
 )
+from yadonpy.sim.performance import resolve_io_analysis_policy
 from yadonpy.sim.preset import eq
 
 
@@ -47,6 +48,13 @@ def _env_float(name: str, default: float) -> float:
     return float(raw)
 
 
+def _env_optional_float(name: str) -> float | None:
+    raw = os.environ.get(name)
+    if raw is None or not str(raw).strip():
+        return None
+    return float(raw)
+
+
 def _env_text(name: str, default: str) -> str:
     raw = os.environ.get(name)
     if raw is None or not str(raw).strip():
@@ -57,6 +65,39 @@ def _env_text(name: str, default: str) -> str:
 def _env_list(name: str, default: str) -> list[str]:
     raw = os.environ.get(name, default)
     return [item.strip() for item in str(raw).split(",") if item.strip()]
+
+
+def _normalize_analysis_profile(profile: str) -> str:
+    token = str(profile or "auto").strip().lower()
+    if token in {"auto", "default"}:
+        return "auto"
+    if token in {"fast", "screening", "transport", "transport-fast", "transport_fast"}:
+        return "transport_fast"
+    if token in {"minimal", "min"}:
+        return "minimal"
+    if token == "full":
+        return "full"
+    raise ValueError("ANALYSIS_PROFILE must be auto, transport_fast, minimal, or full.")
+
+
+def _json_cache_is_fresh(path: Path, deps: list[Path]) -> bool:
+    try:
+        if not path.exists() or path.stat().st_size <= 0:
+            return False
+        dep_mtimes = [Path(dep).stat().st_mtime for dep in deps if Path(dep).exists()]
+        return bool(dep_mtimes) and path.stat().st_mtime >= max(dep_mtimes)
+    except Exception:
+        return False
+
+
+def _load_json_cache(path: Path, deps: list[Path]) -> dict | None:
+    if not _json_cache_is_fresh(path, deps):
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    return payload if isinstance(payload, dict) else None
 
 
 def _make_gaff2():
@@ -73,7 +114,16 @@ BASE_DIR = Path(__file__).resolve().parent
 restart_status = _env_bool("RESTART_STATUS", False)
 set_run_options(restart=restart_status)
 
-case_labels = _env_list("JPCB_CASES", "P1.00S1.00,P1.00S0.75,P1.20S0.75")
+literature_preset = _env_text("LITERATURE_PRESET", "")
+if literature_preset and "JPCB_CASES" not in os.environ:
+    preset_token = literature_preset
+    for prefix in ("JPCB2020_", "JPCB_"):
+        if preset_token.upper().startswith(prefix):
+            preset_token = preset_token[len(prefix):]
+            break
+    case_labels = [preset_token]
+else:
+    case_labels = _env_list("JPCB_CASES", "P1.00S1.00,P1.00S0.75,P1.20S0.75")
 paper_size = _env_bool("PAPER_SIZE", False)
 dry_run = _env_bool("DRY_RUN", False)
 
@@ -81,6 +131,9 @@ target_mode = str(os.environ.get("TARGET_MODE", "normalized_inverse") or "normal
 target_temp_override = os.environ.get("TARGET_TEMP_K")
 target_temp_k = float(target_temp_override) if target_temp_override and target_temp_override.strip() else None
 normalized_inverse = _env_float("NORMALIZED_INVERSE", 5.4)
+polymer_charge_scale_override = _env_optional_float("POLYMER_CHARGE_SCALE")
+li_charge_scale_override = _env_optional_float("LI_CHARGE_SCALE")
+anion_charge_scale_override = _env_optional_float("ANION_CHARGE_SCALE")
 
 chain_count = _env_int("CHAIN_COUNT", 96)
 prod_ns_default = _env_float("PROD_NS", 20.0)
@@ -97,6 +150,32 @@ gpu_id = _env_int("GPU_ID", 0)
 gpu_offload_mode = _env_text("GPU_OFFLOAD_MODE", "auto")
 omp_psi4 = _env_int("OMP_PSI4", 32)
 mem_mb = _env_int("MEM_MB", 20000)
+tfsi_resp_profile = _env_text("TFSI_RESP_PROFILE", "adaptive")
+
+performance_profile = _env_text("PERFORMANCE_PROFILE", "auto")
+analysis_profile_requested = _normalize_analysis_profile(_env_text("ANALYSIS_PROFILE", "auto"))
+traj_ps_setting = _env_text("TRAJ_PS", os.environ.get("YADONPY_PROD_TRAJ_PS", "auto"))
+energy_ps_setting = _env_text("ENERGY_PS", os.environ.get("YADONPY_PROD_ENERGY_PS", "auto"))
+log_ps_setting = _env_text("LOG_PS", os.environ.get("YADONPY_PROD_LOG_PS", "auto"))
+trr_ps_setting = os.environ.get("TRR_PS")
+velocity_ps_setting = os.environ.get("VELOCITY_PS")
+max_trajectory_frames = _env_int("MAX_TRAJECTORY_FRAMES", 50000)
+max_atom_frames = _env_float("MAX_ATOM_FRAMES", 5.0e9)
+rdf_frame_stride_setting = _env_text("RDF_FRAME_STRIDE", "auto")
+rdf_bin_nm_setting = _env_text("RDF_BIN_NM", "auto")
+rdf_rmax_nm_setting = _env_text("RDF_RMAX_NM", "auto")
+resume_analysis = _env_bool("RESUME_ANALYSIS", True)
+msd_geometry = _env_text("MSD_GEOMETRY", "auto")
+msd_unwrap = _env_text("MSD_UNWRAP", "auto")
+msd_drift = _env_text("MSD_DRIFT", "auto")
+dielectric_analysis = _env_bool("DIELECTRIC_ANALYSIS", True)
+dielectric_group = _env_text("DIELECTRIC_GROUP", "peo")
+dielectric_dt_ps_raw = os.environ.get("DIELECTRIC_DT_PS")
+dielectric_dt_ps = (
+    float(dielectric_dt_ps_raw)
+    if dielectric_dt_ps_raw is not None and str(dielectric_dt_ps_raw).strip()
+    else None
+)
 
 work_dir_name = os.environ.get("WORK_DIR_NAME", "benchmark_peo_litfsi_jpcb2020_work")
 work_root = Path(os.environ.get("WORK_DIR", str(BASE_DIR / work_dir_name))).resolve()
@@ -114,6 +193,22 @@ def _resolved_cases() -> list[dict]:
             production_ns=prod_ns_default,
             paper_size=paper_size,
         )
+        overrides = {}
+        if polymer_charge_scale_override is not None:
+            case["polymer_charge_scale"] = float(polymer_charge_scale_override)
+            overrides["polymer_charge_scale"] = float(polymer_charge_scale_override)
+        if li_charge_scale_override is not None:
+            case["li_charge_scale"] = float(li_charge_scale_override)
+            overrides["li_charge_scale"] = float(li_charge_scale_override)
+        if anion_charge_scale_override is not None:
+            case["anion_charge_scale"] = float(anion_charge_scale_override)
+            overrides["anion_charge_scale"] = float(anion_charge_scale_override)
+        if overrides:
+            li_scale = float(case.get("li_charge_scale", case.get("salt_charge_scale", 1.0)))
+            anion_scale = float(case.get("anion_charge_scale", case.get("salt_charge_scale", 1.0)))
+            if abs(li_scale - anion_scale) <= 1.0e-12:
+                case["salt_charge_scale"] = li_scale
+            case["charge_scale_overrides"] = overrides
         out.append(case)
     return out
 
@@ -121,11 +216,41 @@ def _resolved_cases() -> list[dict]:
 def _write_dry_run_plan(root: Path, cases: list[dict], ff_variant: str) -> None:
     payload = {
         "benchmark_name": "JPCB2020 PEO/LiTFSI charge-scaling reproduction",
-        "forcefield": {"polymer_and_tfsi": ff_variant, "cation": "MERZ", "charge_model": "RESP"},
+        "forcefield": {
+            "polymer_and_tfsi": ff_variant,
+            "cation": "MERZ",
+            "charge_model": "RESP",
+            "tfsi_resp_profile": tfsi_resp_profile,
+        },
         "target_cases": cases,
         "available_cases": jpcb2020_peo_litfsi_cases(),
         "execution": {
             "dry_run": True,
+            "performance_profile": performance_profile,
+            "analysis_profile_requested": analysis_profile_requested,
+            "resume_analysis": bool(resume_analysis),
+            "dielectric_analysis": bool(dielectric_analysis),
+            "dielectric_group": dielectric_group,
+            "literature_preset": literature_preset or None,
+            "charge_scale_overrides": {
+                "polymer": polymer_charge_scale_override,
+                "li": li_charge_scale_override,
+                "anion": anion_charge_scale_override,
+            },
+            "rdf": {
+                "bin_nm": rdf_bin_nm_setting,
+                "r_max_nm": rdf_rmax_nm_setting,
+                "frame_stride": rdf_frame_stride_setting,
+            },
+            "output_cadence": {
+                "traj_ps": traj_ps_setting,
+                "energy_ps": energy_ps_setting,
+                "log_ps": log_ps_setting,
+                "trr_ps": trr_ps_setting,
+                "velocity_ps": velocity_ps_setting,
+                "max_trajectory_frames": max_trajectory_frames,
+                "max_atom_frames": max_atom_frames,
+            },
             "notes": [
                 "Set DRY_RUN=0 to run QM/build/equilibration/production.",
                 "The paper used 300-600 ns production; PROD_NS defaults to a shorter screening run.",
@@ -197,6 +322,7 @@ def _prepare_species(root, ff, cation_ff):
         tfsi = ff.mol(
             "FC(F)(F)S(=O)(=O)[N-]S(=O)(=O)C(F)(F)F",
             charge="RESP",
+            resp_profile=tfsi_resp_profile,
             require_ready=True,
             prefer_db=True,
         )
@@ -233,6 +359,25 @@ def _run_case(root, case: dict, peo, li, tfsi, ff_variant: str) -> dict:
             f"Estimated atom count {estimated_atoms} outside [{min_atoms}, {max_atoms}]. "
             "Adjust CHAIN_COUNT, PAPER_SIZE, MIN_ATOMS, or MAX_ATOMS."
         )
+    io_policy = resolve_io_analysis_policy(
+        prod_ns=float(case["production_ns"]),
+        atom_count=int(estimated_atoms),
+        performance_profile=performance_profile,
+        analysis_profile=analysis_profile_requested,
+        traj_ps=traj_ps_setting,
+        energy_ps=energy_ps_setting,
+        log_ps=log_ps_setting,
+        trr_ps=trr_ps_setting,
+        velocity_ps=velocity_ps_setting,
+        rdf_frame_stride=rdf_frame_stride_setting,
+        rdf_rmax_nm=rdf_rmax_nm_setting,
+        rdf_bin_nm=rdf_bin_nm_setting,
+        msd_selected_species=["PEO", "Li", "TFSI"],
+        max_trajectory_frames=max_trajectory_frames,
+        max_atom_frames=max_atom_frames,
+    )
+    analysis_profile = io_policy.analysis_profile
+    analysis_fast = analysis_profile in {"transport_fast", "minimal"}
 
     pre_export = [
         summarize_rdkit_species_forcefield(peo, label="PEO", moltype_hint="PEO", charge_scale=charge_scale[0]),
@@ -298,14 +443,89 @@ def _run_case(root, case: dict, peo, li, tfsi, ff_variant: str) -> dict:
         gpu=gpu,
         gpu_id=gpu_id,
         time=float(case["production_ns"]),
+        traj_ps=io_policy.traj_ps,
+        energy_ps=io_policy.energy_ps,
+        log_ps=io_policy.log_ps,
+        trr_ps=io_policy.trr_ps,
+        velocity_ps=io_policy.velocity_ps,
+        performance_profile=io_policy.performance_profile,
+        analysis_profile=io_policy.analysis_profile,
+        max_trajectory_frames=io_policy.max_trajectory_frames,
+        max_atom_frames=io_policy.max_atom_frames,
         gpu_offload_mode=gpu_offload_mode,
     )
 
     analy = npt.analyze()
-    prop_data = analy.get_all_prop(temp=float(case["target_temp_k"]), press=press_bar, save=True)
-    rdf = analy.rdf(center_mol=li)
-    msd = analy.msd()
-    sigma = analy.sigma(msd=msd, temp_k=float(case["target_temp_k"]), eh_mode="gmx_current_only")
+    analysis_metadata = {
+        "analysis_profile": analysis_profile,
+        "performance_policy": io_policy.to_dict(),
+        "resume_analysis": bool(resume_analysis),
+        "include_polymer_metrics": bool(io_policy.include_polymer_metrics),
+        "rdf": {
+            "bin_nm": float(io_policy.rdf_bin_nm),
+            "r_max_nm": io_policy.rdf_rmax_nm,
+            "frame_stride": int(io_policy.rdf_frame_stride),
+            "site_filter": (
+                ["ether_oxygen", "sulfonyl_oxygen", "anion_nitrogen"]
+                if analysis_fast
+                else None
+            ),
+        },
+        "msd": {
+            "selected_species": io_policy.msd_selected_species if analysis_fast else None,
+            "default_metric_only": bool(io_policy.msd_default_metric_only),
+            "geometry": msd_geometry,
+            "unwrap": msd_unwrap,
+            "drift": msd_drift,
+        },
+        "dielectric": {
+            "enabled": bool(dielectric_analysis),
+            "group": dielectric_group,
+            "dt_ps": dielectric_dt_ps,
+            "method": "gmx dipoles",
+        },
+    }
+    prop_data = analy.get_all_prop(
+        temp=float(case["target_temp_k"]),
+        press=press_bar,
+        save=True,
+        include_polymer_metrics=bool(io_policy.include_polymer_metrics),
+        analysis_profile=analysis_profile,
+    )
+    rdf = analy.rdf(
+        center_mol=li,
+        analysis_profile=analysis_profile,
+        bin_nm=float(io_policy.rdf_bin_nm),
+        r_max_nm=io_policy.rdf_rmax_nm,
+        frame_stride=int(io_policy.rdf_frame_stride),
+        resume=resume_analysis,
+    )
+    msd = analy.msd(
+        analysis_profile=analysis_profile,
+        geometry=msd_geometry,
+        unwrap=msd_unwrap,
+        drift=msd_drift,
+        resume=resume_analysis,
+    )
+    if dielectric_analysis:
+        try:
+            dielectric = analy.dielectric(
+                temp_k=float(prop_data.get("basic_properties", {}).get("temperature_K") or case["target_temp_k"]),
+                group=dielectric_group,
+                dt_ps=dielectric_dt_ps,
+                resume=resume_analysis,
+            )
+        except Exception as exc:
+            dielectric = {
+                "status": "failed",
+                "error": f"{exc.__class__.__name__}: {exc}",
+                "note": (
+                    "Dielectric analysis is optional. If this failed with a TPR version error, set "
+                    "YADONPY_GMX_CMD to the same GROMACS major version used for production."
+                ),
+            }
+    else:
+        dielectric = {"status": "disabled"}
 
     analysis_dir = case_root / "06_analysis"
     system_dir = case_root / "02_system"
@@ -320,15 +540,39 @@ def _run_case(root, case: dict, peo, li, tfsi, ff_variant: str) -> dict:
     )
     coordination = build_coordination_partition(rdf, polymer_moltype="PEO", anion_moltype="TFSI")
     literature = literature_band_peo_litfsi_jpcb2020(case_key)
-    transport = build_transport_summary(
-        msd=msd,
-        sigma=sigma,
-        rdf=rdf,
-        polymer_moltype="PEO",
-        anion_moltype="TFSI",
-        thermo_xvg=analysis_dir / "thermo.xvg",
-        literature_band=literature,
-    )
+    transport_cache = None
+    if resume_analysis:
+        transport_cache = _load_json_cache(
+            analysis_dir / "transport_summary.json",
+            [
+                analysis_dir / "rdf_first_shell.json",
+                analysis_dir / "msd.json",
+                analysis_dir / "thermo.xvg",
+            ],
+        )
+        if isinstance(transport_cache, dict):
+            cached_meta = transport_cache.get("analysis_metadata")
+            cached_profile = (
+                cached_meta.get("analysis_profile")
+                if isinstance(cached_meta, dict)
+                else transport_cache.get("analysis_profile")
+            )
+            if str(cached_profile or "") != analysis_profile:
+                transport_cache = None
+    if isinstance(transport_cache, dict):
+        transport = transport_cache
+    else:
+        sigma = analy.sigma(msd=msd, temp_k=float(case["target_temp_k"]), eh_mode="gmx_current_only")
+        transport = build_transport_summary(
+            msd=msd,
+            sigma=sigma,
+            rdf=rdf,
+            polymer_moltype="PEO",
+            anion_moltype="TFSI",
+            thermo_xvg=analysis_dir / "thermo.xvg",
+            literature_band=literature,
+            analysis_metadata=analysis_metadata,
+        )
     compare = build_benchmark_compare(
         force_balance_report=force_balance,
         coordination_partition=coordination,
@@ -342,7 +586,12 @@ def _run_case(root, case: dict, peo, li, tfsi, ff_variant: str) -> dict:
     metadata = {
         "benchmark_name": "JPCB2020 PEO/LiTFSI charge-scaling reproduction",
         "paper_case": dict(case),
-        "forcefield": {"polymer_and_tfsi": ff_variant, "cation": "MERZ", "charge_model": "RESP"},
+        "forcefield": {
+            "polymer_and_tfsi": ff_variant,
+            "cation": "MERZ",
+            "charge_model": "RESP",
+            "tfsi_resp_profile": tfsi_resp_profile,
+        },
         "eo_li_ratio": f"{float(case['effective_eo_li_ratio']):.3g}:1",
         "target_temp_k": float(case["target_temp_k"]),
         "normalized_inverse_temperature": float(case["normalized_inverse_temperature"]),
@@ -359,6 +608,7 @@ def _run_case(root, case: dict, peo, li, tfsi, ff_variant: str) -> dict:
         "gpu": gpu,
         "gpu_id": gpu_id,
         "gpu_offload_mode": gpu_offload_mode,
+        "analysis": analysis_metadata,
     }
 
     _dump_json(analysis_dir / "force_balance_report.json", force_balance)
@@ -370,6 +620,7 @@ def _run_case(root, case: dict, peo, li, tfsi, ff_variant: str) -> dict:
             "metadata": metadata,
             "compare": compare,
             "basic_properties": prop_data.get("basic_properties", {}),
+            "dielectric": dielectric,
         },
     )
     _dump_json(analysis_dir / "benchmark_metadata.json", metadata)

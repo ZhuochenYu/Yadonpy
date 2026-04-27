@@ -1,5 +1,13 @@
+"""Mass, density, and composition metrics for sandwich phases.
+
+The helpers here summarize phase-level properties needed to compare prepared
+slabs and final stacks. They operate on exported metadata rather than live MD
+objects so reports can be regenerated cheaply from work directories.
+"""
+
 from __future__ import annotations
 
+import math
 from pathlib import Path
 from typing import Sequence
 
@@ -25,6 +33,22 @@ def _read_gro_z_coords(gro_path: Path) -> list[float]:
         except Exception:
             z.append(float(raw[-8:]))
     return z
+
+
+def _read_gro_xyz_coords(gro_path: Path) -> list[tuple[float, float, float]]:
+    lines = Path(gro_path).read_text(encoding="utf-8", errors="replace").splitlines()
+    if len(lines) < 3:
+        raise ValueError(f"Invalid .gro file: {gro_path}")
+    nat = int(lines[1].strip())
+    coords: list[tuple[float, float, float]] = []
+    for i in range(nat):
+        raw = lines[2 + i]
+        try:
+            coords.append((float(raw[20:28]), float(raw[28:36]), float(raw[36:44])))
+        except Exception:
+            parts = raw.split()
+            coords.append((float(parts[-3]), float(parts[-2]), float(parts[-1])))
+    return coords
 
 
 def _read_gro_box_nm(gro_path: Path) -> tuple[float, float, float]:
@@ -77,10 +101,43 @@ def _phase_crosses_z_boundary(values: Sequence[float], *, box_z_nm: float) -> tu
     return crosses, [float(x) for x in (unwrapped if crosses else arr)]
 
 
+def _minimum_atom_distance_nm(coords: Sequence[tuple[float, float, float]], *, cutoff_nm: float = 0.20) -> float | None:
+    if len(coords) < 2:
+        return None
+    cutoff = max(float(cutoff_nm), 1.0e-6)
+    bins: dict[tuple[int, int, int], list[tuple[float, float, float]]] = {}
+    best2 = float("inf")
+    for raw in coords:
+        point = (float(raw[0]), float(raw[1]), float(raw[2]))
+        key = (
+            int(math.floor(point[0] / cutoff)),
+            int(math.floor(point[1] / cutoff)),
+            int(math.floor(point[2] / cutoff)),
+        )
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                for dz in (-1, 0, 1):
+                    for other in bins.get((key[0] + dx, key[1] + dy, key[2] + dz), []):
+                        dist2 = (
+                            (point[0] - other[0]) ** 2
+                            + (point[1] - other[1]) ** 2
+                            + (point[2] - other[2]) ** 2
+                        )
+                        if dist2 < best2:
+                            best2 = float(dist2)
+        bins.setdefault(key, []).append(point)
+    if not np.isfinite(best2):
+        return None
+    return float(np.sqrt(best2))
+
+
 def build_stack_checks(*, gro_path: Path, ndx_groups: dict[str, list[int]]) -> dict[str, object]:
     z_coords = _read_gro_z_coords(gro_path)
     _box_x_nm, _box_y_nm, box_z_nm = _read_gro_box_nm(gro_path)
-    payload: dict[str, object] = {"gro_path": str(gro_path)}
+    payload: dict[str, object] = {
+        "gro_path": str(gro_path),
+        "min_atom_distance_nm": _minimum_atom_distance_nm(_read_gro_xyz_coords(gro_path)),
+    }
     phase_stats: dict[str, dict[str, float]] = {}
     for name in ("GRAPHITE", "POLYMER", "ELECTROLYTE"):
         members = [int(idx) for idx in ndx_groups.get(name, []) if 1 <= int(idx) <= len(z_coords)]
@@ -123,6 +180,8 @@ def build_sandwich_acceptance(
     stack_checks: dict[str, object],
     polymer_density_range_g_cm3: tuple[float, float] | None = None,
     electrolyte_density_range_g_cm3: tuple[float, float] | None = None,
+    charge_summary: dict[str, object] | None = None,
+    min_atom_distance_nm: float | None = None,
 ) -> dict[str, object]:
     polymer_density = representative_phase_density(polymer_summary)
     electrolyte_density = representative_phase_density(electrolyte_summary)
@@ -144,6 +203,22 @@ def build_sandwich_acceptance(
     electrolyte_wrapped = bool(electrolyte_summary.get("wrapped_across_z_boundary", False))
     polymer_density_ok = float(polymer_range[0]) <= float(polymer_density) <= float(polymer_range[1])
     electrolyte_density_ok = float(electrolyte_range[0]) <= float(electrolyte_density) <= float(electrolyte_range[1])
+    min_distance = stack_checks.get("min_atom_distance_nm")
+    min_distance_value = None if min_distance is None else float(min_distance)
+    min_distance_threshold = None if min_atom_distance_nm is None else float(min_atom_distance_nm)
+    min_atom_distance_ok = True if min_distance_threshold is None or min_distance_value is None else min_distance_value >= min_distance_threshold
+    charge_payload = dict(charge_summary or {})
+    if charge_payload:
+        if "net_charge_ok" in charge_payload:
+            charge_ok = bool(charge_payload.get("net_charge_ok"))
+        elif "net_charge_scaled" in charge_payload:
+            charge_ok = abs(float(charge_payload.get("net_charge_scaled", 0.0))) <= float(charge_payload.get("charge_tolerance", 1.0e-3))
+        elif "net_charge_e" in charge_payload:
+            charge_ok = abs(float(charge_payload.get("net_charge_e", 0.0))) <= float(charge_payload.get("charge_tolerance", 1.0e-3))
+        else:
+            charge_ok = True
+    else:
+        charge_ok = True
     acceptance = {
         "polymer_density_g_cm3": float(polymer_density),
         "electrolyte_density_g_cm3": float(electrolyte_density),
@@ -162,14 +237,36 @@ def build_sandwich_acceptance(
         "observed_order": observed_order,
         "expected_order": expected_order,
         "order_ok": observed_order == expected_order,
+        "min_atom_distance_nm": min_distance_value,
+        "min_atom_distance_threshold_nm": min_distance_threshold,
+        "min_atom_distance_ok": bool(min_atom_distance_ok),
+        "charge_summary": charge_payload,
+        "charge_ok": bool(charge_ok),
     }
     failed_checks: list[str] = []
-    for key in ("polymer_density_ok", "electrolyte_density_ok", "core_gaps_ok", "wrapped_ok", "order_ok"):
+    for key in (
+        "polymer_density_ok",
+        "electrolyte_density_ok",
+        "core_gaps_ok",
+        "wrapped_ok",
+        "order_ok",
+        "min_atom_distance_ok",
+        "charge_ok",
+    ):
         if not bool(acceptance[key]):
             failed_checks.append(key)
     acceptance["failed_checks"] = failed_checks
     acceptance["passing_checks"] = [
-        key for key in ("polymer_density_ok", "electrolyte_density_ok", "core_gaps_ok", "wrapped_ok", "order_ok")
+        key
+        for key in (
+            "polymer_density_ok",
+            "electrolyte_density_ok",
+            "core_gaps_ok",
+            "wrapped_ok",
+            "order_ok",
+            "min_atom_distance_ok",
+            "charge_ok",
+        )
         if bool(acceptance[key])
     ]
     acceptance["accepted"] = bool(
@@ -178,6 +275,8 @@ def build_sandwich_acceptance(
         and acceptance["core_gaps_ok"]
         and acceptance["wrapped_ok"]
         and acceptance["order_ok"]
+        and acceptance["min_atom_distance_ok"]
+        and acceptance["charge_ok"]
     )
     return acceptance
 

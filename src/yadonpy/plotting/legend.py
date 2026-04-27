@@ -1,3 +1,10 @@
+"""Legend-placement helpers for generated analysis plots.
+
+YadonPy creates many SVG diagnostics automatically. These helpers keep legends
+readable by trying preferred locations, measuring overlap, and falling back to
+safe defaults when matplotlib cannot infer a good placement.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass

@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """Runtime options (global defaults) for YadonPy workflows.
 
 This module exists so users can set `restart` once (globally) and then omit
@@ -10,6 +8,8 @@ This module exists so users can set `restart` once (globally) and then omit
 
 Explicit keyword arguments in API calls always override these defaults.
 """
+
+from __future__ import annotations
 
 import os
 from contextlib import contextmanager

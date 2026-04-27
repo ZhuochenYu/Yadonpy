@@ -1,3 +1,11 @@
+"""Charge-group and RESP-constraint helpers for polyelectrolyte chemistry.
+
+This module is the chemistry-aware layer that detects localized charged motifs,
+records charge-group metadata on RDKit molecules, and builds constraint payloads
+consumed by RESP fitting and GROMACS export. The intent is to keep charged-group
+bookkeeping centralized so MolDB, QM, and analysis agree on the same atom sets.
+"""
+
 from __future__ import annotations
 
 import json

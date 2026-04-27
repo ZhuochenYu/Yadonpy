@@ -1,3 +1,10 @@
+"""Shared plotting style defaults for YadonPy diagnostics.
+
+The plotting layer uses this module to keep colors, line styles, fonts, and
+figure sizes consistent across thermo, RDF, MSD, migration, and interface plots.
+Callers can use these helpers without importing heavy workflow modules.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass

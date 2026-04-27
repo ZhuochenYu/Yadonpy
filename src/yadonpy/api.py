@@ -54,6 +54,13 @@ def build_graphite_polymer_electrolyte_sandwich(**kwargs):
     return _build_sandwich(**kwargs)
 
 
+def build_cmcna_graphite_electrolyte_stack(**kwargs):
+    """Thin wrapper around :func:`yadonpy.interface.sandwich.build_cmcna_graphite_electrolyte_stack`."""
+    from .interface.sandwich import build_cmcna_graphite_electrolyte_stack as _build_stack
+
+    return _build_stack(**kwargs)
+
+
 def prepare_graphite_substrate(**kwargs):
     """Thin wrapper around :func:`yadonpy.interface.prepare_graphite_substrate`."""
     from .interface import prepare_graphite_substrate as _prepare_graphite_substrate
@@ -377,6 +384,7 @@ __all__ = [
     'assign_forcefield',
     'build_graphite',
     'build_cmc_electrolyte_interphase',
+    'build_cmcna_graphite_electrolyte_stack',
     'build_graphite_cmc_interphase',
     'build_graphite_cmcna_example_case',
     'build_graphite_cmcna_glucose6_periodic_case',

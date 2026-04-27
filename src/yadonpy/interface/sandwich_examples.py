@@ -1,3 +1,10 @@
+"""Convenience constructors for common sandwich demonstration systems.
+
+These wrappers provide ready-to-run graphite/PEO and graphite/CMC-Na cases used
+in examples and documentation. They keep the representative study definitions in
+one place while delegating all real preparation logic to the sandwich workflow.
+"""
+
 from __future__ import annotations
 
 from .sandwich import (

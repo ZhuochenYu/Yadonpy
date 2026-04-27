@@ -227,8 +227,8 @@ def test_example05_cmcna_periodic_case_is_moldb_only_for_core_species():
     assert 'name="PF6"' in example_text
     assert example_text.count('prefer_db=True') >= 5
     assert example_text.count('require_ready=True') >= 5
-    assert 'yp.build_graphite_cmc_interphase(' in example_text
-    assert 'yp.build_cmc_electrolyte_interphase(' in example_text
+    assert 'yp.build_cmcna_graphite_electrolyte_stack(' in example_text
+    assert 'yp.InterfaceBuildPolicy(' in example_text
 
 
 def test_example08_scripts_use_stage_apis_and_interface_summary_printer():
@@ -255,9 +255,8 @@ def test_example08_scripts_use_stage_apis_and_interface_summary_printer():
             'yp.release_graphite_cmc_electrolyte_stack(',
         ),
         'examples/08_graphite_polymer_electrolyte_sandwich/05_cmcna_glucose6_periodic_case.py': (
-            'yp.build_graphite_cmc_interphase(',
-            'yp.build_cmc_electrolyte_interphase(',
-            'yp.release_graphite_cmc_electrolyte_stack(',
+            'yp.build_cmcna_graphite_electrolyte_stack(',
+            'yp.InterfaceBuildPolicy(',
         ),
     }
 
@@ -268,9 +267,10 @@ def test_example08_scripts_use_stage_apis_and_interface_summary_printer():
         assert 'yp.doctor(' in text
         assert 'yp.get_ff("gaff2_mod")' in text
         assert 'yp.get_ff("merz")' in text
-        assert 'yp.prepare_graphite_substrate(' in text
-        assert 'yp.calibrate_polymer_bulk_phase(' in text
-        assert 'yp.calibrate_electrolyte_bulk_phase(' in text
+        if 'yp.build_cmcna_graphite_electrolyte_stack(' not in text:
+            assert 'yp.prepare_graphite_substrate(' in text
+            assert 'yp.calibrate_polymer_bulk_phase(' in text
+            assert 'yp.calibrate_electrolyte_bulk_phase(' in text
         assert 'yp.print_interface_result_summary(' in text
         for call in required_calls:
             assert call in text

@@ -1,3 +1,10 @@
+"""Filesystem cache for prepared molecule artifacts.
+
+The cache maps chemical identity plus preparation options to reusable molecule
+files. It is intentionally simple and path-based so expensive intermediate
+assets can be shared between scripts without requiring a database server.
+"""
+
 from __future__ import annotations
 
 import hashlib

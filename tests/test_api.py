@@ -130,11 +130,13 @@ def test_top_level_api_exports_mechanics_helpers():
     assert hasattr(api, 'build_graphite_polymer_interphase')
     assert hasattr(api, 'build_polymer_electrolyte_interphase')
     assert hasattr(api, 'release_graphite_polymer_electrolyte_stack')
+    assert hasattr(api, 'build_cmcna_graphite_electrolyte_stack')
     assert hasattr(api, 'print_interface_result_summary')
     assert hasattr(yadonpy, 'GraphiteSubstrateSpec')
     assert hasattr(yadonpy, 'PolymerSlabSpec')
     assert hasattr(yadonpy, 'ElectrolyteSlabSpec')
     assert hasattr(yadonpy, 'SandwichRelaxationSpec')
+    assert hasattr(yadonpy, 'InterfaceBuildPolicy')
 
 
 def test_analyzer_does_not_expose_transport_bundle_api():

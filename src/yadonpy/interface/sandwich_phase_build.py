@@ -1,3 +1,10 @@
+"""Phase-build summaries for graphite/polymer/electrolyte sandwich workflows.
+
+The dataclasses in this module capture bulk calibration and slab preparation
+results in a compact, JSON-friendly form. They are used to move phase provenance
+between build steps without coupling callers to every raw artifact path.
+"""
+
 from __future__ import annotations
 
 import json

@@ -84,11 +84,12 @@ pf6 = yp.load_from_moldb(
 import yadonpy as yp
 
 graphite = yp.GraphiteSubstrateSpec(nx=4, ny=4, n_layers=2)
-polymer = yp.default_peo_polymer_spec(dp=20)
+polymer = yp.default_cmcna_polymer_spec(dp=20)
 electrolyte = yp.default_carbonate_lipf6_electrolyte_spec()
 relax = yp.SandwichRelaxationSpec(omp=8, gpu=1, psi4_omp=8)
+policy = yp.InterfaceBuildPolicy(stack_relaxation="natural_contact")
 
-graphite_stage = yp.prepare_graphite_substrate(
+result = yp.build_cmcna_graphite_electrolyte_stack(
     work_dir="./work_sandwich",
     ff=yp.get_ff("gaff2_mod"),
     ion_ff=yp.get_ff("merz"),
@@ -96,8 +97,9 @@ graphite_stage = yp.prepare_graphite_substrate(
     polymer=polymer,
     electrolyte=electrolyte,
     relax=relax,
+    policy=policy,
 )
-# ... calibrate phases, build interphases, then release the final stack
+yp.print_interface_result_summary(result)
 ```
 
 ## Workflow Areas
@@ -134,8 +136,33 @@ analy = production.analyze()
 rdf = analy.rdf(center_mol=li_mol)
 msd = analy.msd()
 sigma = analy.sigma(msd=msd, temp_k=300.0)
+dielectric = analy.dielectric(temp_k=300.0)
 migration = analy.migration(center_mol=li_mol)
 ```
+
+For high-throughput electrolyte screening, use the lighter transport profile:
+
+```python
+prop = analy.get_all_prop(temp=300.0, press=1.0, include_polymer_metrics=False, analysis_profile="transport_fast")
+rdf = analy.rdf(center_mol=li_mol, analysis_profile="transport_fast", resume=True)
+msd = analy.msd(analysis_profile="transport_fast", resume=True)
+```
+
+`transport_fast` keeps Li coordination and diffusion diagnostics, but skips full
+site RDF and expensive polymer conformation metrics. Use `analysis_profile="full"`
+when you want the complete report.
+
+Production output cadence is adaptive by default in the production presets and
+benchmark scripts. `PERFORMANCE_PROFILE=auto` keeps short/small runs near 2 ps
+trajectory output, but switches long or large systems to coarser 10-50 ps output
+and matching fast-analysis defaults. Set `PERFORMANCE_PROFILE=full` or explicit
+`TRAJ_PS` / `ENERGY_PS` / `LOG_PS` values when you need dense trajectories for
+short-time dynamics.
+
+`dielectric()` wraps `gmx dipoles` and estimates the static dielectric constant
+from total dipole fluctuations. Use the same GROMACS major version that produced
+the `.tpr` file, e.g. set `YADONPY_GMX_CMD=/path/to/gmx` on clusters with
+multiple GROMACS installations.
 
 This keeps the defaults physically aligned:
 

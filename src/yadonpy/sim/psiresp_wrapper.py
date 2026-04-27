@@ -1,3 +1,11 @@
+"""PsiRESP integration layer for RESP/RESP2/ESP charge fitting.
+
+The wrapper translates RDKit molecules and YadonPy constraint metadata into the
+objects expected by `psiresp-base`, then writes fitted charges and provenance
+back onto the molecule. This keeps symmetry, resonance, and MolDB bookkeeping
+consistent across QM workflows.
+"""
+
 from __future__ import annotations
 
 import datetime

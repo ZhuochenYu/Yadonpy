@@ -1,3 +1,11 @@
+"""Protocol dataclasses and execution helpers for interface relaxation.
+
+This module describes how prepared interfaces should be minimized, equilibrated,
+and optionally produced. It separates protocol configuration from the lower-level
+builders so scientific choices such as restraints, wall handling, and MD stages
+are explicit and reusable.
+"""
+
 from __future__ import annotations
 
 import json

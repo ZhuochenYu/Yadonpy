@@ -1,6 +1,6 @@
-from __future__ import annotations
-
 """Central schema/version constants for cache invalidation sensitive workflows."""
+
+from __future__ import annotations
 
 PACKAGE_SERIES = "0.8.74"
 AMORPHOUS_CELL_SCHEMA_VERSION = f"{PACKAGE_SERIES}-amorphous-cell-v2"

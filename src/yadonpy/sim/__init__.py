@@ -11,6 +11,7 @@ from __future__ import annotations
 from . import qm
 from . import seminario
 from .analyzer import AnalyzeResult
+from .performance import IOAnalysisPolicy, resolve_io_analysis_policy
 
 Psi4w = None
 try:
@@ -19,4 +20,4 @@ except Exception:
     # Keep import optional; user will get a clear message when calling RESP.
     Psi4w = None
 
-__all__ = ["qm", "seminario", "Psi4w", "AnalyzeResult"]
+__all__ = ["qm", "seminario", "Psi4w", "AnalyzeResult", "IOAnalysisPolicy", "resolve_io_analysis_policy"]

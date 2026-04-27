@@ -89,6 +89,18 @@ The screening comparison helper writes:
 Transport notes:
 
 - `RDF`, `MSD`, and conductivity are called independently.
+- `benchmark_peo_litfsi_jpcb2020.py` and the carbonate benchmark default to
+  `PERFORMANCE_PROFILE=auto` / `ANALYSIS_PROFILE=auto`. Short/small jobs keep
+  dense output, while large or long jobs automatically move to coarser 10-50 ps
+  trajectory output and matching RDF/MSD settings.
+- The resolved policy is written into `05_*_production/summary.json` and the
+  benchmark metadata. Explicit `TRAJ_PS`, `ENERGY_PS`, `LOG_PS`,
+  `RDF_FRAME_STRIDE`, `RDF_BIN_NM`, or `RDF_RMAX_NM` values always override auto.
+- Set `PERFORMANCE_PROFILE=full ANALYSIS_PROFILE=full` to restore dense output,
+  all-site RDF, and full polymer metrics.
+- `DIELECTRIC_ANALYSIS=1` runs `AnalyzeResult.dielectric()` via `gmx dipoles`.
+  If the cluster default `gmx` is older than the production `.tpr`, set
+  `YADONPY_GMX_CMD=/path/to/gmx` before running post-processing.
 - `sigma_ne_upper_bound_S_m` should be read as an upper bound.
 - `sigma_eh_total_S_m` is the preferred total conductivity when available.
 - For experiment comparison, `benchmark_peo_litfsi_60c.py` uses `eh_mode="gmx_current_only"`, so EH is reported only from `gmx current -dsp`. If `gmx current` fails, EH is marked unavailable rather than replaced by a fallback estimate.

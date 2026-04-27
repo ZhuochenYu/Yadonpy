@@ -876,6 +876,60 @@ class GromacsRunner:
             args += ["-e", str(end_ps)]
         self.run(args, cwd=cwd, stdin_text=f"{group}\n")
 
+    def dipoles(
+        self,
+        *,
+        tpr: Path,
+        xtc: Path,
+        ndx: Optional[Path] = None,
+        group: str = "System",
+        out_mtot_xvg: Path,
+        out_epsilon_xvg: Path,
+        out_average_xvg: Optional[Path] = None,
+        out_distribution_xvg: Optional[Path] = None,
+        temp_k: float = 300.0,
+        begin_ps: Optional[float] = None,
+        end_ps: Optional[float] = None,
+        dt_ps: Optional[float] = None,
+        epsilon_rf: float = 0.0,
+        pairs: bool = False,
+        cwd: Optional[Path] = None,
+    ) -> subprocess.CompletedProcess:
+        """Run `gmx dipoles` for total dipole and dielectric-constant analysis."""
+        args = [
+            "dipoles",
+            "-s",
+            str(tpr),
+            "-f",
+            str(xtc),
+            "-o",
+            str(out_mtot_xvg),
+            "-eps",
+            str(out_epsilon_xvg),
+            "-temp",
+            str(float(temp_k)),
+            "-epsilonRF",
+            str(float(epsilon_rf)),
+            "-corr",
+            "none",
+            "-xvg",
+            "none",
+        ]
+        if ndx is not None:
+            args += ["-n", str(ndx)]
+        if out_average_xvg is not None:
+            args += ["-a", str(out_average_xvg)]
+        if out_distribution_xvg is not None:
+            args += ["-d", str(out_distribution_xvg)]
+        if begin_ps is not None:
+            args += ["-b", str(begin_ps)]
+        if end_ps is not None:
+            args += ["-e", str(end_ps)]
+        if dt_ps is not None:
+            args += ["-dt", str(float(dt_ps))]
+        args += ["-pairs" if bool(pairs) else "-nopairs"]
+        return self.run(args, cwd=cwd, stdin_text=f"{group}\n")
+
     def gyrate(
         self,
         *,

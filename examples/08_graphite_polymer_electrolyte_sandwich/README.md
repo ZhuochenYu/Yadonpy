@@ -14,8 +14,10 @@ coherent workflow family built around the same staged sandwich workflow:
    mainly along the surface normal;
 7. record bulk-calibration summaries, walled-phase diagnostics, and final phase ordering.
 
-The scripts are intentionally thin but no longer black-box. Each one now spells
-out the same public stages used by the convenience builder:
+The recommended CMC-Na target script now uses the one-shot
+`build_cmcna_graphite_electrolyte_stack(...)` builder. The older explicit-stage
+scripts remain intentionally thin but no longer black-box; they spell out the
+same public stages used internally by the convenience builder:
 
 1. `prepare_graphite_substrate(...)`
 2. `calibrate_polymer_bulk_phase(...)`
@@ -41,9 +43,11 @@ not repeated.
   - fuller CMC-Na study on the same three-phase builder
 - `05_cmcna_glucose6_periodic_case.py`
   - target case: `1 M LiPF6 in EC:EMC:DEC = 3:2:5` above 8 chains of `DP=50` CMC-Na built only from the `glucose_6` repeat unit, on top of a 4-layer graphite substrate using the new uncapped `edge_cap="periodic"` mode
-  - uses the same explicit stage API sequence as the other scripts, but keeps
-    the chemistry fixed to MolDB-ready `glucose_6`, `EC`, `EMC`, `DEC`, and
-    `PF6`
+  - uses the high-level CMC-Na one-shot builder with `InterfaceBuildPolicy`
+    defaults: final-XY walled soft phases, natural-contact stack relaxation,
+    conservative rescue, and production-route acceptance hard stop
+  - keeps the chemistry fixed to MolDB-ready `glucose_6`, `EC`, `EMC`, `DEC`,
+    and `PF6`
 
 ## Routes And Profiles
 
@@ -95,6 +99,7 @@ single source of truth for launching and summarizing Example 08 cases.
   the same chemistry can be validated with a much smaller remote-friendly system
   before launching the exact production-sized case.
 - The manifest written under each work directory includes:
+  - `00_interface_design/interface_design.json`
   - `01_graphite/graphite_preparation_summary.json`
   - `02_polymer_bulk_calibration/polymer_bulk_calibration_summary.json`
   - `03_electrolyte_bulk_calibration/electrolyte_bulk_calibration_summary.json`
@@ -105,8 +110,9 @@ single source of truth for launching and summarizing Example 08 cases.
   - walled-phase build summaries for each soft phase
   - confined phase summaries for each soft phase
   - final `GRAPHITE -> POLYMER -> ELECTROLYTE` phase-order checks
-  - explicit acceptance fields for density windows, wrapped-Z detection, and
-    positive core gaps
+  - explicit acceptance fields for density windows, wrapped-Z detection,
+    positive core gaps, minimum atom distance, and charge balance
+  - stack attempt history and any selected conservative rescue strategy
   - the chosen stacked export paths and main relaxation outputs
 - The printed terminal summary now exposes the main acceptance booleans and a
   `failed_checks` list directly, so remote monitoring does not require opening

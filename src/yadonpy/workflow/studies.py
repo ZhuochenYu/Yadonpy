@@ -1,3 +1,10 @@
+"""Small study-level configuration objects for repeatable workflows.
+
+These dataclasses capture resources, restart behavior, and study metadata that
+span multiple workflow steps. They give scripts a typed place to store run-level
+intent without turning YadonPy's script-first style into a large framework.
+"""
+
 from __future__ import annotations
 
 import json

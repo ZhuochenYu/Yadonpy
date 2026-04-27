@@ -1,6 +1,6 @@
-from __future__ import annotations
-
 """Formatted force-field assignment reports."""
+
+from __future__ import annotations
 
 from collections import Counter, OrderedDict
 
