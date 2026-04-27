@@ -18,6 +18,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 import re
+import json
 from copy import copy
 import itertools
 import datetime
@@ -374,6 +375,8 @@ _CACHE_SAFE_ATOM_FLOAT_PROPS = (
     'AtomicCharge_raw',
     'RESP',
     'RESP_raw',
+    'RESP2',
+    'RESP2_raw',
     'ESP',
     'MullikenCharge',
     'LowdinCharge',
@@ -1300,7 +1303,7 @@ def _nudge_first_atom_charge(mol, delta: float) -> None:
     if mol is None or mol.GetNumAtoms() <= 0:
         return
     atom = mol.GetAtomWithIdx(0)
-    keys = ['AtomicCharge', 'AtomicCharge_raw', 'RESP', 'RESP_raw']
+    keys = ['AtomicCharge', 'AtomicCharge_raw', 'RESP', 'RESP_raw', 'RESP2', 'RESP2_raw']
     base = 0.0
     for k in keys:
         try:
@@ -1311,7 +1314,7 @@ def _nudge_first_atom_charge(mol, delta: float) -> None:
             pass
     for k in keys:
         try:
-            if atom.HasProp(k) or k in ('AtomicCharge', 'RESP'):
+            if atom.HasProp(k) or k in ('AtomicCharge', 'RESP', 'RESP2'):
                 atom.SetDoubleProp(k, float(base + delta))
         except Exception:
             pass
@@ -1719,7 +1722,7 @@ def _prepare_connect_trial(mol1, mol2, bond_length=1.5, dihedral=np.pi, random_r
         'mon_coord': mol2_coord_rot[keep_idx2],
         'tail_ne_idx_new': tail_ne_idx_new,
         'head_ne_idx_new': head_ne_idx_new,
-        'charge_list': ['AtomicCharge', '_GasteigerCharge', 'RESP', 'ESP', 'MullikenCharge', 'LowdinCharge'],
+        'charge_list': ['AtomicCharge', '_GasteigerCharge', 'RESP', 'RESP2', 'ESP', 'MullikenCharge', 'LowdinCharge'],
     }
 
 
@@ -2994,6 +2997,625 @@ def random_copolymerize_rw(mols, n, ratio=None, reac_ratio=[], init_poly=None, h
 
     _rw_save(work_dir, 'random_copolymerize_rw', payload, poly)
     return poly
+
+
+_SEGMENT_META_PROP = "_yadonpy_segment_metadata_json"
+_BRANCH_META_PROP = "_yadonpy_branch_metadata_json"
+_SEGMENT_CHARGE_PROPS = ("AtomicCharge", "_GasteigerCharge", "RESP", "RESP2", "ESP", "MullikenCharge", "LowdinCharge")
+
+
+def _segment_resolve_mol(mol, *, name: str | None = None):
+    if isinstance(mol, str):
+        return utils.mol_from_smiles(mol, name=name)
+    return _resolve_mol_like(mol)
+
+
+def _segment_smiles(mol) -> str | None:
+    try:
+        if hasattr(mol, 'HasProp') and mol.HasProp('_yadonpy_input_smiles'):
+            return str(mol.GetProp('_yadonpy_input_smiles'))
+        return Chem.MolToSmiles(mol, isomericSmiles=True)
+    except Exception:
+        return None
+
+
+def _segment_linker_indices(mol, label: int = 1) -> list[int]:
+    out: list[int] = []
+    isotope = int(label) + 2
+    for atom in mol.GetAtoms():
+        try:
+            if atom.GetSymbol() == "H" and int(atom.GetIsotope()) == isotope:
+                out.append(int(atom.GetIdx()))
+            elif int(label) == 1 and atom.GetSymbol() == "*":
+                out.append(int(atom.GetIdx()))
+        except Exception:
+            continue
+    return out
+
+
+def _segment_branch_labels(mol, *, main_label: int = 1) -> list[int]:
+    labels: set[int] = set()
+    for atom in mol.GetAtoms():
+        try:
+            if atom.GetSymbol() == "H" and int(atom.GetIsotope()) >= 3:
+                label = int(atom.GetIsotope()) - 2
+                if label != int(main_label):
+                    labels.add(label)
+        except Exception:
+            continue
+    return sorted(labels)
+
+
+def _segment_validate_linker_count(mol, *, label: int, allowed: tuple[int, ...], role: str) -> list[int]:
+    idxs = _segment_linker_indices(mol, label=label)
+    if len(idxs) not in set(int(x) for x in allowed):
+        raise ValueError(
+            f"{role} must contain {allowed} linker(s) for label={label}; found {len(idxs)}. "
+            "Use '*'/'[1*]' for main-chain ends and '[2*]'/'[3*]' for branch sites."
+        )
+    return idxs
+
+
+def _segment_charge_props(*mols) -> list[str]:
+    props: list[str] = []
+    for prop in _SEGMENT_CHARGE_PROPS:
+        for mol in mols:
+            try:
+                if mol is not None and any(atom.HasProp(prop) for atom in mol.GetAtoms()):
+                    props.append(prop)
+                    break
+            except Exception:
+                continue
+    return props
+
+
+def _segment_harmonize_charge_props(*mols) -> None:
+    props = _segment_charge_props(*mols)
+    if not props:
+        return
+    for mol in mols:
+        if mol is None:
+            continue
+        for atom in mol.GetAtoms():
+            for prop in props:
+                if not atom.HasProp(prop):
+                    atom.SetDoubleProp(prop, 0.0)
+
+
+def _segment_total_charge(mol, prop: str = "AtomicCharge") -> float | None:
+    try:
+        if not any(atom.HasProp(prop) for atom in mol.GetAtoms()):
+            return None
+        return float(sum(float(atom.GetDoubleProp(prop)) for atom in mol.GetAtoms() if atom.HasProp(prop)))
+    except Exception:
+        return None
+
+
+def _segment_write_json_prop(mol, key: str, payload: dict) -> None:
+    try:
+        mol.SetProp(key, json.dumps(_rw_normalize_value(payload), ensure_ascii=False, sort_keys=True))
+    except Exception:
+        pass
+
+
+def _segment_set_name(mol, name: str | None, *, work_dir=None) -> None:
+    try:
+        resolved = str(name).strip() if name is not None else ""
+        if not resolved:
+            resolved = utils.suggest_name_from_work_dir(work_dir) or ""
+        if resolved:
+            utils.ensure_name(mol, name=resolved, depth=1, prefer_var=False)
+    except Exception:
+        pass
+
+
+def _segment_cap_end(segment, cap, *, side: str, label: int = 1, confId: int = 0, **kwargs):
+    if cap is None:
+        return segment
+    cap_mol = _segment_resolve_mol(cap)
+    if cap_mol is None:
+        raise ValueError(f"Invalid segment cap for {side!r}: {cap!r}")
+    segment_c = utils.deepcopy_mol(segment)
+    cap_c = utils.deepcopy_mol(cap_mol)
+    _segment_harmonize_charge_props(segment_c, cap_c)
+    if side == "tail":
+        out = connect_mols(
+            segment_c,
+            cap_c,
+            label1=label,
+            label2=label,
+            confId1=confId,
+            confId2=confId,
+            res_name_1="SEG",
+            res_name_2="CAP",
+            **kwargs,
+        )
+    elif side == "head":
+        out = connect_mols(
+            cap_c,
+            segment_c,
+            label1=label,
+            label2=label,
+            confId1=confId,
+            confId2=confId,
+            res_name_1="CAP",
+            res_name_2="SEG",
+            **kwargs,
+        )
+    else:
+        raise ValueError(f"Unsupported cap side: {side!r}")
+    return _rw_finalize_bonded_terms(out)
+
+
+def seg_gen(
+    units,
+    *,
+    name: str | None = None,
+    label: int = 1,
+    cap_head=None,
+    cap_tail=None,
+    confId: int = 0,
+    dist_min: float = 0.7,
+    retry: int = 60,
+    rollback: int = 3,
+    rollback_shaking: bool = False,
+    retry_step: int = 80,
+    retry_opt_step: int = 4,
+    res_name=None,
+    ff=None,
+    work_dir=None,
+    omp: int = 0,
+    mpi: int = 1,
+    gpu: int = 0,
+    restart=None,
+    **kwargs,
+):
+    """Generate a reusable polymer segment from pre-parameterized units.
+
+    The main-chain connection label defaults to ``1`` (``*`` or ``[1*]``).
+    Higher labels such as ``[2*]`` are preserved for later branch attachment.
+    Existing per-atom charge properties are carried through the connection.
+    """
+
+    dt1 = datetime.datetime.now()
+    utils.radon_print('Start poly.seg_gen.', level=1)
+    if isinstance(units, (Chem.Mol, MolSpec, str)):
+        units = [units]
+    units_resolved = [_segment_resolve_mol(unit) for unit in list(units)]
+    if any(unit is None for unit in units_resolved):
+        raise ValueError("seg_gen received an unresolved unit.")
+    for idx, unit in enumerate(units_resolved):
+        _segment_validate_linker_count(unit, label=label, allowed=(2,), role=f"seg_gen unit {idx}")
+
+    payload = _rw_payload(
+        'seg_gen',
+        unit_smiles=[_segment_smiles(unit) for unit in units_resolved],
+        label=int(label),
+        cap_head=_segment_smiles(_segment_resolve_mol(cap_head)) if cap_head is not None else None,
+        cap_tail=_segment_smiles(_segment_resolve_mol(cap_tail)) if cap_tail is not None else None,
+        name=name,
+    )
+    rst_flag = _effective_restart_flag(work_dir, restart)
+    if rst_flag:
+        cached = _rw_load(work_dir, 'seg_gen', payload)
+        if cached is not None:
+            return cached
+
+    if len(units_resolved) == 1:
+        seg = utils.deepcopy_mol(units_resolved[0])
+    else:
+        m_idx = list(range(len(units_resolved)))
+        chi_inv = [False for _ in m_idx]
+        if res_name is None:
+            res_name = ['SG%s' % const.pdb_id[i] for i in range(len(units_resolved))]
+        seg = random_walk_polymerization(
+            units_resolved,
+            m_idx,
+            chi_inv,
+            confId=confId,
+            dist_min=dist_min,
+            retry=retry,
+            rollback=rollback,
+            rollback_shaking=rollback_shaking,
+            retry_step=retry_step,
+            retry_opt_step=retry_opt_step,
+            tacticity=None,
+            res_name=res_name,
+            label=[[int(label), int(label)] for _ in units_resolved],
+            ff=ff,
+            work_dir=work_dir,
+            omp=omp,
+            mpi=mpi,
+            gpu=gpu,
+            restart=restart,
+        )
+
+    if cap_head is not None:
+        seg = _segment_cap_end(seg, cap_head, side="head", label=label, confId=confId, **kwargs)
+    if cap_tail is not None:
+        seg = _segment_cap_end(seg, cap_tail, side="tail", label=label, confId=confId, **kwargs)
+
+    _segment_set_name(seg, name, work_dir=work_dir)
+    meta = {
+        "kind": "segment",
+        "unit_count": len(units_resolved),
+        "unit_smiles": [_segment_smiles(unit) for unit in units_resolved],
+        "main_label": int(label),
+        "main_linker_count": len(_segment_linker_indices(seg, label=label)),
+        "branch_labels": _segment_branch_labels(seg, main_label=label),
+        "cap_head": payload.get("cap_head"),
+        "cap_tail": payload.get("cap_tail"),
+        "name": name,
+        "net_charge_atomic": _segment_total_charge(seg, "AtomicCharge"),
+    }
+    _segment_write_json_prop(seg, _SEGMENT_META_PROP, meta)
+    _rw_save(work_dir, 'seg_gen', payload, seg)
+    utils.radon_print('Normal termination of poly.seg_gen. Elapsed time = %s' % str(datetime.datetime.now() - dt1), level=1)
+    return seg
+
+
+def block_segment_rw(
+    segments,
+    block_lengths,
+    *,
+    name: str | None = None,
+    label: int = 1,
+    confId: int = 0,
+    dist_min: float = 0.7,
+    retry: int = 60,
+    rollback: int = 3,
+    rollback_shaking: bool = False,
+    retry_step: int = 80,
+    retry_opt_step: int = 4,
+    res_name=None,
+    ff=None,
+    work_dir=None,
+    omp: int = 0,
+    mpi: int = 1,
+    gpu: int = 0,
+    restart=None,
+):
+    """Build a block polymer by treating each segment as a pseudo-monomer."""
+
+    segments_resolved = [_segment_resolve_mol(seg) for seg in list(segments)]
+    lengths = [int(x) for x in list(block_lengths)]
+    if len(segments_resolved) != len(lengths):
+        raise ValueError(f"segments/block_lengths mismatch: {len(segments_resolved)} vs {len(lengths)}")
+    if any(n <= 0 for n in lengths):
+        raise ValueError("All block_lengths must be positive integers.")
+    for idx, seg in enumerate(segments_resolved):
+        _segment_validate_linker_count(seg, label=label, allowed=(2,), role=f"block segment {idx}")
+    m_idx: list[int] = []
+    for idx, length in enumerate(lengths):
+        m_idx.extend([idx for _ in range(int(length))])
+    chi_inv = [False for _ in m_idx]
+
+    payload = _rw_payload(
+        'block_segment_rw',
+        segment_smiles=[_segment_smiles(seg) for seg in segments_resolved],
+        block_lengths=lengths,
+        label=int(label),
+        name=name,
+    )
+    rst_flag = _effective_restart_flag(work_dir, restart)
+    if rst_flag:
+        cached = _rw_load(work_dir, 'block_segment_rw', payload)
+        if cached is not None:
+            return cached
+
+    if res_name is None:
+        res_name = ['BK%s' % const.pdb_id[i] for i in range(len(segments_resolved))]
+    out = random_walk_polymerization(
+        segments_resolved,
+        m_idx,
+        chi_inv,
+        confId=confId,
+        dist_min=dist_min,
+        retry=retry,
+        rollback=rollback,
+        rollback_shaking=rollback_shaking,
+        retry_step=retry_step,
+        retry_opt_step=retry_opt_step,
+        tacticity=None,
+        res_name=res_name,
+        label=[[int(label), int(label)] for _ in segments_resolved],
+        ff=ff,
+        work_dir=work_dir,
+        omp=omp,
+        mpi=mpi,
+        gpu=gpu,
+        restart=restart,
+    )
+    _segment_set_name(out, name, work_dir=work_dir)
+    _segment_write_json_prop(
+        out,
+        _SEGMENT_META_PROP,
+        {
+            "kind": "block_segment_polymer",
+            "segment_count": len(segments_resolved),
+            "block_lengths": lengths,
+            "main_label": int(label),
+            "branch_labels": _segment_branch_labels(out, main_label=label),
+            "name": name,
+        },
+    )
+    _rw_save(work_dir, 'block_segment_rw', payload, out)
+    return out
+
+
+def _branch_normalize_branches(branches):
+    if isinstance(branches, (Chem.Mol, MolSpec, str)):
+        branches = [branches]
+    out = [_segment_resolve_mol(branch) for branch in list(branches)]
+    if any(branch is None for branch in out):
+        raise ValueError("branch_segment_rw received an unresolved branch.")
+    return out
+
+
+def _branch_prepare_fragment(branch, *, branch_terminator, label: int, confId: int, **kwargs):
+    branch_c = utils.deepcopy_mol(branch)
+    n_linkers = len(_segment_linker_indices(branch_c, label=label))
+    if n_linkers == 1:
+        return branch_c
+    if n_linkers == 2:
+        if branch_terminator is None:
+            raise ValueError("Two-linker branch fragments require branch_terminator or prior cap_tail.")
+        return _segment_cap_end(branch_c, branch_terminator, side="tail", label=label, confId=confId, **kwargs)
+    raise ValueError(f"Branch fragment must have one or two label={label} linkers; found {n_linkers}.")
+
+
+def _branch_normalize_positions(position) -> list[int]:
+    if isinstance(position, (list, tuple, np.ndarray)):
+        return [int(x) for x in position]
+    return [int(position)]
+
+
+def _branch_normalize_ds(ds, *, n_branches: int, n_positions: int) -> np.ndarray:
+    if ds is None:
+        arr = np.zeros((n_branches, n_positions), dtype=float)
+        arr[0, :] = 1.0
+        return arr
+    arr = np.asarray(ds, dtype=float)
+    if arr.ndim == 0:
+        arr = np.full((n_branches, n_positions), float(arr))
+    elif arr.ndim == 1:
+        if n_branches == 1 and arr.size == n_positions:
+            arr = arr.reshape(1, n_positions)
+        elif n_positions == 1 and arr.size == n_branches:
+            arr = arr.reshape(n_branches, 1)
+        elif arr.size == n_branches:
+            arr = np.tile(arr.reshape(n_branches, 1), (1, n_positions))
+        else:
+            raise ValueError("Cannot interpret ds shape for branches/positions.")
+    elif arr.ndim == 2:
+        if arr.shape != (n_branches, n_positions):
+            raise ValueError(f"ds must have shape {(n_branches, n_positions)}, got {arr.shape}.")
+    else:
+        raise ValueError("ds must be scalar, 1D, or 2D.")
+    if np.any(arr < 0.0) or np.any(arr > 1.0):
+        raise ValueError("ds values must be between 0 and 1.")
+    if np.any(np.sum(arr, axis=0) > 1.0 + 1.0e-12):
+        raise ValueError("For each branch position, sum(ds[:, position]) must be <= 1.")
+    return arr
+
+
+def _branch_select_sites(base, branches, *, position, ds, exact_map, random_seed=None) -> list[dict]:
+    positions = _branch_normalize_positions(position)
+    sites_by_pos = {pos: _segment_linker_indices(base, label=pos) for pos in positions}
+    rng = np.random.default_rng(random_seed) if random_seed is not None else np.random.default_rng()
+    selected: list[dict] = []
+    if exact_map is not None:
+        entries = [exact_map] if isinstance(exact_map, dict) else list(exact_map)
+        for entry in entries:
+            pos = int(entry.get("position", positions[0]))
+            sites = sorted(sites_by_pos.get(pos) or _segment_linker_indices(base, label=pos))
+            if "atom_idx" in entry:
+                atom_idx = int(entry["atom_idx"])
+                if atom_idx not in sites:
+                    raise ValueError(f"atom_idx={atom_idx} is not a branch marker for position={pos}.")
+            else:
+                site_index = int(entry.get("site_index", 0))
+                if site_index < 0 or site_index >= len(sites):
+                    raise ValueError(f"site_index={site_index} out of range for position={pos}; n_sites={len(sites)}.")
+                atom_idx = int(sites[site_index])
+            branch_idx = int(entry.get("branch", entry.get("branch_index", 0)))
+            if branch_idx < 0 or branch_idx >= len(branches):
+                raise ValueError(f"branch index out of range: {branch_idx}")
+            selected.append({"position": pos, "atom_idx": atom_idx, "branch": branch_idx, "source": "exact_map"})
+    else:
+        ds_arr = _branch_normalize_ds(ds, n_branches=len(branches), n_positions=len(positions))
+        for pos_j, pos in enumerate(positions):
+            sites = list(sorted(sites_by_pos.get(pos, [])))
+            if not sites:
+                continue
+            rng.shuffle(sites)
+            cursor = 0
+            for branch_idx in range(len(branches)):
+                n_take = int(round(len(sites) * float(ds_arr[branch_idx, pos_j])))
+                for atom_idx in sites[cursor:cursor + n_take]:
+                    selected.append({"position": pos, "atom_idx": int(atom_idx), "branch": branch_idx, "source": "ds"})
+                cursor += n_take
+    seen: set[int] = set()
+    for item in selected:
+        atom_idx = int(item["atom_idx"])
+        if atom_idx in seen:
+            raise ValueError(f"Duplicate branch attachment site selected: atom_idx={atom_idx}")
+        seen.add(atom_idx)
+    selected.sort(key=lambda item: int(item["atom_idx"]), reverse=True)
+    return selected
+
+
+def _branch_set_single_site_linker(mol, *, atom_idx: int) -> None:
+    atom_idx = int(atom_idx)
+    atom = mol.GetAtomWithIdx(atom_idx)
+    neighbors = list(atom.GetNeighbors())
+    if len(neighbors) != 1:
+        raise ValueError(f"Branch marker atom {atom_idx} must have exactly one neighbor.")
+    ne_idx = int(neighbors[0].GetIdx())
+    for at in mol.GetAtoms():
+        at.SetBoolProp('linker', False)
+        at.SetBoolProp('head', False)
+        at.SetBoolProp('tail', False)
+        at.SetBoolProp('head_neighbor', False)
+        at.SetBoolProp('tail_neighbor', False)
+    atom.SetBoolProp('linker', True)
+    atom.SetBoolProp('head', True)
+    atom.SetBoolProp('tail', True)
+    mol.GetAtomWithIdx(ne_idx).SetBoolProp('head_neighbor', True)
+    mol.GetAtomWithIdx(ne_idx).SetBoolProp('tail_neighbor', True)
+    mol.SetIntProp('head_idx', atom_idx)
+    mol.SetIntProp('tail_idx', atom_idx)
+    mol.SetIntProp('head_ne_idx', ne_idx)
+    mol.SetIntProp('tail_ne_idx', ne_idx)
+
+
+def _branch_connect_one_site(
+    base,
+    branch,
+    *,
+    atom_idx: int,
+    branch_label: int,
+    confId: int,
+    dist_min: float,
+    retry_step: int,
+    retry_opt_step: int,
+    res_name_base: str,
+    res_name_branch: str,
+    **kwargs,
+):
+    last = None
+    for _ in range(max(int(retry_step) * (1 + int(retry_opt_step)), 1)):
+        base_c = utils.deepcopy_mol(base)
+        branch_c = utils.deepcopy_mol(branch)
+        _segment_harmonize_charge_props(base_c, branch_c)
+        _branch_set_single_site_linker(base_c, atom_idx=atom_idx)
+        if not set_linker_flag(branch_c, label=branch_label):
+            raise ValueError(f"Branch fragment does not have a usable label={branch_label} attach linker.")
+        trial = _prepare_connect_trial(
+            base_c,
+            branch_c,
+            random_rot=True,
+            set_linker=False,
+            confId1=confId,
+            confId2=confId,
+            **kwargs,
+        )
+        if trial is None:
+            last = None
+            continue
+        ok = check_3d_structure_connect_trial(base_c, branch_c, trial, dist_min=dist_min)
+        if not ok:
+            last = None
+            continue
+        out = _materialize_connected_mols(base_c, branch_c, trial, res_name_1=res_name_base, res_name_2=res_name_branch)
+        try:
+            set_linker_flag(out, label=1)
+        except Exception:
+            pass
+        return _rw_finalize_bonded_terms(out)
+    raise RuntimeError(f"Could not attach branch at atom_idx={atom_idx} after retry_step={retry_step}.")
+
+
+def branch_segment_rw(
+    base,
+    branches,
+    *,
+    position=2,
+    ds=None,
+    exact_map=None,
+    branch_terminator="[H][*]",
+    mode: str = "post",
+    branch_label: int = 1,
+    name: str | None = None,
+    confId: int = 0,
+    dist_min: float = 0.7,
+    retry_step: int = 80,
+    retry_opt_step: int = 4,
+    random_seed=None,
+    work_dir=None,
+    restart=None,
+    **kwargs,
+):
+    """Attach prebuilt branch fragments to labelled branch sites on a segment/polymer."""
+
+    mode_norm = str(mode or "post").strip().lower()
+    if mode_norm not in {"pre", "post"}:
+        raise ValueError("branch_segment_rw mode must be 'pre' or 'post'.")
+    base_mol = _segment_resolve_mol(base)
+    if base_mol is None:
+        raise ValueError("branch_segment_rw received an unresolved base molecule.")
+    branch_mols = _branch_normalize_branches(branches)
+    prepared_branches = [
+        _branch_prepare_fragment(
+            branch,
+            branch_terminator=branch_terminator,
+            label=branch_label,
+            confId=confId,
+            **kwargs,
+        )
+        for branch in branch_mols
+    ]
+
+    payload = _rw_payload(
+        'branch_segment_rw',
+        base_smiles=_segment_smiles(base_mol),
+        branch_smiles=[_segment_smiles(branch) for branch in branch_mols],
+        position=position,
+        ds=np.asarray(ds).tolist() if ds is not None else None,
+        exact_map=exact_map,
+        branch_terminator=_segment_smiles(_segment_resolve_mol(branch_terminator)) if branch_terminator is not None else None,
+        mode=mode_norm,
+        name=name,
+    )
+    rst_flag = _effective_restart_flag(work_dir, restart)
+    if rst_flag:
+        cached = _rw_load(work_dir, 'branch_segment_rw', payload)
+        if cached is not None:
+            return cached
+
+    selected = _branch_select_sites(
+        base_mol,
+        prepared_branches,
+        position=position,
+        ds=ds,
+        exact_map=exact_map,
+        random_seed=random_seed,
+    )
+    out = utils.deepcopy_mol(base_mol)
+    for attach in selected:
+        out = _branch_connect_one_site(
+            out,
+            prepared_branches[int(attach["branch"])],
+            atom_idx=int(attach["atom_idx"]),
+            branch_label=int(branch_label),
+            confId=confId,
+            dist_min=dist_min,
+            retry_step=retry_step,
+            retry_opt_step=retry_opt_step,
+            res_name_base="BAS",
+            res_name_branch="BRN",
+            **kwargs,
+        )
+    _segment_set_name(out, name, work_dir=work_dir)
+    meta = {
+        "kind": "branched_segment" if mode_norm == "pre" else "branched_polymer",
+        "mode": mode_norm,
+        "position": _branch_normalize_positions(position),
+        "ds": np.asarray(ds).tolist() if ds is not None else None,
+        "exact_map": exact_map,
+        "selected_site_count": len(selected),
+        "selected_sites": selected,
+        "branch_smiles": [_segment_smiles(branch) for branch in branch_mols],
+        "branch_terminator": payload.get("branch_terminator"),
+        "main_linker_count": len(_segment_linker_indices(out, label=1)),
+        "remaining_branch_labels": _segment_branch_labels(out, main_label=1),
+        "net_charge_atomic": _segment_total_charge(out, "AtomicCharge"),
+    }
+    _segment_write_json_prop(out, _BRANCH_META_PROP, meta)
+    if mode_norm == "pre":
+        _segment_write_json_prop(out, _SEGMENT_META_PROP, {**meta, "kind": "prebranched_segment", "main_label": 1})
+    _rw_save(work_dir, 'branch_segment_rw', payload, out)
+    return out
 
 
 def random_copolymerize_rw_old(mols, n, ratio=None, reac_ratio=[], init_poly=None, headhead=False, confId=0, tacticity='atactic', atac_ratio=0.5,
@@ -7155,7 +7777,7 @@ def connect_mols_dev(mol1, mol2, bond_length=1.5, dihedral=np.pi, random_rot=Fal
     mol2_coord = mol2.GetConformer(confId2).GetPositions()
     mol1_tail_vec = mol1_coord[mol1.GetIntProp('tail_ne_idx')] - mol1_coord[mol1.GetIntProp('tail_idx')]
     mol2_head_vec = mol2_coord[mol2.GetIntProp('head_ne_idx')] - mol2_coord[mol2.GetIntProp('head_idx')]
-    charge_list = ['AtomicCharge', '_GasteigerCharge', 'RESP', 'ESP', 'MullikenCharge', 'LowdinCharge']
+    charge_list = ['AtomicCharge', '_GasteigerCharge', 'RESP', 'RESP2', 'ESP', 'MullikenCharge', 'LowdinCharge']
     #bd1type = mol1.GetBondBetweenAtoms(mol1.GetIntProp('tail_idx'), mol1.GetIntProp('tail_ne_idx')).GetBondTypeAsDouble()
     #bd2type = mol2.GetBondBetweenAtoms(mol2.GetIntProp('head_idx'), mol2.GetIntProp('head_ne_idx')).GetBondTypeAsDouble()
 

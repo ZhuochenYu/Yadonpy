@@ -454,6 +454,55 @@ Important behavior:
 - grouped-polyelectrolyte RESP is available through `polyelectrolyte_mode=True`.
 - hydrogen terminator placeholders are handled specially so polymer workflows do not crash.
 
+### Segment-first polymer helpers
+
+```python
+from yadonpy.core import poly
+
+poly.seg_gen(
+    units,
+    *,
+    name=None,
+    label=1,
+    cap_head=None,
+    cap_tail=None,
+    work_dir=None,
+    restart=None,
+    **rw_kwargs,
+)
+
+poly.block_segment_rw(
+    segments,
+    block_lengths,
+    *,
+    name=None,
+    label=1,
+    work_dir=None,
+    restart=None,
+    **rw_kwargs,
+)
+
+poly.branch_segment_rw(
+    base,
+    branches,
+    *,
+    position=2,
+    ds=None,
+    exact_map=None,
+    branch_terminator="[H][*]",
+    mode="post",
+    work_dir=None,
+    restart=None,
+    **rw_kwargs,
+)
+```
+
+Use `*` or `[1*]` for main-chain segment ends. Use `[2*]`, `[3*]`, ... for branch
+sites. `seg_gen` consumes only the main-chain label and preserves branch labels.
+`branch_segment_rw` supports both pre-branching a reusable segment and post-branching
+an already-grown chain. Existing per-atom charge properties are preserved; QM/RESP is
+only rerun when the user explicitly calls `qm.assign_charges()`.
+
 ### Single-point and optical-property helpers
 
 ```python
