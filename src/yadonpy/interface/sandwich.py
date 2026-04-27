@@ -1074,6 +1074,34 @@ def _prepare_small_molecule(spec: MoleculeSpec, *, ff, ion_ff):
     return assigned
 
 
+def _ensure_phase_species_artifact(mol, *, ff_name: str | None, mol_name: str | None, charge_method: str = "RESP") -> None:
+    """Fail fast if an interface phase species cannot be exported later.
+
+    Final stack assembly is intentionally metadata-driven: it reconstructs the
+    GROMACS system from per-species artifacts rather than carrying all temporary
+    topology files between phase builders. Large generated polymer chains are
+    not MolDB records, so they must carry a cached artifact directory before the
+    final stack is assembled.
+    """
+
+    try:
+        from ..io.molecule_cache import ensure_cached_artifacts
+
+        ensure_cached_artifacts(
+            mol,
+            ff_name=(str(ff_name) if ff_name else None),
+            mol_name=(str(mol_name) if mol_name else None),
+            charge_method=str(charge_method or "RESP"),
+        )
+    except Exception as exc:
+        label = str(mol_name or get_name(mol, default="species"))
+        raise RuntimeError(
+            f"Failed to prepare reusable GROMACS artifacts for interface species {label}. "
+            "This would otherwise fail much later during final stack export; inspect the force-field "
+            "assignment and charge metadata for this molecule before continuing."
+        ) from exc
+
+
 def _build_polymer_chain(*, ff, polymer: PolymerSlabSpec, relax: SandwichRelaxationSpec, chain_dir: Path):
     if polymer.monomers:
         monomer_specs = tuple(polymer.monomers)
@@ -1163,6 +1191,12 @@ def _build_polymer_chain(*, ff, polymer: PolymerSlabSpec, relax: SandwichRelaxat
     chain = ff.ff_assign(chain, report=False, polyelectrolyte_mode=chain_pe_mode)
     if not chain:
         raise RuntimeError(f"Cannot assign force field parameters for polymer chain {polymer.name}.")
+    _ensure_phase_species_artifact(
+        chain,
+        ff_name=getattr(ff, "name", None),
+        mol_name=polymer.name,
+        charge_method="RESP",
+    )
     return chain, dp
 
 

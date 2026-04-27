@@ -1217,6 +1217,12 @@ def test_build_polymer_chain_forwards_polyelectrolyte_mode_to_final_chain_assign
     monkeypatch.setattr(sandwich.qm, "assign_charges", lambda *args, **kwargs: True)
     monkeypatch.setattr(sandwich.poly, "polymerize_rw", lambda monomer, dp, **kwargs: _dummy_mol("polymer"))
     monkeypatch.setattr(sandwich.poly, "terminate_rw", lambda chain, terminal, **kwargs: _dummy_mol("terminated"))
+    artifact_calls = []
+    monkeypatch.setattr(
+        sandwich,
+        "_ensure_phase_species_artifact",
+        lambda mol, **kwargs: artifact_calls.append((mol, dict(kwargs))),
+    )
 
     polymer = sandwich.default_cmcna_polymer_spec(
         monomers=(sandwich.default_cmcna_polymer_spec().monomers[2],),
@@ -1234,6 +1240,8 @@ def test_build_polymer_chain_forwards_polyelectrolyte_mode_to_final_chain_assign
     assert chain is not None
     assert ff.ff_assign_calls
     assert ff.ff_assign_calls[-1]["polyelectrolyte_mode"] is True
+    assert artifact_calls
+    assert artifact_calls[-1][1]["mol_name"] == polymer.name
 
 
 def test_default_cmcna_and_carbonate_specs_require_ready_db_records():
