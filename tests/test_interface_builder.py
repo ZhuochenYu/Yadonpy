@@ -1741,7 +1741,7 @@ def test_additional_exec_defaults_to_unconstrained_1fs_and_auto_gpu_policy(tmp_p
     assert stages[0].name == "04_md"
     assert stages[0].mdp.params["dt"] == pytest.approx(0.001)
     assert stages[0].mdp.params["constraints"] == "none"
-    assert resources.gpu_offload_mode == "conservative"
+    assert resources.gpu_offload_mode == "full"
 
 
 def test_additional_exec_supports_explicit_constraint_mode(tmp_path: Path, monkeypatch):
@@ -2339,7 +2339,7 @@ def _polymer_like_ac():
     return mol
 
 
-def test_npt_exec_auto_uses_conservative_gpu_and_bridge_for_polymer_system(tmp_path: Path, monkeypatch):
+def test_npt_exec_auto_uses_full_gpu_and_bridge_for_polymer_system(tmp_path: Path, monkeypatch):
     system_dir = tmp_path / "02_system"
     system_dir.mkdir(parents=True, exist_ok=True)
     for name in ("system.gro", "system.top", "system.ndx", "system_meta.json"):
@@ -2384,7 +2384,7 @@ def test_npt_exec_auto_uses_conservative_gpu_and_bridge_for_polymer_system(tmp_p
     assert len(stages) == 2
     assert stages[0].name == "01_bridge_npt"
     assert stages[0].mdp.params["dt"] == pytest.approx(0.001)
-    assert resources.gpu_offload_mode == "conservative"
+    assert resources.gpu_offload_mode == "full"
 
 
 def test_nvt_exec_keeps_density_scaling_enabled_by_default_for_polymer_system(tmp_path: Path, monkeypatch):
@@ -2432,7 +2432,7 @@ def test_nvt_exec_keeps_density_scaling_enabled_by_default_for_polymer_system(tm
     resources = captured["resources"]
     assert len(stages) == 2
     assert stages[0].name == "01_bridge_nvt"
-    assert resources.gpu_offload_mode == "conservative"
+    assert resources.gpu_offload_mode == "full"
     assert captured["gro"] == exp.system_gro
     assert eqmod._resolve_nvt_density_control(_polymer_like_ac(), None) is True
 
