@@ -1848,6 +1848,70 @@ def test_npt_exec_invalidates_nvt_resume_state_when_rebuilding(tmp_path: Path, m
     assert invalidations == [(("nvt_production",), ())]
 
 
+def test_eq_and_production_resume_inputs_ignore_runtime_resources(tmp_path: Path, monkeypatch):
+    system_dir = tmp_path / "02_system"
+    system_dir.mkdir(parents=True, exist_ok=True)
+    for name in ("system.gro", "system.top", "system.ndx", "system_meta.json"):
+        (system_dir / name).write_text("x\n", encoding="utf-8")
+    exp = SystemExportResult(
+        system_gro=system_dir / "system.gro",
+        system_top=system_dir / "system.top",
+        system_ndx=system_dir / "system.ndx",
+        molecules_dir=system_dir / "molecules",
+        system_meta=system_dir / "system_meta.json",
+        box_nm=1.0,
+        species=[],
+    )
+    captured_specs = []
+
+    class _FakeJob:
+        default_stages = staticmethod(eqmod.EquilibrationJob.default_stages)
+
+        def __init__(self, *, gro, top, ndx=None, provenance_ndx=None, out_dir, stages, resources):
+            self.out_dir = Path(out_dir)
+            self.stages = stages
+            self.resources = resources
+
+        def run(self, *, restart=False):
+            final_dir = self.out_dir / self.stages[-1].name
+            final_dir.mkdir(parents=True, exist_ok=True)
+            for suffix in ("md.tpr", "md.xtc", "md.edr", "md.gro"):
+                (final_dir / suffix).write_text("x\n", encoding="utf-8")
+            return final_dir / "md.gro"
+
+        def final_outputs(self):
+            final_dir = self.out_dir / self.stages[-1].name
+            return final_dir / "md.tpr", final_dir / "md.xtc", final_dir / "md.edr"
+
+        def final_trr(self):
+            return None
+
+        def final_gro(self):
+            return self.out_dir / self.stages[-1].name / "md.gro"
+
+    def _capture_run(spec, fn, **kwargs):
+        captured_specs.append(spec)
+        return fn()
+
+    monkeypatch.setattr(eqmod.EQ21step, "_ensure_system_exported", lambda self: exp)
+    monkeypatch.setattr(eqmod.NPT, "_ensure_system_exported", lambda self: exp)
+    monkeypatch.setattr(eqmod, "_find_latest_equilibrated_gro", lambda work_dir, exclude_dirs=None: None)
+    monkeypatch.setattr(eqmod, "EquilibrationJob", _FakeJob)
+
+    eq21 = eqmod.EQ21step(ac=object(), work_dir=tmp_path)
+    monkeypatch.setattr(eq21._resume, "run", _capture_run)
+    eq21.exec(temp=300.0, press=1.0, mpi=9, omp=12, gpu=1, gpu_id=3, time=0.01, eq21_final_extend=False)
+
+    npt = eqmod.NPT(ac=object(), work_dir=tmp_path)
+    monkeypatch.setattr(npt._resume, "run", _capture_run)
+    npt.exec(temp=300.0, press=1.0, mpi=9, omp=12, gpu=1, gpu_id=3, time=0.01)
+
+    resource_keys = {"mpi", "omp", "gpu", "gpu_id"}
+    assert captured_specs
+    for spec in captured_specs:
+        assert resource_keys.isdisjoint(set((spec.inputs or {}).keys()))
+
+
 def test_npt_exec_sets_lean_production_output_cadence_and_checkpoints(tmp_path: Path, monkeypatch):
     system_dir = tmp_path / "02_system"
     system_dir.mkdir(parents=True, exist_ok=True)
