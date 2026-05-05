@@ -5,29 +5,46 @@
   "basis_set": "Default",
   "method": "Default",
   "charges": [
-    -0.3133686227523381,
-    0.3684669281658921,
-    -0.5059388191541025,
-    0.930154802163013,
-    -0.5664932263417559,
-    -0.37352836060170236,
-    -0.02648941409508012,
-    0.08619318142929301,
-    0.08619318142929301,
-    0.08619318142929301,
-    -0.0024350891570638737,
-    -0.0024350891570638737,
-    0.0778291155474408,
-    0.0778291155474408,
-    0.0778291155474408
+    -0.3133686227518908,
+    0.3684669281663966,
+    -0.5059388191542254,
+    0.930154802162963,
+    -0.5664932263417221,
+    -0.373528360601575,
+    -0.02648941409511241,
+    0.08619318142912784,
+    0.08619318142912784,
+    0.08619318142912784,
+    -0.0024350891572434887,
+    -0.0024350891572434887,
+    0.07782911554742332,
+    0.07782911554742332,
+    0.07782911554742332
   ],
   "polyelectrolyte_mode": false,
   "polyelectrolyte_detection": "auto",
   "constraint_signature": "0a140537d2b3",
   "charge_groups": [],
   "resp_constraints": {
-    "mode": "whole_molecule_scale",
     "charged_group_constraints": [],
+    "equivalence_groups": [
+      [
+        7,
+        8,
+        9
+      ],
+      [
+        10,
+        11
+      ],
+      [
+        12,
+        13,
+        14
+      ]
+    ],
+    "fallback": "whole_molecule_scale",
+    "mode": "whole_molecule_scale",
     "neutral_remainder_charge": 0,
     "neutral_remainder_indices": [
       0,
@@ -46,6 +63,10 @@
       13,
       14
     ],
+    "resp_profile": "adaptive"
+  },
+  "polyelectrolyte_summary": {
+    "detection": "auto",
     "equivalence_groups": [
       [
         7,
@@ -63,14 +84,10 @@
       ]
     ],
     "fallback": "whole_molecule_scale",
-    "resp_profile": "adaptive"
-  },
-  "polyelectrolyte_summary": {
-    "is_polymer": false,
-    "is_polyelectrolyte": false,
-    "detection": "auto",
-    "fallback": "whole_molecule_scale",
     "groups": [],
+    "is_polyelectrolyte": false,
+    "is_polymer": false,
+    "molecule_formal_charge": 0,
     "neutral_remainder": [
       0,
       1,
@@ -88,51 +105,11 @@
       13,
       14
     ],
-    "molecule_formal_charge": 0,
-    "resp_profile": "adaptive",
-    "equivalence_groups": [
-      [
-        7,
-        8,
-        9
-      ],
-      [
-        10,
-        11
-      ],
-      [
-        12,
-        13,
-        14
-      ]
-    ]
+    "resp_profile": "adaptive"
   },
   "psiresp_constraints": {
-    "summary": {
-      "is_polymer": false,
-      "is_polyelectrolyte": false,
-      "detection": "auto",
-      "fallback": "whole_molecule_scale",
-      "groups": [],
-      "neutral_remainder": [
-        0,
-        1,
-        2,
-        3,
-        4,
-        5,
-        6,
-        7,
-        8,
-        9,
-        10,
-        11,
-        12,
-        13,
-        14
-      ],
-      "molecule_formal_charge": 0,
-      "resp_profile": "adaptive",
+    "constraints": {
+      "charged_group_constraints": [],
       "equivalence_groups": [
         [
           7,
@@ -148,11 +125,9 @@
           13,
           14
         ]
-      ]
-    },
-    "constraints": {
+      ],
+      "fallback": "whole_molecule_scale",
       "mode": "whole_molecule_scale",
-      "charged_group_constraints": [],
       "neutral_remainder_charge": 0,
       "neutral_remainder_indices": [
         0,
@@ -171,6 +146,12 @@
         13,
         14
       ],
+      "resp_profile": "adaptive"
+    },
+    "fit_kind": "RESP",
+    "resp_profile": "adaptive",
+    "summary": {
+      "detection": "auto",
       "equivalence_groups": [
         [
           7,
@@ -188,31 +169,50 @@
         ]
       ],
       "fallback": "whole_molecule_scale",
+      "groups": [],
+      "is_polyelectrolyte": false,
+      "is_polymer": false,
+      "molecule_formal_charge": 0,
+      "neutral_remainder": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14
+      ],
       "resp_profile": "adaptive"
-    },
-    "resp_profile": "adaptive",
-    "fit_kind": "RESP"
+    }
   },
   "resp_profile": "adaptive",
   "qm_recipe": {
-    "resp_profile": "adaptive",
-    "charge_model": "RESP",
-    "opt_method": "wb97m-v",
-    "opt_basis": "def2-TZVP",
-    "charge_method": "wb97m-v",
+    "adaptive_carbonate_recipe": true,
+    "anion_diffuse_upgrade": false,
+    "auto_level": true,
+    "carbonate_like": true,
     "charge_basis": "def2-TZVP",
-    "opt_basis_gen": {
-      "Br": "def2-TZVP",
-      "I": "def2-TZVP"
-    },
     "charge_basis_gen": {
       "Br": "def2-TZVP",
       "I": "def2-TZVP"
     },
-    "auto_level": true,
-    "anion_diffuse_upgrade": false,
-    "adaptive_carbonate_recipe": true,
-    "carbonate_like": true
+    "charge_method": "wb97m-v",
+    "charge_model": "RESP",
+    "opt_basis": "def2-TZVP",
+    "opt_basis_gen": {
+      "Br": "def2-TZVP",
+      "I": "def2-TZVP"
+    },
+    "opt_method": "wb97m-v",
+    "resp_profile": "adaptive"
   },
   "source_kind": "smiles"
 }

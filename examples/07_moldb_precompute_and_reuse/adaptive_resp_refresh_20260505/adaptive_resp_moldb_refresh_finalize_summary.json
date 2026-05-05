@@ -1,0 +1,6291 @@
+{
+  "catalog_csv": "/home/zcyu/codex_project/yadonpy/examples/07_moldb_precompute_and_reuse/electrolyte_species.csv",
+  "repo_db": "/home/zcyu/codex_project/yadonpy/moldb",
+  "candidate_db": "/home/zcyu/codex_project/yadonpy_remote_runs/eg07_adaptive_resp_refresh_20260503_012228/work_dir/candidate_moldb",
+  "work_dir": "/home/zcyu/codex_project/yadonpy_remote_runs/eg07_adaptive_resp_refresh_20260503_012228/work_dir",
+  "resp_profile": "adaptive",
+  "target_mode": "existing-repo",
+  "target_count": 40,
+  "cpu_total": 48,
+  "memory_total_mb": 63744,
+  "reserve_cores": 4,
+  "reserve_memory_mb": 16000,
+  "planner_cpu_budget": 44,
+  "planner_memory_budget_mb": 47744,
+  "reuse_geometry": false,
+  "geom_iter": 50,
+  "retry_geom_iter": 120,
+  "commit": true,
+  "tasks": [
+    {
+      "name": "PF6",
+      "smiles": "F[P-](F)(F)(F)(F)F",
+      "kind": "smiles",
+      "charge": "RESP",
+      "bonded": "DRIH",
+      "polyelectrolyte_mode": false,
+      "profile": "drih",
+      "priority": 0,
+      "heavy_atoms": 7,
+      "formal_charge": -1,
+      "required_cores": 8,
+      "psi4_omp": 8,
+      "memory_mb": 13540
+    },
+    {
+      "name": "glucose_236",
+      "smiles": "*OC1OC(COCC(=O)[O-])C(*)C(OCC(=O)[O-])C1OCC(=O)[O-]",
+      "kind": "psmiles",
+      "charge": "RESP",
+      "bonded": null,
+      "polyelectrolyte_mode": true,
+      "profile": "polyelectrolyte",
+      "priority": 1,
+      "heavy_atoms": 23,
+      "formal_charge": -3,
+      "required_cores": 8,
+      "psi4_omp": 8,
+      "memory_mb": 17060
+    },
+    {
+      "name": "glucose_23",
+      "smiles": "*OC1OC(CO)C(*)C(OCC(=O)[O-])C1OCC(=O)[O-]",
+      "kind": "psmiles",
+      "charge": "RESP",
+      "bonded": null,
+      "polyelectrolyte_mode": true,
+      "profile": "polyelectrolyte",
+      "priority": 1,
+      "heavy_atoms": 19,
+      "formal_charge": -2,
+      "required_cores": 8,
+      "psi4_omp": 8,
+      "memory_mb": 16180
+    },
+    {
+      "name": "glucose_26",
+      "smiles": "*OC1OC(COCC(=O)[O-])C(*)C(O)C1OCC(=O)[O-]",
+      "kind": "psmiles",
+      "charge": "RESP",
+      "bonded": null,
+      "polyelectrolyte_mode": true,
+      "profile": "polyelectrolyte",
+      "priority": 1,
+      "heavy_atoms": 19,
+      "formal_charge": -2,
+      "required_cores": 8,
+      "psi4_omp": 8,
+      "memory_mb": 16180
+    },
+    {
+      "name": "glucose_36",
+      "smiles": "*OC1OC(COCC(=O)[O-])C(*)C(OCC(=O)[O-])C1O",
+      "kind": "psmiles",
+      "charge": "RESP",
+      "bonded": null,
+      "polyelectrolyte_mode": true,
+      "profile": "polyelectrolyte",
+      "priority": 1,
+      "heavy_atoms": 19,
+      "formal_charge": -2,
+      "required_cores": 8,
+      "psi4_omp": 8,
+      "memory_mb": 16180
+    },
+    {
+      "name": "glucose_2",
+      "smiles": "*OC1OC(CO)C(*)C(O)C1OCC(=O)[O-]",
+      "kind": "psmiles",
+      "charge": "RESP",
+      "bonded": null,
+      "polyelectrolyte_mode": true,
+      "profile": "polyelectrolyte",
+      "priority": 1,
+      "heavy_atoms": 15,
+      "formal_charge": -1,
+      "required_cores": 8,
+      "psi4_omp": 8,
+      "memory_mb": 15300
+    },
+    {
+      "name": "glucose_3",
+      "smiles": "*OC1OC(CO)C(*)C(OCC(=O)[O-])C1O",
+      "kind": "psmiles",
+      "charge": "RESP",
+      "bonded": null,
+      "polyelectrolyte_mode": true,
+      "profile": "polyelectrolyte",
+      "priority": 1,
+      "heavy_atoms": 15,
+      "formal_charge": -1,
+      "required_cores": 8,
+      "psi4_omp": 8,
+      "memory_mb": 15300
+    },
+    {
+      "name": "glucose_6",
+      "smiles": "*OC1OC(COCC(=O)[O-])C(*)C(O)C1O",
+      "kind": "psmiles",
+      "charge": "RESP",
+      "bonded": null,
+      "polyelectrolyte_mode": true,
+      "profile": "polyelectrolyte",
+      "priority": 1,
+      "heavy_atoms": 15,
+      "formal_charge": -1,
+      "required_cores": 8,
+      "psi4_omp": 8,
+      "memory_mb": 15300
+    },
+    {
+      "name": "PAA",
+      "smiles": "*CC(C(=O)[O-])*",
+      "kind": "psmiles",
+      "charge": "RESP",
+      "bonded": null,
+      "polyelectrolyte_mode": true,
+      "profile": "polyelectrolyte",
+      "priority": 1,
+      "heavy_atoms": 5,
+      "formal_charge": -1,
+      "required_cores": 8,
+      "psi4_omp": 8,
+      "memory_mb": 13100
+    },
+    {
+      "name": "polymer_route_ab",
+      "smiles": "*CC1=CC=C(CCC2=CC=C(C*)C=C2)C=C1",
+      "kind": "psmiles",
+      "charge": "RESP",
+      "bonded": null,
+      "polyelectrolyte_mode": false,
+      "profile": "polymer",
+      "priority": 2,
+      "heavy_atoms": 16,
+      "formal_charge": 0,
+      "required_cores": 6,
+      "psi4_omp": 6,
+      "memory_mb": 11520
+    },
+    {
+      "name": "glucose_0",
+      "smiles": "*OC1OC(CO)C(*)C(O)C1O",
+      "kind": "psmiles",
+      "charge": "RESP",
+      "bonded": null,
+      "polyelectrolyte_mode": false,
+      "profile": "polymer",
+      "priority": 2,
+      "heavy_atoms": 11,
+      "formal_charge": 0,
+      "required_cores": 6,
+      "psi4_omp": 6,
+      "memory_mb": 10420
+    },
+    {
+      "name": "PS",
+      "smiles": "*CC(c1ccccc1)*",
+      "kind": "psmiles",
+      "charge": "RESP",
+      "bonded": null,
+      "polyelectrolyte_mode": false,
+      "profile": "polymer",
+      "priority": 2,
+      "heavy_atoms": 8,
+      "formal_charge": 0,
+      "required_cores": 6,
+      "psi4_omp": 6,
+      "memory_mb": 9760
+    },
+    {
+      "name": "PCL",
+      "smiles": "*OCCCCC(=O)*",
+      "kind": "psmiles",
+      "charge": "RESP",
+      "bonded": null,
+      "polyelectrolyte_mode": false,
+      "profile": "polymer",
+      "priority": 2,
+      "heavy_atoms": 7,
+      "formal_charge": 0,
+      "required_cores": 6,
+      "psi4_omp": 6,
+      "memory_mb": 9540
+    },
+    {
+      "name": "PMMA",
+      "smiles": "*CC(C)(C(=O)OC)*",
+      "kind": "psmiles",
+      "charge": "RESP",
+      "bonded": null,
+      "polyelectrolyte_mode": false,
+      "profile": "polymer",
+      "priority": 2,
+      "heavy_atoms": 7,
+      "formal_charge": 0,
+      "required_cores": 6,
+      "psi4_omp": 6,
+      "memory_mb": 9540
+    },
+    {
+      "name": "PTMC",
+      "smiles": "*OCCC(=O)O*",
+      "kind": "psmiles",
+      "charge": "RESP",
+      "bonded": null,
+      "polyelectrolyte_mode": false,
+      "profile": "polymer",
+      "priority": 2,
+      "heavy_atoms": 6,
+      "formal_charge": 0,
+      "required_cores": 6,
+      "psi4_omp": 6,
+      "memory_mb": 9320
+    },
+    {
+      "name": "PVAc",
+      "smiles": "*CC(OC(=O)C)*",
+      "kind": "psmiles",
+      "charge": "RESP",
+      "bonded": null,
+      "polyelectrolyte_mode": false,
+      "profile": "polymer",
+      "priority": 2,
+      "heavy_atoms": 6,
+      "formal_charge": 0,
+      "required_cores": 6,
+      "psi4_omp": 6,
+      "memory_mb": 9320
+    },
+    {
+      "name": "PAAH",
+      "smiles": "*CC(C(=O)O)*",
+      "kind": "psmiles",
+      "charge": "RESP",
+      "bonded": null,
+      "polyelectrolyte_mode": false,
+      "profile": "polymer",
+      "priority": 2,
+      "heavy_atoms": 5,
+      "formal_charge": 0,
+      "required_cores": 6,
+      "psi4_omp": 6,
+      "memory_mb": 9100
+    },
+    {
+      "name": "PAN",
+      "smiles": "*CC(C#N)*",
+      "kind": "psmiles",
+      "charge": "RESP",
+      "bonded": null,
+      "polyelectrolyte_mode": false,
+      "profile": "polymer",
+      "priority": 2,
+      "heavy_atoms": 4,
+      "formal_charge": 0,
+      "required_cores": 6,
+      "psi4_omp": 6,
+      "memory_mb": 8880
+    },
+    {
+      "name": "PVDF",
+      "smiles": "*CC(F)(F)*",
+      "kind": "psmiles",
+      "charge": "RESP",
+      "bonded": null,
+      "polyelectrolyte_mode": false,
+      "profile": "polymer",
+      "priority": 2,
+      "heavy_atoms": 4,
+      "formal_charge": 0,
+      "required_cores": 6,
+      "psi4_omp": 6,
+      "memory_mb": 8880
+    },
+    {
+      "name": "monomer_A",
+      "smiles": "*CCO*",
+      "kind": "psmiles",
+      "charge": "RESP",
+      "bonded": null,
+      "polyelectrolyte_mode": false,
+      "profile": "polymer",
+      "priority": 2,
+      "heavy_atoms": 3,
+      "formal_charge": 0,
+      "required_cores": 6,
+      "psi4_omp": 6,
+      "memory_mb": 8660
+    },
+    {
+      "name": "monomer_B",
+      "smiles": "*COC*",
+      "kind": "psmiles",
+      "charge": "RESP",
+      "bonded": null,
+      "polyelectrolyte_mode": false,
+      "profile": "polymer",
+      "priority": 2,
+      "heavy_atoms": 3,
+      "formal_charge": 0,
+      "required_cores": 6,
+      "psi4_omp": 6,
+      "memory_mb": 8660
+    },
+    {
+      "name": "TFSI",
+      "smiles": "FC(F)(F)S(=O)(=O)[N-]S(=O)(=O)C(F)(F)F",
+      "kind": "smiles",
+      "charge": "RESP",
+      "bonded": null,
+      "polyelectrolyte_mode": false,
+      "profile": "standard",
+      "priority": 3,
+      "heavy_atoms": 15,
+      "formal_charge": -1,
+      "required_cores": 4,
+      "psi4_omp": 4,
+      "memory_mb": 11300
+    },
+    {
+      "name": "TTE",
+      "smiles": "FC(F)C(F)(F)COC(F)(F)C(F)F",
+      "kind": "smiles",
+      "charge": "RESP",
+      "bonded": null,
+      "polyelectrolyte_mode": false,
+      "profile": "standard",
+      "priority": 3,
+      "heavy_atoms": 14,
+      "formal_charge": 0,
+      "required_cores": 4,
+      "psi4_omp": 4,
+      "memory_mb": 11080
+    },
+    {
+      "name": "Triglyme",
+      "smiles": "COCCOCCOCCOC",
+      "kind": "smiles",
+      "charge": "RESP",
+      "bonded": null,
+      "polyelectrolyte_mode": false,
+      "profile": "standard",
+      "priority": 3,
+      "heavy_atoms": 12,
+      "formal_charge": 0,
+      "required_cores": 4,
+      "psi4_omp": 4,
+      "memory_mb": 10640
+    },
+    {
+      "name": "Diglyme",
+      "smiles": "COCCOCCOC",
+      "kind": "smiles",
+      "charge": "RESP",
+      "bonded": null,
+      "polyelectrolyte_mode": false,
+      "profile": "standard",
+      "priority": 3,
+      "heavy_atoms": 9,
+      "formal_charge": 0,
+      "required_cores": 4,
+      "psi4_omp": 4,
+      "memory_mb": 9980
+    },
+    {
+      "name": "DEC",
+      "smiles": "CCOC(=O)OCC",
+      "kind": "smiles",
+      "charge": "RESP",
+      "bonded": null,
+      "polyelectrolyte_mode": false,
+      "profile": "standard",
+      "priority": 3,
+      "heavy_atoms": 8,
+      "formal_charge": 0,
+      "required_cores": 4,
+      "psi4_omp": 4,
+      "memory_mb": 9760
+    },
+    {
+      "name": "OTf",
+      "smiles": "O=S(=O)([O-])C(F)(F)F",
+      "kind": "smiles",
+      "charge": "RESP",
+      "bonded": null,
+      "polyelectrolyte_mode": false,
+      "profile": "standard",
+      "priority": 3,
+      "heavy_atoms": 8,
+      "formal_charge": -1,
+      "required_cores": 4,
+      "psi4_omp": 4,
+      "memory_mb": 9760
+    },
+    {
+      "name": "CPME",
+      "smiles": "COC1CCCC1",
+      "kind": "smiles",
+      "charge": "RESP",
+      "bonded": null,
+      "polyelectrolyte_mode": false,
+      "profile": "standard",
+      "priority": 3,
+      "heavy_atoms": 7,
+      "formal_charge": 0,
+      "required_cores": 4,
+      "psi4_omp": 4,
+      "memory_mb": 9540
+    },
+    {
+      "name": "DTD",
+      "smiles": "O=S1(=O)OC=CO1",
+      "kind": "smiles",
+      "charge": "RESP",
+      "bonded": null,
+      "polyelectrolyte_mode": false,
+      "profile": "standard",
+      "priority": 3,
+      "heavy_atoms": 7,
+      "formal_charge": 0,
+      "required_cores": 4,
+      "psi4_omp": 4,
+      "memory_mb": 9540
+    },
+    {
+      "name": "EMC",
+      "smiles": "CCOC(=O)OC",
+      "kind": "smiles",
+      "charge": "RESP",
+      "bonded": null,
+      "polyelectrolyte_mode": false,
+      "profile": "standard",
+      "priority": 3,
+      "heavy_atoms": 7,
+      "formal_charge": 0,
+      "required_cores": 4,
+      "psi4_omp": 4,
+      "memory_mb": 9540
+    },
+    {
+      "name": "FEC",
+      "smiles": "O=C1OCC(F)O1",
+      "kind": "smiles",
+      "charge": "RESP",
+      "bonded": null,
+      "polyelectrolyte_mode": false,
+      "profile": "standard",
+      "priority": 3,
+      "heavy_atoms": 7,
+      "formal_charge": 0,
+      "required_cores": 4,
+      "psi4_omp": 4,
+      "memory_mb": 9540
+    },
+    {
+      "name": "PC",
+      "smiles": "CC1COC(=O)O1",
+      "kind": "smiles",
+      "charge": "RESP",
+      "bonded": null,
+      "polyelectrolyte_mode": false,
+      "profile": "standard",
+      "priority": 3,
+      "heavy_atoms": 7,
+      "formal_charge": 0,
+      "required_cores": 4,
+      "psi4_omp": 4,
+      "memory_mb": 9540
+    },
+    {
+      "name": "Dioxane",
+      "smiles": "C1COCCO1",
+      "kind": "smiles",
+      "charge": "RESP",
+      "bonded": null,
+      "polyelectrolyte_mode": false,
+      "profile": "standard",
+      "priority": 3,
+      "heavy_atoms": 6,
+      "formal_charge": 0,
+      "required_cores": 4,
+      "psi4_omp": 4,
+      "memory_mb": 9320
+    },
+    {
+      "name": "DMC",
+      "smiles": "COC(=O)OC",
+      "kind": "smiles",
+      "charge": "RESP",
+      "bonded": null,
+      "polyelectrolyte_mode": false,
+      "profile": "standard",
+      "priority": 3,
+      "heavy_atoms": 6,
+      "formal_charge": 0,
+      "required_cores": 4,
+      "psi4_omp": 4,
+      "memory_mb": 9320
+    },
+    {
+      "name": "DME",
+      "smiles": "COCCOC",
+      "kind": "smiles",
+      "charge": "RESP",
+      "bonded": null,
+      "polyelectrolyte_mode": false,
+      "profile": "standard",
+      "priority": 3,
+      "heavy_atoms": 6,
+      "formal_charge": 0,
+      "required_cores": 4,
+      "psi4_omp": 4,
+      "memory_mb": 9320
+    },
+    {
+      "name": "EC",
+      "smiles": "O=C1OCCO1",
+      "kind": "smiles",
+      "charge": "RESP",
+      "bonded": null,
+      "polyelectrolyte_mode": false,
+      "profile": "standard",
+      "priority": 3,
+      "heavy_atoms": 6,
+      "formal_charge": 0,
+      "required_cores": 4,
+      "psi4_omp": 4,
+      "memory_mb": 9320
+    },
+    {
+      "name": "VC",
+      "smiles": "O=c1occo1",
+      "kind": "smiles",
+      "charge": "RESP",
+      "bonded": null,
+      "polyelectrolyte_mode": false,
+      "profile": "standard",
+      "priority": 3,
+      "heavy_atoms": 6,
+      "formal_charge": 0,
+      "required_cores": 4,
+      "psi4_omp": 4,
+      "memory_mb": 9320
+    },
+    {
+      "name": "DOL",
+      "smiles": "C1COCO1",
+      "kind": "smiles",
+      "charge": "RESP",
+      "bonded": null,
+      "polyelectrolyte_mode": false,
+      "profile": "standard",
+      "priority": 3,
+      "heavy_atoms": 5,
+      "formal_charge": 0,
+      "required_cores": 4,
+      "psi4_omp": 4,
+      "memory_mb": 9100
+    },
+    {
+      "name": "THF",
+      "smiles": "C1CCOC1",
+      "kind": "smiles",
+      "charge": "RESP",
+      "bonded": null,
+      "polyelectrolyte_mode": false,
+      "profile": "standard",
+      "priority": 3,
+      "heavy_atoms": 5,
+      "formal_charge": 0,
+      "required_cores": 4,
+      "psi4_omp": 4,
+      "memory_mb": 9100
+    },
+    {
+      "name": "NO3",
+      "smiles": "[O-][N+](=O)[O-]",
+      "kind": "smiles",
+      "charge": "RESP",
+      "bonded": null,
+      "polyelectrolyte_mode": false,
+      "profile": "standard",
+      "priority": 3,
+      "heavy_atoms": 4,
+      "formal_charge": -1,
+      "required_cores": 4,
+      "psi4_omp": 4,
+      "memory_mb": 8880
+    }
+  ],
+  "backup_path": "/home/zcyu/codex_project/yadonpy_remote_runs/eg07_adaptive_resp_refresh_20260503_012228/work_dir/backups/moldb_backup_pre_adaptive_resp_20260505_195003.tar.zst",
+  "success_count": 40,
+  "failure_count": 0,
+  "retry_count": 0,
+  "committed": true,
+  "finalize_candidates": true,
+  "diff_outputs": {
+    "summary_json": "/home/zcyu/codex_project/yadonpy_remote_runs/eg07_adaptive_resp_refresh_20260503_012228/work_dir/charge_diffs/charge_diff_summary.json",
+    "summary_csv": "/home/zcyu/codex_project/yadonpy_remote_runs/eg07_adaptive_resp_refresh_20260503_012228/work_dir/charge_diffs/charge_diff_summary.csv",
+    "summary_md": "/home/zcyu/codex_project/yadonpy_remote_runs/eg07_adaptive_resp_refresh_20260503_012228/work_dir/charge_diffs/charge_diff_summary.md",
+    "per_atom_json": "/home/zcyu/codex_project/yadonpy_remote_runs/eg07_adaptive_resp_refresh_20260503_012228/work_dir/charge_diffs/charge_diff_per_atom.json",
+    "per_atom_csv": "/home/zcyu/codex_project/yadonpy_remote_runs/eg07_adaptive_resp_refresh_20260503_012228/work_dir/charge_diffs/charge_diff_per_atom.csv",
+    "failures_json": "/home/zcyu/codex_project/yadonpy_remote_runs/eg07_adaptive_resp_refresh_20260503_012228/work_dir/charge_diffs/refresh_failures.json"
+  },
+  "results": [
+    {
+      "name": "monomer_A",
+      "smiles": "*CCO*",
+      "formal_charge": 0,
+      "polyelectrolyte_mode": false,
+      "charge_group_count": 0,
+      "resp_profile": "adaptive",
+      "qm_recipe": {
+        "adaptive_carbonate_recipe": false,
+        "anion_diffuse_upgrade": false,
+        "auto_level": true,
+        "carbonate_like": false,
+        "charge_basis": "def2-TZVP",
+        "charge_basis_gen": {
+          "Br": "def2-TZVP",
+          "I": "def2-TZVP"
+        },
+        "charge_method": "wb97m-d3bj",
+        "charge_model": "RESP",
+        "opt_basis": "def2-SVP",
+        "opt_basis_gen": {
+          "Br": "def2-SVP",
+          "I": "def2-SVP"
+        },
+        "opt_method": "wb97m-d3bj",
+        "resp_profile": "adaptive"
+      },
+      "repaired_equivalence_groups": 0,
+      "validation": {
+        "ok": true,
+        "tolerance": 1e-08,
+        "equivalence_group_count": 2,
+        "max_equivalence_spread": 0.0,
+        "max_carboxylate_oxygen_spread": 0.0,
+        "equivalence_spreads": [
+          {
+            "indices": [
+              5,
+              6
+            ],
+            "symbols": [
+              "H",
+              "H"
+            ],
+            "charges": [
+              0.06269506162863875,
+              0.06269506162863875
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              7,
+              8
+            ],
+            "symbols": [
+              "H",
+              "H"
+            ],
+            "charges": [
+              -0.048102271310619706,
+              -0.048102271310619706
+            ],
+            "spread": 0.0
+          }
+        ],
+        "carboxylate_spreads": []
+      },
+      "candidate_key": "945a465c5743ceb9",
+      "candidate_variant_id": "8edcbd906c67",
+      "diff_summary": {
+        "species": "monomer_A",
+        "smiles": "*CCO*",
+        "atom_count": 9,
+        "formal_charge": 0,
+        "old_net_charge": -1.1102230246251565e-16,
+        "new_net_charge": 9.71445146547012e-17,
+        "old_resp_profile": "legacy",
+        "new_resp_profile": "adaptive",
+        "old_resp_variant_ids": [
+          "56a209e16a4a"
+        ],
+        "new_resp_variant_id": "8edcbd906c67",
+        "max_abs_delta": 0.06369202141312114,
+        "mean_abs_delta": 0.0173485805398436,
+        "rms_delta": 0.0253766018834293,
+        "equivalence_ok": true,
+        "max_equivalence_spread": 0.0,
+        "max_carboxylate_oxygen_spread": 0.0
+      },
+      "attempt": null,
+      "psi4_omp": null,
+      "memory_mb": null,
+      "source": "candidate_moldb"
+    },
+    {
+      "name": "monomer_B",
+      "smiles": "*COC*",
+      "formal_charge": 0,
+      "polyelectrolyte_mode": false,
+      "charge_group_count": 0,
+      "resp_profile": "adaptive",
+      "qm_recipe": {
+        "adaptive_carbonate_recipe": false,
+        "anion_diffuse_upgrade": false,
+        "auto_level": true,
+        "carbonate_like": false,
+        "charge_basis": "def2-TZVP",
+        "charge_basis_gen": {
+          "Br": "def2-TZVP",
+          "I": "def2-TZVP"
+        },
+        "charge_method": "wb97m-d3bj",
+        "charge_model": "RESP",
+        "opt_basis": "def2-SVP",
+        "opt_basis_gen": {
+          "Br": "def2-SVP",
+          "I": "def2-SVP"
+        },
+        "opt_method": "wb97m-d3bj",
+        "resp_profile": "adaptive"
+      },
+      "repaired_equivalence_groups": 0,
+      "validation": {
+        "ok": true,
+        "tolerance": 1e-08,
+        "equivalence_group_count": 3,
+        "max_equivalence_spread": 0.0,
+        "max_carboxylate_oxygen_spread": 0.0,
+        "equivalence_spreads": [
+          {
+            "indices": [
+              0,
+              4
+            ],
+            "symbols": [
+              "H",
+              "H"
+            ],
+            "charges": [
+              0.05237717523614267,
+              0.05237717523614267
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              1,
+              3
+            ],
+            "symbols": [
+              "C",
+              "C"
+            ],
+            "charges": [
+              0.0037549990760065797,
+              0.0037549990760065797
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              5,
+              6,
+              7,
+              8
+            ],
+            "symbols": [
+              "H",
+              "H",
+              "H",
+              "H"
+            ],
+            "charges": [
+              0.045110731943376385,
+              0.045110731943376385,
+              0.045110731943376385,
+              0.045110731943376385
+            ],
+            "spread": 0.0
+          }
+        ],
+        "carboxylate_spreads": []
+      },
+      "candidate_key": "829d565d3cc01e36",
+      "candidate_variant_id": "b8fe72246b88",
+      "diff_summary": {
+        "species": "monomer_B",
+        "smiles": "*COC*",
+        "atom_count": 9,
+        "formal_charge": 0,
+        "old_net_charge": -1.3877787807814457e-17,
+        "new_net_charge": -1.3877787807814457e-17,
+        "old_resp_profile": "legacy",
+        "new_resp_profile": "adaptive",
+        "old_resp_variant_ids": [
+          "56a209e16a4a"
+        ],
+        "new_resp_variant_id": "b8fe72246b88",
+        "max_abs_delta": 0.005794191468487683,
+        "mean_abs_delta": 0.0025648104645308476,
+        "rms_delta": 0.0031690391604053845,
+        "equivalence_ok": true,
+        "max_equivalence_spread": 0.0,
+        "max_carboxylate_oxygen_spread": 0.0
+      },
+      "attempt": null,
+      "psi4_omp": null,
+      "memory_mb": null,
+      "source": "candidate_moldb"
+    },
+    {
+      "name": "PAA",
+      "smiles": "*CC(C(=O)[O-])*",
+      "formal_charge": -1,
+      "polyelectrolyte_mode": true,
+      "charge_group_count": 1,
+      "resp_profile": "adaptive",
+      "qm_recipe": {
+        "adaptive_carbonate_recipe": false,
+        "anion_diffuse_upgrade": true,
+        "auto_level": true,
+        "carbonate_like": false,
+        "charge_basis": "def2-TZVPD",
+        "charge_basis_gen": {
+          "Br": "def2-TZVPD",
+          "I": "def2-TZVPD"
+        },
+        "charge_method": "wb97m-d3bj",
+        "charge_model": "RESP",
+        "opt_basis": "def2-SVPD",
+        "opt_basis_gen": {
+          "Br": "def2-SVPD",
+          "I": "def2-SVPD"
+        },
+        "opt_method": "wb97m-d3bj",
+        "resp_profile": "adaptive"
+      },
+      "repaired_equivalence_groups": 0,
+      "validation": {
+        "ok": true,
+        "tolerance": 1e-08,
+        "equivalence_group_count": 2,
+        "max_equivalence_spread": 0.0,
+        "max_carboxylate_oxygen_spread": 0.0,
+        "equivalence_spreads": [
+          {
+            "indices": [
+              4,
+              5
+            ],
+            "symbols": [
+              "O",
+              "O"
+            ],
+            "charges": [
+              -0.7689730783125623,
+              -0.7689730783125623
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              7,
+              8
+            ],
+            "symbols": [
+              "H",
+              "H"
+            ],
+            "charges": [
+              -0.0076238132239056415,
+              -0.0076238132239056415
+            ],
+            "spread": 0.0
+          }
+        ],
+        "carboxylate_spreads": [
+          {
+            "carbon": 3,
+            "oxygen_indices": [
+              4,
+              5
+            ],
+            "charges": [
+              -0.7689730783125623,
+              -0.7689730783125623
+            ],
+            "spread": 0.0
+          }
+        ]
+      },
+      "candidate_key": "d2bcbce21f3b649f",
+      "candidate_variant_id": "2862381833f8",
+      "diff_summary": {
+        "species": "PAA",
+        "smiles": "*CC(C(=O)[O-])*",
+        "atom_count": 10,
+        "formal_charge": -1,
+        "old_net_charge": -1.0000000000000002,
+        "new_net_charge": -1.0000000000000004,
+        "old_resp_profile": "adaptive",
+        "new_resp_profile": "adaptive",
+        "old_resp_variant_ids": [
+          "2862381833f8",
+          "8a687c87f3af"
+        ],
+        "new_resp_variant_id": "2862381833f8",
+        "max_abs_delta": 0.07013493861242631,
+        "mean_abs_delta": 0.017916029162644734,
+        "rms_delta": 0.025378241552523967,
+        "equivalence_ok": true,
+        "max_equivalence_spread": 0.0,
+        "max_carboxylate_oxygen_spread": 0.0
+      },
+      "attempt": null,
+      "psi4_omp": null,
+      "memory_mb": null,
+      "source": "candidate_moldb"
+    },
+    {
+      "name": "PAAH",
+      "smiles": "*CC(C(=O)O)*",
+      "formal_charge": 0,
+      "polyelectrolyte_mode": false,
+      "charge_group_count": 0,
+      "resp_profile": "adaptive",
+      "qm_recipe": {
+        "adaptive_carbonate_recipe": false,
+        "anion_diffuse_upgrade": false,
+        "auto_level": true,
+        "carbonate_like": false,
+        "charge_basis": "def2-TZVP",
+        "charge_basis_gen": {
+          "Br": "def2-TZVP",
+          "I": "def2-TZVP"
+        },
+        "charge_method": "wb97m-d3bj",
+        "charge_model": "RESP",
+        "opt_basis": "def2-SVP",
+        "opt_basis_gen": {
+          "Br": "def2-SVP",
+          "I": "def2-SVP"
+        },
+        "opt_method": "wb97m-d3bj",
+        "resp_profile": "adaptive"
+      },
+      "repaired_equivalence_groups": 0,
+      "validation": {
+        "ok": true,
+        "tolerance": 1e-08,
+        "equivalence_group_count": 1,
+        "max_equivalence_spread": 0.0,
+        "max_carboxylate_oxygen_spread": 0.0,
+        "equivalence_spreads": [
+          {
+            "indices": [
+              7,
+              8
+            ],
+            "symbols": [
+              "H",
+              "H"
+            ],
+            "charges": [
+              0.055256832731915576,
+              0.055256832731915576
+            ],
+            "spread": 0.0
+          }
+        ],
+        "carboxylate_spreads": []
+      },
+      "candidate_key": "3984a37c83aeb371",
+      "candidate_variant_id": "1b76e622d2af",
+      "diff_summary": {
+        "species": "PAAH",
+        "smiles": "*CC(C(=O)O)*",
+        "atom_count": 11,
+        "formal_charge": 0,
+        "old_net_charge": -1.6653345369377348e-16,
+        "new_net_charge": -5.551115123125783e-17,
+        "old_resp_profile": "legacy",
+        "new_resp_profile": "adaptive",
+        "old_resp_variant_ids": [
+          "56a209e16a4a"
+        ],
+        "new_resp_variant_id": "1b76e622d2af",
+        "max_abs_delta": 0.011801448947079185,
+        "mean_abs_delta": 0.002864753696525522,
+        "rms_delta": 0.0049317009668610485,
+        "equivalence_ok": true,
+        "max_equivalence_spread": 0.0,
+        "max_carboxylate_oxygen_spread": 0.0
+      },
+      "attempt": null,
+      "psi4_omp": null,
+      "memory_mb": null,
+      "source": "candidate_moldb"
+    },
+    {
+      "name": "PVDF",
+      "smiles": "*CC(F)(F)*",
+      "formal_charge": 0,
+      "polyelectrolyte_mode": false,
+      "charge_group_count": 0,
+      "resp_profile": "adaptive",
+      "qm_recipe": {
+        "adaptive_carbonate_recipe": false,
+        "anion_diffuse_upgrade": false,
+        "auto_level": true,
+        "carbonate_like": false,
+        "charge_basis": "def2-TZVP",
+        "charge_basis_gen": {
+          "Br": "def2-TZVP",
+          "I": "def2-TZVP"
+        },
+        "charge_method": "wb97m-d3bj",
+        "charge_model": "RESP",
+        "opt_basis": "def2-SVP",
+        "opt_basis_gen": {
+          "Br": "def2-SVP",
+          "I": "def2-SVP"
+        },
+        "opt_method": "wb97m-d3bj",
+        "resp_profile": "adaptive"
+      },
+      "repaired_equivalence_groups": 0,
+      "validation": {
+        "ok": true,
+        "tolerance": 1e-08,
+        "equivalence_group_count": 2,
+        "max_equivalence_spread": 0.0,
+        "max_carboxylate_oxygen_spread": 0.0,
+        "equivalence_spreads": [
+          {
+            "indices": [
+              3,
+              4
+            ],
+            "symbols": [
+              "F",
+              "F"
+            ],
+            "charges": [
+              -0.25097357965039047,
+              -0.25097357965039047
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              6,
+              7
+            ],
+            "symbols": [
+              "H",
+              "H"
+            ],
+            "charges": [
+              0.12847534887431766,
+              0.12847534887431766
+            ],
+            "spread": 0.0
+          }
+        ],
+        "carboxylate_spreads": []
+      },
+      "candidate_key": "fdfe9f3ec9baa781",
+      "candidate_variant_id": "4c8186b505aa",
+      "diff_summary": {
+        "species": "PVDF",
+        "smiles": "*CC(F)(F)*",
+        "atom_count": 8,
+        "formal_charge": 0,
+        "old_net_charge": 8.326672684688674e-17,
+        "new_net_charge": 0.0,
+        "old_resp_profile": "legacy",
+        "new_resp_profile": "adaptive",
+        "old_resp_variant_ids": [
+          "56a209e16a4a"
+        ],
+        "new_resp_variant_id": "4c8186b505aa",
+        "max_abs_delta": 0.018982772191589975,
+        "mean_abs_delta": 0.005197552077069536,
+        "rms_delta": 0.008491525029547557,
+        "equivalence_ok": true,
+        "max_equivalence_spread": 0.0,
+        "max_carboxylate_oxygen_spread": 0.0
+      },
+      "attempt": null,
+      "psi4_omp": null,
+      "memory_mb": null,
+      "source": "candidate_moldb"
+    },
+    {
+      "name": "PAN",
+      "smiles": "*CC(C#N)*",
+      "formal_charge": 0,
+      "polyelectrolyte_mode": false,
+      "charge_group_count": 0,
+      "resp_profile": "adaptive",
+      "qm_recipe": {
+        "adaptive_carbonate_recipe": false,
+        "anion_diffuse_upgrade": false,
+        "auto_level": true,
+        "carbonate_like": false,
+        "charge_basis": "def2-TZVP",
+        "charge_basis_gen": {
+          "Br": "def2-TZVP",
+          "I": "def2-TZVP"
+        },
+        "charge_method": "wb97m-d3bj",
+        "charge_model": "RESP",
+        "opt_basis": "def2-SVP",
+        "opt_basis_gen": {
+          "Br": "def2-SVP",
+          "I": "def2-SVP"
+        },
+        "opt_method": "wb97m-d3bj",
+        "resp_profile": "adaptive"
+      },
+      "repaired_equivalence_groups": 0,
+      "validation": {
+        "ok": true,
+        "tolerance": 1e-08,
+        "equivalence_group_count": 1,
+        "max_equivalence_spread": 0.0,
+        "max_carboxylate_oxygen_spread": 0.0,
+        "equivalence_spreads": [
+          {
+            "indices": [
+              6,
+              7
+            ],
+            "symbols": [
+              "H",
+              "H"
+            ],
+            "charges": [
+              0.07127376765549236,
+              0.07127376765549236
+            ],
+            "spread": 0.0
+          }
+        ],
+        "carboxylate_spreads": []
+      },
+      "candidate_key": "e3f4585cf90538ba",
+      "candidate_variant_id": "01017ad76e4e",
+      "diff_summary": {
+        "species": "PAN",
+        "smiles": "*CC(C#N)*",
+        "atom_count": 9,
+        "formal_charge": 0,
+        "old_net_charge": 2.42861286636753e-17,
+        "new_net_charge": 2.0816681711721685e-17,
+        "old_resp_profile": "legacy",
+        "new_resp_profile": "adaptive",
+        "old_resp_variant_ids": [
+          "56a209e16a4a"
+        ],
+        "new_resp_variant_id": "01017ad76e4e",
+        "max_abs_delta": 0.027815605199395854,
+        "mean_abs_delta": 0.00843804764542477,
+        "rms_delta": 0.011572834463177011,
+        "equivalence_ok": true,
+        "max_equivalence_spread": 0.0,
+        "max_carboxylate_oxygen_spread": 0.0
+      },
+      "attempt": null,
+      "psi4_omp": null,
+      "memory_mb": null,
+      "source": "candidate_moldb"
+    },
+    {
+      "name": "PTMC",
+      "smiles": "*OCCC(=O)O*",
+      "formal_charge": 0,
+      "polyelectrolyte_mode": false,
+      "charge_group_count": 0,
+      "resp_profile": "adaptive",
+      "qm_recipe": {
+        "adaptive_carbonate_recipe": false,
+        "anion_diffuse_upgrade": false,
+        "auto_level": true,
+        "carbonate_like": false,
+        "charge_basis": "def2-TZVP",
+        "charge_basis_gen": {
+          "Br": "def2-TZVP",
+          "I": "def2-TZVP"
+        },
+        "charge_method": "wb97m-d3bj",
+        "charge_model": "RESP",
+        "opt_basis": "def2-SVP",
+        "opt_basis_gen": {
+          "Br": "def2-SVP",
+          "I": "def2-SVP"
+        },
+        "opt_method": "wb97m-d3bj",
+        "resp_profile": "adaptive"
+      },
+      "repaired_equivalence_groups": 0,
+      "validation": {
+        "ok": true,
+        "tolerance": 1e-08,
+        "equivalence_group_count": 2,
+        "max_equivalence_spread": 0.0,
+        "max_carboxylate_oxygen_spread": 0.0,
+        "equivalence_spreads": [
+          {
+            "indices": [
+              8,
+              9
+            ],
+            "symbols": [
+              "H",
+              "H"
+            ],
+            "charges": [
+              0.009792253260245853,
+              0.009792253260245853
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              10,
+              11
+            ],
+            "symbols": [
+              "H",
+              "H"
+            ],
+            "charges": [
+              0.06905966025943133,
+              0.06905966025943133
+            ],
+            "spread": 0.0
+          }
+        ],
+        "carboxylate_spreads": []
+      },
+      "candidate_key": "6ceff8887f06d9d5",
+      "candidate_variant_id": "1f816824792c",
+      "diff_summary": {
+        "species": "PTMC",
+        "smiles": "*OCCC(=O)O*",
+        "atom_count": 12,
+        "formal_charge": 0,
+        "old_net_charge": -1.1102230246251565e-16,
+        "new_net_charge": 1.1102230246251565e-16,
+        "old_resp_profile": "legacy",
+        "new_resp_profile": "adaptive",
+        "old_resp_variant_ids": [
+          "56a209e16a4a"
+        ],
+        "new_resp_variant_id": "1f816824792c",
+        "max_abs_delta": 0.024869192031154896,
+        "mean_abs_delta": 0.004808832596697755,
+        "rms_delta": 0.0085202985017624,
+        "equivalence_ok": true,
+        "max_equivalence_spread": 0.0,
+        "max_carboxylate_oxygen_spread": 0.0
+      },
+      "attempt": null,
+      "psi4_omp": null,
+      "memory_mb": null,
+      "source": "candidate_moldb"
+    },
+    {
+      "name": "PCL",
+      "smiles": "*OCCCCC(=O)*",
+      "formal_charge": 0,
+      "polyelectrolyte_mode": false,
+      "charge_group_count": 0,
+      "resp_profile": "adaptive",
+      "qm_recipe": {
+        "adaptive_carbonate_recipe": false,
+        "anion_diffuse_upgrade": false,
+        "auto_level": true,
+        "carbonate_like": false,
+        "charge_basis": "def2-TZVP",
+        "charge_basis_gen": {
+          "Br": "def2-TZVP",
+          "I": "def2-TZVP"
+        },
+        "charge_method": "wb97m-d3bj",
+        "charge_model": "RESP",
+        "opt_basis": "def2-SVP",
+        "opt_basis_gen": {
+          "Br": "def2-SVP",
+          "I": "def2-SVP"
+        },
+        "opt_method": "wb97m-d3bj",
+        "resp_profile": "adaptive"
+      },
+      "repaired_equivalence_groups": 0,
+      "validation": {
+        "ok": true,
+        "tolerance": 1e-08,
+        "equivalence_group_count": 4,
+        "max_equivalence_spread": 0.0,
+        "max_carboxylate_oxygen_spread": 0.0,
+        "equivalence_spreads": [
+          {
+            "indices": [
+              9,
+              10
+            ],
+            "symbols": [
+              "H",
+              "H"
+            ],
+            "charges": [
+              -0.0016473320062442218,
+              -0.0016473320062442218
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              11,
+              12
+            ],
+            "symbols": [
+              "H",
+              "H"
+            ],
+            "charges": [
+              0.02001808740117516,
+              0.02001808740117516
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              13,
+              14
+            ],
+            "symbols": [
+              "H",
+              "H"
+            ],
+            "charges": [
+              -0.013391915423926443,
+              -0.013391915423926443
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              15,
+              16
+            ],
+            "symbols": [
+              "H",
+              "H"
+            ],
+            "charges": [
+              0.027531793512393085,
+              0.027531793512393085
+            ],
+            "spread": 0.0
+          }
+        ],
+        "carboxylate_spreads": []
+      },
+      "candidate_key": "1dae20e7eaec2a5e",
+      "candidate_variant_id": "51f114c2747a",
+      "diff_summary": {
+        "species": "PCL",
+        "smiles": "*OCCCCC(=O)*",
+        "atom_count": 17,
+        "formal_charge": 0,
+        "old_net_charge": 1.5265566588595902e-16,
+        "new_net_charge": -6.938893903907228e-17,
+        "old_resp_profile": "legacy",
+        "new_resp_profile": "adaptive",
+        "old_resp_variant_ids": [
+          "56a209e16a4a"
+        ],
+        "new_resp_variant_id": "51f114c2747a",
+        "max_abs_delta": 0.02424726882835329,
+        "mean_abs_delta": 0.003966812917373082,
+        "rms_delta": 0.007229595804067855,
+        "equivalence_ok": true,
+        "max_equivalence_spread": 0.0,
+        "max_carboxylate_oxygen_spread": 0.0
+      },
+      "attempt": null,
+      "psi4_omp": null,
+      "memory_mb": null,
+      "source": "candidate_moldb"
+    },
+    {
+      "name": "PVAc",
+      "smiles": "*CC(OC(=O)C)*",
+      "formal_charge": 0,
+      "polyelectrolyte_mode": false,
+      "charge_group_count": 0,
+      "resp_profile": "adaptive",
+      "qm_recipe": {
+        "adaptive_carbonate_recipe": false,
+        "anion_diffuse_upgrade": false,
+        "auto_level": true,
+        "carbonate_like": false,
+        "charge_basis": "def2-TZVP",
+        "charge_basis_gen": {
+          "Br": "def2-TZVP",
+          "I": "def2-TZVP"
+        },
+        "charge_method": "wb97m-d3bj",
+        "charge_model": "RESP",
+        "opt_basis": "def2-SVP",
+        "opt_basis_gen": {
+          "Br": "def2-SVP",
+          "I": "def2-SVP"
+        },
+        "opt_method": "wb97m-d3bj",
+        "resp_profile": "adaptive"
+      },
+      "repaired_equivalence_groups": 0,
+      "validation": {
+        "ok": true,
+        "tolerance": 1e-08,
+        "equivalence_group_count": 2,
+        "max_equivalence_spread": 0.0,
+        "max_carboxylate_oxygen_spread": 0.0,
+        "equivalence_spreads": [
+          {
+            "indices": [
+              8,
+              9
+            ],
+            "symbols": [
+              "H",
+              "H"
+            ],
+            "charges": [
+              0.07447894088383407,
+              0.07447894088383407
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              11,
+              12,
+              13
+            ],
+            "symbols": [
+              "H",
+              "H",
+              "H"
+            ],
+            "charges": [
+              0.15840075317849392,
+              0.15840075317849392,
+              0.15840075317849392
+            ],
+            "spread": 0.0
+          }
+        ],
+        "carboxylate_spreads": []
+      },
+      "candidate_key": "0ddc77a648ba64ae",
+      "candidate_variant_id": "9f46c6429f27",
+      "diff_summary": {
+        "species": "PVAc",
+        "smiles": "*CC(OC(=O)C)*",
+        "atom_count": 14,
+        "formal_charge": 0,
+        "old_net_charge": 0.0,
+        "new_net_charge": 1.6653345369377348e-16,
+        "old_resp_profile": "legacy",
+        "new_resp_profile": "adaptive",
+        "old_resp_variant_ids": [
+          "56a209e16a4a"
+        ],
+        "new_resp_variant_id": "9f46c6429f27",
+        "max_abs_delta": 0.05822365601554236,
+        "mean_abs_delta": 0.009978659790252278,
+        "rms_delta": 0.018774017856581938,
+        "equivalence_ok": true,
+        "max_equivalence_spread": 0.0,
+        "max_carboxylate_oxygen_spread": 0.0
+      },
+      "attempt": null,
+      "psi4_omp": null,
+      "memory_mb": null,
+      "source": "candidate_moldb"
+    },
+    {
+      "name": "PMMA",
+      "smiles": "*CC(C)(C(=O)OC)*",
+      "formal_charge": 0,
+      "polyelectrolyte_mode": false,
+      "charge_group_count": 0,
+      "resp_profile": "adaptive",
+      "qm_recipe": {
+        "adaptive_carbonate_recipe": false,
+        "anion_diffuse_upgrade": false,
+        "auto_level": true,
+        "carbonate_like": false,
+        "charge_basis": "def2-TZVP",
+        "charge_basis_gen": {
+          "Br": "def2-TZVP",
+          "I": "def2-TZVP"
+        },
+        "charge_method": "wb97m-d3bj",
+        "charge_model": "RESP",
+        "opt_basis": "def2-SVP",
+        "opt_basis_gen": {
+          "Br": "def2-SVP",
+          "I": "def2-SVP"
+        },
+        "opt_method": "wb97m-d3bj",
+        "resp_profile": "adaptive"
+      },
+      "repaired_equivalence_groups": 0,
+      "validation": {
+        "ok": true,
+        "tolerance": 1e-08,
+        "equivalence_group_count": 3,
+        "max_equivalence_spread": 0.0,
+        "max_carboxylate_oxygen_spread": 0.0,
+        "equivalence_spreads": [
+          {
+            "indices": [
+              9,
+              10
+            ],
+            "symbols": [
+              "H",
+              "H"
+            ],
+            "charges": [
+              0.09226625277431509,
+              0.09226625277431509
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              11,
+              12,
+              13
+            ],
+            "symbols": [
+              "H",
+              "H",
+              "H"
+            ],
+            "charges": [
+              0.08400642456802897,
+              0.08400642456802897,
+              0.08400642456802897
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              14,
+              15,
+              16
+            ],
+            "symbols": [
+              "H",
+              "H",
+              "H"
+            ],
+            "charges": [
+              0.09562392566635151,
+              0.09562392566635151,
+              0.09562392566635151
+            ],
+            "spread": 0.0
+          }
+        ],
+        "carboxylate_spreads": []
+      },
+      "candidate_key": "7bba18c2f240dc10",
+      "candidate_variant_id": "45c6f9554992",
+      "diff_summary": {
+        "species": "PMMA",
+        "smiles": "*CC(C)(C(=O)OC)*",
+        "atom_count": 17,
+        "formal_charge": 0,
+        "old_net_charge": -2.220446049250313e-16,
+        "new_net_charge": 2.498001805406602e-16,
+        "old_resp_profile": "legacy",
+        "new_resp_profile": "adaptive",
+        "old_resp_variant_ids": [
+          "56a209e16a4a"
+        ],
+        "new_resp_variant_id": "45c6f9554992",
+        "max_abs_delta": 0.04975749092481965,
+        "mean_abs_delta": 0.008235674839828011,
+        "rms_delta": 0.014536904577516961,
+        "equivalence_ok": true,
+        "max_equivalence_spread": 0.0,
+        "max_carboxylate_oxygen_spread": 0.0
+      },
+      "attempt": null,
+      "psi4_omp": null,
+      "memory_mb": null,
+      "source": "candidate_moldb"
+    },
+    {
+      "name": "PS",
+      "smiles": "*CC(c1ccccc1)*",
+      "formal_charge": 0,
+      "polyelectrolyte_mode": false,
+      "charge_group_count": 0,
+      "resp_profile": "adaptive",
+      "qm_recipe": {
+        "adaptive_carbonate_recipe": false,
+        "anion_diffuse_upgrade": false,
+        "auto_level": true,
+        "carbonate_like": false,
+        "charge_basis": "def2-TZVP",
+        "charge_basis_gen": {
+          "Br": "def2-TZVP",
+          "I": "def2-TZVP"
+        },
+        "charge_method": "wb97m-d3bj",
+        "charge_model": "RESP",
+        "opt_basis": "def2-SVP",
+        "opt_basis_gen": {
+          "Br": "def2-SVP",
+          "I": "def2-SVP"
+        },
+        "opt_method": "wb97m-d3bj",
+        "resp_profile": "adaptive"
+      },
+      "repaired_equivalence_groups": 0,
+      "validation": {
+        "ok": true,
+        "tolerance": 1e-08,
+        "equivalence_group_count": 5,
+        "max_equivalence_spread": 0.0,
+        "max_carboxylate_oxygen_spread": 0.0,
+        "equivalence_spreads": [
+          {
+            "indices": [
+              4,
+              8
+            ],
+            "symbols": [
+              "C",
+              "C"
+            ],
+            "charges": [
+              -0.15202132500578475,
+              -0.15202132500578475
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              5,
+              7
+            ],
+            "symbols": [
+              "C",
+              "C"
+            ],
+            "charges": [
+              -0.1526794662637068,
+              -0.1526794662637068
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              10,
+              11
+            ],
+            "symbols": [
+              "H",
+              "H"
+            ],
+            "charges": [
+              0.02288392086287625,
+              0.02288392086287625
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              13,
+              17
+            ],
+            "symbols": [
+              "H",
+              "H"
+            ],
+            "charges": [
+              0.1264970210639036,
+              0.1264970210639036
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              14,
+              16
+            ],
+            "symbols": [
+              "H",
+              "H"
+            ],
+            "charges": [
+              0.12551990539059926,
+              0.12551990539059926
+            ],
+            "spread": 0.0
+          }
+        ],
+        "carboxylate_spreads": []
+      },
+      "candidate_key": "3e9f8c6433134896",
+      "candidate_variant_id": "d20712034802",
+      "diff_summary": {
+        "species": "PS",
+        "smiles": "*CC(c1ccccc1)*",
+        "atom_count": 18,
+        "formal_charge": 0,
+        "old_net_charge": 1.942890293094024e-16,
+        "new_net_charge": -5.551115123125783e-17,
+        "old_resp_profile": "legacy",
+        "new_resp_profile": "adaptive",
+        "old_resp_variant_ids": [
+          "56a209e16a4a"
+        ],
+        "new_resp_variant_id": "d20712034802",
+        "max_abs_delta": 0.013646271983647873,
+        "mean_abs_delta": 0.002195812092429626,
+        "rms_delta": 0.003951733556623816,
+        "equivalence_ok": true,
+        "max_equivalence_spread": 0.0,
+        "max_carboxylate_oxygen_spread": 0.0
+      },
+      "attempt": null,
+      "psi4_omp": null,
+      "memory_mb": null,
+      "source": "candidate_moldb"
+    },
+    {
+      "name": "polymer_route_ab",
+      "smiles": "*CC1=CC=C(CCC2=CC=C(C*)C=C2)C=C1",
+      "formal_charge": 0,
+      "polyelectrolyte_mode": false,
+      "charge_group_count": 0,
+      "resp_profile": "adaptive",
+      "qm_recipe": {
+        "adaptive_carbonate_recipe": false,
+        "anion_diffuse_upgrade": false,
+        "auto_level": true,
+        "carbonate_like": false,
+        "charge_basis": "def2-TZVP",
+        "charge_basis_gen": {
+          "Br": "def2-TZVP",
+          "I": "def2-TZVP"
+        },
+        "charge_method": "wb97m-d3bj",
+        "charge_model": "RESP",
+        "opt_basis": "def2-SVP",
+        "opt_basis_gen": {
+          "Br": "def2-SVP",
+          "I": "def2-SVP"
+        },
+        "opt_method": "wb97m-d3bj",
+        "resp_profile": "adaptive"
+      },
+      "repaired_equivalence_groups": 0,
+      "validation": {
+        "ok": true,
+        "tolerance": 1e-08,
+        "equivalence_group_count": 11,
+        "max_equivalence_spread": 0.0,
+        "max_carboxylate_oxygen_spread": 0.0,
+        "equivalence_spreads": [
+          {
+            "indices": [
+              0,
+              13
+            ],
+            "symbols": [
+              "H",
+              "H"
+            ],
+            "charges": [
+              0.11566455605750106,
+              0.11566455605750106
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              1,
+              12
+            ],
+            "symbols": [
+              "C",
+              "C"
+            ],
+            "charges": [
+              -0.43000901025972316,
+              -0.43000901025972316
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              2,
+              11
+            ],
+            "symbols": [
+              "C",
+              "C"
+            ],
+            "charges": [
+              0.3530815901672688,
+              0.3530815901672688
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              3,
+              10,
+              14,
+              17
+            ],
+            "symbols": [
+              "C",
+              "C",
+              "C",
+              "C"
+            ],
+            "charges": [
+              -0.31213798957343697,
+              -0.31213798957343697,
+              -0.31213798957343697,
+              -0.31213798957343697
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              4,
+              9,
+              15,
+              16
+            ],
+            "symbols": [
+              "C",
+              "C",
+              "C",
+              "C"
+            ],
+            "charges": [
+              -0.13116592431201474,
+              -0.13116592431201474,
+              -0.13116592431201474,
+              -0.13116592431201474
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              5,
+              8
+            ],
+            "symbols": [
+              "C",
+              "C"
+            ],
+            "charges": [
+              -0.006596030448289077,
+              -0.006596030448289077
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              6,
+              7
+            ],
+            "symbols": [
+              "C",
+              "C"
+            ],
+            "charges": [
+              0.02037017181531534,
+              0.02037017181531534
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              18,
+              19,
+              28,
+              29
+            ],
+            "symbols": [
+              "H",
+              "H",
+              "H",
+              "H"
+            ],
+            "charges": [
+              0.11233802896407306,
+              0.11233802896407306,
+              0.11233802896407306,
+              0.11233802896407306
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              20,
+              27,
+              30,
+              33
+            ],
+            "symbols": [
+              "H",
+              "H",
+              "H",
+              "H"
+            ],
+            "charges": [
+              0.1543807966688452,
+              0.1543807966688452,
+              0.1543807966688452,
+              0.1543807966688452
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              21,
+              26,
+              31,
+              32
+            ],
+            "symbols": [
+              "H",
+              "H",
+              "H",
+              "H"
+            ],
+            "charges": [
+              0.13124504716947274,
+              0.13124504716947274,
+              0.13124504716947274,
+              0.13124504716947274
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              22,
+              23,
+              24,
+              25
+            ],
+            "symbols": [
+              "H",
+              "H",
+              "H",
+              "H"
+            ],
+            "charges": [
+              0.01908440241702418,
+              0.01908440241702418,
+              0.01908440241702418,
+              0.01908440241702418
+            ],
+            "spread": 0.0
+          }
+        ],
+        "carboxylate_spreads": []
+      },
+      "candidate_key": "22656a4b05da2a9e",
+      "candidate_variant_id": "a41c7fa2bf87",
+      "diff_summary": {
+        "species": "polymer_route_ab",
+        "smiles": "*CC1=CC=C(CCC2=CC=C(C*)C=C2)C=C1",
+        "atom_count": 34,
+        "formal_charge": 0,
+        "old_net_charge": 2.220446049250313e-16,
+        "new_net_charge": 2.7755575615628914e-17,
+        "old_resp_profile": "legacy",
+        "new_resp_profile": "adaptive",
+        "old_resp_variant_ids": [
+          "56a209e16a4a"
+        ],
+        "new_resp_variant_id": "a41c7fa2bf87",
+        "max_abs_delta": 0.018789167714769905,
+        "mean_abs_delta": 0.0035421481708130262,
+        "rms_delta": 0.0057686553291568495,
+        "equivalence_ok": true,
+        "max_equivalence_spread": 0.0,
+        "max_carboxylate_oxygen_spread": 0.0
+      },
+      "attempt": null,
+      "psi4_omp": null,
+      "memory_mb": null,
+      "source": "candidate_moldb"
+    },
+    {
+      "name": "glucose_0",
+      "smiles": "*OC1OC(CO)C(*)C(O)C1O",
+      "formal_charge": 0,
+      "polyelectrolyte_mode": false,
+      "charge_group_count": 0,
+      "resp_profile": "adaptive",
+      "qm_recipe": {
+        "adaptive_carbonate_recipe": false,
+        "anion_diffuse_upgrade": false,
+        "auto_level": true,
+        "carbonate_like": false,
+        "charge_basis": "def2-TZVP",
+        "charge_basis_gen": {
+          "Br": "def2-TZVP",
+          "I": "def2-TZVP"
+        },
+        "charge_method": "wb97m-d3bj",
+        "charge_model": "RESP",
+        "opt_basis": "def2-SVP",
+        "opt_basis_gen": {
+          "Br": "def2-SVP",
+          "I": "def2-SVP"
+        },
+        "opt_method": "wb97m-d3bj",
+        "resp_profile": "adaptive"
+      },
+      "repaired_equivalence_groups": 0,
+      "validation": {
+        "ok": true,
+        "tolerance": 1e-08,
+        "equivalence_group_count": 1,
+        "max_equivalence_spread": 0.0,
+        "max_carboxylate_oxygen_spread": 0.0,
+        "equivalence_spreads": [
+          {
+            "indices": [
+              15,
+              16
+            ],
+            "symbols": [
+              "H",
+              "H"
+            ],
+            "charges": [
+              0.06474944010094089,
+              0.06474944010094089
+            ],
+            "spread": 0.0
+          }
+        ],
+        "carboxylate_spreads": []
+      },
+      "candidate_key": "aef36ef7e9294a6d",
+      "candidate_variant_id": "33393c1c770d",
+      "diff_summary": {
+        "species": "glucose_0",
+        "smiles": "*OC1OC(CO)C(*)C(O)C1O",
+        "atom_count": 23,
+        "formal_charge": 0,
+        "old_net_charge": -4.996003610813204e-16,
+        "new_net_charge": 3.3306690738754696e-16,
+        "old_resp_profile": "legacy",
+        "new_resp_profile": "adaptive",
+        "old_resp_variant_ids": [
+          "56a209e16a4a"
+        ],
+        "new_resp_variant_id": "33393c1c770d",
+        "max_abs_delta": 0.023577512971285464,
+        "mean_abs_delta": 0.0036848810470033314,
+        "rms_delta": 0.007915044190477562,
+        "equivalence_ok": true,
+        "max_equivalence_spread": 0.0,
+        "max_carboxylate_oxygen_spread": 0.0
+      },
+      "attempt": null,
+      "psi4_omp": null,
+      "memory_mb": null,
+      "source": "candidate_moldb"
+    },
+    {
+      "name": "glucose_2",
+      "smiles": "*OC1OC(CO)C(*)C(O)C1OCC(=O)[O-]",
+      "formal_charge": -1,
+      "polyelectrolyte_mode": true,
+      "charge_group_count": 1,
+      "resp_profile": "adaptive",
+      "qm_recipe": {
+        "adaptive_carbonate_recipe": false,
+        "anion_diffuse_upgrade": true,
+        "auto_level": true,
+        "carbonate_like": false,
+        "charge_basis": "def2-TZVPD",
+        "charge_basis_gen": {
+          "Br": "def2-TZVPD",
+          "I": "def2-TZVPD"
+        },
+        "charge_method": "wb97m-d3bj",
+        "charge_model": "RESP",
+        "opt_basis": "def2-SVPD",
+        "opt_basis_gen": {
+          "Br": "def2-SVPD",
+          "I": "def2-SVPD"
+        },
+        "opt_method": "wb97m-d3bj",
+        "resp_profile": "adaptive"
+      },
+      "repaired_equivalence_groups": 0,
+      "validation": {
+        "ok": true,
+        "tolerance": 1e-08,
+        "equivalence_group_count": 3,
+        "max_equivalence_spread": 0.0,
+        "max_carboxylate_oxygen_spread": 0.0,
+        "equivalence_spreads": [
+          {
+            "indices": [
+              15,
+              16
+            ],
+            "symbols": [
+              "O",
+              "O"
+            ],
+            "charges": [
+              -0.8071202184466743,
+              -0.8071202184466743
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              19,
+              20
+            ],
+            "symbols": [
+              "H",
+              "H"
+            ],
+            "charges": [
+              0.05266708246153235,
+              0.05266708246153235
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              26,
+              27
+            ],
+            "symbols": [
+              "H",
+              "H"
+            ],
+            "charges": [
+              -0.0004999003998338348,
+              -0.0004999003998338348
+            ],
+            "spread": 0.0
+          }
+        ],
+        "carboxylate_spreads": [
+          {
+            "carbon": 14,
+            "oxygen_indices": [
+              15,
+              16
+            ],
+            "charges": [
+              -0.8071202184466743,
+              -0.8071202184466743
+            ],
+            "spread": 0.0
+          }
+        ]
+      },
+      "candidate_key": "889ed58492f6dda5",
+      "candidate_variant_id": "30e172c609f5",
+      "diff_summary": {
+        "species": "glucose_2",
+        "smiles": "*OC1OC(CO)C(*)C(O)C1OCC(=O)[O-]",
+        "atom_count": 28,
+        "formal_charge": -1,
+        "old_net_charge": -1.0,
+        "new_net_charge": -0.9999999999999998,
+        "old_resp_profile": "adaptive",
+        "new_resp_profile": "adaptive",
+        "old_resp_variant_ids": [
+          "234160b0a990",
+          "30e172c609f5",
+          "8a687c87f3af"
+        ],
+        "new_resp_variant_id": "30e172c609f5",
+        "max_abs_delta": 1.152354206159572,
+        "mean_abs_delta": 0.14578616975651704,
+        "rms_delta": 0.2795857039904083,
+        "equivalence_ok": true,
+        "max_equivalence_spread": 0.0,
+        "max_carboxylate_oxygen_spread": 0.0
+      },
+      "attempt": null,
+      "psi4_omp": null,
+      "memory_mb": null,
+      "source": "candidate_moldb"
+    },
+    {
+      "name": "glucose_3",
+      "smiles": "*OC1OC(CO)C(*)C(OCC(=O)[O-])C1O",
+      "formal_charge": -1,
+      "polyelectrolyte_mode": true,
+      "charge_group_count": 1,
+      "resp_profile": "adaptive",
+      "qm_recipe": {
+        "adaptive_carbonate_recipe": false,
+        "anion_diffuse_upgrade": true,
+        "auto_level": true,
+        "carbonate_like": false,
+        "charge_basis": "def2-TZVPD",
+        "charge_basis_gen": {
+          "Br": "def2-TZVPD",
+          "I": "def2-TZVPD"
+        },
+        "charge_method": "wb97m-d3bj",
+        "charge_model": "RESP",
+        "opt_basis": "def2-SVPD",
+        "opt_basis_gen": {
+          "Br": "def2-SVPD",
+          "I": "def2-SVPD"
+        },
+        "opt_method": "wb97m-d3bj",
+        "resp_profile": "adaptive"
+      },
+      "repaired_equivalence_groups": 0,
+      "validation": {
+        "ok": true,
+        "tolerance": 1e-08,
+        "equivalence_group_count": 3,
+        "max_equivalence_spread": 0.0,
+        "max_carboxylate_oxygen_spread": 0.0,
+        "equivalence_spreads": [
+          {
+            "indices": [
+              13,
+              14
+            ],
+            "symbols": [
+              "O",
+              "O"
+            ],
+            "charges": [
+              -0.8060723858209276,
+              -0.8060723858209276
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              19,
+              20
+            ],
+            "symbols": [
+              "H",
+              "H"
+            ],
+            "charges": [
+              0.021226314048318574,
+              0.021226314048318574
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              24,
+              25
+            ],
+            "symbols": [
+              "H",
+              "H"
+            ],
+            "charges": [
+              -0.023245016931212434,
+              -0.023245016931212434
+            ],
+            "spread": 0.0
+          }
+        ],
+        "carboxylate_spreads": [
+          {
+            "carbon": 12,
+            "oxygen_indices": [
+              13,
+              14
+            ],
+            "charges": [
+              -0.8060723858209276,
+              -0.8060723858209276
+            ],
+            "spread": 0.0
+          }
+        ]
+      },
+      "candidate_key": "cebcbd750c7d6113",
+      "candidate_variant_id": "f10271630afe",
+      "diff_summary": {
+        "species": "glucose_3",
+        "smiles": "*OC1OC(CO)C(*)C(OCC(=O)[O-])C1O",
+        "atom_count": 28,
+        "formal_charge": -1,
+        "old_net_charge": -0.9999999999999996,
+        "new_net_charge": -1.0000000000000009,
+        "old_resp_profile": "adaptive",
+        "new_resp_profile": "adaptive",
+        "old_resp_variant_ids": [
+          "a1eacd87b2f2",
+          "f10271630afe"
+        ],
+        "new_resp_variant_id": "f10271630afe",
+        "max_abs_delta": 1.0240479199791794,
+        "mean_abs_delta": 0.2066554892447588,
+        "rms_delta": 0.32619593908940986,
+        "equivalence_ok": true,
+        "max_equivalence_spread": 0.0,
+        "max_carboxylate_oxygen_spread": 0.0
+      },
+      "attempt": null,
+      "psi4_omp": null,
+      "memory_mb": null,
+      "source": "candidate_moldb"
+    },
+    {
+      "name": "glucose_6",
+      "smiles": "*OC1OC(COCC(=O)[O-])C(*)C(O)C1O",
+      "formal_charge": -1,
+      "polyelectrolyte_mode": true,
+      "charge_group_count": 1,
+      "resp_profile": "adaptive",
+      "qm_recipe": {
+        "adaptive_carbonate_recipe": false,
+        "anion_diffuse_upgrade": true,
+        "auto_level": true,
+        "carbonate_like": false,
+        "charge_basis": "def2-TZVPD",
+        "charge_basis_gen": {
+          "Br": "def2-TZVPD",
+          "I": "def2-TZVPD"
+        },
+        "charge_method": "wb97m-d3bj",
+        "charge_model": "RESP",
+        "opt_basis": "def2-SVPD",
+        "opt_basis_gen": {
+          "Br": "def2-SVPD",
+          "I": "def2-SVPD"
+        },
+        "opt_method": "wb97m-d3bj",
+        "resp_profile": "adaptive"
+      },
+      "repaired_equivalence_groups": 0,
+      "validation": {
+        "ok": true,
+        "tolerance": 1e-08,
+        "equivalence_group_count": 3,
+        "max_equivalence_spread": 0.0,
+        "max_carboxylate_oxygen_spread": 0.0,
+        "equivalence_spreads": [
+          {
+            "indices": [
+              9,
+              10
+            ],
+            "symbols": [
+              "O",
+              "O"
+            ],
+            "charges": [
+              -0.84088942189001,
+              -0.84088942189001
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              19,
+              20
+            ],
+            "symbols": [
+              "H",
+              "H"
+            ],
+            "charges": [
+              0.08878522046671941,
+              0.08878522046671941
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              21,
+              22
+            ],
+            "symbols": [
+              "H",
+              "H"
+            ],
+            "charges": [
+              -0.04825994843631786,
+              -0.04825994843631786
+            ],
+            "spread": 0.0
+          }
+        ],
+        "carboxylate_spreads": [
+          {
+            "carbon": 8,
+            "oxygen_indices": [
+              9,
+              10
+            ],
+            "charges": [
+              -0.84088942189001,
+              -0.84088942189001
+            ],
+            "spread": 0.0
+          }
+        ]
+      },
+      "candidate_key": "558914981581b2c2",
+      "candidate_variant_id": "e326a6b5eb18",
+      "diff_summary": {
+        "species": "glucose_6",
+        "smiles": "*OC1OC(COCC(=O)[O-])C(*)C(O)C1O",
+        "atom_count": 28,
+        "formal_charge": -1,
+        "old_net_charge": -0.9999999999999998,
+        "new_net_charge": -1.0000000000000007,
+        "old_resp_profile": "adaptive",
+        "new_resp_profile": "adaptive",
+        "old_resp_variant_ids": [
+          "4da716fabbcf",
+          "8a687c87f3af",
+          "e326a6b5eb18"
+        ],
+        "new_resp_variant_id": "e326a6b5eb18",
+        "max_abs_delta": 0.7904463912592303,
+        "mean_abs_delta": 0.10024157458854586,
+        "rms_delta": 0.19342860190523062,
+        "equivalence_ok": true,
+        "max_equivalence_spread": 0.0,
+        "max_carboxylate_oxygen_spread": 0.0
+      },
+      "attempt": null,
+      "psi4_omp": null,
+      "memory_mb": null,
+      "source": "candidate_moldb"
+    },
+    {
+      "name": "glucose_23",
+      "smiles": "*OC1OC(CO)C(*)C(OCC(=O)[O-])C1OCC(=O)[O-]",
+      "formal_charge": -2,
+      "polyelectrolyte_mode": true,
+      "charge_group_count": 2,
+      "resp_profile": "adaptive",
+      "qm_recipe": {
+        "adaptive_carbonate_recipe": false,
+        "anion_diffuse_upgrade": true,
+        "auto_level": true,
+        "carbonate_like": false,
+        "charge_basis": "def2-TZVPD",
+        "charge_basis_gen": {
+          "Br": "def2-TZVPD",
+          "I": "def2-TZVPD"
+        },
+        "charge_method": "wb97m-d3bj",
+        "charge_model": "RESP",
+        "opt_basis": "def2-SVPD",
+        "opt_basis_gen": {
+          "Br": "def2-SVPD",
+          "I": "def2-SVPD"
+        },
+        "opt_method": "wb97m-d3bj",
+        "resp_profile": "adaptive"
+      },
+      "repaired_equivalence_groups": 0,
+      "validation": {
+        "ok": true,
+        "tolerance": 1e-08,
+        "equivalence_group_count": 5,
+        "max_equivalence_spread": 0.0,
+        "max_carboxylate_oxygen_spread": 0.0,
+        "equivalence_spreads": [
+          {
+            "indices": [
+              13,
+              14
+            ],
+            "symbols": [
+              "O",
+              "O"
+            ],
+            "charges": [
+              -0.8490204714984518,
+              -0.8490204714984518
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              19,
+              20
+            ],
+            "symbols": [
+              "O",
+              "O"
+            ],
+            "charges": [
+              -0.8361258548190613,
+              -0.8361258548190613
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              23,
+              24
+            ],
+            "symbols": [
+              "H",
+              "H"
+            ],
+            "charges": [
+              0.008892252643905741,
+              0.008892252643905741
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              28,
+              29
+            ],
+            "symbols": [
+              "H",
+              "H"
+            ],
+            "charges": [
+              0.0004086102250162073,
+              0.0004086102250162073
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              31,
+              32
+            ],
+            "symbols": [
+              "H",
+              "H"
+            ],
+            "charges": [
+              -0.032338749740675465,
+              -0.032338749740675465
+            ],
+            "spread": 0.0
+          }
+        ],
+        "carboxylate_spreads": [
+          {
+            "carbon": 12,
+            "oxygen_indices": [
+              13,
+              14
+            ],
+            "charges": [
+              -0.8490204714984518,
+              -0.8490204714984518
+            ],
+            "spread": 0.0
+          },
+          {
+            "carbon": 18,
+            "oxygen_indices": [
+              19,
+              20
+            ],
+            "charges": [
+              -0.8361258548190613,
+              -0.8361258548190613
+            ],
+            "spread": 0.0
+          }
+        ]
+      },
+      "candidate_key": "a04243a10c48467e",
+      "candidate_variant_id": "dcca83f8f92a",
+      "diff_summary": {
+        "species": "glucose_23",
+        "smiles": "*OC1OC(CO)C(*)C(OCC(=O)[O-])C1OCC(=O)[O-]",
+        "atom_count": 33,
+        "formal_charge": -2,
+        "old_net_charge": -2.0000000000000004,
+        "new_net_charge": -2.0000000000000018,
+        "old_resp_profile": "adaptive",
+        "new_resp_profile": "adaptive",
+        "old_resp_variant_ids": [
+          "8a687c87f3af",
+          "dcca83f8f92a"
+        ],
+        "new_resp_variant_id": "dcca83f8f92a",
+        "max_abs_delta": 0.6243135365034738,
+        "mean_abs_delta": 0.13845649702119187,
+        "rms_delta": 0.21695368037612917,
+        "equivalence_ok": true,
+        "max_equivalence_spread": 0.0,
+        "max_carboxylate_oxygen_spread": 0.0
+      },
+      "attempt": null,
+      "psi4_omp": null,
+      "memory_mb": null,
+      "source": "candidate_moldb"
+    },
+    {
+      "name": "glucose_26",
+      "smiles": "*OC1OC(COCC(=O)[O-])C(*)C(O)C1OCC(=O)[O-]",
+      "formal_charge": -2,
+      "polyelectrolyte_mode": true,
+      "charge_group_count": 2,
+      "resp_profile": "adaptive",
+      "qm_recipe": {
+        "adaptive_carbonate_recipe": false,
+        "anion_diffuse_upgrade": true,
+        "auto_level": true,
+        "carbonate_like": false,
+        "charge_basis": "def2-TZVPD",
+        "charge_basis_gen": {
+          "Br": "def2-TZVPD",
+          "I": "def2-TZVPD"
+        },
+        "charge_method": "wb97m-d3bj",
+        "charge_model": "RESP",
+        "opt_basis": "def2-SVPD",
+        "opt_basis_gen": {
+          "Br": "def2-SVPD",
+          "I": "def2-SVPD"
+        },
+        "opt_method": "wb97m-d3bj",
+        "resp_profile": "adaptive"
+      },
+      "repaired_equivalence_groups": 0,
+      "validation": {
+        "ok": true,
+        "tolerance": 1e-08,
+        "equivalence_group_count": 5,
+        "max_equivalence_spread": 0.0,
+        "max_carboxylate_oxygen_spread": 0.0,
+        "equivalence_spreads": [
+          {
+            "indices": [
+              9,
+              10
+            ],
+            "symbols": [
+              "O",
+              "O"
+            ],
+            "charges": [
+              -0.8313506773221091,
+              -0.8313506773221091
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              19,
+              20
+            ],
+            "symbols": [
+              "O",
+              "O"
+            ],
+            "charges": [
+              -0.8404626633463376,
+              -0.8404626633463376
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              23,
+              24
+            ],
+            "symbols": [
+              "H",
+              "H"
+            ],
+            "charges": [
+              0.14473029303113255,
+              0.14473029303113255
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              25,
+              26
+            ],
+            "symbols": [
+              "H",
+              "H"
+            ],
+            "charges": [
+              -0.04945917725578239,
+              -0.04945917725578239
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              31,
+              32
+            ],
+            "symbols": [
+              "H",
+              "H"
+            ],
+            "charges": [
+              -0.04556253973428025,
+              -0.04556253973428025
+            ],
+            "spread": 0.0
+          }
+        ],
+        "carboxylate_spreads": [
+          {
+            "carbon": 8,
+            "oxygen_indices": [
+              9,
+              10
+            ],
+            "charges": [
+              -0.8313506773221091,
+              -0.8313506773221091
+            ],
+            "spread": 0.0
+          },
+          {
+            "carbon": 18,
+            "oxygen_indices": [
+              19,
+              20
+            ],
+            "charges": [
+              -0.8404626633463376,
+              -0.8404626633463376
+            ],
+            "spread": 0.0
+          }
+        ]
+      },
+      "candidate_key": "0b556c7c380b510e",
+      "candidate_variant_id": "3b4ee9f697fd",
+      "diff_summary": {
+        "species": "glucose_26",
+        "smiles": "*OC1OC(COCC(=O)[O-])C(*)C(O)C1OCC(=O)[O-]",
+        "atom_count": 33,
+        "formal_charge": -2,
+        "old_net_charge": -2.000000000000001,
+        "new_net_charge": -1.9999999999999991,
+        "old_resp_profile": "adaptive",
+        "new_resp_profile": "adaptive",
+        "old_resp_variant_ids": [
+          "3b4ee9f697fd",
+          "8a687c87f3af"
+        ],
+        "new_resp_variant_id": "3b4ee9f697fd",
+        "max_abs_delta": 0.7337910146083113,
+        "mean_abs_delta": 0.16359842015574813,
+        "rms_delta": 0.2414530276555675,
+        "equivalence_ok": true,
+        "max_equivalence_spread": 0.0,
+        "max_carboxylate_oxygen_spread": 0.0
+      },
+      "attempt": null,
+      "psi4_omp": null,
+      "memory_mb": null,
+      "source": "candidate_moldb"
+    },
+    {
+      "name": "glucose_36",
+      "smiles": "*OC1OC(COCC(=O)[O-])C(*)C(OCC(=O)[O-])C1O",
+      "formal_charge": -2,
+      "polyelectrolyte_mode": true,
+      "charge_group_count": 2,
+      "resp_profile": "adaptive",
+      "qm_recipe": {
+        "adaptive_carbonate_recipe": false,
+        "anion_diffuse_upgrade": true,
+        "auto_level": true,
+        "carbonate_like": false,
+        "charge_basis": "def2-TZVPD",
+        "charge_basis_gen": {
+          "Br": "def2-TZVPD",
+          "I": "def2-TZVPD"
+        },
+        "charge_method": "wb97m-d3bj",
+        "charge_model": "RESP",
+        "opt_basis": "def2-SVPD",
+        "opt_basis_gen": {
+          "Br": "def2-SVPD",
+          "I": "def2-SVPD"
+        },
+        "opt_method": "wb97m-d3bj",
+        "resp_profile": "adaptive"
+      },
+      "repaired_equivalence_groups": 0,
+      "validation": {
+        "ok": true,
+        "tolerance": 1e-08,
+        "equivalence_group_count": 5,
+        "max_equivalence_spread": 0.0,
+        "max_carboxylate_oxygen_spread": 0.0,
+        "equivalence_spreads": [
+          {
+            "indices": [
+              9,
+              10
+            ],
+            "symbols": [
+              "O",
+              "O"
+            ],
+            "charges": [
+              -0.8415770778175409,
+              -0.8415770778175409
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              17,
+              18
+            ],
+            "symbols": [
+              "O",
+              "O"
+            ],
+            "charges": [
+              -0.8345657187432105,
+              -0.8345657187432105
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              23,
+              24
+            ],
+            "symbols": [
+              "H",
+              "H"
+            ],
+            "charges": [
+              0.16095712061474282,
+              0.16095712061474282
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              25,
+              26
+            ],
+            "symbols": [
+              "H",
+              "H"
+            ],
+            "charges": [
+              -0.06914337894221925,
+              -0.06914337894221925
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              29,
+              30
+            ],
+            "symbols": [
+              "H",
+              "H"
+            ],
+            "charges": [
+              -0.04497393707157983,
+              -0.04497393707157983
+            ],
+            "spread": 0.0
+          }
+        ],
+        "carboxylate_spreads": [
+          {
+            "carbon": 8,
+            "oxygen_indices": [
+              9,
+              10
+            ],
+            "charges": [
+              -0.8415770778175409,
+              -0.8415770778175409
+            ],
+            "spread": 0.0
+          },
+          {
+            "carbon": 16,
+            "oxygen_indices": [
+              17,
+              18
+            ],
+            "charges": [
+              -0.8345657187432105,
+              -0.8345657187432105
+            ],
+            "spread": 0.0
+          }
+        ]
+      },
+      "candidate_key": "57fa7686df4bec7d",
+      "candidate_variant_id": "2af8ac21c4a7",
+      "diff_summary": {
+        "species": "glucose_36",
+        "smiles": "*OC1OC(COCC(=O)[O-])C(*)C(OCC(=O)[O-])C1O",
+        "atom_count": 33,
+        "formal_charge": -2,
+        "old_net_charge": -2.000000000000001,
+        "new_net_charge": -1.9999999999999996,
+        "old_resp_profile": "adaptive",
+        "new_resp_profile": "adaptive",
+        "old_resp_variant_ids": [
+          "2af8ac21c4a7",
+          "8a687c87f3af"
+        ],
+        "new_resp_variant_id": "2af8ac21c4a7",
+        "max_abs_delta": 0.6848765605257217,
+        "mean_abs_delta": 0.14274191156934055,
+        "rms_delta": 0.21639407031900615,
+        "equivalence_ok": true,
+        "max_equivalence_spread": 0.0,
+        "max_carboxylate_oxygen_spread": 0.0
+      },
+      "attempt": null,
+      "psi4_omp": null,
+      "memory_mb": null,
+      "source": "candidate_moldb"
+    },
+    {
+      "name": "glucose_236",
+      "smiles": "*OC1OC(COCC(=O)[O-])C(*)C(OCC(=O)[O-])C1OCC(=O)[O-]",
+      "formal_charge": -3,
+      "polyelectrolyte_mode": true,
+      "charge_group_count": 3,
+      "resp_profile": "adaptive",
+      "qm_recipe": {
+        "adaptive_carbonate_recipe": false,
+        "anion_diffuse_upgrade": true,
+        "auto_level": true,
+        "carbonate_like": false,
+        "charge_basis": "def2-TZVPD",
+        "charge_basis_gen": {
+          "Br": "def2-TZVPD",
+          "I": "def2-TZVPD"
+        },
+        "charge_method": "wb97m-d3bj",
+        "charge_model": "RESP",
+        "opt_basis": "def2-SVPD",
+        "opt_basis_gen": {
+          "Br": "def2-SVPD",
+          "I": "def2-SVPD"
+        },
+        "opt_method": "wb97m-d3bj",
+        "resp_profile": "adaptive"
+      },
+      "repaired_equivalence_groups": 0,
+      "validation": {
+        "ok": true,
+        "tolerance": 1e-08,
+        "equivalence_group_count": 7,
+        "max_equivalence_spread": 0.0,
+        "max_carboxylate_oxygen_spread": 0.0,
+        "equivalence_spreads": [
+          {
+            "indices": [
+              9,
+              10
+            ],
+            "symbols": [
+              "O",
+              "O"
+            ],
+            "charges": [
+              -0.8782797816686077,
+              -0.8782797816686077
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              17,
+              18
+            ],
+            "symbols": [
+              "O",
+              "O"
+            ],
+            "charges": [
+              -0.8744869051732469,
+              -0.8744869051732469
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              23,
+              24
+            ],
+            "symbols": [
+              "O",
+              "O"
+            ],
+            "charges": [
+              -0.8280765611807791,
+              -0.8280765611807791
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              27,
+              28
+            ],
+            "symbols": [
+              "H",
+              "H"
+            ],
+            "charges": [
+              0.08136382131521391,
+              0.08136382131521391
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              29,
+              30
+            ],
+            "symbols": [
+              "H",
+              "H"
+            ],
+            "charges": [
+              -0.052799152988447846,
+              -0.052799152988447846
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              33,
+              34
+            ],
+            "symbols": [
+              "H",
+              "H"
+            ],
+            "charges": [
+              -0.08666267715032831,
+              -0.08666267715032831
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              36,
+              37
+            ],
+            "symbols": [
+              "H",
+              "H"
+            ],
+            "charges": [
+              -0.018817901741347634,
+              -0.018817901741347634
+            ],
+            "spread": 0.0
+          }
+        ],
+        "carboxylate_spreads": [
+          {
+            "carbon": 8,
+            "oxygen_indices": [
+              9,
+              10
+            ],
+            "charges": [
+              -0.8782797816686077,
+              -0.8782797816686077
+            ],
+            "spread": 0.0
+          },
+          {
+            "carbon": 16,
+            "oxygen_indices": [
+              17,
+              18
+            ],
+            "charges": [
+              -0.8744869051732469,
+              -0.8744869051732469
+            ],
+            "spread": 0.0
+          },
+          {
+            "carbon": 22,
+            "oxygen_indices": [
+              23,
+              24
+            ],
+            "charges": [
+              -0.8280765611807791,
+              -0.8280765611807791
+            ],
+            "spread": 0.0
+          }
+        ]
+      },
+      "candidate_key": "b216bf8c7a3d0da0",
+      "candidate_variant_id": "b259130aca52",
+      "diff_summary": {
+        "species": "glucose_236",
+        "smiles": "*OC1OC(COCC(=O)[O-])C(*)C(OCC(=O)[O-])C1OCC(=O)[O-]",
+        "atom_count": 38,
+        "formal_charge": -3,
+        "old_net_charge": -2.9999999999999987,
+        "new_net_charge": -3.000000000000001,
+        "old_resp_profile": "adaptive",
+        "new_resp_profile": "adaptive",
+        "old_resp_variant_ids": [
+          "b259130aca52"
+        ],
+        "new_resp_variant_id": "b259130aca52",
+        "max_abs_delta": 0.6110573903554541,
+        "mean_abs_delta": 0.13493733994324156,
+        "rms_delta": 0.20557702091817612,
+        "equivalence_ok": true,
+        "max_equivalence_spread": 0.0,
+        "max_carboxylate_oxygen_spread": 0.0
+      },
+      "attempt": null,
+      "psi4_omp": null,
+      "memory_mb": null,
+      "source": "candidate_moldb"
+    },
+    {
+      "name": "EC",
+      "smiles": "O=C1OCCO1",
+      "formal_charge": 0,
+      "polyelectrolyte_mode": false,
+      "charge_group_count": 0,
+      "resp_profile": "adaptive",
+      "qm_recipe": {
+        "adaptive_carbonate_recipe": true,
+        "anion_diffuse_upgrade": false,
+        "auto_level": true,
+        "carbonate_like": true,
+        "charge_basis": "def2-TZVP",
+        "charge_basis_gen": {
+          "Br": "def2-TZVP",
+          "I": "def2-TZVP"
+        },
+        "charge_method": "wb97m-v",
+        "charge_model": "RESP",
+        "opt_basis": "def2-TZVP",
+        "opt_basis_gen": {
+          "Br": "def2-TZVP",
+          "I": "def2-TZVP"
+        },
+        "opt_method": "wb97m-v",
+        "resp_profile": "adaptive"
+      },
+      "repaired_equivalence_groups": 0,
+      "validation": {
+        "ok": true,
+        "tolerance": 1e-08,
+        "equivalence_group_count": 3,
+        "max_equivalence_spread": 0.0,
+        "max_carboxylate_oxygen_spread": 0.0,
+        "equivalence_spreads": [
+          {
+            "indices": [
+              2,
+              5
+            ],
+            "symbols": [
+              "O",
+              "O"
+            ],
+            "charges": [
+              -0.3728788811589963,
+              -0.3728788811589963
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              3,
+              4
+            ],
+            "symbols": [
+              "C",
+              "C"
+            ],
+            "charges": [
+              0.0834328737295567,
+              0.0834328737295567
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              6,
+              7,
+              8,
+              9
+            ],
+            "symbols": [
+              "H",
+              "H",
+              "H",
+              "H"
+            ],
+            "charges": [
+              0.06958922673956594,
+              0.06958922673956594,
+              0.06958922673956594,
+              0.06958922673956594
+            ],
+            "spread": 0.0
+          }
+        ],
+        "carboxylate_spreads": []
+      },
+      "candidate_key": "03ca6bd306c3de7b",
+      "candidate_variant_id": "5dda38f59f4d",
+      "diff_summary": {
+        "species": "EC",
+        "smiles": "O=C1OCCO1",
+        "atom_count": 10,
+        "formal_charge": 0,
+        "old_net_charge": 1.3877787807814457e-17,
+        "new_net_charge": 1.1102230246251565e-16,
+        "old_resp_profile": "adaptive",
+        "new_resp_profile": "adaptive",
+        "old_resp_variant_ids": [
+          "56a209e16a4a",
+          "5dda38f59f4d"
+        ],
+        "new_resp_variant_id": "5dda38f59f4d",
+        "max_abs_delta": 0.014679465810100004,
+        "mean_abs_delta": 0.004221145947935859,
+        "rms_delta": 0.005714936882009021,
+        "equivalence_ok": true,
+        "max_equivalence_spread": 0.0,
+        "max_carboxylate_oxygen_spread": 0.0
+      },
+      "attempt": null,
+      "psi4_omp": null,
+      "memory_mb": null,
+      "source": "candidate_moldb"
+    },
+    {
+      "name": "EMC",
+      "smiles": "CCOC(=O)OC",
+      "formal_charge": 0,
+      "polyelectrolyte_mode": false,
+      "charge_group_count": 0,
+      "resp_profile": "adaptive",
+      "qm_recipe": {
+        "adaptive_carbonate_recipe": true,
+        "anion_diffuse_upgrade": false,
+        "auto_level": true,
+        "carbonate_like": true,
+        "charge_basis": "def2-TZVP",
+        "charge_basis_gen": {
+          "Br": "def2-TZVP",
+          "I": "def2-TZVP"
+        },
+        "charge_method": "wb97m-v",
+        "charge_model": "RESP",
+        "opt_basis": "def2-TZVP",
+        "opt_basis_gen": {
+          "Br": "def2-TZVP",
+          "I": "def2-TZVP"
+        },
+        "opt_method": "wb97m-v",
+        "resp_profile": "adaptive"
+      },
+      "repaired_equivalence_groups": 0,
+      "validation": {
+        "ok": true,
+        "tolerance": 1e-08,
+        "equivalence_group_count": 3,
+        "max_equivalence_spread": 0.0,
+        "max_carboxylate_oxygen_spread": 0.0,
+        "equivalence_spreads": [
+          {
+            "indices": [
+              7,
+              8,
+              9
+            ],
+            "symbols": [
+              "H",
+              "H",
+              "H"
+            ],
+            "charges": [
+              0.08619318142912784,
+              0.08619318142912784,
+              0.08619318142912784
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              10,
+              11
+            ],
+            "symbols": [
+              "H",
+              "H"
+            ],
+            "charges": [
+              -0.0024350891572434887,
+              -0.0024350891572434887
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              12,
+              13,
+              14
+            ],
+            "symbols": [
+              "H",
+              "H",
+              "H"
+            ],
+            "charges": [
+              0.07782911554742332,
+              0.07782911554742332,
+              0.07782911554742332
+            ],
+            "spread": 0.0
+          }
+        ],
+        "carboxylate_spreads": []
+      },
+      "candidate_key": "508a1c4f70416b74",
+      "candidate_variant_id": "ae1bed556cba",
+      "diff_summary": {
+        "species": "EMC",
+        "smiles": "CCOC(=O)OC",
+        "atom_count": 15,
+        "formal_charge": 0,
+        "old_net_charge": -4.163336342344337e-17,
+        "new_net_charge": 3.608224830031759e-16,
+        "old_resp_profile": "adaptive",
+        "new_resp_profile": "adaptive",
+        "old_resp_variant_ids": [
+          "56a209e16a4a",
+          "ae1bed556cba"
+        ],
+        "new_resp_variant_id": "ae1bed556cba",
+        "max_abs_delta": 0.055866945959908376,
+        "mean_abs_delta": 0.014543467822761946,
+        "rms_delta": 0.020026063625307206,
+        "equivalence_ok": true,
+        "max_equivalence_spread": 0.0,
+        "max_carboxylate_oxygen_spread": 0.0
+      },
+      "attempt": null,
+      "psi4_omp": null,
+      "memory_mb": null,
+      "source": "candidate_moldb"
+    },
+    {
+      "name": "DEC",
+      "smiles": "CCOC(=O)OCC",
+      "formal_charge": 0,
+      "polyelectrolyte_mode": false,
+      "charge_group_count": 0,
+      "resp_profile": "adaptive",
+      "qm_recipe": {
+        "adaptive_carbonate_recipe": true,
+        "anion_diffuse_upgrade": false,
+        "auto_level": true,
+        "carbonate_like": true,
+        "charge_basis": "def2-TZVP",
+        "charge_basis_gen": {
+          "Br": "def2-TZVP",
+          "I": "def2-TZVP"
+        },
+        "charge_method": "wb97m-v",
+        "charge_model": "RESP",
+        "opt_basis": "def2-TZVP",
+        "opt_basis_gen": {
+          "Br": "def2-TZVP",
+          "I": "def2-TZVP"
+        },
+        "opt_method": "wb97m-v",
+        "resp_profile": "adaptive"
+      },
+      "repaired_equivalence_groups": 0,
+      "validation": {
+        "ok": true,
+        "tolerance": 1e-08,
+        "equivalence_group_count": 5,
+        "max_equivalence_spread": 0.0,
+        "max_carboxylate_oxygen_spread": 0.0,
+        "equivalence_spreads": [
+          {
+            "indices": [
+              0,
+              7
+            ],
+            "symbols": [
+              "C",
+              "C"
+            ],
+            "charges": [
+              -0.2964480219686716,
+              -0.2964480219686716
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              1,
+              6
+            ],
+            "symbols": [
+              "C",
+              "C"
+            ],
+            "charges": [
+              0.35156444622119576,
+              0.35156444622119576
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              2,
+              5
+            ],
+            "symbols": [
+              "O",
+              "O"
+            ],
+            "charges": [
+              -0.45352541772980626,
+              -0.45352541772980626
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              8,
+              9,
+              10,
+              15,
+              16,
+              17
+            ],
+            "symbols": [
+              "H",
+              "H",
+              "H",
+              "H",
+              "H",
+              "H"
+            ],
+            "charges": [
+              0.08392012976806301,
+              0.08392012976806301,
+              0.08392012976806301,
+              0.08392012976806301,
+              0.08392012976806301,
+              0.08392012976806301
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              11,
+              12,
+              13,
+              14
+            ],
+            "symbols": [
+              "H",
+              "H",
+              "H",
+              "H"
+            ],
+            "charges": [
+              -0.009157879645460956,
+              -0.009157879645460956,
+              -0.009157879645460956,
+              -0.009157879645460956
+            ],
+            "spread": 0.0
+          }
+        ],
+        "carboxylate_spreads": []
+      },
+      "candidate_key": "864a8b1cc87098b3",
+      "candidate_variant_id": "86d88792c65f",
+      "diff_summary": {
+        "species": "DEC",
+        "smiles": "CCOC(=O)OCC",
+        "atom_count": 18,
+        "formal_charge": 0,
+        "old_net_charge": -1.1102230246251565e-16,
+        "new_net_charge": 0.0,
+        "old_resp_profile": "adaptive",
+        "new_resp_profile": "adaptive",
+        "old_resp_variant_ids": [
+          "56a209e16a4a",
+          "86d88792c65f"
+        ],
+        "new_resp_variant_id": "86d88792c65f",
+        "max_abs_delta": 0.12732175360627107,
+        "mean_abs_delta": 0.023076709093004705,
+        "rms_delta": 0.03754041146593522,
+        "equivalence_ok": true,
+        "max_equivalence_spread": 0.0,
+        "max_carboxylate_oxygen_spread": 0.0
+      },
+      "attempt": null,
+      "psi4_omp": null,
+      "memory_mb": null,
+      "source": "candidate_moldb"
+    },
+    {
+      "name": "DMC",
+      "smiles": "COC(=O)OC",
+      "formal_charge": 0,
+      "polyelectrolyte_mode": false,
+      "charge_group_count": 0,
+      "resp_profile": "adaptive",
+      "qm_recipe": {
+        "adaptive_carbonate_recipe": true,
+        "anion_diffuse_upgrade": false,
+        "auto_level": true,
+        "carbonate_like": true,
+        "charge_basis": "def2-TZVP",
+        "charge_basis_gen": {
+          "Br": "def2-TZVP",
+          "I": "def2-TZVP"
+        },
+        "charge_method": "wb97m-v",
+        "charge_model": "RESP",
+        "opt_basis": "def2-TZVP",
+        "opt_basis_gen": {
+          "Br": "def2-TZVP",
+          "I": "def2-TZVP"
+        },
+        "opt_method": "wb97m-v",
+        "resp_profile": "adaptive"
+      },
+      "repaired_equivalence_groups": 0,
+      "validation": {
+        "ok": true,
+        "tolerance": 1e-08,
+        "equivalence_group_count": 3,
+        "max_equivalence_spread": 0.0,
+        "max_carboxylate_oxygen_spread": 0.0,
+        "equivalence_spreads": [
+          {
+            "indices": [
+              0,
+              5
+            ],
+            "symbols": [
+              "C",
+              "C"
+            ],
+            "charges": [
+              -0.05851242165518618,
+              -0.05851242165518618
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              1,
+              4
+            ],
+            "symbols": [
+              "O",
+              "O"
+            ],
+            "charges": [
+              -0.40929633545136174,
+              -0.40929633545136174
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              6,
+              7,
+              8,
+              9,
+              10,
+              11
+            ],
+            "symbols": [
+              "H",
+              "H",
+              "H",
+              "H",
+              "H",
+              "H"
+            ],
+            "charges": [
+              0.08856360608149753,
+              0.08856360608149753,
+              0.08856360608149753,
+              0.08856360608149753,
+              0.08856360608149753,
+              0.08856360608149753
+            ],
+            "spread": 0.0
+          }
+        ],
+        "carboxylate_spreads": []
+      },
+      "candidate_key": "6ccad973a4eaf78c",
+      "candidate_variant_id": "c3819ba367c2",
+      "diff_summary": {
+        "species": "DMC",
+        "smiles": "COC(=O)OC",
+        "atom_count": 12,
+        "formal_charge": 0,
+        "old_net_charge": -4.85722573273506e-17,
+        "new_net_charge": 8.326672684688674e-17,
+        "old_resp_profile": "legacy",
+        "new_resp_profile": "adaptive",
+        "old_resp_variant_ids": [
+          "56a209e16a4a"
+        ],
+        "new_resp_variant_id": "c3819ba367c2",
+        "max_abs_delta": 0.09838971336813412,
+        "mean_abs_delta": 0.0338053171818778,
+        "rms_delta": 0.04504853270485209,
+        "equivalence_ok": true,
+        "max_equivalence_spread": 0.0,
+        "max_carboxylate_oxygen_spread": 0.0
+      },
+      "attempt": null,
+      "psi4_omp": null,
+      "memory_mb": null,
+      "source": "candidate_moldb"
+    },
+    {
+      "name": "PC",
+      "smiles": "CC1COC(=O)O1",
+      "formal_charge": 0,
+      "polyelectrolyte_mode": false,
+      "charge_group_count": 0,
+      "resp_profile": "adaptive",
+      "qm_recipe": {
+        "adaptive_carbonate_recipe": true,
+        "anion_diffuse_upgrade": false,
+        "auto_level": true,
+        "carbonate_like": true,
+        "charge_basis": "def2-TZVP",
+        "charge_basis_gen": {
+          "Br": "def2-TZVP",
+          "I": "def2-TZVP"
+        },
+        "charge_method": "wb97m-v",
+        "charge_model": "RESP",
+        "opt_basis": "def2-TZVP",
+        "opt_basis_gen": {
+          "Br": "def2-TZVP",
+          "I": "def2-TZVP"
+        },
+        "opt_method": "wb97m-v",
+        "resp_profile": "adaptive"
+      },
+      "repaired_equivalence_groups": 0,
+      "validation": {
+        "ok": true,
+        "tolerance": 1e-08,
+        "equivalence_group_count": 2,
+        "max_equivalence_spread": 0.0,
+        "max_carboxylate_oxygen_spread": 0.0,
+        "equivalence_spreads": [
+          {
+            "indices": [
+              7,
+              8,
+              9
+            ],
+            "symbols": [
+              "H",
+              "H",
+              "H"
+            ],
+            "charges": [
+              0.13332202207374813,
+              0.13332202207374813,
+              0.13332202207374813
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              11,
+              12
+            ],
+            "symbols": [
+              "H",
+              "H"
+            ],
+            "charges": [
+              0.07796213730332019,
+              0.07796213730332019
+            ],
+            "spread": 0.0
+          }
+        ],
+        "carboxylate_spreads": []
+      },
+      "candidate_key": "77068c9132ef1fbc",
+      "candidate_variant_id": "27bbcf9d1d11",
+      "diff_summary": {
+        "species": "PC",
+        "smiles": "CC1COC(=O)O1",
+        "atom_count": 13,
+        "formal_charge": 0,
+        "old_net_charge": -2.7755575615628914e-17,
+        "new_net_charge": 2.7755575615628914e-17,
+        "old_resp_profile": "legacy",
+        "new_resp_profile": "adaptive",
+        "old_resp_variant_ids": [
+          "56a209e16a4a"
+        ],
+        "new_resp_variant_id": "27bbcf9d1d11",
+        "max_abs_delta": 0.04856361728397167,
+        "mean_abs_delta": 0.012555118315624213,
+        "rms_delta": 0.019021903372588314,
+        "equivalence_ok": true,
+        "max_equivalence_spread": 0.0,
+        "max_carboxylate_oxygen_spread": 0.0
+      },
+      "attempt": null,
+      "psi4_omp": null,
+      "memory_mb": null,
+      "source": "candidate_moldb"
+    },
+    {
+      "name": "FEC",
+      "smiles": "O=C1OCC(F)O1",
+      "formal_charge": 0,
+      "polyelectrolyte_mode": false,
+      "charge_group_count": 0,
+      "resp_profile": "adaptive",
+      "qm_recipe": {
+        "adaptive_carbonate_recipe": true,
+        "anion_diffuse_upgrade": false,
+        "auto_level": true,
+        "carbonate_like": true,
+        "charge_basis": "def2-TZVP",
+        "charge_basis_gen": {
+          "Br": "def2-TZVP",
+          "I": "def2-TZVP"
+        },
+        "charge_method": "wb97m-v",
+        "charge_model": "RESP",
+        "opt_basis": "def2-TZVP",
+        "opt_basis_gen": {
+          "Br": "def2-TZVP",
+          "I": "def2-TZVP"
+        },
+        "opt_method": "wb97m-v",
+        "resp_profile": "adaptive"
+      },
+      "repaired_equivalence_groups": 0,
+      "validation": {
+        "ok": true,
+        "tolerance": 1e-08,
+        "equivalence_group_count": 1,
+        "max_equivalence_spread": 0.0,
+        "max_carboxylate_oxygen_spread": 0.0,
+        "equivalence_spreads": [
+          {
+            "indices": [
+              7,
+              8
+            ],
+            "symbols": [
+              "H",
+              "H"
+            ],
+            "charges": [
+              0.09838909492446538,
+              0.09838909492446538
+            ],
+            "spread": 0.0
+          }
+        ],
+        "carboxylate_spreads": []
+      },
+      "candidate_key": "4ed1fbb1914240b7",
+      "candidate_variant_id": "dfe7e9c72399",
+      "diff_summary": {
+        "species": "FEC",
+        "smiles": "O=C1OCC(F)O1",
+        "atom_count": 10,
+        "formal_charge": 0,
+        "old_net_charge": -1.6653345369377348e-16,
+        "new_net_charge": 0.0,
+        "old_resp_profile": "legacy",
+        "new_resp_profile": "adaptive",
+        "old_resp_variant_ids": [
+          "56a209e16a4a"
+        ],
+        "new_resp_variant_id": "dfe7e9c72399",
+        "max_abs_delta": 0.010793862409648525,
+        "mean_abs_delta": 0.005096318427018973,
+        "rms_delta": 0.0056958419190358345,
+        "equivalence_ok": true,
+        "max_equivalence_spread": 0.0,
+        "max_carboxylate_oxygen_spread": 0.0
+      },
+      "attempt": null,
+      "psi4_omp": null,
+      "memory_mb": null,
+      "source": "candidate_moldb"
+    },
+    {
+      "name": "VC",
+      "smiles": "O=c1occo1",
+      "formal_charge": 0,
+      "polyelectrolyte_mode": false,
+      "charge_group_count": 0,
+      "resp_profile": "adaptive",
+      "qm_recipe": {
+        "adaptive_carbonate_recipe": false,
+        "anion_diffuse_upgrade": false,
+        "auto_level": true,
+        "carbonate_like": false,
+        "charge_basis": "def2-TZVP",
+        "charge_basis_gen": {
+          "Br": "def2-TZVP",
+          "I": "def2-TZVP"
+        },
+        "charge_method": "wb97m-d3bj",
+        "charge_model": "RESP",
+        "opt_basis": "def2-SVP",
+        "opt_basis_gen": {
+          "Br": "def2-SVP",
+          "I": "def2-SVP"
+        },
+        "opt_method": "wb97m-d3bj",
+        "resp_profile": "adaptive"
+      },
+      "repaired_equivalence_groups": 0,
+      "validation": {
+        "ok": true,
+        "tolerance": 1e-08,
+        "equivalence_group_count": 3,
+        "max_equivalence_spread": 0.0,
+        "max_carboxylate_oxygen_spread": 0.0,
+        "equivalence_spreads": [
+          {
+            "indices": [
+              2,
+              5
+            ],
+            "symbols": [
+              "O",
+              "O"
+            ],
+            "charges": [
+              -0.2376445075410263,
+              -0.2376445075410263
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              3,
+              4
+            ],
+            "symbols": [
+              "C",
+              "C"
+            ],
+            "charges": [
+              -0.10620372447370718,
+              -0.10620372447370718
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              6,
+              7
+            ],
+            "symbols": [
+              "H",
+              "H"
+            ],
+            "charges": [
+              0.20257706966094335,
+              0.20257706966094335
+            ],
+            "spread": 0.0
+          }
+        ],
+        "carboxylate_spreads": []
+      },
+      "candidate_key": "1c936f5a9805d700",
+      "candidate_variant_id": "1829ab86c5a7",
+      "diff_summary": {
+        "species": "VC",
+        "smiles": "O=c1occo1",
+        "atom_count": 8,
+        "formal_charge": 0,
+        "old_net_charge": -2.7755575615628914e-17,
+        "new_net_charge": 5.551115123125783e-17,
+        "old_resp_profile": "legacy",
+        "new_resp_profile": "adaptive",
+        "old_resp_variant_ids": [
+          "56a209e16a4a"
+        ],
+        "new_resp_variant_id": "1829ab86c5a7",
+        "max_abs_delta": 0.0017232929987575502,
+        "mean_abs_delta": 0.0006101594293920834,
+        "rms_delta": 0.000861549396934064,
+        "equivalence_ok": true,
+        "max_equivalence_spread": 0.0,
+        "max_carboxylate_oxygen_spread": 0.0
+      },
+      "attempt": null,
+      "psi4_omp": null,
+      "memory_mb": null,
+      "source": "candidate_moldb"
+    },
+    {
+      "name": "DTD",
+      "smiles": "O=S1(=O)OC=CO1",
+      "formal_charge": 0,
+      "polyelectrolyte_mode": false,
+      "charge_group_count": 0,
+      "resp_profile": "adaptive",
+      "qm_recipe": {
+        "adaptive_carbonate_recipe": false,
+        "anion_diffuse_upgrade": false,
+        "auto_level": true,
+        "carbonate_like": false,
+        "charge_basis": "def2-TZVP",
+        "charge_basis_gen": {
+          "Br": "def2-TZVP",
+          "I": "def2-TZVP"
+        },
+        "charge_method": "wb97m-d3bj",
+        "charge_model": "RESP",
+        "opt_basis": "def2-SVP",
+        "opt_basis_gen": {
+          "Br": "def2-SVP",
+          "I": "def2-SVP"
+        },
+        "opt_method": "wb97m-d3bj",
+        "resp_profile": "adaptive"
+      },
+      "repaired_equivalence_groups": 0,
+      "validation": {
+        "ok": true,
+        "tolerance": 1e-08,
+        "equivalence_group_count": 4,
+        "max_equivalence_spread": 0.0,
+        "max_carboxylate_oxygen_spread": 0.0,
+        "equivalence_spreads": [
+          {
+            "indices": [
+              0,
+              2
+            ],
+            "symbols": [
+              "O",
+              "O"
+            ],
+            "charges": [
+              -0.38265184409349084,
+              -0.38265184409349084
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              3,
+              6
+            ],
+            "symbols": [
+              "O",
+              "O"
+            ],
+            "charges": [
+              -0.1603296907860678,
+              -0.1603296907860678
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              4,
+              5
+            ],
+            "symbols": [
+              "C",
+              "C"
+            ],
+            "charges": [
+              -0.1305757978829754,
+              -0.1305757978829754
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              7,
+              8
+            ],
+            "symbols": [
+              "H",
+              "H"
+            ],
+            "charges": [
+              0.21484431168939044,
+              0.21484431168939044
+            ],
+            "spread": 0.0
+          }
+        ],
+        "carboxylate_spreads": []
+      },
+      "candidate_key": "378fd993935c494b",
+      "candidate_variant_id": "ef8b92d56401",
+      "diff_summary": {
+        "species": "DTD",
+        "smiles": "O=S1(=O)OC=CO1",
+        "atom_count": 9,
+        "formal_charge": 0,
+        "old_net_charge": -1.3877787807814457e-16,
+        "new_net_charge": 1.1102230246251565e-16,
+        "old_resp_profile": "legacy",
+        "new_resp_profile": "adaptive",
+        "old_resp_variant_ids": [
+          "56a209e16a4a"
+        ],
+        "new_resp_variant_id": "ef8b92d56401",
+        "max_abs_delta": 0.0016159064672241485,
+        "mean_abs_delta": 0.0006941928840392193,
+        "rms_delta": 0.0008664457993810198,
+        "equivalence_ok": true,
+        "max_equivalence_spread": 0.0,
+        "max_carboxylate_oxygen_spread": 0.0
+      },
+      "attempt": null,
+      "psi4_omp": null,
+      "memory_mb": null,
+      "source": "candidate_moldb"
+    },
+    {
+      "name": "DME",
+      "smiles": "COCCOC",
+      "formal_charge": 0,
+      "polyelectrolyte_mode": false,
+      "charge_group_count": 0,
+      "resp_profile": "adaptive",
+      "qm_recipe": {
+        "adaptive_carbonate_recipe": false,
+        "anion_diffuse_upgrade": false,
+        "auto_level": true,
+        "carbonate_like": false,
+        "charge_basis": "def2-TZVP",
+        "charge_basis_gen": {
+          "Br": "def2-TZVP",
+          "I": "def2-TZVP"
+        },
+        "charge_method": "wb97m-d3bj",
+        "charge_model": "RESP",
+        "opt_basis": "def2-SVP",
+        "opt_basis_gen": {
+          "Br": "def2-SVP",
+          "I": "def2-SVP"
+        },
+        "opt_method": "wb97m-d3bj",
+        "resp_profile": "adaptive"
+      },
+      "repaired_equivalence_groups": 0,
+      "validation": {
+        "ok": true,
+        "tolerance": 1e-08,
+        "equivalence_group_count": 5,
+        "max_equivalence_spread": 0.0,
+        "max_carboxylate_oxygen_spread": 0.0,
+        "equivalence_spreads": [
+          {
+            "indices": [
+              0,
+              5
+            ],
+            "symbols": [
+              "C",
+              "C"
+            ],
+            "charges": [
+              -0.11009746539821447,
+              -0.11009746539821447
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              1,
+              4
+            ],
+            "symbols": [
+              "O",
+              "O"
+            ],
+            "charges": [
+              -0.2315097602035369,
+              -0.2315097602035369
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              2,
+              3
+            ],
+            "symbols": [
+              "C",
+              "C"
+            ],
+            "charges": [
+              -0.0003471707553109847,
+              -0.0003471707553109847
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              6,
+              7,
+              8,
+              13,
+              14,
+              15
+            ],
+            "symbols": [
+              "H",
+              "H",
+              "H",
+              "H",
+              "H",
+              "H"
+            ],
+            "charges": [
+              0.07526324965771679,
+              0.07526324965771679,
+              0.07526324965771679,
+              0.07526324965771679,
+              0.07526324965771679,
+              0.07526324965771679
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              9,
+              10,
+              11,
+              12
+            ],
+            "symbols": [
+              "H",
+              "H",
+              "H",
+              "H"
+            ],
+            "charges": [
+              0.05808232369195599,
+              0.05808232369195599,
+              0.05808232369195599,
+              0.05808232369195599
+            ],
+            "spread": 0.0
+          }
+        ],
+        "carboxylate_spreads": []
+      },
+      "candidate_key": "ffa88e79e5e17aaa",
+      "candidate_variant_id": "ec8a437a2005",
+      "diff_summary": {
+        "species": "DME",
+        "smiles": "COCCOC",
+        "atom_count": 16,
+        "formal_charge": 0,
+        "old_net_charge": 2.7755575615628914e-17,
+        "new_net_charge": -2.7755575615628914e-17,
+        "old_resp_profile": "legacy",
+        "new_resp_profile": "adaptive",
+        "old_resp_variant_ids": [
+          "56a209e16a4a"
+        ],
+        "new_resp_variant_id": "ec8a437a2005",
+        "max_abs_delta": 0.06638510234022513,
+        "mean_abs_delta": 0.030951495906487,
+        "rms_delta": 0.03643495012593151,
+        "equivalence_ok": true,
+        "max_equivalence_spread": 0.0,
+        "max_carboxylate_oxygen_spread": 0.0
+      },
+      "attempt": null,
+      "psi4_omp": null,
+      "memory_mb": null,
+      "source": "candidate_moldb"
+    },
+    {
+      "name": "Diglyme",
+      "smiles": "COCCOCCOC",
+      "formal_charge": 0,
+      "polyelectrolyte_mode": false,
+      "charge_group_count": 0,
+      "resp_profile": "adaptive",
+      "qm_recipe": {
+        "adaptive_carbonate_recipe": false,
+        "anion_diffuse_upgrade": false,
+        "auto_level": true,
+        "carbonate_like": false,
+        "charge_basis": "def2-TZVP",
+        "charge_basis_gen": {
+          "Br": "def2-TZVP",
+          "I": "def2-TZVP"
+        },
+        "charge_method": "wb97m-d3bj",
+        "charge_model": "RESP",
+        "opt_basis": "def2-SVP",
+        "opt_basis_gen": {
+          "Br": "def2-SVP",
+          "I": "def2-SVP"
+        },
+        "opt_method": "wb97m-d3bj",
+        "resp_profile": "adaptive"
+      },
+      "repaired_equivalence_groups": 0,
+      "validation": {
+        "ok": true,
+        "tolerance": 1e-08,
+        "equivalence_group_count": 7,
+        "max_equivalence_spread": 0.0,
+        "max_carboxylate_oxygen_spread": 0.0,
+        "equivalence_spreads": [
+          {
+            "indices": [
+              0,
+              8
+            ],
+            "symbols": [
+              "C",
+              "C"
+            ],
+            "charges": [
+              -0.0891765301656347,
+              -0.0891765301656347
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              1,
+              7
+            ],
+            "symbols": [
+              "O",
+              "O"
+            ],
+            "charges": [
+              -0.30186321871530175,
+              -0.30186321871530175
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              2,
+              6
+            ],
+            "symbols": [
+              "C",
+              "C"
+            ],
+            "charges": [
+              0.018908141012458593,
+              0.018908141012458593
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              3,
+              5
+            ],
+            "symbols": [
+              "C",
+              "C"
+            ],
+            "charges": [
+              0.367704563104444,
+              0.367704563104444
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              9,
+              10,
+              11,
+              20,
+              21,
+              22
+            ],
+            "symbols": [
+              "H",
+              "H",
+              "H",
+              "H",
+              "H",
+              "H"
+            ],
+            "charges": [
+              0.07361482250469303,
+              0.07361482250469303,
+              0.07361482250469303,
+              0.07361482250469303,
+              0.07361482250469303,
+              0.07361482250469303
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              12,
+              13,
+              18,
+              19
+            ],
+            "symbols": [
+              "H",
+              "H",
+              "H",
+              "H"
+            ],
+            "charges": [
+              0.05716735321765435,
+              0.05716735321765435,
+              0.05716735321765435,
+              0.05716735321765435
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              14,
+              15,
+              16,
+              17
+            ],
+            "symbols": [
+              "H",
+              "H",
+              "H",
+              "H"
+            ],
+            "charges": [
+              -0.03151386802983095,
+              -0.03151386802983095,
+              -0.03151386802983095,
+              -0.03151386802983095
+            ],
+            "spread": 0.0
+          }
+        ],
+        "carboxylate_spreads": []
+      },
+      "candidate_key": "c0a04447956b8da2",
+      "candidate_variant_id": "daf13a5bad9a",
+      "diff_summary": {
+        "species": "Diglyme",
+        "smiles": "COCCOCCOC",
+        "atom_count": 23,
+        "formal_charge": 0,
+        "old_net_charge": 6.245004513516506e-17,
+        "new_net_charge": -2.7755575615628914e-17,
+        "old_resp_profile": "legacy",
+        "new_resp_profile": "adaptive",
+        "old_resp_variant_ids": [
+          "56a209e16a4a"
+        ],
+        "new_resp_variant_id": "daf13a5bad9a",
+        "max_abs_delta": 0.23522586878924992,
+        "mean_abs_delta": 0.06531698170389952,
+        "rms_delta": 0.08607309533700654,
+        "equivalence_ok": true,
+        "max_equivalence_spread": 0.0,
+        "max_carboxylate_oxygen_spread": 0.0
+      },
+      "attempt": null,
+      "psi4_omp": null,
+      "memory_mb": null,
+      "source": "candidate_moldb"
+    },
+    {
+      "name": "Triglyme",
+      "smiles": "COCCOCCOCCOC",
+      "formal_charge": 0,
+      "polyelectrolyte_mode": false,
+      "charge_group_count": 0,
+      "resp_profile": "adaptive",
+      "qm_recipe": {
+        "adaptive_carbonate_recipe": false,
+        "anion_diffuse_upgrade": false,
+        "auto_level": true,
+        "carbonate_like": false,
+        "charge_basis": "def2-TZVP",
+        "charge_basis_gen": {
+          "Br": "def2-TZVP",
+          "I": "def2-TZVP"
+        },
+        "charge_method": "wb97m-d3bj",
+        "charge_model": "RESP",
+        "opt_basis": "def2-SVP",
+        "opt_basis_gen": {
+          "Br": "def2-SVP",
+          "I": "def2-SVP"
+        },
+        "opt_method": "wb97m-d3bj",
+        "resp_profile": "adaptive"
+      },
+      "repaired_equivalence_groups": 0,
+      "validation": {
+        "ok": true,
+        "tolerance": 1e-08,
+        "equivalence_group_count": 10,
+        "max_equivalence_spread": 0.0,
+        "max_carboxylate_oxygen_spread": 0.0,
+        "equivalence_spreads": [
+          {
+            "indices": [
+              0,
+              11
+            ],
+            "symbols": [
+              "C",
+              "C"
+            ],
+            "charges": [
+              -0.14870575595843122,
+              -0.14870575595843122
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              1,
+              10
+            ],
+            "symbols": [
+              "O",
+              "O"
+            ],
+            "charges": [
+              -0.24345151080169855,
+              -0.24345151080169855
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              2,
+              9
+            ],
+            "symbols": [
+              "C",
+              "C"
+            ],
+            "charges": [
+              0.009938706713807963,
+              0.009938706713807963
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              3,
+              8
+            ],
+            "symbols": [
+              "C",
+              "C"
+            ],
+            "charges": [
+              0.16562343214855685,
+              0.16562343214855685
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              4,
+              7
+            ],
+            "symbols": [
+              "O",
+              "O"
+            ],
+            "charges": [
+              -0.3760631993877783,
+              -0.3760631993877783
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              5,
+              6
+            ],
+            "symbols": [
+              "C",
+              "C"
+            ],
+            "charges": [
+              0.13226224610177884,
+              0.13226224610177884
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              12,
+              13,
+              14,
+              27,
+              28,
+              29
+            ],
+            "symbols": [
+              "H",
+              "H",
+              "H",
+              "H",
+              "H",
+              "H"
+            ],
+            "charges": [
+              0.08722617393480116,
+              0.08722617393480116,
+              0.08722617393480116,
+              0.08722617393480116,
+              0.08722617393480116,
+              0.08722617393480116
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              15,
+              16,
+              25,
+              26
+            ],
+            "symbols": [
+              "H",
+              "H",
+              "H",
+              "H"
+            ],
+            "charges": [
+              0.05420450222366634,
+              0.05420450222366634,
+              0.05420450222366634,
+              0.05420450222366634
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              17,
+              18,
+              23,
+              24
+            ],
+            "symbols": [
+              "H",
+              "H",
+              "H",
+              "H"
+            ],
+            "charges": [
+              0.005223650153438819,
+              0.005223650153438819,
+              0.005223650153438819,
+              0.005223650153438819
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              19,
+              20,
+              21,
+              22
+            ],
+            "symbols": [
+              "H",
+              "H",
+              "H",
+              "H"
+            ],
+            "charges": [
+              0.03993062731257535,
+              0.03993062731257535,
+              0.03993062731257535,
+              0.03993062731257535
+            ],
+            "spread": 0.0
+          }
+        ],
+        "carboxylate_spreads": []
+      },
+      "candidate_key": "0c6ef69d092a936e",
+      "candidate_variant_id": "aaa608e7b568",
+      "diff_summary": {
+        "species": "Triglyme",
+        "smiles": "COCCOCCOCCOC",
+        "atom_count": 30,
+        "formal_charge": 0,
+        "old_net_charge": -6.245004513516506e-17,
+        "new_net_charge": 2.7755575615628914e-17,
+        "old_resp_profile": "legacy",
+        "new_resp_profile": "adaptive",
+        "old_resp_variant_ids": [
+          "56a209e16a4a"
+        ],
+        "new_resp_variant_id": "aaa608e7b568",
+        "max_abs_delta": 0.2653164836533398,
+        "mean_abs_delta": 0.06392802821302264,
+        "rms_delta": 0.08996740796484326,
+        "equivalence_ok": true,
+        "max_equivalence_spread": 0.0,
+        "max_carboxylate_oxygen_spread": 0.0
+      },
+      "attempt": null,
+      "psi4_omp": null,
+      "memory_mb": null,
+      "source": "candidate_moldb"
+    },
+    {
+      "name": "DOL",
+      "smiles": "C1COCO1",
+      "formal_charge": 0,
+      "polyelectrolyte_mode": false,
+      "charge_group_count": 0,
+      "resp_profile": "adaptive",
+      "qm_recipe": {
+        "adaptive_carbonate_recipe": false,
+        "anion_diffuse_upgrade": false,
+        "auto_level": true,
+        "carbonate_like": false,
+        "charge_basis": "def2-TZVP",
+        "charge_basis_gen": {
+          "Br": "def2-TZVP",
+          "I": "def2-TZVP"
+        },
+        "charge_method": "wb97m-d3bj",
+        "charge_model": "RESP",
+        "opt_basis": "def2-SVP",
+        "opt_basis_gen": {
+          "Br": "def2-SVP",
+          "I": "def2-SVP"
+        },
+        "opt_method": "wb97m-d3bj",
+        "resp_profile": "adaptive"
+      },
+      "repaired_equivalence_groups": 0,
+      "validation": {
+        "ok": true,
+        "tolerance": 1e-08,
+        "equivalence_group_count": 4,
+        "max_equivalence_spread": 0.0,
+        "max_carboxylate_oxygen_spread": 0.0,
+        "equivalence_spreads": [
+          {
+            "indices": [
+              0,
+              1
+            ],
+            "symbols": [
+              "C",
+              "C"
+            ],
+            "charges": [
+              0.11579654088268272,
+              0.11579654088268272
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              2,
+              4
+            ],
+            "symbols": [
+              "O",
+              "O"
+            ],
+            "charges": [
+              -0.37026800801914383,
+              -0.37026800801914383
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              5,
+              6,
+              7,
+              8
+            ],
+            "symbols": [
+              "H",
+              "H",
+              "H",
+              "H"
+            ],
+            "charges": [
+              0.03581644268260148,
+              0.03581644268260148,
+              0.03581644268260148,
+              0.03581644268260148
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              9,
+              10
+            ],
+            "symbols": [
+              "H",
+              "H"
+            ],
+            "charges": [
+              0.025713630777980945,
+              0.025713630777980945
+            ],
+            "spread": 0.0
+          }
+        ],
+        "carboxylate_spreads": []
+      },
+      "candidate_key": "6329f6891f70fdfd",
+      "candidate_variant_id": "9f37541cffc8",
+      "diff_summary": {
+        "species": "DOL",
+        "smiles": "C1COCO1",
+        "atom_count": 11,
+        "formal_charge": 0,
+        "old_net_charge": -4.163336342344337e-17,
+        "new_net_charge": 2.7755575615628914e-17,
+        "old_resp_profile": "legacy",
+        "new_resp_profile": "adaptive",
+        "old_resp_variant_ids": [
+          "56a209e16a4a"
+        ],
+        "new_resp_variant_id": "9f37541cffc8",
+        "max_abs_delta": 0.07717417931907633,
+        "mean_abs_delta": 0.021830638810283184,
+        "rms_delta": 0.0318119082342666,
+        "equivalence_ok": true,
+        "max_equivalence_spread": 0.0,
+        "max_carboxylate_oxygen_spread": 0.0
+      },
+      "attempt": null,
+      "psi4_omp": null,
+      "memory_mb": null,
+      "source": "candidate_moldb"
+    },
+    {
+      "name": "THF",
+      "smiles": "C1CCOC1",
+      "formal_charge": 0,
+      "polyelectrolyte_mode": false,
+      "charge_group_count": 0,
+      "resp_profile": "adaptive",
+      "qm_recipe": {
+        "adaptive_carbonate_recipe": false,
+        "anion_diffuse_upgrade": false,
+        "auto_level": true,
+        "carbonate_like": false,
+        "charge_basis": "def2-TZVP",
+        "charge_basis_gen": {
+          "Br": "def2-TZVP",
+          "I": "def2-TZVP"
+        },
+        "charge_method": "wb97m-d3bj",
+        "charge_model": "RESP",
+        "opt_basis": "def2-SVP",
+        "opt_basis_gen": {
+          "Br": "def2-SVP",
+          "I": "def2-SVP"
+        },
+        "opt_method": "wb97m-d3bj",
+        "resp_profile": "adaptive"
+      },
+      "repaired_equivalence_groups": 0,
+      "validation": {
+        "ok": true,
+        "tolerance": 1e-08,
+        "equivalence_group_count": 4,
+        "max_equivalence_spread": 0.0,
+        "max_carboxylate_oxygen_spread": 0.0,
+        "equivalence_spreads": [
+          {
+            "indices": [
+              0,
+              1
+            ],
+            "symbols": [
+              "C",
+              "C"
+            ],
+            "charges": [
+              -0.036395032142031644,
+              -0.036395032142031644
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              2,
+              4
+            ],
+            "symbols": [
+              "C",
+              "C"
+            ],
+            "charges": [
+              0.2084858440174186,
+              0.2084858440174186
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              5,
+              6,
+              7,
+              8
+            ],
+            "symbols": [
+              "H",
+              "H",
+              "H",
+              "H"
+            ],
+            "charges": [
+              0.0172454834989809,
+              0.0172454834989809,
+              0.0172454834989809,
+              0.0172454834989809
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              9,
+              10,
+              11,
+              12
+            ],
+            "symbols": [
+              "H",
+              "H",
+              "H",
+              "H"
+            ],
+            "charges": [
+              0.002169483810696728,
+              0.002169483810696728,
+              0.002169483810696728,
+              0.002169483810696728
+            ],
+            "spread": 0.0
+          }
+        ],
+        "carboxylate_spreads": []
+      },
+      "candidate_key": "92623ccd36bc322b",
+      "candidate_variant_id": "c0a39f980b3e",
+      "diff_summary": {
+        "species": "THF",
+        "smiles": "C1CCOC1",
+        "atom_count": 13,
+        "formal_charge": 0,
+        "old_net_charge": 5.2475385148298415e-17,
+        "new_net_charge": 8.933825901280557e-17,
+        "old_resp_profile": "legacy",
+        "new_resp_profile": "adaptive",
+        "old_resp_variant_ids": [
+          "56a209e16a4a"
+        ],
+        "new_resp_variant_id": "c0a39f980b3e",
+        "max_abs_delta": 0.0026867194561042626,
+        "mean_abs_delta": 0.0008172378871748963,
+        "rms_delta": 0.001183712708825584,
+        "equivalence_ok": true,
+        "max_equivalence_spread": 0.0,
+        "max_carboxylate_oxygen_spread": 0.0
+      },
+      "attempt": null,
+      "psi4_omp": null,
+      "memory_mb": null,
+      "source": "candidate_moldb"
+    },
+    {
+      "name": "Dioxane",
+      "smiles": "C1COCCO1",
+      "formal_charge": 0,
+      "polyelectrolyte_mode": false,
+      "charge_group_count": 0,
+      "resp_profile": "adaptive",
+      "qm_recipe": {
+        "adaptive_carbonate_recipe": false,
+        "anion_diffuse_upgrade": false,
+        "auto_level": true,
+        "carbonate_like": false,
+        "charge_basis": "def2-TZVP",
+        "charge_basis_gen": {
+          "Br": "def2-TZVP",
+          "I": "def2-TZVP"
+        },
+        "charge_method": "wb97m-d3bj",
+        "charge_model": "RESP",
+        "opt_basis": "def2-SVP",
+        "opt_basis_gen": {
+          "Br": "def2-SVP",
+          "I": "def2-SVP"
+        },
+        "opt_method": "wb97m-d3bj",
+        "resp_profile": "adaptive"
+      },
+      "repaired_equivalence_groups": 0,
+      "validation": {
+        "ok": true,
+        "tolerance": 1e-08,
+        "equivalence_group_count": 3,
+        "max_equivalence_spread": 0.0,
+        "max_carboxylate_oxygen_spread": 0.0,
+        "equivalence_spreads": [
+          {
+            "indices": [
+              0,
+              1,
+              3,
+              4
+            ],
+            "symbols": [
+              "C",
+              "C",
+              "C",
+              "C"
+            ],
+            "charges": [
+              0.0517120608464381,
+              0.0517120608464381,
+              0.0517120608464381,
+              0.0517120608464381
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              2,
+              5
+            ],
+            "symbols": [
+              "O",
+              "O"
+            ],
+            "charges": [
+              -0.34919195028812144,
+              -0.34919195028812144
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              6,
+              7,
+              8,
+              9,
+              10,
+              11,
+              12,
+              13
+            ],
+            "symbols": [
+              "H",
+              "H",
+              "H",
+              "H",
+              "H",
+              "H",
+              "H",
+              "H"
+            ],
+            "charges": [
+              0.06144195714881133,
+              0.06144195714881133,
+              0.06144195714881133,
+              0.06144195714881133,
+              0.06144195714881133,
+              0.06144195714881133,
+              0.06144195714881133,
+              0.06144195714881133
+            ],
+            "spread": 0.0
+          }
+        ],
+        "carboxylate_spreads": []
+      },
+      "candidate_key": "53b5b2411b4bfe41",
+      "candidate_variant_id": "dc1b28a06c66",
+      "diff_summary": {
+        "species": "Dioxane",
+        "smiles": "C1COCCO1",
+        "atom_count": 14,
+        "formal_charge": 0,
+        "old_net_charge": 6.938893903907228e-18,
+        "new_net_charge": 1.8041124150158794e-16,
+        "old_resp_profile": "legacy",
+        "new_resp_profile": "adaptive",
+        "old_resp_variant_ids": [
+          "56a209e16a4a"
+        ],
+        "new_resp_variant_id": "dc1b28a06c66",
+        "max_abs_delta": 0.003417907316035633,
+        "mean_abs_delta": 0.0012458186691694216,
+        "rms_delta": 0.001489958471100452,
+        "equivalence_ok": true,
+        "max_equivalence_spread": 0.0,
+        "max_carboxylate_oxygen_spread": 0.0
+      },
+      "attempt": null,
+      "psi4_omp": null,
+      "memory_mb": null,
+      "source": "candidate_moldb"
+    },
+    {
+      "name": "CPME",
+      "smiles": "COC1CCCC1",
+      "formal_charge": 0,
+      "polyelectrolyte_mode": false,
+      "charge_group_count": 0,
+      "resp_profile": "adaptive",
+      "qm_recipe": {
+        "adaptive_carbonate_recipe": false,
+        "anion_diffuse_upgrade": false,
+        "auto_level": true,
+        "carbonate_like": false,
+        "charge_basis": "def2-TZVP",
+        "charge_basis_gen": {
+          "Br": "def2-TZVP",
+          "I": "def2-TZVP"
+        },
+        "charge_method": "wb97m-d3bj",
+        "charge_model": "RESP",
+        "opt_basis": "def2-SVP",
+        "opt_basis_gen": {
+          "Br": "def2-SVP",
+          "I": "def2-SVP"
+        },
+        "opt_method": "wb97m-d3bj",
+        "resp_profile": "adaptive"
+      },
+      "repaired_equivalence_groups": 0,
+      "validation": {
+        "ok": true,
+        "tolerance": 1e-08,
+        "equivalence_group_count": 5,
+        "max_equivalence_spread": 0.0,
+        "max_carboxylate_oxygen_spread": 0.0,
+        "equivalence_spreads": [
+          {
+            "indices": [
+              3,
+              6
+            ],
+            "symbols": [
+              "C",
+              "C"
+            ],
+            "charges": [
+              -0.2783420090186338,
+              -0.2783420090186338
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              4,
+              5
+            ],
+            "symbols": [
+              "C",
+              "C"
+            ],
+            "charges": [
+              0.039938476420696985,
+              0.039938476420696985
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              7,
+              8,
+              9
+            ],
+            "symbols": [
+              "H",
+              "H",
+              "H"
+            ],
+            "charges": [
+              0.05361642361169672,
+              0.05361642361169672,
+              0.05361642361169672
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              11,
+              12,
+              17,
+              18
+            ],
+            "symbols": [
+              "H",
+              "H",
+              "H",
+              "H"
+            ],
+            "charges": [
+              0.09036051118140262,
+              0.09036051118140262,
+              0.09036051118140262,
+              0.09036051118140262
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              13,
+              14,
+              15,
+              16
+            ],
+            "symbols": [
+              "H",
+              "H",
+              "H",
+              "H"
+            ],
+            "charges": [
+              1.6037461699421746e-05,
+              1.6037461699421746e-05,
+              1.6037461699421746e-05,
+              1.6037461699421746e-05
+            ],
+            "spread": 0.0
+          }
+        ],
+        "carboxylate_spreads": []
+      },
+      "candidate_key": "0bb5ee5db22519ff",
+      "candidate_variant_id": "0f130560b148",
+      "diff_summary": {
+        "species": "CPME",
+        "smiles": "COC1CCCC1",
+        "atom_count": 19,
+        "formal_charge": 0,
+        "old_net_charge": -2.7755575615628914e-17,
+        "new_net_charge": -8.326672684688674e-17,
+        "old_resp_profile": "legacy",
+        "new_resp_profile": "adaptive",
+        "old_resp_variant_ids": [
+          "56a209e16a4a"
+        ],
+        "new_resp_variant_id": "0f130560b148",
+        "max_abs_delta": 0.1983960384056338,
+        "mean_abs_delta": 0.029159472855988838,
+        "rms_delta": 0.054700396624179894,
+        "equivalence_ok": true,
+        "max_equivalence_spread": 0.0,
+        "max_carboxylate_oxygen_spread": 0.0
+      },
+      "attempt": null,
+      "psi4_omp": null,
+      "memory_mb": null,
+      "source": "candidate_moldb"
+    },
+    {
+      "name": "TTE",
+      "smiles": "FC(F)C(F)(F)COC(F)(F)C(F)F",
+      "formal_charge": 0,
+      "polyelectrolyte_mode": false,
+      "charge_group_count": 0,
+      "resp_profile": "adaptive",
+      "qm_recipe": {
+        "adaptive_carbonate_recipe": false,
+        "anion_diffuse_upgrade": false,
+        "auto_level": true,
+        "carbonate_like": false,
+        "charge_basis": "def2-TZVP",
+        "charge_basis_gen": {
+          "Br": "def2-TZVP",
+          "I": "def2-TZVP"
+        },
+        "charge_method": "wb97m-d3bj",
+        "charge_model": "RESP",
+        "opt_basis": "def2-SVP",
+        "opt_basis_gen": {
+          "Br": "def2-SVP",
+          "I": "def2-SVP"
+        },
+        "opt_method": "wb97m-d3bj",
+        "resp_profile": "adaptive"
+      },
+      "repaired_equivalence_groups": 0,
+      "validation": {
+        "ok": true,
+        "tolerance": 1e-08,
+        "equivalence_group_count": 5,
+        "max_equivalence_spread": 0.0,
+        "max_carboxylate_oxygen_spread": 0.0,
+        "equivalence_spreads": [
+          {
+            "indices": [
+              0,
+              2
+            ],
+            "symbols": [
+              "F",
+              "F"
+            ],
+            "charges": [
+              -0.15431403309812497,
+              -0.15431403309812497
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              4,
+              5
+            ],
+            "symbols": [
+              "F",
+              "F"
+            ],
+            "charges": [
+              -0.1635077434451474,
+              -0.1635077434451474
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              9,
+              10
+            ],
+            "symbols": [
+              "F",
+              "F"
+            ],
+            "charges": [
+              -0.14215664376519938,
+              -0.14215664376519938
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              12,
+              13
+            ],
+            "symbols": [
+              "F",
+              "F"
+            ],
+            "charges": [
+              -0.16142801716684863,
+              -0.16142801716684863
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              15,
+              16
+            ],
+            "symbols": [
+              "H",
+              "H"
+            ],
+            "charges": [
+              0.07580261258424528,
+              0.07580261258424528
+            ],
+            "spread": 0.0
+          }
+        ],
+        "carboxylate_spreads": []
+      },
+      "candidate_key": "deb4548fb00e8d53",
+      "candidate_variant_id": "ecd63f4e7aad",
+      "diff_summary": {
+        "species": "TTE",
+        "smiles": "FC(F)C(F)(F)COC(F)(F)C(F)F",
+        "atom_count": 18,
+        "formal_charge": 0,
+        "old_net_charge": 1.942890293094024e-16,
+        "new_net_charge": -1.1102230246251565e-16,
+        "old_resp_profile": "legacy",
+        "new_resp_profile": "adaptive",
+        "old_resp_variant_ids": [
+          "56a209e16a4a"
+        ],
+        "new_resp_variant_id": "ecd63f4e7aad",
+        "max_abs_delta": 0.07451969958448798,
+        "mean_abs_delta": 0.013316105604824359,
+        "rms_delta": 0.02163123196336813,
+        "equivalence_ok": true,
+        "max_equivalence_spread": 0.0,
+        "max_carboxylate_oxygen_spread": 0.0
+      },
+      "attempt": null,
+      "psi4_omp": null,
+      "memory_mb": null,
+      "source": "candidate_moldb"
+    },
+    {
+      "name": "PF6",
+      "smiles": "F[P-](F)(F)(F)(F)F",
+      "formal_charge": -1,
+      "polyelectrolyte_mode": false,
+      "charge_group_count": 1,
+      "resp_profile": "adaptive",
+      "qm_recipe": {
+        "adaptive_carbonate_recipe": false,
+        "anion_diffuse_upgrade": true,
+        "auto_level": true,
+        "carbonate_like": false,
+        "charge_basis": "def2-TZVPD",
+        "charge_basis_gen": {
+          "Br": "def2-TZVPD",
+          "I": "def2-TZVPD"
+        },
+        "charge_method": "wb97m-d3bj",
+        "charge_model": "RESP",
+        "opt_basis": "def2-SVPD",
+        "opt_basis_gen": {
+          "Br": "def2-SVPD",
+          "I": "def2-SVPD"
+        },
+        "opt_method": "wb97m-d3bj",
+        "resp_profile": "adaptive"
+      },
+      "repaired_equivalence_groups": 0,
+      "validation": {
+        "ok": true,
+        "tolerance": 1e-08,
+        "equivalence_group_count": 1,
+        "max_equivalence_spread": 0.0,
+        "max_carboxylate_oxygen_spread": 0.0,
+        "equivalence_spreads": [
+          {
+            "indices": [
+              0,
+              2,
+              3,
+              4,
+              5,
+              6
+            ],
+            "symbols": [
+              "F",
+              "F",
+              "F",
+              "F",
+              "F",
+              "F"
+            ],
+            "charges": [
+              -0.37544272997510303,
+              -0.37544272997510303,
+              -0.37544272997510303,
+              -0.37544272997510303,
+              -0.37544272997510303,
+              -0.37544272997510303
+            ],
+            "spread": 0.0
+          }
+        ],
+        "carboxylate_spreads": []
+      },
+      "candidate_key": "a262cd2921905bc6",
+      "candidate_variant_id": "02a6816741c3",
+      "diff_summary": {
+        "species": "PF6",
+        "smiles": "F[P-](F)(F)(F)(F)F",
+        "atom_count": 7,
+        "formal_charge": -1,
+        "old_net_charge": -1.0,
+        "new_net_charge": -1.0000000000000002,
+        "old_resp_profile": "legacy",
+        "new_resp_profile": "adaptive",
+        "old_resp_variant_ids": [
+          "56a209e16a4a"
+        ],
+        "new_resp_variant_id": "02a6816741c3",
+        "max_abs_delta": 0.00016111316555206256,
+        "mean_abs_delta": 0.0001086275149360819,
+        "rms_delta": 0.00011724478084823753,
+        "equivalence_ok": true,
+        "max_equivalence_spread": 0.0,
+        "max_carboxylate_oxygen_spread": 0.0
+      },
+      "attempt": null,
+      "psi4_omp": null,
+      "memory_mb": null,
+      "source": "candidate_moldb"
+    },
+    {
+      "name": "NO3",
+      "smiles": "[O-][N+](=O)[O-]",
+      "formal_charge": -1,
+      "polyelectrolyte_mode": false,
+      "charge_group_count": 1,
+      "resp_profile": "adaptive",
+      "qm_recipe": {
+        "adaptive_carbonate_recipe": false,
+        "anion_diffuse_upgrade": true,
+        "auto_level": true,
+        "carbonate_like": false,
+        "charge_basis": "def2-TZVPD",
+        "charge_basis_gen": {
+          "Br": "def2-TZVPD",
+          "I": "def2-TZVPD"
+        },
+        "charge_method": "wb97m-d3bj",
+        "charge_model": "RESP",
+        "opt_basis": "def2-SVPD",
+        "opt_basis_gen": {
+          "Br": "def2-SVPD",
+          "I": "def2-SVPD"
+        },
+        "opt_method": "wb97m-d3bj",
+        "resp_profile": "adaptive"
+      },
+      "repaired_equivalence_groups": 0,
+      "validation": {
+        "ok": true,
+        "tolerance": 1e-08,
+        "equivalence_group_count": 1,
+        "max_equivalence_spread": 0.0,
+        "max_carboxylate_oxygen_spread": 0.0,
+        "equivalence_spreads": [
+          {
+            "indices": [
+              0,
+              3
+            ],
+            "symbols": [
+              "O",
+              "O"
+            ],
+            "charges": [
+              -0.6843037107668043,
+              -0.6843037107668043
+            ],
+            "spread": 0.0
+          }
+        ],
+        "carboxylate_spreads": []
+      },
+      "candidate_key": "8edfdb3da8bb7aa2",
+      "candidate_variant_id": "ba3b1042749a",
+      "diff_summary": {
+        "species": "NO3",
+        "smiles": "[O-][N+](=O)[O-]",
+        "atom_count": 4,
+        "formal_charge": -1,
+        "old_net_charge": -1.0000000000000002,
+        "new_net_charge": -0.9999999999999999,
+        "old_resp_profile": "legacy",
+        "new_resp_profile": "adaptive",
+        "old_resp_variant_ids": [
+          "56a209e16a4a"
+        ],
+        "new_resp_variant_id": "ba3b1042749a",
+        "max_abs_delta": 3.341436903447903e-05,
+        "mean_abs_delta": 1.872395823701578e-05,
+        "rms_delta": 2.1901013599179165e-05,
+        "equivalence_ok": true,
+        "max_equivalence_spread": 0.0,
+        "max_carboxylate_oxygen_spread": 0.0
+      },
+      "attempt": null,
+      "psi4_omp": null,
+      "memory_mb": null,
+      "source": "candidate_moldb"
+    },
+    {
+      "name": "OTf",
+      "smiles": "O=S(=O)([O-])C(F)(F)F",
+      "formal_charge": -1,
+      "polyelectrolyte_mode": false,
+      "charge_group_count": 1,
+      "resp_profile": "adaptive",
+      "qm_recipe": {
+        "adaptive_carbonate_recipe": false,
+        "anion_diffuse_upgrade": true,
+        "auto_level": true,
+        "carbonate_like": false,
+        "charge_basis": "def2-TZVPD",
+        "charge_basis_gen": {
+          "Br": "def2-TZVPD",
+          "I": "def2-TZVPD"
+        },
+        "charge_method": "wb97m-d3bj",
+        "charge_model": "RESP",
+        "opt_basis": "def2-SVPD",
+        "opt_basis_gen": {
+          "Br": "def2-SVPD",
+          "I": "def2-SVPD"
+        },
+        "opt_method": "wb97m-d3bj",
+        "resp_profile": "adaptive"
+      },
+      "repaired_equivalence_groups": 0,
+      "validation": {
+        "ok": true,
+        "tolerance": 1e-08,
+        "equivalence_group_count": 2,
+        "max_equivalence_spread": 0.0,
+        "max_carboxylate_oxygen_spread": 0.0,
+        "equivalence_spreads": [
+          {
+            "indices": [
+              0,
+              2,
+              3
+            ],
+            "symbols": [
+              "O",
+              "O",
+              "O"
+            ],
+            "charges": [
+              -0.524836753274834,
+              -0.524836753274834,
+              -0.524836753274834
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              5,
+              6,
+              7
+            ],
+            "symbols": [
+              "F",
+              "F",
+              "F"
+            ],
+            "charges": [
+              -0.3573003912034867,
+              -0.3573003912034867,
+              -0.3573003912034867
+            ],
+            "spread": 0.0
+          }
+        ],
+        "carboxylate_spreads": []
+      },
+      "candidate_key": "8d67ccc035ab28e7",
+      "candidate_variant_id": "10f2b75cc840",
+      "diff_summary": {
+        "species": "OTf",
+        "smiles": "O=S(=O)([O-])C(F)(F)F",
+        "atom_count": 8,
+        "formal_charge": -1,
+        "old_net_charge": -1.0,
+        "new_net_charge": -1.0000000000000002,
+        "old_resp_profile": "legacy",
+        "new_resp_profile": "adaptive",
+        "old_resp_variant_ids": [
+          "56a209e16a4a"
+        ],
+        "new_resp_variant_id": "10f2b75cc840",
+        "max_abs_delta": 0.6963646357932616,
+        "mean_abs_delta": 0.23516301018569014,
+        "rms_delta": 0.3121670240718634,
+        "equivalence_ok": true,
+        "max_equivalence_spread": 0.0,
+        "max_carboxylate_oxygen_spread": 0.0
+      },
+      "attempt": null,
+      "psi4_omp": null,
+      "memory_mb": null,
+      "source": "candidate_moldb"
+    },
+    {
+      "name": "TFSI",
+      "smiles": "FC(F)(F)S(=O)(=O)[N-]S(=O)(=O)C(F)(F)F",
+      "formal_charge": -1,
+      "polyelectrolyte_mode": false,
+      "charge_group_count": 1,
+      "resp_profile": "adaptive",
+      "qm_recipe": {
+        "adaptive_carbonate_recipe": false,
+        "anion_diffuse_upgrade": true,
+        "auto_level": true,
+        "carbonate_like": false,
+        "charge_basis": "def2-TZVPD",
+        "charge_basis_gen": {
+          "Br": "def2-TZVPD",
+          "I": "def2-TZVPD"
+        },
+        "charge_method": "wb97m-d3bj",
+        "charge_model": "RESP",
+        "opt_basis": "def2-SVPD",
+        "opt_basis_gen": {
+          "Br": "def2-SVPD",
+          "I": "def2-SVPD"
+        },
+        "opt_method": "wb97m-d3bj",
+        "resp_profile": "adaptive"
+      },
+      "repaired_equivalence_groups": 0,
+      "validation": {
+        "ok": true,
+        "tolerance": 1e-08,
+        "equivalence_group_count": 4,
+        "max_equivalence_spread": 0.0,
+        "max_carboxylate_oxygen_spread": 0.0,
+        "equivalence_spreads": [
+          {
+            "indices": [
+              0,
+              2,
+              3,
+              12,
+              13,
+              14
+            ],
+            "symbols": [
+              "F",
+              "F",
+              "F",
+              "F",
+              "F",
+              "F"
+            ],
+            "charges": [
+              -0.13753301043831626,
+              -0.13753301043831626,
+              -0.13753301043831626,
+              -0.13753301043831626,
+              -0.13753301043831626,
+              -0.13753301043831626
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              1,
+              11
+            ],
+            "symbols": [
+              "C",
+              "C"
+            ],
+            "charges": [
+              0.2666587052062339,
+              0.2666587052062339
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              4,
+              8
+            ],
+            "symbols": [
+              "S",
+              "S"
+            ],
+            "charges": [
+              1.034497182973467,
+              1.034497182973467
+            ],
+            "spread": 0.0
+          },
+          {
+            "indices": [
+              5,
+              6,
+              9,
+              10
+            ],
+            "symbols": [
+              "O",
+              "O",
+              "O",
+              "O"
+            ],
+            "charges": [
+              -0.5336756996194041,
+              -0.5336756996194041,
+              -0.5336756996194041,
+              -0.5336756996194041
+            ],
+            "spread": 0.0
+          }
+        ],
+        "carboxylate_spreads": []
+      },
+      "candidate_key": "b561ac4285777dff",
+      "candidate_variant_id": "7fd491c29452",
+      "diff_summary": {
+        "species": "TFSI",
+        "smiles": "FC(F)(F)S(=O)(=O)[N-]S(=O)(=O)C(F)(F)F",
+        "atom_count": 15,
+        "formal_charge": -1,
+        "old_net_charge": -0.9999999999999999,
+        "new_net_charge": -0.9999999999999992,
+        "old_resp_profile": "adaptive",
+        "new_resp_profile": "adaptive",
+        "old_resp_variant_ids": [
+          "7fd491c29452"
+        ],
+        "new_resp_variant_id": "7fd491c29452",
+        "max_abs_delta": 0.33574432382837816,
+        "mean_abs_delta": 0.08953181968756746,
+        "rms_delta": 0.137983728322939,
+        "equivalence_ok": true,
+        "max_equivalence_spread": 0.0,
+        "max_carboxylate_oxygen_spread": 0.0
+      },
+      "attempt": null,
+      "psi4_omp": null,
+      "memory_mb": null,
+      "source": "candidate_moldb"
+    }
+  ],
+  "failures": [],
+  "replacements": [
+    {
+      "name": "monomer_A",
+      "key": "945a465c5743ceb9",
+      "kept_resp_variant_id": "8edcbd906c67",
+      "removed_resp_variant_ids": [
+        "56a209e16a4a"
+      ],
+      "remaining_variant_ids": [
+        "8edcbd906c67"
+      ]
+    },
+    {
+      "name": "monomer_B",
+      "key": "829d565d3cc01e36",
+      "kept_resp_variant_id": "b8fe72246b88",
+      "removed_resp_variant_ids": [
+        "56a209e16a4a"
+      ],
+      "remaining_variant_ids": [
+        "b8fe72246b88"
+      ]
+    },
+    {
+      "name": "PAA",
+      "key": "d2bcbce21f3b649f",
+      "kept_resp_variant_id": "2862381833f8",
+      "removed_resp_variant_ids": [
+        "8a687c87f3af"
+      ],
+      "remaining_variant_ids": [
+        "2862381833f8"
+      ]
+    },
+    {
+      "name": "PAAH",
+      "key": "3984a37c83aeb371",
+      "kept_resp_variant_id": "1b76e622d2af",
+      "removed_resp_variant_ids": [
+        "56a209e16a4a"
+      ],
+      "remaining_variant_ids": [
+        "1b76e622d2af"
+      ]
+    },
+    {
+      "name": "PVDF",
+      "key": "fdfe9f3ec9baa781",
+      "kept_resp_variant_id": "4c8186b505aa",
+      "removed_resp_variant_ids": [
+        "56a209e16a4a"
+      ],
+      "remaining_variant_ids": [
+        "4c8186b505aa"
+      ]
+    },
+    {
+      "name": "PAN",
+      "key": "e3f4585cf90538ba",
+      "kept_resp_variant_id": "01017ad76e4e",
+      "removed_resp_variant_ids": [
+        "56a209e16a4a"
+      ],
+      "remaining_variant_ids": [
+        "01017ad76e4e"
+      ]
+    },
+    {
+      "name": "PTMC",
+      "key": "6ceff8887f06d9d5",
+      "kept_resp_variant_id": "1f816824792c",
+      "removed_resp_variant_ids": [
+        "56a209e16a4a"
+      ],
+      "remaining_variant_ids": [
+        "1f816824792c"
+      ]
+    },
+    {
+      "name": "PCL",
+      "key": "1dae20e7eaec2a5e",
+      "kept_resp_variant_id": "51f114c2747a",
+      "removed_resp_variant_ids": [
+        "56a209e16a4a"
+      ],
+      "remaining_variant_ids": [
+        "51f114c2747a"
+      ]
+    },
+    {
+      "name": "PVAc",
+      "key": "0ddc77a648ba64ae",
+      "kept_resp_variant_id": "9f46c6429f27",
+      "removed_resp_variant_ids": [
+        "56a209e16a4a"
+      ],
+      "remaining_variant_ids": [
+        "9f46c6429f27"
+      ]
+    },
+    {
+      "name": "PMMA",
+      "key": "7bba18c2f240dc10",
+      "kept_resp_variant_id": "45c6f9554992",
+      "removed_resp_variant_ids": [
+        "56a209e16a4a"
+      ],
+      "remaining_variant_ids": [
+        "45c6f9554992"
+      ]
+    },
+    {
+      "name": "PS",
+      "key": "3e9f8c6433134896",
+      "kept_resp_variant_id": "d20712034802",
+      "removed_resp_variant_ids": [
+        "56a209e16a4a"
+      ],
+      "remaining_variant_ids": [
+        "d20712034802"
+      ]
+    },
+    {
+      "name": "polymer_route_ab",
+      "key": "22656a4b05da2a9e",
+      "kept_resp_variant_id": "a41c7fa2bf87",
+      "removed_resp_variant_ids": [
+        "56a209e16a4a"
+      ],
+      "remaining_variant_ids": [
+        "a41c7fa2bf87"
+      ]
+    },
+    {
+      "name": "glucose_0",
+      "key": "aef36ef7e9294a6d",
+      "kept_resp_variant_id": "33393c1c770d",
+      "removed_resp_variant_ids": [
+        "56a209e16a4a"
+      ],
+      "remaining_variant_ids": [
+        "33393c1c770d"
+      ]
+    },
+    {
+      "name": "glucose_2",
+      "key": "889ed58492f6dda5",
+      "kept_resp_variant_id": "30e172c609f5",
+      "removed_resp_variant_ids": [
+        "234160b0a990",
+        "8a687c87f3af"
+      ],
+      "remaining_variant_ids": [
+        "30e172c609f5"
+      ]
+    },
+    {
+      "name": "glucose_3",
+      "key": "cebcbd750c7d6113",
+      "kept_resp_variant_id": "f10271630afe",
+      "removed_resp_variant_ids": [
+        "a1eacd87b2f2"
+      ],
+      "remaining_variant_ids": [
+        "f10271630afe"
+      ]
+    },
+    {
+      "name": "glucose_6",
+      "key": "558914981581b2c2",
+      "kept_resp_variant_id": "e326a6b5eb18",
+      "removed_resp_variant_ids": [
+        "4da716fabbcf",
+        "8a687c87f3af"
+      ],
+      "remaining_variant_ids": [
+        "e326a6b5eb18"
+      ]
+    },
+    {
+      "name": "glucose_23",
+      "key": "a04243a10c48467e",
+      "kept_resp_variant_id": "dcca83f8f92a",
+      "removed_resp_variant_ids": [
+        "8a687c87f3af"
+      ],
+      "remaining_variant_ids": [
+        "dcca83f8f92a"
+      ]
+    },
+    {
+      "name": "glucose_26",
+      "key": "0b556c7c380b510e",
+      "kept_resp_variant_id": "3b4ee9f697fd",
+      "removed_resp_variant_ids": [
+        "8a687c87f3af"
+      ],
+      "remaining_variant_ids": [
+        "3b4ee9f697fd"
+      ]
+    },
+    {
+      "name": "glucose_36",
+      "key": "57fa7686df4bec7d",
+      "kept_resp_variant_id": "2af8ac21c4a7",
+      "removed_resp_variant_ids": [
+        "8a687c87f3af"
+      ],
+      "remaining_variant_ids": [
+        "2af8ac21c4a7"
+      ]
+    },
+    {
+      "name": "glucose_236",
+      "key": "b216bf8c7a3d0da0",
+      "kept_resp_variant_id": "b259130aca52",
+      "removed_resp_variant_ids": [],
+      "remaining_variant_ids": [
+        "b259130aca52"
+      ]
+    },
+    {
+      "name": "EC",
+      "key": "03ca6bd306c3de7b",
+      "kept_resp_variant_id": "5dda38f59f4d",
+      "removed_resp_variant_ids": [
+        "56a209e16a4a"
+      ],
+      "remaining_variant_ids": [
+        "5dda38f59f4d"
+      ]
+    },
+    {
+      "name": "EMC",
+      "key": "508a1c4f70416b74",
+      "kept_resp_variant_id": "ae1bed556cba",
+      "removed_resp_variant_ids": [
+        "56a209e16a4a"
+      ],
+      "remaining_variant_ids": [
+        "ae1bed556cba"
+      ]
+    },
+    {
+      "name": "DEC",
+      "key": "864a8b1cc87098b3",
+      "kept_resp_variant_id": "86d88792c65f",
+      "removed_resp_variant_ids": [
+        "56a209e16a4a"
+      ],
+      "remaining_variant_ids": [
+        "86d88792c65f"
+      ]
+    },
+    {
+      "name": "DMC",
+      "key": "6ccad973a4eaf78c",
+      "kept_resp_variant_id": "c3819ba367c2",
+      "removed_resp_variant_ids": [
+        "56a209e16a4a"
+      ],
+      "remaining_variant_ids": [
+        "c3819ba367c2"
+      ]
+    },
+    {
+      "name": "PC",
+      "key": "77068c9132ef1fbc",
+      "kept_resp_variant_id": "27bbcf9d1d11",
+      "removed_resp_variant_ids": [
+        "56a209e16a4a"
+      ],
+      "remaining_variant_ids": [
+        "27bbcf9d1d11"
+      ]
+    },
+    {
+      "name": "FEC",
+      "key": "4ed1fbb1914240b7",
+      "kept_resp_variant_id": "dfe7e9c72399",
+      "removed_resp_variant_ids": [
+        "56a209e16a4a"
+      ],
+      "remaining_variant_ids": [
+        "dfe7e9c72399"
+      ]
+    },
+    {
+      "name": "VC",
+      "key": "1c936f5a9805d700",
+      "kept_resp_variant_id": "1829ab86c5a7",
+      "removed_resp_variant_ids": [
+        "56a209e16a4a"
+      ],
+      "remaining_variant_ids": [
+        "1829ab86c5a7"
+      ]
+    },
+    {
+      "name": "DTD",
+      "key": "378fd993935c494b",
+      "kept_resp_variant_id": "ef8b92d56401",
+      "removed_resp_variant_ids": [
+        "56a209e16a4a"
+      ],
+      "remaining_variant_ids": [
+        "ef8b92d56401"
+      ]
+    },
+    {
+      "name": "DME",
+      "key": "ffa88e79e5e17aaa",
+      "kept_resp_variant_id": "ec8a437a2005",
+      "removed_resp_variant_ids": [
+        "56a209e16a4a"
+      ],
+      "remaining_variant_ids": [
+        "ec8a437a2005"
+      ]
+    },
+    {
+      "name": "Diglyme",
+      "key": "c0a04447956b8da2",
+      "kept_resp_variant_id": "daf13a5bad9a",
+      "removed_resp_variant_ids": [
+        "56a209e16a4a"
+      ],
+      "remaining_variant_ids": [
+        "daf13a5bad9a"
+      ]
+    },
+    {
+      "name": "Triglyme",
+      "key": "0c6ef69d092a936e",
+      "kept_resp_variant_id": "aaa608e7b568",
+      "removed_resp_variant_ids": [
+        "56a209e16a4a"
+      ],
+      "remaining_variant_ids": [
+        "aaa608e7b568"
+      ]
+    },
+    {
+      "name": "DOL",
+      "key": "6329f6891f70fdfd",
+      "kept_resp_variant_id": "9f37541cffc8",
+      "removed_resp_variant_ids": [
+        "56a209e16a4a"
+      ],
+      "remaining_variant_ids": [
+        "9f37541cffc8"
+      ]
+    },
+    {
+      "name": "THF",
+      "key": "92623ccd36bc322b",
+      "kept_resp_variant_id": "c0a39f980b3e",
+      "removed_resp_variant_ids": [
+        "56a209e16a4a"
+      ],
+      "remaining_variant_ids": [
+        "c0a39f980b3e"
+      ]
+    },
+    {
+      "name": "Dioxane",
+      "key": "53b5b2411b4bfe41",
+      "kept_resp_variant_id": "dc1b28a06c66",
+      "removed_resp_variant_ids": [
+        "56a209e16a4a"
+      ],
+      "remaining_variant_ids": [
+        "dc1b28a06c66"
+      ]
+    },
+    {
+      "name": "CPME",
+      "key": "0bb5ee5db22519ff",
+      "kept_resp_variant_id": "0f130560b148",
+      "removed_resp_variant_ids": [
+        "56a209e16a4a"
+      ],
+      "remaining_variant_ids": [
+        "0f130560b148"
+      ]
+    },
+    {
+      "name": "TTE",
+      "key": "deb4548fb00e8d53",
+      "kept_resp_variant_id": "ecd63f4e7aad",
+      "removed_resp_variant_ids": [
+        "56a209e16a4a"
+      ],
+      "remaining_variant_ids": [
+        "ecd63f4e7aad"
+      ]
+    },
+    {
+      "name": "PF6",
+      "key": "a262cd2921905bc6",
+      "kept_resp_variant_id": "02a6816741c3",
+      "removed_resp_variant_ids": [
+        "56a209e16a4a"
+      ],
+      "remaining_variant_ids": [
+        "02a6816741c3",
+        "4cf272098eae"
+      ]
+    },
+    {
+      "name": "NO3",
+      "key": "8edfdb3da8bb7aa2",
+      "kept_resp_variant_id": "ba3b1042749a",
+      "removed_resp_variant_ids": [
+        "56a209e16a4a"
+      ],
+      "remaining_variant_ids": [
+        "ba3b1042749a"
+      ]
+    },
+    {
+      "name": "OTf",
+      "key": "8d67ccc035ab28e7",
+      "kept_resp_variant_id": "10f2b75cc840",
+      "removed_resp_variant_ids": [
+        "56a209e16a4a"
+      ],
+      "remaining_variant_ids": [
+        "10f2b75cc840"
+      ]
+    },
+    {
+      "name": "TFSI",
+      "key": "b561ac4285777dff",
+      "kept_resp_variant_id": "7fd491c29452",
+      "removed_resp_variant_ids": [],
+      "remaining_variant_ids": [
+        "7fd491c29452"
+      ]
+    }
+  ]
+}

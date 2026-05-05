@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from pathlib import Path
 import csv
@@ -238,6 +239,93 @@ def test_example07_adaptive_refresh_readiness_honors_requested_profile():
         )
     )
     assert mod._profile_variant_ready(db_missing_legacy, spec, resp_profile="legacy") is False
+
+
+def test_example07_adaptive_refresh_hard_replace_keeps_non_resp_variant(tmp_path):
+    mod = _load_example07_refresh_module()
+    repo_db = mod.MolDB(tmp_path / "repo_moldb")
+    candidate_db = mod.MolDB(tmp_path / "candidate_moldb")
+    smiles = "O=C1OCCO1"
+    spec = mod.SpeciesSpec(
+        name="EC",
+        smiles=smiles,
+        kind="smiles",
+        charge="RESP",
+        bonded=None,
+        polyelectrolyte_mode=False,
+    )
+
+    legacy = mod.yp.mol_from_smiles(smiles, coord=True, name="EC")
+    for atom in legacy.GetAtoms():
+        atom.SetDoubleProp("AtomicCharge", -0.01)
+    legacy.SetProp("_yadonpy_resp_profile", "legacy")
+    rec = repo_db.update_from_mol(legacy, smiles_or_psmiles=smiles, name="EC", charge="RESP", resp_profile="legacy")
+    legacy_vid = next(iter(rec.variants))
+
+    gasteiger = mod.yp.mol_from_smiles(smiles, coord=True, name="EC")
+    for atom in gasteiger.GetAtoms():
+        atom.SetDoubleProp("AtomicCharge", 0.02)
+    rec = repo_db.update_from_mol(gasteiger, smiles_or_psmiles=smiles, name="EC", charge="gasteiger")
+    gasteiger_vids = [
+        vid for vid, meta in rec.variants.items() if str(meta.get("charge")).lower() == "gasteiger"
+    ]
+    assert gasteiger_vids
+
+    adaptive = mod.yp.mol_from_smiles(smiles, coord=True, name="EC")
+    for idx, atom in enumerate(adaptive.GetAtoms()):
+        atom.SetDoubleProp("AtomicCharge", 0.001 * idx)
+    adaptive.SetProp("_yadonpy_resp_profile", "adaptive")
+    candidate_db.update_from_mol(adaptive, smiles_or_psmiles=smiles, name="EC", charge="RESP", resp_profile="adaptive")
+
+    replacement = mod._hard_replace_repo_record(
+        repo_db=repo_db,
+        candidate_db=candidate_db,
+        spec=spec,
+        resp_profile="adaptive",
+    )
+
+    reloaded = repo_db.load_record(replacement["key"])
+    assert reloaded is not None
+    resp_metas = [meta for meta in reloaded.variants.values() if str(meta.get("charge")).upper() == "RESP"]
+    assert len(resp_metas) == 1
+    assert resp_metas[0]["resp_profile"] == "adaptive"
+    assert legacy_vid in replacement["removed_resp_variant_ids"]
+    assert set(gasteiger_vids).issubset(set(reloaded.variants))
+
+
+def test_example07_adaptive_refresh_charge_diff_reports_per_atom_delta():
+    mod = _load_example07_refresh_module()
+    smiles = "O=C1OCCO1"
+    spec = mod.SpeciesSpec(
+        name="EC",
+        smiles=smiles,
+        kind="smiles",
+        charge="RESP",
+        bonded=None,
+        polyelectrolyte_mode=False,
+    )
+    mol = mod.yp.mol_from_smiles(smiles, coord=True, name="EC")
+    old_charges = [0.0 for _ in mol.GetAtoms()]
+    for idx, atom in enumerate(mol.GetAtoms()):
+        atom.SetDoubleProp("AtomicCharge", 0.01 * idx)
+
+    diff = mod._charge_diff(
+        spec=spec,
+        old_snapshot={
+            "charges": old_charges,
+            "net_charge": 0.0,
+            "selected_resp_profile": "legacy",
+            "resp_variant_ids": ["old"],
+        },
+        new_mol=mol,
+        validation={"ok": True, "max_equivalence_spread": 0.0, "max_carboxylate_oxygen_spread": 0.0},
+        new_variant_id="new",
+    )
+
+    assert diff["summary"]["old_resp_profile"] == "legacy"
+    assert diff["summary"]["new_resp_variant_id"] == "new"
+    assert diff["summary"]["max_abs_delta"] == max(row["abs_delta"] for row in diff["per_atom"])
+    assert len(diff["per_atom"]) == mol.GetNumAtoms()
 
 
 def test_example07_parallel_planner_assigns_profiles_and_core_budgets():

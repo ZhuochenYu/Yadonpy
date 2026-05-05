@@ -33,6 +33,33 @@ cleanly, use:
 python 05_check_forcefield_assignment.py
 ```
 
+To refresh the repository MolDB after RESP logic changes, use:
+
+```bash
+python 04_refresh_adaptive_resp_moldb.py
+```
+
+This refresh script is intentionally two-stage. It scans the existing repo
+`moldb/objects` records that also appear in `electrolyte_species.csv`, runs a
+fresh DFT optimization plus adaptive RESP in a temporary candidate MolDB, writes
+old/new charge-difference tables, and only then hard-replaces the repo RESP
+variants if every target succeeded. Non-RESP fallback variants, such as legacy
+Gasteiger entries, are kept. Use `--dry-run` to inspect the planned parallel
+resource allocation without running Psi4.
+
+Operational rescue options are also available for long RESP refresh batches:
+
+- `--geom-iter N` and `--retry-geom-iter N` increase the Psi4 geometry
+  optimization iteration budget for species that are close to convergence but
+  exceed the default 50 optimizer steps.
+- `--reuse-geometry` refits adaptive RESP on the stored MolDB geometry. This is
+  useful as a targeted rescue for small molecules whose DFT optimization has
+  already become the bottleneck, while still exercising the new equivalence and
+  resonance constraints.
+- `--finalize-candidates` skips QM, validates every record already present in
+  the candidate MolDB, rewrites the full charge-difference tables, and then
+  hard-replaces repo RESP variants only if all targets are present and valid.
+
 To audit how your active `~/.yadonpy/moldb` differs from the bundled default
 catalog that ships with the source tree, use:
 
@@ -175,6 +202,14 @@ and now redirects to `01_build_moldb.py`.
 - Build summary: `examples/07_moldb_precompute_and_reuse/work_dir/01_build_moldb/build_moldb_summary.json`
 - Parallel plan: `examples/07_moldb_precompute_and_reuse/work_dir/02_build_moldb_parallel/parallel_plan.json`
 - Parallel summary: `examples/07_moldb_precompute_and_reuse/work_dir/02_build_moldb_parallel/parallel_build_summary.json`
+- Adaptive RESP refresh plan:
+  - `examples/07_moldb_precompute_and_reuse/work_dir/04_refresh_adaptive_resp_moldb/parallel_refresh_plan.json`
+- Adaptive RESP refresh summary:
+  - `examples/07_moldb_precompute_and_reuse/work_dir/04_refresh_adaptive_resp_moldb/adaptive_resp_moldb_refresh_summary.json`
+- Adaptive RESP charge-difference tables:
+  - `.../04_refresh_adaptive_resp_moldb/charge_diffs/charge_diff_summary.csv`
+  - `.../04_refresh_adaptive_resp_moldb/charge_diffs/charge_diff_summary.md`
+  - `.../04_refresh_adaptive_resp_moldb/charge_diffs/charge_diff_per_atom.csv`
 - Force-field check summary: `examples/07_moldb_precompute_and_reuse/work_dir/05_check_forcefield_assignment/forcefield_check_summary.json`
 - Force-field category reports:
   - `.../05_check_forcefield_assignment/neutral_molecules.json`

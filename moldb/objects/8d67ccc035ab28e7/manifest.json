@@ -8,21 +8,211 @@
   "ready": true,
   "connectors": null,
   "variants": {
-    "56a209e16a4a": {
-      "variant_id": "56a209e16a4a",
+    "10f2b75cc840": {
+      "variant_id": "10f2b75cc840",
       "charge": "RESP",
       "basis_set": "Default",
       "method": "Default",
       "ready": true,
-      "polyelectrolyte_mode": false,
+      "polyelectrolyte_mode": true,
       "polyelectrolyte_detection": "auto",
-      "constraint_signature": null,
-      "charge_groups": [],
-      "resp_constraints": {},
-      "polyelectrolyte_summary": {},
+      "constraint_signature": "3c6f1775a9de",
+      "charge_groups": [
+        {
+          "atom_indices": [
+            0,
+            1,
+            2,
+            3
+          ],
+          "formal_charge": -1,
+          "group_id": "group_1",
+          "label": "sulfonate",
+          "source": "template"
+        }
+      ],
+      "resp_constraints": {
+        "charged_group_constraints": [
+          {
+            "atom_indices": [
+              0,
+              1,
+              2,
+              3
+            ],
+            "group_id": "group_1",
+            "source": "template",
+            "target_charge": -1
+          }
+        ],
+        "equivalence_groups": [
+          [
+            0,
+            2,
+            3
+          ],
+          [
+            5,
+            6,
+            7
+          ]
+        ],
+        "fallback": null,
+        "mode": "grouped",
+        "neutral_remainder_charge": 0,
+        "neutral_remainder_indices": [
+          4,
+          5,
+          6,
+          7
+        ],
+        "resp_profile": "adaptive"
+      },
+      "polyelectrolyte_summary": {
+        "detection": "auto",
+        "equivalence_groups": [
+          [
+            0,
+            2,
+            3
+          ],
+          [
+            5,
+            6,
+            7
+          ]
+        ],
+        "fallback": null,
+        "groups": [
+          {
+            "atom_indices": [
+              0,
+              1,
+              2,
+              3
+            ],
+            "formal_charge": -1,
+            "group_id": "group_1",
+            "label": "sulfonate",
+            "source": "template"
+          }
+        ],
+        "is_polyelectrolyte": false,
+        "is_polymer": false,
+        "molecule_formal_charge": -1,
+        "neutral_remainder": [
+          4,
+          5,
+          6,
+          7
+        ],
+        "resp_profile": "adaptive"
+      },
+      "psiresp_constraints": {
+        "constraints": {
+          "charged_group_constraints": [
+            {
+              "atom_indices": [
+                0,
+                1,
+                2,
+                3
+              ],
+              "group_id": "group_1",
+              "source": "template",
+              "target_charge": -1
+            }
+          ],
+          "equivalence_groups": [
+            [
+              0,
+              2,
+              3
+            ],
+            [
+              5,
+              6,
+              7
+            ]
+          ],
+          "fallback": null,
+          "mode": "grouped",
+          "neutral_remainder_charge": 0,
+          "neutral_remainder_indices": [
+            4,
+            5,
+            6,
+            7
+          ],
+          "resp_profile": "adaptive"
+        },
+        "fit_kind": "RESP",
+        "resp_profile": "adaptive",
+        "summary": {
+          "detection": "auto",
+          "equivalence_groups": [
+            [
+              0,
+              2,
+              3
+            ],
+            [
+              5,
+              6,
+              7
+            ]
+          ],
+          "fallback": null,
+          "groups": [
+            {
+              "atom_indices": [
+                0,
+                1,
+                2,
+                3
+              ],
+              "formal_charge": -1,
+              "group_id": "group_1",
+              "label": "sulfonate",
+              "source": "template"
+            }
+          ],
+          "is_polyelectrolyte": false,
+          "is_polymer": false,
+          "molecule_formal_charge": -1,
+          "neutral_remainder": [
+            4,
+            5,
+            6,
+            7
+          ],
+          "resp_profile": "adaptive"
+        }
+      },
+      "resp_profile": "adaptive",
+      "qm_recipe": {
+        "adaptive_carbonate_recipe": false,
+        "anion_diffuse_upgrade": true,
+        "auto_level": true,
+        "carbonate_like": false,
+        "charge_basis": "def2-TZVPD",
+        "charge_basis_gen": {
+          "Br": "def2-TZVPD",
+          "I": "def2-TZVPD"
+        },
+        "charge_method": "wb97m-d3bj",
+        "charge_model": "RESP",
+        "opt_basis": "def2-SVPD",
+        "opt_basis_gen": {
+          "Br": "def2-SVPD",
+          "I": "def2-SVPD"
+        },
+        "opt_method": "wb97m-d3bj",
+        "resp_profile": "adaptive"
+      },
       "is_polyelectrolyte": false,
       "is_polymer": false,
-      "charge_group_count": 0,
+      "charge_group_count": 1,
       "source_kind": "smiles"
     }
   }

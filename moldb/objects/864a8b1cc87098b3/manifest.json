@@ -8,23 +8,6 @@
   "ready": true,
   "connectors": null,
   "variants": {
-    "56a209e16a4a": {
-      "variant_id": "56a209e16a4a",
-      "charge": "RESP",
-      "basis_set": "Default",
-      "method": "Default",
-      "ready": true,
-      "polyelectrolyte_mode": false,
-      "polyelectrolyte_detection": "auto",
-      "constraint_signature": null,
-      "charge_groups": [],
-      "resp_constraints": {},
-      "polyelectrolyte_summary": {},
-      "is_polyelectrolyte": false,
-      "is_polymer": false,
-      "charge_group_count": 0,
-      "source_kind": "smiles"
-    },
     "86d88792c65f": {
       "variant_id": "86d88792c65f",
       "charge": "RESP",
@@ -36,8 +19,37 @@
       "constraint_signature": "69489b0e3e35",
       "charge_groups": [],
       "resp_constraints": {
-        "mode": "whole_molecule_scale",
         "charged_group_constraints": [],
+        "equivalence_groups": [
+          [
+            0,
+            7
+          ],
+          [
+            1,
+            6
+          ],
+          [
+            2,
+            5
+          ],
+          [
+            8,
+            9,
+            10,
+            15,
+            16,
+            17
+          ],
+          [
+            11,
+            12,
+            13,
+            14
+          ]
+        ],
+        "fallback": "whole_molecule_scale",
+        "mode": "whole_molecule_scale",
         "neutral_remainder_charge": 0,
         "neutral_remainder_indices": [
           0,
@@ -59,6 +71,10 @@
           16,
           17
         ],
+        "resp_profile": "adaptive"
+      },
+      "polyelectrolyte_summary": {
+        "detection": "auto",
         "equivalence_groups": [
           [
             0,
@@ -88,14 +104,10 @@
           ]
         ],
         "fallback": "whole_molecule_scale",
-        "resp_profile": "adaptive"
-      },
-      "polyelectrolyte_summary": {
-        "is_polymer": false,
-        "is_polyelectrolyte": false,
-        "detection": "auto",
-        "fallback": "whole_molecule_scale",
         "groups": [],
+        "is_polyelectrolyte": false,
+        "is_polymer": false,
+        "molecule_formal_charge": 0,
         "neutral_remainder": [
           0,
           1,
@@ -116,66 +128,11 @@
           16,
           17
         ],
-        "molecule_formal_charge": 0,
-        "resp_profile": "adaptive",
-        "equivalence_groups": [
-          [
-            0,
-            7
-          ],
-          [
-            1,
-            6
-          ],
-          [
-            2,
-            5
-          ],
-          [
-            8,
-            9,
-            10,
-            15,
-            16,
-            17
-          ],
-          [
-            11,
-            12,
-            13,
-            14
-          ]
-        ]
+        "resp_profile": "adaptive"
       },
       "psiresp_constraints": {
-        "summary": {
-          "is_polymer": false,
-          "is_polyelectrolyte": false,
-          "detection": "auto",
-          "fallback": "whole_molecule_scale",
-          "groups": [],
-          "neutral_remainder": [
-            0,
-            1,
-            2,
-            3,
-            4,
-            5,
-            6,
-            7,
-            8,
-            9,
-            10,
-            11,
-            12,
-            13,
-            14,
-            15,
-            16,
-            17
-          ],
-          "molecule_formal_charge": 0,
-          "resp_profile": "adaptive",
+        "constraints": {
+          "charged_group_constraints": [],
           "equivalence_groups": [
             [
               0,
@@ -203,11 +160,9 @@
               13,
               14
             ]
-          ]
-        },
-        "constraints": {
+          ],
+          "fallback": "whole_molecule_scale",
           "mode": "whole_molecule_scale",
-          "charged_group_constraints": [],
           "neutral_remainder_charge": 0,
           "neutral_remainder_indices": [
             0,
@@ -229,6 +184,12 @@
             16,
             17
           ],
+          "resp_profile": "adaptive"
+        },
+        "fit_kind": "RESP",
+        "resp_profile": "adaptive",
+        "summary": {
+          "detection": "auto",
           "equivalence_groups": [
             [
               0,
@@ -258,31 +219,53 @@
             ]
           ],
           "fallback": "whole_molecule_scale",
+          "groups": [],
+          "is_polyelectrolyte": false,
+          "is_polymer": false,
+          "molecule_formal_charge": 0,
+          "neutral_remainder": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17
+          ],
           "resp_profile": "adaptive"
-        },
-        "resp_profile": "adaptive",
-        "fit_kind": "RESP"
+        }
       },
       "resp_profile": "adaptive",
       "qm_recipe": {
-        "resp_profile": "adaptive",
-        "charge_model": "RESP",
-        "opt_method": "wb97m-v",
-        "opt_basis": "def2-TZVP",
-        "charge_method": "wb97m-v",
+        "adaptive_carbonate_recipe": true,
+        "anion_diffuse_upgrade": false,
+        "auto_level": true,
+        "carbonate_like": true,
         "charge_basis": "def2-TZVP",
-        "opt_basis_gen": {
-          "Br": "def2-TZVP",
-          "I": "def2-TZVP"
-        },
         "charge_basis_gen": {
           "Br": "def2-TZVP",
           "I": "def2-TZVP"
         },
-        "auto_level": true,
-        "anion_diffuse_upgrade": false,
-        "adaptive_carbonate_recipe": true,
-        "carbonate_like": true
+        "charge_method": "wb97m-v",
+        "charge_model": "RESP",
+        "opt_basis": "def2-TZVP",
+        "opt_basis_gen": {
+          "Br": "def2-TZVP",
+          "I": "def2-TZVP"
+        },
+        "opt_method": "wb97m-v",
+        "resp_profile": "adaptive"
       },
       "is_polyelectrolyte": false,
       "is_polymer": false,
