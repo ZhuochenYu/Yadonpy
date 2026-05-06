@@ -26,12 +26,13 @@ from .sim import qm  # noqa: F401
 from .sim.analyzer import AnalyzeResult  # noqa: F401
 from .sim.performance import IOAnalysisPolicy, resolve_io_analysis_policy  # noqa: F401
 from .diagnostics import doctor  # noqa: F401
-from .interface import BulkCalibrationResult, ElectrolyteSlabSpec, GraphitePreparationResult, GraphiteSubstrateSpec, InterfaceBuildPolicy, InterfaceBuilder, InterfaceDynamics, InterfaceProtocol, InterfaceRouteSpec, InterfaceTransportResult, InterphaseBuildResult, MoleculeSpec, PolymerSlabSpec, SandwichRelaxationSpec, StackReleaseResult, analyze_interface_transport, build_cmc_electrolyte_interphase, build_cmcna_graphite_electrolyte_stack, build_graphite_cmc_interphase, build_graphite_cmcna_example_case, build_graphite_cmcna_glucose6_periodic_case, build_graphite_cmcna_electrolyte_sandwich, build_graphite_peo_electrolyte_sandwich, build_graphite_peo_example_case, build_graphite_polymer_electrolyte_sandwich, build_graphite_polymer_interphase, build_interface, build_interface_from_workdirs, build_polymer_electrolyte_interphase, calibrate_electrolyte_bulk_phase, calibrate_polymer_bulk_phase, default_carbonate_lipf6_electrolyte_spec, default_cmcna_polymer_spec, default_peo_electrolyte_spec, default_peo_polymer_spec, prepare_graphite_substrate, print_interface_result_summary, print_sandwich_result_summary, release_graphite_cmc_electrolyte_stack, release_graphite_polymer_electrolyte_stack  # noqa: F401
+from .interface import BulkCalibrationResult, ElectrolyteSlabSpec, GraphitePreparationResult, GraphiteSubstrateSpec, InterfaceBuildPolicy, InterfaceBuilder, InterfaceDynamics, InterfaceProtocol, InterfaceRouteSpec, InterfaceTransportResult, InterphaseBuildResult, MoleculeSpec, PolymerSlabSpec, SandwichNvtFollowupResult, SandwichRelaxationSpec, StackReleaseResult, analyze_sandwich_interface, analyze_interface_transport, build_cmc_electrolyte_interphase, build_cmcna_graphite_electrolyte_stack, build_graphite_cmc_interphase, build_graphite_cmcna_example_case, build_graphite_cmcna_glucose6_periodic_case, build_graphite_cmcna_electrolyte_sandwich, build_graphite_peo_electrolyte_sandwich, build_graphite_peo_example_case, build_graphite_polymer_electrolyte_sandwich, build_graphite_polymer_interphase, build_interface, build_interface_from_workdirs, build_polymer_electrolyte_interphase, calibrate_electrolyte_bulk_phase, calibrate_polymer_bulk_phase, default_carbonate_lipf6_electrolyte_spec, default_cmcna_polymer_spec, default_peo_electrolyte_spec, default_peo_polymer_spec, prepare_graphite_substrate, print_interface_result_summary, print_sandwich_result_summary, release_graphite_cmc_electrolyte_stack, release_graphite_polymer_electrolyte_stack, run_sandwich_nvt_followup  # noqa: F401
 from .runtime import get_run_options, set_run_options, run_options  # noqa: F401
 from .api import (  # noqa: F401
     audit_default_moldb_sync,
     audit_oplsaa_reference,
     analyze_interface_transport,
+    analyze_sandwich_interface,
     assign_charges,
     assign_forcefield,
     build_graphite,
@@ -66,6 +67,7 @@ from .api import (  # noqa: F401
     release_graphite_cmc_electrolyte_stack,
     release_graphite_polymer_electrolyte_stack,
     resolve_prepared_system,
+    run_sandwich_nvt_followup,
     run_elongation_gmx,
     run_tg_scan_gmx,
 )
@@ -79,6 +81,7 @@ __all__ = [
     'audit_default_moldb_sync',
     'audit_oplsaa_reference',
     'analyze_interface_transport',
+    'analyze_sandwich_interface',
     'build_graphite',
     'build_cmc_electrolyte_interphase',
     'build_cmcna_graphite_electrolyte_stack',
@@ -131,8 +134,10 @@ __all__ = [
     'resolve_prepared_system',
     'resolve_io_analysis_policy',
     'run_elongation_gmx',
+    'run_sandwich_nvt_followup',
     'run_options',
     'run_tg_scan_gmx',
+    'SandwichNvtFollowupResult',
     'SandwichRelaxationSpec',
     'set_run_options',
     'StackReleaseResult',

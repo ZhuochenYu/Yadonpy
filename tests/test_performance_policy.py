@@ -113,6 +113,8 @@ def test_npt_auto_policy_writes_coarse_output_cadence(tmp_path: Path, monkeypatc
     assert "nstlog                   = 10000" in mdp_text
     summary = json.loads((tmp_path / "05_npt_production" / "summary.json").read_text(encoding="utf-8"))
     assert summary["performance_policy"]["policy_level"] == "efficient"
+    step_summary = json.loads((tmp_path / "05_npt_production" / "01_npt" / "summary.json").read_text(encoding="utf-8"))
+    assert step_summary["performance_policy"]["traj_ps"] == pytest.approx(20.0)
 
 
 def test_analyzer_auto_profile_reads_production_policy(tmp_path: Path):
@@ -142,3 +144,85 @@ def test_analyzer_auto_profile_reads_production_policy(tmp_path: Path):
 
     assert analyzer._resolve_analysis_profile("auto") == "minimal"
     assert analyzer._analysis_policy_cache_meta()["output_traj_ps"] == pytest.approx(50.0)
+
+
+def test_analyzer_runtime_policy_downsamples_dense_legacy_trajectory(tmp_path: Path):
+    prod_dir = tmp_path / "05_npt_production" / "02_npt"
+    prod_dir.mkdir(parents=True, exist_ok=True)
+    (prod_dir / "md.mdp").write_text(
+        "dt = 0.001\n"
+        "nsteps = 400000000\n"
+        "nstxout-compressed = 2000\n",
+        encoding="utf-8",
+    )
+    for name in ("md.tpr", "md.xtc", "md.edr"):
+        (prod_dir / name).write_text("x\n", encoding="utf-8")
+    analyzer = AnalyzeResult(
+        work_dir=tmp_path,
+        tpr=prod_dir / "md.tpr",
+        xtc=prod_dir / "md.xtc",
+        edr=prod_dir / "md.edr",
+        top=tmp_path / "system.top",
+        ndx=tmp_path / "system.ndx",
+    )
+
+    policy = analyzer._resolve_analysis_runtime_policy("rdf", profile="transport_fast", requested_frame_stride=5)
+
+    assert policy["estimated_raw_frames"] == 200001
+    assert policy["max_frames"] == 10000
+    assert policy["frame_stride"] == 21
+    assert policy["estimated_effective_frames"] <= 10000
+    assert policy["analysis_cost_warning"] == "dense_legacy_trajectory_downsampled"
+    runtime_json = json.loads((tmp_path / "06_analysis" / "analysis_runtime_policy.json").read_text(encoding="utf-8"))
+    assert runtime_json["sections"]["rdf"]["frame_stride"] == 21
+
+
+def test_analyzer_runtime_policy_global_cap_can_tighten_sections(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("MAX_ANALYSIS_FRAMES", "5000")
+    prod_dir = tmp_path / "05_npt_production" / "02_npt"
+    prod_dir.mkdir(parents=True, exist_ok=True)
+    (prod_dir / "md.mdp").write_text(
+        "dt = 0.001\n"
+        "nsteps = 400000000\n"
+        "nstxout-compressed = 2000\n",
+        encoding="utf-8",
+    )
+    analyzer = AnalyzeResult(
+        work_dir=tmp_path,
+        tpr=prod_dir / "md.tpr",
+        xtc=prod_dir / "md.xtc",
+        edr=prod_dir / "md.edr",
+        top=tmp_path / "system.top",
+        ndx=tmp_path / "system.ndx",
+    )
+
+    policy = analyzer._resolve_analysis_runtime_policy("rdf", profile="transport_fast", requested_frame_stride=5)
+
+    assert policy["max_frames"] == 5000
+    assert policy["frame_stride"] == 41
+    assert policy["estimated_effective_frames"] <= 5000
+
+
+def test_analyzer_runtime_policy_full_profile_keeps_requested_stride(tmp_path: Path):
+    prod_dir = tmp_path / "05_npt_production" / "02_npt"
+    prod_dir.mkdir(parents=True, exist_ok=True)
+    (prod_dir / "md.mdp").write_text(
+        "dt = 0.001\n"
+        "nsteps = 400000000\n"
+        "nstxout-compressed = 2000\n",
+        encoding="utf-8",
+    )
+    analyzer = AnalyzeResult(
+        work_dir=tmp_path,
+        tpr=prod_dir / "md.tpr",
+        xtc=prod_dir / "md.xtc",
+        edr=prod_dir / "md.edr",
+        top=tmp_path / "system.top",
+        ndx=tmp_path / "system.ndx",
+    )
+
+    policy = analyzer._resolve_analysis_runtime_policy("rdf", profile="full", requested_frame_stride=1)
+
+    assert policy["estimated_raw_frames"] == 200001
+    assert policy["frame_stride"] == 1
+    assert policy["analysis_cost_warning"] is None

@@ -62,8 +62,16 @@ def _read_gro_box_nm(gro_path: Path) -> tuple[float, float, float]:
 
 
 def _unwrap_phase_z(values: Sequence[float], *, box_z_nm: float) -> list[float]:
-    arr = np.asarray(list(values), dtype=float)
-    if arr.size == 0 or box_z_nm <= 0.0:
+    raw = np.asarray(list(values), dtype=float)
+    if raw.size == 0 or box_z_nm <= 0.0:
+        return [float(x) for x in raw]
+    # GROMACS tools such as ``trjconv -pbc whole`` may legitimately write
+    # whole molecules with z coordinates slightly below 0 or above box_z.
+    # Normalize those coordinates before looking for the compact periodic slab;
+    # otherwise a top electrolyte layer can be misread as spanning the full box.
+    raw_outside_box = bool(float(np.min(raw)) < 0.0 or float(np.max(raw)) >= float(box_z_nm))
+    arr = np.mod(raw, float(box_z_nm)) if raw_outside_box else raw.copy()
+    if arr.size == 0:
         return [float(x) for x in arr]
     if float(np.max(arr) - np.min(arr)) <= 0.5 * float(box_z_nm):
         return [float(x) for x in arr]
@@ -79,11 +87,13 @@ def _unwrap_phase_z(values: Sequence[float], *, box_z_nm: float) -> list[float]:
 
 
 def _phase_crosses_z_boundary(values: Sequence[float], *, box_z_nm: float) -> tuple[bool, list[float]]:
-    arr = np.asarray(list(values), dtype=float)
-    if arr.size == 0 or box_z_nm <= 0.0:
-        return False, [float(x) for x in arr]
+    raw = np.asarray(list(values), dtype=float)
+    if raw.size == 0 or box_z_nm <= 0.0:
+        return False, [float(x) for x in raw]
+    raw_outside_box = bool(float(np.min(raw)) < 0.0 or float(np.max(raw)) >= float(box_z_nm))
+    arr = np.mod(raw, float(box_z_nm)) if raw_outside_box else raw.copy()
     raw_span = float(np.max(arr) - np.min(arr))
-    if raw_span <= 0.5 * float(box_z_nm):
+    if raw_span <= 0.5 * float(box_z_nm) and not raw_outside_box:
         return False, [float(x) for x in arr]
 
     # A thick, centered slab can legitimately occupy more than half of its
@@ -97,7 +107,10 @@ def _phase_crosses_z_boundary(values: Sequence[float], *, box_z_nm: float) -> tu
 
     unwrapped = np.asarray(_unwrap_phase_z(arr.tolist(), box_z_nm=float(box_z_nm)), dtype=float)
     unwrapped_span = float(np.max(unwrapped) - np.min(unwrapped)) if unwrapped.size else raw_span
-    crosses = bool(unwrapped_span < 0.85 * raw_span and unwrapped_span < 0.60 * float(box_z_nm))
+    crosses = bool(
+        (raw_outside_box or (touches_lower and touches_upper))
+        and unwrapped_span < 0.85 * max(raw_span, 1.0e-9)
+    )
     return crosses, [float(x) for x in (unwrapped if crosses else arr)]
 
 
@@ -131,12 +144,63 @@ def _minimum_atom_distance_nm(coords: Sequence[tuple[float, float, float]], *, c
     return float(np.sqrt(best2))
 
 
+def _minimum_group_distance_nm(
+    coords: Sequence[tuple[float, float, float]],
+    members_a: Sequence[int],
+    members_b: Sequence[int],
+    *,
+    cutoff_nm: float = 0.30,
+) -> float | None:
+    if not members_a or not members_b:
+        return None
+    cutoff = max(float(cutoff_nm), 1.0e-6)
+    bins: dict[tuple[int, int, int], list[tuple[float, float, float]]] = {}
+    for raw_idx in members_b:
+        idx = int(raw_idx) - 1
+        if idx < 0 or idx >= len(coords):
+            continue
+        point = tuple(float(x) for x in coords[idx])
+        key = (
+            int(math.floor(point[0] / cutoff)),
+            int(math.floor(point[1] / cutoff)),
+            int(math.floor(point[2] / cutoff)),
+        )
+        bins.setdefault(key, []).append(point)
+
+    best2 = float("inf")
+    for raw_idx in members_a:
+        idx = int(raw_idx) - 1
+        if idx < 0 or idx >= len(coords):
+            continue
+        point = tuple(float(x) for x in coords[idx])
+        key = (
+            int(math.floor(point[0] / cutoff)),
+            int(math.floor(point[1] / cutoff)),
+            int(math.floor(point[2] / cutoff)),
+        )
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                for dz in (-1, 0, 1):
+                    for other in bins.get((key[0] + dx, key[1] + dy, key[2] + dz), []):
+                        dist2 = (
+                            (point[0] - other[0]) ** 2
+                            + (point[1] - other[1]) ** 2
+                            + (point[2] - other[2]) ** 2
+                        )
+                        if dist2 < best2:
+                            best2 = float(dist2)
+    if not np.isfinite(best2):
+        return None
+    return float(np.sqrt(best2))
+
+
 def build_stack_checks(*, gro_path: Path, ndx_groups: dict[str, list[int]]) -> dict[str, object]:
     z_coords = _read_gro_z_coords(gro_path)
     _box_x_nm, _box_y_nm, box_z_nm = _read_gro_box_nm(gro_path)
+    xyz_coords = _read_gro_xyz_coords(gro_path)
     payload: dict[str, object] = {
         "gro_path": str(gro_path),
-        "min_atom_distance_nm": _minimum_atom_distance_nm(_read_gro_xyz_coords(gro_path)),
+        "min_atom_distance_nm": _minimum_atom_distance_nm(xyz_coords),
     }
     phase_stats: dict[str, dict[str, float]] = {}
     for name in ("GRAPHITE", "POLYMER", "ELECTROLYTE"):
@@ -170,6 +234,26 @@ def build_stack_checks(*, gro_path: Path, ndx_groups: dict[str, list[int]]) -> d
         payload["polymer_electrolyte_gap_nm"] = float(phase_stats["ELECTROLYTE"]["min_z_nm"] - phase_stats["POLYMER"]["max_z_nm"])
         payload["graphite_polymer_core_gap_nm"] = float(phase_stats["POLYMER"]["p05_z_nm"] - phase_stats["GRAPHITE"]["p95_z_nm"])
         payload["polymer_electrolyte_core_gap_nm"] = float(phase_stats["ELECTROLYTE"]["p05_z_nm"] - phase_stats["POLYMER"]["p95_z_nm"])
+    interphase_distances = {
+        "graphite_polymer": _minimum_group_distance_nm(
+            xyz_coords,
+            ndx_groups.get("GRAPHITE", []),
+            ndx_groups.get("POLYMER", []),
+        ),
+        "polymer_electrolyte": _minimum_group_distance_nm(
+            xyz_coords,
+            ndx_groups.get("POLYMER", []),
+            ndx_groups.get("ELECTROLYTE", []),
+        ),
+        "graphite_electrolyte": _minimum_group_distance_nm(
+            xyz_coords,
+            ndx_groups.get("GRAPHITE", []),
+            ndx_groups.get("ELECTROLYTE", []),
+        ),
+    }
+    payload["interphase_min_distances_nm"] = interphase_distances
+    finite_interphase = [float(x) for x in interphase_distances.values() if x is not None]
+    payload["min_interphase_distance_nm"] = min(finite_interphase) if finite_interphase else None
     return payload
 
 
@@ -182,6 +266,7 @@ def build_sandwich_acceptance(
     electrolyte_density_range_g_cm3: tuple[float, float] | None = None,
     charge_summary: dict[str, object] | None = None,
     min_atom_distance_nm: float | None = None,
+    max_core_gap_nm: float | None = None,
 ) -> dict[str, object]:
     polymer_density = representative_phase_density(polymer_summary)
     electrolyte_density = representative_phase_density(electrolyte_summary)
@@ -197,13 +282,34 @@ def build_sandwich_acceptance(
     )
     graphite_polymer_core_gap = float(stack_checks.get("graphite_polymer_core_gap_nm", stack_checks.get("graphite_polymer_gap_nm", 0.0)) or 0.0)
     polymer_electrolyte_core_gap = float(stack_checks.get("polymer_electrolyte_core_gap_nm", stack_checks.get("polymer_electrolyte_gap_nm", 0.0)) or 0.0)
+    max_core_gap = None if max_core_gap_nm is None else float(max_core_gap_nm)
     observed_order = list(stack_checks.get("observed_order") or [])
     expected_order = ["GRAPHITE", "POLYMER", "ELECTROLYTE"]
     polymer_wrapped = bool(polymer_summary.get("wrapped_across_z_boundary", False))
     electrolyte_wrapped = bool(electrolyte_summary.get("wrapped_across_z_boundary", False))
     polymer_density_ok = float(polymer_range[0]) <= float(polymer_density) <= float(polymer_range[1])
     electrolyte_density_ok = float(electrolyte_range[0]) <= float(electrolyte_density) <= float(electrolyte_range[1])
-    min_distance = stack_checks.get("min_atom_distance_nm")
+    polymer_density_direction = (
+        "low"
+        if float(polymer_density) < float(polymer_range[0])
+        else ("high" if float(polymer_density) > float(polymer_range[1]) else "ok")
+    )
+    electrolyte_density_direction = (
+        "low"
+        if float(electrolyte_density) < float(electrolyte_range[0])
+        else ("high" if float(electrolyte_density) > float(electrolyte_range[1]) else "ok")
+    )
+    core_gaps_positive_ok = bool(graphite_polymer_core_gap > 0.0 and polymer_electrolyte_core_gap > 0.0)
+    core_gaps_upper_ok = bool(
+        max_core_gap is None
+        or (graphite_polymer_core_gap <= max_core_gap and polymer_electrolyte_core_gap <= max_core_gap)
+    )
+    all_atom_min_distance = stack_checks.get("min_atom_distance_nm")
+    min_distance = stack_checks.get("min_interphase_distance_nm")
+    min_distance_source = "interphase"
+    if min_distance is None:
+        min_distance = all_atom_min_distance
+        min_distance_source = "all_atom"
     min_distance_value = None if min_distance is None else float(min_distance)
     min_distance_threshold = None if min_atom_distance_nm is None else float(min_atom_distance_nm)
     min_atom_distance_ok = True if min_distance_threshold is None or min_distance_value is None else min_distance_value >= min_distance_threshold
@@ -226,9 +332,14 @@ def build_sandwich_acceptance(
         "electrolyte_density_range_g_cm3": [float(electrolyte_range[0]), float(electrolyte_range[1])],
         "polymer_density_ok": bool(polymer_density_ok),
         "electrolyte_density_ok": bool(electrolyte_density_ok),
+        "polymer_density_direction": polymer_density_direction,
+        "electrolyte_density_direction": electrolyte_density_direction,
         "graphite_polymer_core_gap_nm": float(graphite_polymer_core_gap),
         "polymer_electrolyte_core_gap_nm": float(polymer_electrolyte_core_gap),
-        "core_gaps_ok": bool(graphite_polymer_core_gap > 0.0 and polymer_electrolyte_core_gap > 0.0),
+        "max_core_gap_nm": max_core_gap,
+        "core_gaps_positive_ok": bool(core_gaps_positive_ok),
+        "core_gaps_upper_ok": bool(core_gaps_upper_ok),
+        "core_gaps_ok": bool(core_gaps_positive_ok and core_gaps_upper_ok),
         "wrapped_across_z_boundary": {
             "polymer": bool(polymer_wrapped),
             "electrolyte": bool(electrolyte_wrapped),
@@ -238,6 +349,9 @@ def build_sandwich_acceptance(
         "expected_order": expected_order,
         "order_ok": observed_order == expected_order,
         "min_atom_distance_nm": min_distance_value,
+        "min_all_atom_distance_nm": None if all_atom_min_distance is None else float(all_atom_min_distance),
+        "min_distance_source": min_distance_source,
+        "interphase_min_distances_nm": dict(stack_checks.get("interphase_min_distances_nm") or {}),
         "min_atom_distance_threshold_nm": min_distance_threshold,
         "min_atom_distance_ok": bool(min_atom_distance_ok),
         "charge_summary": charge_payload,
@@ -299,11 +413,17 @@ def _density_acceptance_range(
     return float((1.0 - rel_tol) * target), float((1.0 + rel_tol) * target)
 
 
-def phase_local_density_summary(*, gro_path: Path, species: Sequence, counts: Sequence[int]) -> dict[str, object]:
-    coords = np.asarray(_read_gro_z_coords(gro_path), dtype=float)
+def _phase_local_density_summary_from_z(
+    *,
+    z_values: Sequence[float],
+    box_nm: tuple[float, float, float],
+    species: Sequence,
+    counts: Sequence[int],
+) -> dict[str, object]:
+    coords = np.asarray(list(z_values), dtype=float)
     if coords.size == 0:
         return {
-            "box_nm": list(_read_gro_box_nm(gro_path)),
+            "box_nm": list(box_nm),
             "occupied_thickness_nm": 0.0,
             "occupied_density_g_cm3": 0.0,
             "center_window_nm": 0.0,
@@ -312,7 +432,6 @@ def phase_local_density_summary(*, gro_path: Path, species: Sequence, counts: Se
             "wrapped_across_z_boundary": False,
         }
 
-    box_nm = _read_gro_box_nm(gro_path)
     box_z_nm = max(float(box_nm[2]), 1.0e-9)
     wrapped, normalized_z = _phase_crosses_z_boundary(coords.tolist(), box_z_nm=box_z_nm)
     if wrapped:
@@ -332,6 +451,9 @@ def phase_local_density_summary(*, gro_path: Path, species: Sequence, counts: Se
         }
 
     species_masses = [float(molecular_weight(mol, strict=True)) for mol in species]
+    total_mass_amu_from_counts = float(
+        sum(float(mass_amu) * int(count) for mass_amu, count in zip(species_masses, counts))
+    )
     atom_masses: list[float] = []
     for mol, count, mass_amu in zip(species, counts, species_masses):
         nat = max(int(mol.GetNumAtoms()), 1)
@@ -339,7 +461,7 @@ def phase_local_density_summary(*, gro_path: Path, species: Sequence, counts: Se
         for _ in range(int(count)):
             atom_masses.extend([per_atom_mass] * nat)
     if len(atom_masses) != len(coords):
-        atom_masses = [float(sum(species_masses)) / float(max(len(coords), 1))] * len(coords)
+        atom_masses = [float(total_mass_amu_from_counts) / float(max(len(coords), 1))] * len(coords)
     masses = np.asarray(atom_masses, dtype=float)
 
     occupied_min = float(np.min(coords))
@@ -378,6 +500,34 @@ def phase_local_density_summary(*, gro_path: Path, species: Sequence, counts: Se
         "center_bulk_like_density_g_cm3": center_density,
         "wrapped_across_z_boundary": wrapped,
     }
+
+
+def phase_local_density_summary(*, gro_path: Path, species: Sequence, counts: Sequence[int]) -> dict[str, object]:
+    return _phase_local_density_summary_from_z(
+        z_values=_read_gro_z_coords(gro_path),
+        box_nm=_read_gro_box_nm(gro_path),
+        species=species,
+        counts=counts,
+    )
+
+
+def phase_local_density_summary_for_group(
+    *,
+    gro_path: Path,
+    atom_indices: Sequence[int],
+    species: Sequence,
+    counts: Sequence[int],
+) -> dict[str, object]:
+    """Summarize one phase inside a released stack from an index group."""
+
+    all_z = _read_gro_z_coords(gro_path)
+    members = [int(idx) for idx in atom_indices if 1 <= int(idx) <= len(all_z)]
+    return _phase_local_density_summary_from_z(
+        z_values=[float(all_z[idx - 1]) for idx in members],
+        box_nm=_read_gro_box_nm(gro_path),
+        species=species,
+        counts=counts,
+    )
 
 
 def representative_phase_density(summary: dict[str, object]) -> float:

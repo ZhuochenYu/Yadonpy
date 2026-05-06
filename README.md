@@ -1,7 +1,7 @@
 # YadonPy
 
 YadonPy is a script-first molecular modeling and simulation toolkit for polymers,
-electrolytes, graphite-supported interfaces, and GROMACS-based workflows.
+electrolytes, graphite-supported interfaces, and GROMACS-first workflows.
 It keeps the scientific procedure visible in ordinary Python scripts while still
 providing reusable building blocks for charge assignment, force-field preparation,
 bulk packing, interface assembly, equilibration, and analysis.
@@ -100,6 +100,20 @@ result = yp.build_cmcna_graphite_electrolyte_stack(
     policy=policy,
 )
 yp.print_interface_result_summary(result)
+
+followup = yp.run_sandwich_nvt_followup(
+    result,
+    work_dir="./work_sandwich/07_nvt_followup",
+    time_ns=4.0,
+    temp=318.15,
+)
+print(followup.summary_path)
+
+profile = yp.analyze_sandwich_interface(
+    work_dir="./work_sandwich",
+    analysis_profile="interface_fast",
+)
+print(profile["outputs"]["interface_profile_summary_json"])
 ```
 
 ## Workflow Areas
@@ -158,6 +172,15 @@ trajectory output, but switches long or large systems to coarser 10-50 ps output
 and matching fast-analysis defaults. Set `PERFORMANCE_PROFILE=full` or explicit
 `TRAJ_PS` / `ENERGY_PS` / `LOG_PS` values when you need dense trajectories for
 short-time dynamics.
+
+Post-processing has a second safety layer for legacy dense trajectories: in
+`auto`, `transport_fast`, and `minimal` modes, YadonPy estimates the trajectory
+frame count from the production `.mdp` and automatically increases the read-time
+stride for cell, RDF, MSD, and polymer metrics when the frame count is too high.
+The decision is written to `06_analysis/analysis_runtime_policy.json`; use
+`MAX_ANALYSIS_FRAMES` as a global tightening cap, or `MAX_RDF_FRAMES`,
+`MAX_MSD_FRAMES`, `MAX_CELL_FRAMES`, and `MAX_POLYMER_METRIC_FRAMES` for
+section-specific caps. Set `ANALYSIS_PROFILE=full` to force dense analysis.
 
 `dielectric()` wraps `gmx dipoles` and estimates the static dielectric constant
 from total dipole fluctuations. Use the same GROMACS major version that produced
@@ -230,7 +253,7 @@ resumed or audited without guessing which intermediate files are authoritative.
 - `examples/05_cmcna_electrolyte`: CMC-Na polymer-electrolyte construction.
 - `examples/06_polymer_electrolyte_nvt`: polymer-electrolyte workflow with NVT-focused staging.
 - `examples/07_moldb_precompute_and_reuse`: one-shot MolDB catalog build and MolDB-backed reuse scripts.
-- `examples/08_graphite_polymer_electrolyte_sandwich`: graphite-polymer-electrolyte sandwich workflows for PEO and CMC-Na.
+- `examples/08_graphite_polymer_electrolyte_sandwich`: two script-first graphite-polymer-electrolyte interface workflows: PEO and CMC-Na.
 - `examples/09_oplsaa_assignment`: compact OPLS-AA assignment workflows written in the same script-first style as the main examples.
 - `examples/11_segment_branch_polymer`: segment-first long-block and branched-polymer construction.
 

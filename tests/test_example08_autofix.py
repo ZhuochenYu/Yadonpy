@@ -6,9 +6,9 @@ import sys
 from pathlib import Path
 
 
-EX08_DIR = Path(__file__).resolve().parents[1] / "examples" / "08_graphite_polymer_electrolyte_sandwich"
-if str(EX08_DIR) not in sys.path:
-    sys.path.insert(0, str(EX08_DIR))
+TOOLS_DIR = Path(__file__).resolve().parents[1] / "tools" / "example08_autofix"
+if str(TOOLS_DIR) not in sys.path:
+    sys.path.insert(0, str(TOOLS_DIR))
 
 import _autofix as autofix  # noqa: E402
 import run_iteration_matrix as matrix  # noqa: E402
@@ -17,7 +17,8 @@ import run_iteration_matrix as matrix  # noqa: E402
 def test_build_failure_signature_classifies_acceptance_failure(tmp_path: Path):
     matrix_dir = tmp_path / "matrix"
     remote_base = Path("/remote/round_001")
-    local_case = matrix_dir / "iter_001" / "fresh" / "01_peo_smoke" / "work_dir" / "06_full_stack_release"
+    case_name = "01_peo_graphite_electrolyte_smoke"
+    local_case = matrix_dir / "iter_001" / "fresh" / case_name / "work_dir" / "06_full_stack_release"
     local_case.mkdir(parents=True, exist_ok=True)
     manifest = {
         "acceptance": {
@@ -34,21 +35,21 @@ def test_build_failure_signature_classifies_acceptance_failure(tmp_path: Path):
     }
     (local_case / "interface_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
     (local_case / "interface_progress.json").write_text(json.dumps({"stage": "completed"}), encoding="utf-8")
-    logs_dir = matrix_dir / "iter_001" / "fresh" / "01_peo_smoke" / "logs"
+    logs_dir = matrix_dir / "iter_001" / "fresh" / case_name / "logs"
     logs_dir.mkdir(parents=True, exist_ok=True)
     (logs_dir / "fresh.log").write_text("done\n", encoding="utf-8")
     latest = {
         "iteration": 1,
         "results": [
             {
-                "case": "01_peo_smoke",
+                "case": case_name,
                 "phase": "fresh",
                 "returncode": 0,
                 "timed_out": False,
                 "manifest_exists": True,
-                "manifest_path": str(remote_base / "iter_001" / "fresh" / "01_peo_smoke" / "work_dir" / "06_full_stack_release" / "interface_manifest.json"),
-                "progress_path": str(remote_base / "iter_001" / "fresh" / "01_peo_smoke" / "work_dir" / "06_full_stack_release" / "interface_progress.json"),
-                "log_path": str(remote_base / "iter_001" / "fresh" / "01_peo_smoke" / "logs" / "fresh.log"),
+                "manifest_path": str(remote_base / "iter_001" / "fresh" / case_name / "work_dir" / "06_full_stack_release" / "interface_manifest.json"),
+                "progress_path": str(remote_base / "iter_001" / "fresh" / case_name / "work_dir" / "06_full_stack_release" / "interface_progress.json"),
+                "log_path": str(remote_base / "iter_001" / "fresh" / case_name / "logs" / "fresh.log"),
             }
         ],
     }

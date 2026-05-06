@@ -34,6 +34,8 @@ Package root exports include:
 - `yp.build_graphite_polymer_electrolyte_sandwich`
 - `yp.build_graphite_peo_electrolyte_sandwich`
 - `yp.build_graphite_cmcna_electrolyte_sandwich`
+- `yp.run_sandwich_nvt_followup`
+- `yp.analyze_sandwich_interface`
 - `yp.resolve_prepared_system`
 - `yp.run_tg_scan_gmx`
 - `yp.run_elongation_gmx`
@@ -70,6 +72,8 @@ yp.build_cmcna_graphite_electrolyte_stack(**kwargs)
 yp.build_graphite_polymer_electrolyte_sandwich(**kwargs)
 yp.build_graphite_peo_electrolyte_sandwich(**kwargs)
 yp.build_graphite_cmcna_electrolyte_sandwich(**kwargs)
+yp.run_sandwich_nvt_followup(result, *, work_dir, time_ns=4.0, temp=None, ...)
+yp.analyze_sandwich_interface(*, work_dir, analysis_profile="interface_fast", ...)
 yp.resolve_prepared_system(
     *,
     gro: str | Path | None = None,
@@ -209,6 +213,15 @@ AnalyzeResult.migration(
 
 AnalyzeResult.migration_markov(center_mol, **kwargs)
 AnalyzeResult.migration_residence(center_mol, **kwargs)
+AnalyzeResult.interface_profile(
+    *,
+    bin_nm: float = 0.05,
+    frame_stride: int | str = "auto",
+    region_width_nm: float = 0.75,
+    analysis_profile: str = "interface_fast",
+    compute_transport: bool = True,
+    resume: bool = False,
+)
 ```
 
 Transport semantics:
@@ -220,8 +233,18 @@ Transport semantics:
   for screening many cases.
 - `analysis_profile="auto"` reads the production performance policy when present
   and resolves to `transport_fast` or `minimal` for large/long runs.
+- In non-`full` profiles, the analyzer also estimates trajectory frame count and
+  automatically increases the read-time frame stride for dense legacy `.xtc`
+  files. The resolved policy is written to
+  `06_analysis/analysis_runtime_policy.json`; caps can be tuned with
+  global `MAX_ANALYSIS_FRAMES` or section-specific `MAX_RDF_FRAMES`,
+  `MAX_MSD_FRAMES`, `MAX_CELL_FRAMES`, and `MAX_POLYMER_METRIC_FRAMES`.
 - `analysis_profile="minimal"` is the most aggressive screening mode: necessary
   transport species only, coarser RDF, and default MSD metrics only.
+- `analysis_profile="interface_fast"` is for graphite/polymer/electrolyte stacks.
+  It writes `06_analysis/interface_profile/` with z density profiles, region
+  summaries, Li coordination partitioning, enrichment, and anisotropic `Dxy/Dz`
+  MSD diagnostics.
 - `analysis_profile="full"` keeps the historical all-site RDF/MSD behavior.
 - `get_all_prop(..., include_polymer_metrics=False)` skips expensive Rg,
   end-to-end, and persistence-length post-processing while preserving thermo and
@@ -900,6 +923,10 @@ SandwichRelaxationSpec(
     stacked_pre_nvt_ps: float = 20.0,
     stacked_z_relax_ps: float = 80.0,
     stacked_exchange_ps: float = 120.0,
+    stack_freeze_group: str | None = "GRAPHITE",
+    stack_release_graphite_final: bool = True,
+    stack_frozen_gpu_offload_mode: str = "balanced",
+    stack_final_gpu_offload_mode: str = "full",
 )
 
 InterfaceBuildPolicy(
@@ -914,6 +941,7 @@ InterfaceBuildPolicy(
 
 SandwichPhaseReport(...)
 GraphitePolymerElectrolyteSandwichResult(...)
+SandwichNvtFollowupResult(...)
 ```
 
 ### Factory helpers
@@ -938,11 +966,26 @@ build_cmcna_graphite_electrolyte_stack(**kwargs)
 build_graphite_polymer_electrolyte_sandwich(**kwargs)
 build_graphite_peo_electrolyte_sandwich(**kwargs)
 build_graphite_cmcna_electrolyte_sandwich(**kwargs)
+run_sandwich_nvt_followup(result, *, work_dir, time_ns=4.0, temp=None, ...)
+analyze_sandwich_interface(*, work_dir, analysis_profile="interface_fast", ...)
 ```
 
 Use `build_cmcna_graphite_electrolyte_stack` for the recommended CMC-Na
 graphite/electrolyte workflow. Use the staged functions when you need explicit
 restart points or to debug one phase at a time.
+Use `run_sandwich_nvt_followup` to start from an accepted stack `relaxed_gro`
+and run a short NVT observation without rebuilding the interface.
+The helper now includes a compact 20 ps + 20 ps 1 fs bridge. By default the
+bridge freezes graphite and uses balanced GPU offload because GROMACS cannot
+use GPU update with frozen atoms; pass `freeze_group=None` for fully mobile
+bonded graphite systems so every dynamic stage can use full GPU offload.
+Likewise, set `SandwichRelaxationSpec(stack_freeze_group=None)` when the stack
+release itself should never freeze graphite.
+Use `analyze_sandwich_interface` on the stack work directory or
+`07_nvt_followup` directory to compute geometry health, z profiles,
+polymer/electrolyte interpenetration, Li coordination-by-region, enrichment, and
+anisotropic interface MSD. `Dxy` is the main transport diagnostic for wall-
+confined systems; `Dz` is reported only as confined-direction mobility.
 
 ## 10. Internal Modules
 

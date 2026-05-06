@@ -154,6 +154,54 @@ def test_system_export_rejects_legacy_artifact_cache_for_adaptive_constraints(tm
     )
 
 
+def test_neutral_generated_polymer_cache_tolerates_reloaded_fragment_signature(tmp_path):
+    cache_dir = tmp_path / "peo_cache"
+    cache_dir.mkdir()
+    (cache_dir / "meta.json").write_text(
+        json.dumps({"n_atoms": 3, "atom_order_signature": "original-rich-rdkit-props"}),
+        encoding="utf-8",
+    )
+    reloaded_fragment = Chem.MolFromSmiles("CCO")
+
+    assert _cached_artifact_compatible(
+        cache_dir,
+        species_payload={
+            "natoms": 3,
+            "name": "PEO",
+            "cached_artifact_dir": str(cache_dir),
+            "cached_mol_id": "neutral-polymer-cache",
+        },
+        kind="polymer",
+        rep_mol=reloaded_fragment,
+        mol_name="PEO",
+    )
+
+
+def test_polyelectrolyte_cache_still_rejects_atom_signature_mismatch(tmp_path):
+    cache_dir = tmp_path / "cmc_cache"
+    cache_dir.mkdir()
+    (cache_dir / "meta.json").write_text(
+        json.dumps({"n_atoms": 3, "atom_order_signature": "original-charge-group-order"}),
+        encoding="utf-8",
+    )
+    reloaded_fragment = Chem.MolFromSmiles("CCO")
+
+    assert not _cached_artifact_compatible(
+        cache_dir,
+        species_payload={
+            "natoms": 3,
+            "name": "CMC",
+            "cached_artifact_dir": str(cache_dir),
+            "cached_mol_id": "charged-polymer-cache",
+            "polyelectrolyte_mode": True,
+            "charge_groups": [{"atom_indices": [1, 2], "formal_charge": -1, "label": "carboxylate"}],
+        },
+        kind="polymer",
+        rep_mol=reloaded_fragment,
+        mol_name="CMC",
+    )
+
+
 def test_export_system_uses_species_specific_charge_policy_for_built_in_opls_ions(tmp_path, monkeypatch):
     calls: dict[str, object] = {}
     ff = OPLSAA()

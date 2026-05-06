@@ -495,10 +495,39 @@ def stack_cell_blocks(
         fixed_y_ang = float(fixed_xy_ang[1])
         if fixed_x_ang <= 0.0 or fixed_y_ang <= 0.0:
             raise ValueError("fixed_xy_ang must contain positive box lengths")
-        if x_span > fixed_x_ang + 1.0e-6 or y_span > fixed_y_ang + 1.0e-6:
+        for block, (mins, maxs) in zip(dup_blocks, extents):
+            block_x_span = float(maxs[0] - mins[0])
+            block_y_span = float(maxs[1] - mins[1])
+            if block_x_span <= fixed_x_ang + 1.0e-6 and block_y_span <= fixed_y_ang + 1.0e-6:
+                continue
+
+            cell = getattr(block, "cell", None)
+            cell_x_ang = None
+            cell_y_ang = None
+            if cell is not None:
+                try:
+                    cell_x_ang = abs(float(cell.xhi) - float(cell.xlo))
+                    cell_y_ang = abs(float(cell.yhi) - float(cell.ylo))
+                except Exception:
+                    cell_x_ang = None
+                    cell_y_ang = None
+
+            periodic_xy_matches_fixed = (
+                cell_x_ang is not None
+                and cell_y_ang is not None
+                and abs(float(cell_x_ang) - fixed_x_ang) <= 5.0e-2
+                and abs(float(cell_y_ang) - fixed_y_ang) <= 5.0e-2
+            )
+            if periodic_xy_matches_fixed:
+                # Whole-molecule PBC repair can legitimately leave long chains
+                # extending outside the primary XY image even though the block's
+                # periodic footprint is exactly the requested fixed footprint.
+                # Keep the fixed box and let GROMACS image these coordinates.
+                continue
+
             raise ValueError(
                 "stack_cell_blocks received a block larger than the requested fixed_xy_ang "
-                f"({x_span:.6f}, {y_span:.6f}) A vs ({fixed_x_ang:.6f}, {fixed_y_ang:.6f}) A"
+                f"({block_x_span:.6f}, {block_y_span:.6f}) A vs ({fixed_x_ang:.6f}, {fixed_y_ang:.6f}) A"
             )
         x_center = 0.5 * fixed_x_ang
         y_center = 0.5 * fixed_y_ang
@@ -564,7 +593,11 @@ def register_cell_species_metadata(
             "n": int(n),
             "natoms": int(mol.GetNumAtoms()),
             "name": get_name(mol, default=None),
-            "ff_name": str(mol.GetProp("_yadonpy_ff_name")) if mol.HasProp("_yadonpy_ff_name") else None,
+            "ff_name": (
+                str(mol.GetProp("_yadonpy_ff_name"))
+                if mol.HasProp("_yadonpy_ff_name")
+                else (str(mol.GetProp("ff_name")) if mol.HasProp("ff_name") else None)
+            ),
         }
         if charge_scale is not None:
             if isinstance(charge_scale, (list, tuple)):

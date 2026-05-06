@@ -15,6 +15,7 @@ from typing import Sequence
 BASE_DIR = Path(__file__).resolve().parent
 REPO_ROOT = BASE_DIR.parent.parent
 SRC_DIR = REPO_ROOT / "src"
+EX08_DIR = REPO_ROOT / "examples" / "08_graphite_polymer_electrolyte_sandwich"
 
 
 @dataclass(frozen=True)
@@ -30,12 +31,11 @@ class CaseSpec:
 
 
 CASES: tuple[CaseSpec, ...] = (
-    CaseSpec(name="01_peo_smoke", script="01_peo_smoke.py", gpu_id=0),
-    CaseSpec(name="03_cmcna_smoke", script="03_cmcna_smoke.py", gpu_id=1),
+    CaseSpec(name="01_peo_graphite_electrolyte_smoke", script="01_peo_graphite_electrolyte.py", gpu_id=0, profile="smoke"),
     CaseSpec(
-        name="05_cmcna_glucose6_periodic_smoke",
-        script="05_cmcna_glucose6_periodic_case.py",
-        gpu_id=2,
+        name="02_cmcna_graphite_electrolyte_smoke",
+        script="02_cmcna_graphite_electrolyte.py",
+        gpu_id=1,
         profile="smoke",
         omp=16,
         psi4_omp=20,
@@ -177,7 +177,7 @@ def run_matrix_iteration(
                 work_dir.mkdir(parents=True, exist_ok=True)
                 log_path = log_dir / f"{phase}.log"
                 handle = stack.enter_context(log_path.open("w", encoding="utf-8"))
-                cmd = [sys.executable, str(BASE_DIR / case.script)]
+                cmd = [sys.executable, str(EX08_DIR / case.script)]
                 handle.write(
                     f"[{_timestamp()}] iteration={iteration} phase={phase} case={case.name} "
                     f"gpu={case.gpu_id} route={case.route} cwd={REPO_ROOT} "

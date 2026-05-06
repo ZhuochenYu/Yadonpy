@@ -4452,6 +4452,7 @@ class NPT(EQ21step):
             shutil.rmtree(run_dir, ignore_errors=True)
         self._resume.run(spec, lambda: job.run(restart=job_restart))
         _write_production_policy_summary(run_dir, policy)
+        _write_production_policy_summary(final_dir, policy)
         self._job = job
         _preset_done("NPT production preset", t_all, detail=f"output={run_dir}")
         return self.ac
@@ -4815,6 +4816,7 @@ class NVT(EQ21step):
             shutil.rmtree(run_dir, ignore_errors=True)
         self._resume.run(spec, lambda: job.run(restart=job_restart))
         _write_production_policy_summary(run_dir, policy)
+        _write_production_policy_summary(final_dir, policy)
         self._job = job
         _preset_done("NVT production preset", t_all, detail=f"output={run_dir}")
         return self.ac

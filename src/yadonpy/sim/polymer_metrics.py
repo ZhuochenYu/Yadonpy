@@ -169,7 +169,15 @@ def _fit_persistence_length(corr: np.ndarray, lb_nm: float) -> Optional[float]:
     return float(-1.0 / slope)
 
 
-def compute_polymer_metrics(*, gro_path: Path, xtc_path: Path, top_path: Path, system_meta_path: Path, chunk: int = 50) -> Dict[str, Any]:
+def compute_polymer_metrics(
+    *,
+    gro_path: Path,
+    xtc_path: Path,
+    top_path: Path,
+    system_meta_path: Path,
+    chunk: int = 50,
+    frame_stride: int = 1,
+) -> Dict[str, Any]:
     try:
         import mdtraj as md
     except Exception as e:
@@ -201,7 +209,19 @@ def compute_polymer_metrics(*, gro_path: Path, xtc_path: Path, top_path: Path, s
     cell_lengths = []
     cell_angles = []
     n_frames_total = 0
-    for trj in md.iterload(str(xtc_path), top=str(gro_path), chunk=int(chunk)):
+    stride = max(1, int(frame_stride or 1))
+    frame_offset = 0
+    for trj_raw in md.iterload(str(xtc_path), top=str(gro_path), chunk=int(chunk)):
+        raw_n_frames = int(getattr(trj_raw, 'n_frames', np.asarray(getattr(trj_raw, 'xyz', [])).shape[0]))
+        if stride > 1:
+            keep = [i for i in range(raw_n_frames) if ((frame_offset + i) % stride) == 0]
+            frame_offset += raw_n_frames
+            if not keep:
+                continue
+            trj = trj_raw[keep]
+        else:
+            frame_offset += raw_n_frames
+            trj = trj_raw
         n_frames_total += int(trj.n_frames)
         if getattr(trj, 'unitcell_lengths', None) is not None:
             try:
@@ -272,7 +292,7 @@ def compute_polymer_metrics(*, gro_path: Path, xtc_path: Path, top_path: Path, s
     return out
 
 
-def compute_cell_summary(*, gro_path: Path, xtc_path: Path, chunk: int = 100) -> Dict[str, Any]:
+def compute_cell_summary(*, gro_path: Path, xtc_path: Path, chunk: int = 100, frame_stride: int = 1) -> Dict[str, Any]:
     try:
         import mdtraj as md
     except Exception as e:
@@ -280,7 +300,19 @@ def compute_cell_summary(*, gro_path: Path, xtc_path: Path, chunk: int = 100) ->
 
     cell_lengths = []
     cell_angles = []
-    for trj in md.iterload(str(xtc_path), top=str(gro_path), chunk=int(chunk)):
+    stride = max(1, int(frame_stride or 1))
+    frame_offset = 0
+    for trj_raw in md.iterload(str(xtc_path), top=str(gro_path), chunk=int(chunk)):
+        raw_n_frames = int(getattr(trj_raw, 'n_frames', np.asarray(getattr(trj_raw, 'xyz', [])).shape[0]))
+        if stride > 1:
+            keep = [i for i in range(raw_n_frames) if ((frame_offset + i) % stride) == 0]
+            frame_offset += raw_n_frames
+            if not keep:
+                continue
+            trj = trj_raw[keep]
+        else:
+            frame_offset += raw_n_frames
+            trj = trj_raw
         if getattr(trj, 'unitcell_lengths', None) is not None:
             try:
                 cell_lengths.append(np.asarray(trj.unitcell_lengths, dtype=float))

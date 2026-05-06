@@ -10,10 +10,12 @@ from __future__ import annotations
 
 import concurrent.futures as confu
 import json
+import math
+import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Optional, Sequence
+from typing import Any, Dict, Mapping, Optional, Sequence
 
 import numpy as np
 
@@ -289,15 +291,15 @@ class AnalyzeResult:
 
         system_dir: Optional[Path] = None
         for base in search_roots:
-            for name in ("02_system", "00_system"):
+            for name in ("02_system", "00_system", "00_stack"):
                 cand = base / name
-                if cand.exists():
+                if cand.exists() and (cand / "system.top").exists():
                     system_dir = cand
                     break
             if system_dir is not None:
                 break
         if system_dir is None:
-            raise FileNotFoundError(f"Could not locate 02_system/00_system under {root}")
+            raise FileNotFoundError(f"Could not locate 02_system/00_system/00_stack under {root}")
 
         def _latest(ext: str) -> Path:
             direct_hits = sorted(
@@ -378,12 +380,19 @@ class AnalyzeResult:
         for stage-local analyses that live under a child directory of the
         exported system work root.
         """
+        top_path = Path(self.top)
+        top_parent = top_path.parent
+        if (
+            (top_path.name == "system.top" and top_parent.name in {"02_system", "00_system", "00_stack"})
+            or (top_parent / "system.top").exists()
+        ):
+            return top_parent
         roots = [self.work_dir]
         roots.extend(list(self.work_dir.parents[:3]))
         for root in roots:
-            for name in ("02_system", "00_system"):
+            for name in ("02_system", "00_system", "00_stack"):
                 d = root / name
-                if d.exists():
+                if d.exists() and (d / "system.top").exists():
                     return d
         # default (even if not yet created)
         return self.work_dir / "02_system"
@@ -505,12 +514,15 @@ class AnalyzeResult:
             return "auto"
         if token in {"fast", "screening", "transport", "transport-fast", "transport_fast"}:
             return "transport_fast"
+        if token in {"interface", "interface-fast", "interface_fast", "sandwich", "sandwich_fast"}:
+            return "interface_fast"
         if token in {"minimal", "min"}:
             return "minimal"
         return "full"
 
     def _read_performance_policy(self) -> dict[str, Any] | None:
         candidates = [
+            Path(self.tpr).parent / "summary.json",
             self.work_dir / "05_npt_production" / "summary.json",
             self.work_dir / "05_nvt_production" / "summary.json",
         ]
@@ -548,6 +560,202 @@ class AnalyzeResult:
             "performance_profile": policy.get("performance_profile"),
             "output_traj_ps": policy.get("traj_ps"),
         }
+
+    def _policy_selected_msd_moltypes(self, metric_catalog: Mapping[str, Any]) -> set[str]:
+        """Resolve optional MSD species hints from the production policy.
+
+        Fast analysis profiles normally keep only ions and polymers. Benchmark
+        workflows can opt neutral transport species, such as EC/EMC/DEC, back in
+        through ``IOAnalysisPolicy.msd_selected_species`` without forcing a full
+        all-species analysis.
+        """
+
+        policy = self._read_performance_policy()
+        if not isinstance(policy, dict):
+            return set()
+        raw = policy.get("msd_selected_species")
+        if raw is None:
+            return set()
+        if isinstance(raw, str):
+            tokens = [part.strip() for part in raw.replace(";", ",").split(",")]
+        elif isinstance(raw, Sequence) and not isinstance(raw, (bytes, bytearray)):
+            tokens = [str(part).strip() for part in raw]
+        else:
+            return set()
+        wanted = {token.lower() for token in tokens if token}
+        if not wanted:
+            return set()
+
+        selected: set[str] = set()
+        for moltype, entry in metric_catalog.items():
+            labels = {str(moltype).lower()}
+            if isinstance(entry, Mapping):
+                for key in ("label", "name", "moltype", "resname"):
+                    value = entry.get(key)
+                    if value:
+                        labels.add(str(value).lower())
+            if labels & wanted:
+                selected.add(str(moltype))
+        return selected
+
+    @staticmethod
+    def _env_int(name: str, default: int) -> int:
+        raw = os.environ.get(name)
+        if raw is None or not str(raw).strip():
+            return int(default)
+        try:
+            return int(float(str(raw).strip()))
+        except Exception:
+            return int(default)
+
+    def _trajectory_output_estimate(self) -> dict[str, Any]:
+        """Return a cheap frame-count estimate for the current production trajectory."""
+
+        mdp_path = Path(self.tpr).with_suffix(".mdp")
+        out: dict[str, Any] = {
+            "mdp_path": str(mdp_path) if mdp_path.exists() else None,
+            "frame_interval_ps": None,
+            "estimated_frames": None,
+            "production_ps": None,
+            "source": "unavailable",
+        }
+        if mdp_path.exists():
+            kv = self._read_mdp_kv(mdp_path)
+            try:
+                dt_ps = float(kv.get("dt", "0"))
+                nsteps = int(float(kv.get("nsteps", "0")))
+                nst = int(float(kv.get("nstxout-compressed") or kv.get("nstxout") or "0"))
+            except Exception:
+                dt_ps, nsteps, nst = 0.0, 0, 0
+            if dt_ps > 0.0 and nsteps > 0 and nst > 0:
+                interval = float(dt_ps) * float(nst)
+                out.update(
+                    {
+                        "frame_interval_ps": float(interval),
+                        "estimated_frames": int(math.ceil(float(nsteps) / float(nst))) + 1,
+                        "production_ps": float(dt_ps) * float(nsteps),
+                        "source": "mdp",
+                    }
+                )
+                return out
+        policy = self._read_performance_policy()
+        if isinstance(policy, dict):
+            try:
+                interval = float(policy.get("traj_ps"))
+                frames = int(policy.get("estimated_frames"))
+                prod_ns = float(policy.get("production_ns"))
+                if interval > 0.0 and frames > 0:
+                    out.update(
+                        {
+                            "frame_interval_ps": interval,
+                            "estimated_frames": frames,
+                            "production_ps": prod_ns * 1000.0 if prod_ns > 0.0 else None,
+                            "source": "performance_policy",
+                        }
+                    )
+            except Exception:
+                pass
+        return out
+
+    def _analysis_frame_cap(self, section: str) -> int:
+        section_key = str(section or "analysis").strip().upper()
+        defaults = {
+            "RDF": 10_000,
+            "MSD": 25_000,
+            "CELL": 20_000,
+            "POLYMER_METRICS": 2_000,
+            "INTERFACE_PROFILE": 10_000,
+        }
+        env_name = f"MAX_{section_key}_FRAMES"
+        general_cap = self._env_int("MAX_ANALYSIS_FRAMES", 25_000)
+        section_default = int(defaults.get(section_key, general_cap))
+        fallback = min(section_default, general_cap)
+        if section_key == "POLYMER_METRICS":
+            fallback = self._env_int("MAX_POLYMER_METRIC_FRAMES", fallback)
+        return max(1, self._env_int(env_name, fallback))
+
+    def _record_analysis_runtime_policy(self, section: str, payload: dict[str, Any]) -> None:
+        """Merge runtime cost-policy metadata into 06_analysis artifacts."""
+
+        path = self._analysis_dir() / "analysis_runtime_policy.json"
+        try:
+            if path.exists():
+                existing = json.loads(path.read_text(encoding="utf-8"))
+                if not isinstance(existing, dict):
+                    existing = {}
+            else:
+                existing = {}
+        except Exception:
+            existing = {}
+        existing.setdefault("trajectory", self._trajectory_output_estimate())
+        existing.setdefault("sections", {})
+        existing["sections"][str(section)] = dict(payload)
+        warnings = [
+            str(v.get("analysis_cost_warning"))
+            for v in (existing.get("sections") or {}).values()
+            if isinstance(v, dict) and v.get("analysis_cost_warning")
+        ]
+        if warnings:
+            existing["analysis_cost_warning"] = sorted(set(warnings))
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(existing, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        except Exception:
+            pass
+        try:
+            self._update_summary_sections(analysis_runtime_policy=existing)
+        except Exception:
+            pass
+
+    def _resolve_analysis_runtime_policy(
+        self,
+        section: str,
+        *,
+        profile: Optional[str] = None,
+        requested_frame_stride: int = 1,
+    ) -> dict[str, Any]:
+        """Resolve analysis-time frame thinning for dense legacy trajectories."""
+
+        resolved_profile = self._resolve_analysis_profile(profile)
+        requested = max(1, int(requested_frame_stride or 1))
+        estimate = self._trajectory_output_estimate()
+        raw_frames = estimate.get("estimated_frames")
+        cap = self._analysis_frame_cap(section)
+        effective_stride = requested
+        reasons: list[str] = []
+        warning = None
+        if resolved_profile != "full" and raw_frames is not None:
+            try:
+                raw_frames_i = int(raw_frames)
+            except Exception:
+                raw_frames_i = 0
+            if raw_frames_i > cap:
+                cap_stride = int(math.ceil(float(raw_frames_i) / float(max(cap, 1))))
+                if cap_stride > effective_stride:
+                    effective_stride = cap_stride
+                    reasons.append(f"estimated_frames>{cap}")
+                    warning = "dense_legacy_trajectory_downsampled"
+        effective_frames = None
+        if raw_frames is not None:
+            try:
+                effective_frames = int(math.ceil(float(raw_frames) / float(max(effective_stride, 1))))
+            except Exception:
+                effective_frames = None
+        payload = {
+            "section": str(section),
+            "analysis_profile": resolved_profile,
+            "requested_frame_stride": int(requested),
+            "frame_stride": int(effective_stride),
+            "max_frames": int(cap),
+            "estimated_raw_frames": int(raw_frames) if raw_frames is not None else None,
+            "estimated_effective_frames": effective_frames,
+            "trajectory_frame_interval_ps": estimate.get("frame_interval_ps"),
+            "trajectory_estimate_source": estimate.get("source"),
+            "analysis_cost_warning": warning,
+            "reasons": reasons,
+        }
+        self._record_analysis_runtime_policy(str(section), payload)
+        return payload
 
     @staticmethod
     def _normalize_site_filter(site_filter: object) -> Optional[list[object]]:
@@ -788,6 +996,8 @@ class AnalyzeResult:
     ) -> Dict[str, Any]:
         """Compute core thermo + polymer metrics and save them into analysis outputs."""
         profile = self._resolve_analysis_profile(analysis_profile)
+        if profile in {"transport_fast", "minimal"}:
+            include_polymer_metrics = False
         t_all = self._section_begin(
             "Post-analysis workflow",
             detail=(
@@ -897,8 +1107,20 @@ class AnalyzeResult:
 
         t0 = self._step_begin("Step 3/5 cell summary", detail="box lengths / volume statistics")
         cell_summary: Dict[str, Any] = {}
+        cell_runtime_policy = self._resolve_analysis_runtime_policy(
+            "cell",
+            profile=profile,
+            requested_frame_stride=1,
+        )
+        if cell_runtime_policy.get("analysis_cost_warning"):
+            self._item("cell_analysis_cost_warning", cell_runtime_policy.get("analysis_cost_warning"))
+        self._item("cell_frame_stride", cell_runtime_policy.get("frame_stride"))
         try:
-            cell_summary = compute_cell_summary(gro_path=self._system_dir() / "system.gro", xtc_path=self.xtc)
+            cell_summary = compute_cell_summary(
+                gro_path=self._system_dir() / "system.gro",
+                xtc_path=self.xtc,
+                frame_stride=int(cell_runtime_policy.get("frame_stride") or 1),
+            )
         except Exception as e:
             cell_summary = {"warning": str(e)}
         if (not cell_summary) or ("lengths_nm" not in cell_summary):
@@ -972,13 +1194,22 @@ class AnalyzeResult:
         polymer_all: Dict[str, Any] = {}
         poly_mts = self._polymer_moltypes_from_meta()
         if poly_mts and bool(include_polymer_metrics):
+            polymer_runtime_policy = self._resolve_analysis_runtime_policy(
+                "polymer_metrics",
+                profile=profile,
+                requested_frame_stride=1,
+            )
             t0 = self._step_begin("Step 4/5 polymer metrics", detail="Rg / end-to-end distance / persistence length")
+            if polymer_runtime_policy.get("analysis_cost_warning"):
+                self._item("polymer_metric_cost_warning", polymer_runtime_policy.get("analysis_cost_warning"))
+            self._item("polymer_metric_frame_stride", polymer_runtime_policy.get("frame_stride"))
             try:
                 polymer_raw = compute_polymer_metrics(
                     gro_path=self._system_dir() / "system.gro",
                     xtc_path=self.xtc,
                     top_path=self.top,
                     system_meta_path=self._system_dir() / "system_meta.json",
+                    frame_stride=int(polymer_runtime_policy.get("frame_stride") or 1),
                 )
                 if isinstance(polymer_raw, dict):
                     polymer_all = {k: v for k, v in polymer_raw.items() if not str(k).startswith("_")}
@@ -1836,6 +2067,112 @@ class AnalyzeResult:
             pass
         return ok
 
+    def interface_profile(
+        self,
+        *,
+        gro_path: str | Path | None = None,
+        top_path: str | Path | None = None,
+        ndx_path: str | Path | None = None,
+        system_dir: str | Path | None = None,
+        xtc_path: str | Path | None = None,
+        out_dir: str | Path | None = None,
+        bin_nm: float = 0.05,
+        frame_stride: int | str = "auto",
+        region_width_nm: float = 0.75,
+        surface_grid_nm: float = 0.5,
+        analysis_profile: str = "interface_fast",
+        phase_groups: Sequence[str] = ("GRAPHITE", "POLYMER", "ELECTROLYTE"),
+        compute_transport: bool = True,
+        resume: bool = False,
+    ) -> Dict[str, Any]:
+        """Analyze graphite/polymer/electrolyte sandwich structure and transport.
+
+        The method is intentionally analysis-only: it reads an existing stack or
+        NVT follow-up trajectory, writes interface diagnostics under
+        ``06_analysis/interface_profile``, and does not alter any MD artifacts.
+        """
+
+        from ..gmx.analysis.interface_profile import compute_interface_profile
+
+        profile = self._resolve_analysis_profile(analysis_profile)
+        requested_stride = 1 if str(frame_stride).strip().lower() == "auto" else max(1, int(frame_stride))
+        runtime_policy = self._resolve_analysis_runtime_policy(
+            "interface_profile",
+            profile=profile,
+            requested_frame_stride=int(requested_stride),
+        )
+        resolved_stride = int(runtime_policy.get("frame_stride") or requested_stride)
+
+        system_root = Path(system_dir) if system_dir is not None else self._system_dir()
+        top_file = Path(top_path) if top_path is not None else Path(self.top)
+        ndx_file = Path(ndx_path) if ndx_path is not None else Path(self.ndx)
+        gro_file = Path(gro_path) if gro_path is not None else system_root / "system.gro"
+        if xtc_path is None:
+            xtc_file = self._analysis_xtc_path()
+        else:
+            xtc_file = Path(xtc_path)
+        xtc_for_profile: Path | None = xtc_file if Path(xtc_file).exists() else None
+        analysis_dir = Path(out_dir) if out_dir is not None else self._analysis_dir() / "interface_profile"
+        analysis_dir.mkdir(parents=True, exist_ok=True)
+
+        expected_cache_meta = {
+            "analysis_profile": profile,
+            "bin_nm": float(bin_nm),
+            "frame_stride": int(resolved_stride),
+            "region_width_nm": float(region_width_nm),
+            "surface_grid_nm": float(surface_grid_nm),
+            "phase_groups": [str(x) for x in phase_groups],
+            "compute_transport": bool(compute_transport),
+        }
+        expected_cache_meta.update(self._analysis_policy_cache_meta())
+        summary_path = analysis_dir / "interface_profile_summary.json"
+        dependencies = [gro_file, top_file, ndx_file, system_root / "system_meta.json"]
+        if xtc_for_profile is not None:
+            dependencies.append(xtc_for_profile)
+        if bool(resume) and self._artifact_is_fresh(summary_path, dependencies):
+            try:
+                cached = json.loads(summary_path.read_text(encoding="utf-8"))
+            except Exception:
+                cached = None
+            if isinstance(cached, dict) and self._analysis_cache_metadata_matches(cached, expected_cache_meta):
+                self._item("interface_profile_cache", f"reuse {self._compact_path(summary_path)}")
+                self._update_summary_sections(interface_profile=cached)
+                return cached
+
+        t_all = self._section_begin(
+            "Interface profile analysis",
+            detail=(
+                f"profile={profile} | bin={float(bin_nm):.3f} nm"
+                f" | stride={resolved_stride} | transport={bool(compute_transport)}"
+            ),
+        )
+        result = compute_interface_profile(
+            gro_path=gro_file,
+            top_path=top_file,
+            ndx_path=ndx_file,
+            system_dir=system_root,
+            out_dir=analysis_dir,
+            xtc_path=xtc_for_profile,
+            bin_nm=float(bin_nm),
+            frame_stride=int(resolved_stride),
+            region_width_nm=float(region_width_nm),
+            surface_grid_nm=float(surface_grid_nm),
+            analysis_profile=profile,
+            phase_groups=tuple(str(x) for x in phase_groups),
+            compute_transport=bool(compute_transport),
+        )
+        result["_analysis"] = expected_cache_meta
+        result["analysis_runtime_policy"] = runtime_policy
+        summary_path.write_text(json.dumps(result, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        self._update_summary_sections(interface_profile=result)
+        health = result.get("geometry_health") if isinstance(result, dict) else {}
+        self._section_done(
+            "Interface profile analysis",
+            t_all,
+            detail=f"phase_order_ok={bool((health or {}).get('phase_order_ok'))} | outputs={self._compact_path(analysis_dir)}",
+        )
+        return result
+
     def rdf(
         self,
         mol_or_mols: object | None = None,
@@ -1873,6 +2210,12 @@ class AnalyzeResult:
             if filters is None:
                 filters = ["ether_oxygen", "sulfonyl_oxygen", "anion_nitrogen"]
         frame_stride = max(1, int(frame_stride or 1))
+        rdf_runtime_policy = self._resolve_analysis_runtime_policy(
+            "rdf",
+            profile=profile,
+            requested_frame_stride=frame_stride,
+        )
+        frame_stride = int(rdf_runtime_policy.get("frame_stride") or frame_stride)
         region_mode = self._transport_rdf_region(region)
         t_all = self._section_begin(
             "RDF/CN analysis",
@@ -1977,6 +2320,9 @@ class AnalyzeResult:
             self._item("rdf_site_filter", ", ".join(str(item) for item in filters))
         self._item("rdf_r_max_nm", f"{float(r_max_nm):.4f}")
         self._item("rdf_frame_stride", frame_stride)
+        if rdf_runtime_policy.get("analysis_cost_warning"):
+            self._item("rdf_analysis_cost_warning", rdf_runtime_policy.get("analysis_cost_warning"))
+            self._item("rdf_estimated_effective_frames", rdf_runtime_policy.get("estimated_effective_frames"))
         rdf_workers = self._resolve_analysis_workers(workers, total_tasks=len(site_groups))
         self._item("rdf_workers", rdf_workers)
 
@@ -2112,17 +2458,28 @@ class AnalyzeResult:
 
         xtc_for_msd = self._analysis_xtc_path()
         self._item("xtc_used", self._compact_path(xtc_for_msd))
+        msd_runtime_policy = self._resolve_analysis_runtime_policy(
+            "msd",
+            profile=profile,
+            requested_frame_stride=1,
+        )
+        msd_frame_stride = int(msd_runtime_policy.get("frame_stride") or 1)
+        self._item("msd_frame_stride", msd_frame_stride)
+        if msd_runtime_policy.get("analysis_cost_warning"):
+            self._item("msd_analysis_cost_warning", msd_runtime_policy.get("analysis_cost_warning"))
+            self._item("msd_estimated_effective_frames", msd_runtime_policy.get("estimated_effective_frames"))
 
         metric_catalog = build_msd_metric_catalog(topo, self._system_dir())
         selected_moltypes = set(self._resolve_species_moltypes(mols)) if mols is not None else None
         if profile in {"transport_fast", "minimal"} and selected_moltypes is None:
+            policy_moltypes = self._policy_selected_msd_moltypes(metric_catalog)
             transport_moltypes = {
                 str(moltype)
                 for moltype, entry in metric_catalog.items()
                 if str(entry.get("kind") or "").strip().lower() in {"polymer", "ion", "cation", "anion"}
                 or abs(float(entry.get("formal_charge_e") or 0.0)) > 1.0e-12
             }
-            selected_moltypes = transport_moltypes or None
+            selected_moltypes = (transport_moltypes | policy_moltypes) or None
         expected_cache_meta = {
             "analysis_profile": profile,
             "selected_moltypes": sorted(selected_moltypes) if selected_moltypes is not None else None,
@@ -2132,6 +2489,7 @@ class AnalyzeResult:
             "unwrap": str(unwrap).strip().lower() or "auto",
             "drift": str(drift).strip().lower() or "auto",
             "selection_mode": str(selection_mode or "default"),
+            "frame_stride": int(msd_frame_stride),
         }
         expected_cache_meta.update(self._analysis_policy_cache_meta())
         msd_json = self._analysis_dir() / "msd.json"
@@ -2255,6 +2613,7 @@ class AnalyzeResult:
                             drift=drift,
                             begin_ps=begin_ps,
                             end_ps=end_ps,
+                            frame_stride=int(msd_frame_stride),
                         )
                 except Exception as e:
                     species_rec["metrics"][metric_name] = {"error": str(e), "group_kind": metric_entry.get("group_kind")}
@@ -2288,6 +2647,7 @@ class AnalyzeResult:
                     "geometry": str(metric_data.get("geometry") or geometry_mode),
                     "n_groups": int(metric_data.get("n_groups") or 0),
                     "frame_interval_ps": metric_data.get("frame_interval_ps"),
+                    "analysis_frame_stride": int(msd_frame_stride),
                     "trajectory_time_start_ps": metric_data.get("trajectory_time_start_ps"),
                     "trajectory_time_end_ps": metric_data.get("trajectory_time_end_ps"),
                     "series_csv": str(csv_path),
@@ -2303,6 +2663,8 @@ class AnalyzeResult:
                     "warning": fit.get("warning"),
                     "D_nm2_ps": fit.get("D_nm2_ps"),
                     "D_m2_s": fit.get("D_m2_s"),
+                    "apparent_D_nm2_ps": fit.get("apparent_D_nm2_ps"),
+                    "apparent_D_m2_s": fit.get("apparent_D_m2_s"),
                     "preprocessing": dict(metric_data.get("preprocessing") or {}),
                 }
                 if plots:
@@ -2338,6 +2700,8 @@ class AnalyzeResult:
                             "warning": comp.get("warning"),
                             "D_nm2_ps": comp.get("D_nm2_ps"),
                             "D_m2_s": comp.get("D_m2_s"),
+                            "apparent_D_nm2_ps": comp.get("apparent_D_nm2_ps"),
+                            "apparent_D_m2_s": comp.get("apparent_D_m2_s"),
                         }
 
                 species_rec["metrics"][metric_name] = metric_rec
@@ -2384,6 +2748,7 @@ class AnalyzeResult:
                 "unwrap": str(unwrap).strip().lower() or "auto",
                 "drift": str(drift).strip().lower() or "auto",
                 "selection_mode": str(selection_mode or "default"),
+                "frame_stride": int(msd_frame_stride),
             }
         )
         res["_analysis"] = expected_cache_meta

@@ -192,6 +192,12 @@ def test_docs_and_examples_do_not_recommend_transport_bundle_api():
 
 def test_interface_examples_keep_linear_script_style():
     root = Path(__file__).resolve().parents[1]
+    eg08_dir = root / 'examples' / '08_graphite_polymer_electrolyte_sandwich'
+    public_scripts = sorted(path.name for path in eg08_dir.glob('*.py'))
+    assert public_scripts == [
+        '01_peo_graphite_electrolyte.py',
+        '02_cmcna_graphite_electrolyte.py',
+    ]
     helper_patterns = (
         'def _named(',
         'def _resolved(',
@@ -201,11 +207,8 @@ def test_interface_examples_keep_linear_script_style():
     )
     offenders: list[str] = []
     for rel in (
-        'examples/08_graphite_polymer_electrolyte_sandwich/01_peo_smoke.py',
-        'examples/08_graphite_polymer_electrolyte_sandwich/02_peo_carbonate_full.py',
-        'examples/08_graphite_polymer_electrolyte_sandwich/03_cmcna_smoke.py',
-        'examples/08_graphite_polymer_electrolyte_sandwich/04_cmcna_full.py',
-        'examples/08_graphite_polymer_electrolyte_sandwich/05_cmcna_glucose6_periodic_case.py',
+        'examples/08_graphite_polymer_electrolyte_sandwich/01_peo_graphite_electrolyte.py',
+        'examples/08_graphite_polymer_electrolyte_sandwich/02_cmcna_graphite_electrolyte.py',
     ):
         text = (root / rel).read_text(encoding='utf-8')
         if any(pattern in text for pattern in helper_patterns):
@@ -214,72 +217,72 @@ def test_interface_examples_keep_linear_script_style():
     assert offenders == []
 
 
-def test_example05_cmcna_periodic_case_is_moldb_only_for_core_species():
+def test_example08_public_cases_are_moldb_only_for_core_species():
     root = Path(__file__).resolve().parents[1]
-    example_text = (
-        root / 'examples' / '08_graphite_polymer_electrolyte_sandwich' / '05_cmcna_glucose6_periodic_case.py'
+    peo_text = (
+        root / 'examples' / '08_graphite_polymer_electrolyte_sandwich' / '01_peo_graphite_electrolyte.py'
+    ).read_text(encoding='utf-8')
+    cmc_text = (
+        root / 'examples' / '08_graphite_polymer_electrolyte_sandwich' / '02_cmcna_graphite_electrolyte.py'
     ).read_text(encoding='utf-8')
 
-    assert 'name="glucose_6"' in example_text
-    assert 'name="EC"' in example_text
-    assert 'name="EMC"' in example_text
-    assert 'name="DEC"' in example_text
-    assert 'name="PF6"' in example_text
-    assert example_text.count('prefer_db=True') >= 5
-    assert example_text.count('require_ready=True') >= 5
-    assert 'yp.build_cmcna_graphite_electrolyte_stack(' in example_text
-    assert 'yp.InterfaceBuildPolicy(' in example_text
+    assert '"PEO_monomer"' in peo_text
+    assert '"*CCO*"' in peo_text
+    assert '_ready_moldb_spec("PEO_monomer", "*CCO*")' in peo_text
+    assert '_ready_moldb_spec("EC", "O=C1OCCO1")' in peo_text
+    assert '_ready_moldb_spec("EMC", "CCOC(=O)OC")' in peo_text
+    assert '_ready_moldb_spec("DEC", "CCOC(=O)OCC")' in peo_text
+    assert '_ready_moldb_spec("PF6", "F[P-](F)(F)(F)(F)F", bonded="DRIH", charge_scale=0.8)' in peo_text
+    assert 'prefer_db=True' in peo_text
+    assert 'require_ready=True' in peo_text
+    assert 'build_graphite_peo_electrolyte_sandwich(' in peo_text
+    assert 'run_sandwich_nvt_followup(' in peo_text
+
+    assert '"glucose_6"' in cmc_text
+    assert '"EC"' in cmc_text
+    assert '"EMC"' in cmc_text
+    assert '"DEC"' in cmc_text
+    assert '"PF6"' in cmc_text
+    assert '_ready_moldb_spec(' in cmc_text
+    assert 'prefer_db=True' in cmc_text
+    assert 'require_ready=True' in cmc_text
+    assert 'build_cmcna_graphite_electrolyte_stack(' in cmc_text
+    assert 'InterfaceBuildPolicy(' in cmc_text
 
 
-def test_example08_scripts_use_stage_apis_and_interface_summary_printer():
+def test_example08_scripts_use_one_shot_builder_and_interface_summary_printer():
     root = Path(__file__).resolve().parents[1]
     expected = {
-        'examples/08_graphite_polymer_electrolyte_sandwich/01_peo_smoke.py': (
-            'yp.build_graphite_polymer_interphase(',
-            'yp.build_polymer_electrolyte_interphase(',
-            'yp.release_graphite_polymer_electrolyte_stack(',
+        'examples/08_graphite_polymer_electrolyte_sandwich/01_peo_graphite_electrolyte.py': (
+            'build_graphite_peo_electrolyte_sandwich(',
+            'InterfaceBuildPolicy(',
+            'run_sandwich_nvt_followup(',
         ),
-        'examples/08_graphite_polymer_electrolyte_sandwich/02_peo_carbonate_full.py': (
-            'yp.build_graphite_polymer_interphase(',
-            'yp.build_polymer_electrolyte_interphase(',
-            'yp.release_graphite_polymer_electrolyte_stack(',
-        ),
-        'examples/08_graphite_polymer_electrolyte_sandwich/03_cmcna_smoke.py': (
-            'yp.build_graphite_cmc_interphase(',
-            'yp.build_cmc_electrolyte_interphase(',
-            'yp.release_graphite_cmc_electrolyte_stack(',
-        ),
-        'examples/08_graphite_polymer_electrolyte_sandwich/04_cmcna_full.py': (
-            'yp.build_graphite_cmc_interphase(',
-            'yp.build_cmc_electrolyte_interphase(',
-            'yp.release_graphite_cmc_electrolyte_stack(',
-        ),
-        'examples/08_graphite_polymer_electrolyte_sandwich/05_cmcna_glucose6_periodic_case.py': (
-            'yp.build_cmcna_graphite_electrolyte_stack(',
-            'yp.InterfaceBuildPolicy(',
+        'examples/08_graphite_polymer_electrolyte_sandwich/02_cmcna_graphite_electrolyte.py': (
+            'build_cmcna_graphite_electrolyte_stack(',
+            'InterfaceBuildPolicy(',
         ),
     }
 
     for rel, required_calls in expected.items():
         text = (root / rel).read_text(encoding='utf-8')
-        assert 'import yadonpy as yp' in text
-        assert 'yp.set_run_options(' in text
-        assert 'yp.doctor(' in text
-        assert 'yp.get_ff("gaff2_mod")' in text
-        assert 'yp.get_ff("merz")' in text
-        if 'yp.build_cmcna_graphite_electrolyte_stack(' not in text:
-            assert 'yp.prepare_graphite_substrate(' in text
-            assert 'yp.calibrate_polymer_bulk_phase(' in text
-            assert 'yp.calibrate_electrolyte_bulk_phase(' in text
-        assert 'yp.print_interface_result_summary(' in text
+        assert 'import yadonpy as yp' not in text
+        assert 'from yadonpy.runtime import set_run_options' in text
+        assert 'from yadonpy.diagnostics import doctor' in text
+        assert 'from yadonpy.ff.gaff2_mod import GAFF2_mod' in text
+        assert 'from yadonpy.ff.merz import MERZ' in text
+        assert 'print_interface_result_summary(' in text
+        assert 'os.environ' not in text
+        assert 'YADONPY_' not in text
         for call in required_calls:
             assert call in text
-        assert 'from yadonpy.interface import ' not in text
-        assert 'from yadonpy.ff import ' not in text
-        assert 'from yadonpy.runtime import ' not in text
+        assert 'from yadonpy.interface import ' in text
         assert 'build_graphite_peo_example_case' not in text
         assert 'build_graphite_cmcna_example_case' not in text
         assert 'build_graphite_cmcna_glucose6_periodic_case' not in text
+        assert 'prepare_graphite_substrate(' not in text
+        assert 'calibrate_polymer_bulk_phase(' not in text
+        assert 'calibrate_electrolyte_bulk_phase(' not in text
         assert 'GraphiteSubstrateSpec(' in text
         assert 'SandwichRelaxationSpec(' in text
 

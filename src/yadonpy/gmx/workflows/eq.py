@@ -33,7 +33,7 @@ from ..mdp_templates import (
     MdpSpec,
     default_mdp_params,
 )
-from ._util import RunResources, atomic_write_json, gro_topology_bond_geometry, load_json, normalize_gro_molecules_inplace, pbc_mol_fix_inplace, safe_mkdir
+from ._util import RunResources, atomic_write_json, gro_topology_bond_geometry, load_json, normalize_gro_molecules_inplace, pbc_mol_fix_inplace, periodic_dimensions_from_pbc, safe_mkdir
 
 
 def _file_signature(path: Path | None) -> dict | None:
@@ -61,6 +61,8 @@ def _normalize_gpu_offload_mode(mode: object) -> str:
     token = str(mode or "full").strip().lower()
     if token in {"full", "default"}:
         return "full"
+    if token in {"balanced", "bonded-gpu", "bonded_gpu"}:
+        return "balanced"
     if token in {"conservative", "safe"}:
         return "conservative"
     if token in {"cpu", "none"}:
@@ -93,6 +95,7 @@ class EqStage:
     lincs_retry: "StageLincsRetryPolicy | None" = None
     checkpoint_minutes: float | None = None
     strict_constraints: bool = False
+    gpu_offload_mode: str | None = None
 
 
 @dataclass(frozen=True)
@@ -561,7 +564,7 @@ class EquilibrationJob:
                 return False
             return True
 
-        def _canonicalize_stage_gro(*, out_tpr: Path, out_gro: Path, stage_dir: Path) -> dict[str, object]:
+        def _canonicalize_stage_gro(*, out_tpr: Path, out_gro: Path, stage_dir: Path, pbc_mode: object = "xyz") -> dict[str, object]:
             raw_gro = stage_dir / f"{out_gro.stem}.raw_before_pbc.gro"
             try:
                 if out_gro.exists() and not raw_gro.exists():
@@ -574,7 +577,12 @@ class EquilibrationJob:
             # sides of the box. That shows up as box-length LINCS failures at
             # step 0 of the next stage, so use `-pbc whole` for simulation input.
             pbc_gro = pbc_mol_fix_inplace(self.runner, tpr=out_tpr, traj_or_gro=out_gro, cwd=stage_dir, pbc="whole")
-            whole_gro = normalize_gro_molecules_inplace(top=self.top, gro=out_gro)
+            periodic_dimensions = periodic_dimensions_from_pbc(pbc_mode)
+            whole_gro = normalize_gro_molecules_inplace(
+                top=self.top,
+                gro=out_gro,
+                periodic_dimensions=periodic_dimensions,
+            )
             if whole_gro.get("applied"):
                 self._log(
                     f"[INFO] Whole-molecule canonicalization applied to {out_gro.name} | normalized_molecules={whole_gro.get('normalized_molecules', 0)}"
@@ -590,7 +598,11 @@ class EquilibrationJob:
                 try:
                     shutil.copyfile(raw_gro, out_gro)
                     pbc_gro = pbc_mol_fix_inplace(self.runner, tpr=out_tpr, traj_or_gro=out_gro, cwd=stage_dir, pbc="whole")
-                    whole_gro = normalize_gro_molecules_inplace(top=self.top, gro=out_gro)
+                    whole_gro = normalize_gro_molecules_inplace(
+                        top=self.top,
+                        gro=out_gro,
+                        periodic_dimensions=periodic_dimensions,
+                    )
                     bond_check = gro_topology_bond_geometry(top=self.top, gro=out_gro)
                 except Exception as exc:
                     bond_check = {"ok": False, "error": str(exc), "previous": bond_check}
@@ -694,7 +706,7 @@ class EquilibrationJob:
             # (e.g., steepest descent minimization). In practice, "em" should
             # run on CPU only, while NVT/NPT/MD can use GPU offload.
             stage_use_gpu = bool(self.resources.use_gpu) and (st.kind not in ("minim", "em"))
-            gpu_offload_mode = _normalize_gpu_offload_mode(self.resources.gpu_offload_mode)
+            gpu_offload_mode = _normalize_gpu_offload_mode(st.gpu_offload_mode or self.resources.gpu_offload_mode)
             if gpu_offload_mode == "cpu":
                 stage_use_gpu = False
             stage_prefer_gpu_update = bool(stage_use_gpu and gpu_offload_mode == "full")
@@ -703,6 +715,14 @@ class EquilibrationJob:
                 stage_offload_kwargs = {
                     "nb": "gpu",
                     "bonded": "cpu",
+                    "pme": "gpu",
+                    "pmefft": "gpu",
+                    "update": "cpu",
+                }
+            elif stage_use_gpu and gpu_offload_mode == "balanced":
+                stage_offload_kwargs = {
+                    "nb": "gpu",
+                    "bonded": "gpu",
                     "pme": "gpu",
                     "pmefft": "gpu",
                     "update": "cpu",
@@ -1217,7 +1237,12 @@ class EquilibrationJob:
             # We therefore rewrite the stage handoff structure with `-pbc whole`
             # and validate topology bond lengths before the next stage can use it.
             # The trajectory rewrite remains visualization-oriented and best-effort.
-            canonical_gro = _canonicalize_stage_gro(out_tpr=stage_runtime_tpr, out_gro=out_gro, stage_dir=stage_dir)
+            canonical_gro = _canonicalize_stage_gro(
+                out_tpr=stage_runtime_tpr,
+                out_gro=out_gro,
+                stage_dir=stage_dir,
+                pbc_mode=st.mdp.params.get("pbc", "xyz"),
+            )
             pbc_gro = canonical_gro["pbc_gro"]
             whole_gro = canonical_gro["whole_gro"]
             bond_geometry = canonical_gro["bond_geometry"]

@@ -147,7 +147,7 @@ def _build_mobile_atom_payload(top: SystemTopology, system_dir: Path) -> tuple[n
     return np.asarray(mobile_indices, dtype=int), np.asarray(mobile_masses, dtype=float)
 
 
-_MOBILE_DRIFT_CACHE: dict[tuple[str, str, str, str, int], tuple[np.ndarray, np.ndarray]] = {}
+_MOBILE_DRIFT_CACHE: dict[tuple[str, str, str, str, int, int], tuple[np.ndarray, np.ndarray]] = {}
 
 
 def _unwrap_position_series(positions_nm: np.ndarray, box_lengths_nm: np.ndarray, *, geometry_mode: str) -> np.ndarray:
@@ -215,6 +215,7 @@ def _compute_mobile_drift_series(
     top_path: Path,
     system_dir: Path,
     chunk: int,
+    frame_stride: int = 1,
 ) -> tuple[np.ndarray, np.ndarray]:
     try:
         import mdtraj as md
@@ -227,6 +228,7 @@ def _compute_mobile_drift_series(
         str(Path(top_path).resolve()),
         str(Path(system_dir).resolve()),
         int(max(1, chunk)),
+        int(max(1, frame_stride)),
     )
     cached = _MOBILE_DRIFT_CACHE.get(cache_key)
     if cached is not None:
@@ -244,7 +246,19 @@ def _compute_mobile_drift_series(
     times: list[np.ndarray] = []
     drift_chunks: list[np.ndarray] = []
     box_chunks: list[np.ndarray] = []
-    for trj in md.iterload(str(xtc_path), top=str(gro_path), chunk=int(max(1, chunk))):
+    stride = max(1, int(frame_stride or 1))
+    frame_offset = 0
+    for trj_raw in md.iterload(str(xtc_path), top=str(gro_path), chunk=int(max(1, chunk))):
+        raw_n_frames = int(getattr(trj_raw, "n_frames", np.asarray(getattr(trj_raw, "xyz", [])).shape[0]))
+        if stride > 1:
+            keep = [i for i in range(raw_n_frames) if ((frame_offset + i) % stride) == 0]
+            frame_offset += raw_n_frames
+            if not keep:
+                continue
+            trj = trj_raw[keep]
+        else:
+            frame_offset += raw_n_frames
+            trj = trj_raw
         xyz = np.asarray(trj.xyz[:, atom_indices, :], dtype=float)
         box = np.asarray(getattr(trj, "unitcell_lengths", None), dtype=float)
         if box.ndim != 2 or box.shape[0] != xyz.shape[0] or box.shape[1] < 3:
@@ -799,6 +813,7 @@ def load_group_positions(
     xtc_path: Path,
     group_specs: Sequence[GroupSpec],
     chunk: int = 50,
+    frame_stride: int = 1,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     try:
         import mdtraj as md
@@ -811,7 +826,19 @@ def load_group_positions(
     times: list[np.ndarray] = []
     pos_chunks: list[np.ndarray] = []
     box_chunks: list[np.ndarray] = []
-    for trj in md.iterload(str(xtc_path), top=str(gro_path), chunk=int(max(1, chunk))):
+    stride = max(1, int(frame_stride or 1))
+    frame_offset = 0
+    for trj_raw in md.iterload(str(xtc_path), top=str(gro_path), chunk=int(max(1, chunk))):
+        raw_n_frames = int(getattr(trj_raw, "n_frames", np.asarray(getattr(trj_raw, "xyz", [])).shape[0]))
+        if stride > 1:
+            keep = [i for i in range(raw_n_frames) if ((frame_offset + i) % stride) == 0]
+            frame_offset += raw_n_frames
+            if not keep:
+                continue
+            trj = trj_raw[keep]
+        else:
+            frame_offset += raw_n_frames
+            trj = trj_raw
         xyz = np.asarray(trj.xyz, dtype=float)
         box = np.asarray(getattr(trj, "unitcell_lengths", None), dtype=float)
         if box.ndim != 2 or box.shape[0] != xyz.shape[0] or box.shape[1] < 3:
@@ -849,6 +876,7 @@ def preprocess_group_positions(
     geometry_mode: str = "auto",
     unwrap: str = "auto",
     drift: str = "auto",
+    frame_stride: int = 1,
 ) -> dict[str, Any]:
     geometry = _default_geometry_mode(system_dir=Path(system_dir), requested=geometry_mode)
     unwrap_mode = _normalize_unwrap_mode(unwrap)
@@ -859,6 +887,7 @@ def preprocess_group_positions(
         xtc_path=xtc_path,
         group_specs=group_specs,
         chunk=chunk,
+        frame_stride=frame_stride,
     )
     if positions.size == 0:
         return {
@@ -888,6 +917,7 @@ def preprocess_group_positions(
             top_path=top_path,
             system_dir=system_dir,
             chunk=max(int(chunk), 25),
+            frame_stride=frame_stride,
         )
         if drift_series.size and drift_t.size == t_ps.size and np.allclose(drift_t, t_ps):
             axes = _geometry_axes(geometry)
@@ -908,6 +938,7 @@ def preprocess_group_positions(
             "drift_correction_mode": str(effective_drift),
             "drift_reference_group": drift_reference,
             "geometry_mode": str(geometry),
+            "frame_stride": int(max(1, frame_stride or 1)),
         },
     }
 
@@ -951,8 +982,19 @@ def select_diffusive_window(
     alpha_target: float = 1.0,
     primary_tol: float = 0.15,
     secondary_tol: float = 0.25,
+    accepted_alpha_min: float = 0.90,
+    accepted_alpha_max: float = 1.15,
     geometry: str = "3d",
 ) -> dict[str, Any]:
+    """Select a formal diffusion window from a log-log MSD slope trace.
+
+    The linear MSD slope is only promoted to ``D_m2_s`` when the local
+    log-log exponent is close enough to one.  When no formal diffusive window
+    is available we still report the best apparent slope for diagnostics, but
+    keep ``D_m2_s`` unset so downstream transport summaries do not silently use
+    subdiffusive or superdiffusive data.
+    """
+
     t = np.asarray(t_ps, dtype=float)
     y = np.asarray(msd_nm2, dtype=float)
     out: dict[str, Any] = {
@@ -969,6 +1011,8 @@ def select_diffusive_window(
         "status": "failed",
         "D_nm2_ps": None,
         "D_m2_s": None,
+        "apparent_D_nm2_ps": None,
+        "apparent_D_m2_s": None,
         "warning": None,
         "geometry": "3d" if _normalize_geometry_mode(geometry) == "auto" else _normalize_geometry_mode(geometry),
     }
@@ -1077,7 +1121,11 @@ def select_diffusive_window(
     best.pop("duration_ps", None)
     out.update(best)
     alpha_mean = float(best.get("alpha_mean")) if best.get("alpha_mean") is not None else float("nan")
-    if best["confidence"] in {"high", "medium"}:
+    formal_alpha = bool(
+        np.isfinite(alpha_mean)
+        and float(accepted_alpha_min) <= float(alpha_mean) <= float(accepted_alpha_max)
+    )
+    if best["confidence"] in {"high", "medium"} and formal_alpha:
         out["status"] = "ok"
     elif np.isfinite(alpha_mean) and alpha_mean < float(alpha_target):
         out["status"] = "subdiffusive_risk"
@@ -1091,8 +1139,17 @@ def select_diffusive_window(
     elif geometry_token == "z":
         divisor = 2.0
     d_nm2_ps = float(best["fit_slope_nm2_ps"]) / float(divisor)
-    out["D_nm2_ps"] = float(d_nm2_ps)
-    out["D_m2_s"] = float(d_nm2_ps) * 1.0e-6
+    out["apparent_D_nm2_ps"] = float(d_nm2_ps)
+    out["apparent_D_m2_s"] = float(d_nm2_ps) * 1.0e-6
+    if out["status"] == "ok":
+        out["D_nm2_ps"] = float(d_nm2_ps)
+        out["D_m2_s"] = float(d_nm2_ps) * 1.0e-6
+    else:
+        if out.get("warning") is None:
+            if out["status"] == "subdiffusive_risk":
+                out["warning"] = "alpha_below_formal_diffusion_threshold"
+            else:
+                out["warning"] = "alpha_above_formal_diffusion_threshold"
     return out
 
 
@@ -1109,6 +1166,7 @@ def compute_msd_series(
     drift: str = "auto",
     begin_ps: float | None = None,
     end_ps: float | None = None,
+    frame_stride: int = 1,
 ) -> dict[str, Any]:
     prepared = preprocess_group_positions(
         gro_path=gro_path,
@@ -1120,6 +1178,7 @@ def compute_msd_series(
         geometry_mode=geometry_mode,
         unwrap=unwrap,
         drift=drift,
+        frame_stride=frame_stride,
     )
     t_ps = np.asarray(prepared["t_ps"], dtype=float)
     positions = np.asarray(prepared["positions_nm"], dtype=float)
@@ -1301,7 +1360,7 @@ def compute_site_rdf(
     stride = max(1, int(frame_stride or 1))
     frame_offset = 0
     for trj_raw in md.iterload(str(xtc_path), top=str(gro_path), chunk=int(max(1, chunk))):
-        raw_n_frames = int(trj_raw.n_frames)
+        raw_n_frames = int(getattr(trj_raw, "n_frames", np.asarray(getattr(trj_raw, "xyz", [])).shape[0]))
         if stride > 1:
             keep = [i for i in range(raw_n_frames) if ((frame_offset + i) % stride) == 0]
             frame_offset += raw_n_frames

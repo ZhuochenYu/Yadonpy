@@ -51,9 +51,12 @@ def initial_bulk_pack_density(
             if z_scale is not None and float(z_scale) > 1.0:
                 density = max(0.30, float(density) / float(z_scale))
             return float(density)
-        density = max(0.45, min(0.68, target * 0.52))
+        # Neutral long-chain polymers are the hardest objects for the random
+        # packer. Start very loose and let EQ21/NPT recover density, instead
+        # of spending minutes trying dense collision-prone placements.
+        density = max(0.30, min(0.58, target * 0.33))
         if z_scale is not None and float(z_scale) > 1.0:
-            density = max(0.38, float(density) / float(z_scale))
+            density = max(0.24, float(density) / float(z_scale))
         return float(density)
     return max(0.65, min(0.90, target * 0.80))
 
@@ -77,8 +80,8 @@ def build_pack_density_ladder(
             floor = 0.22 if floor_density_g_cm3 is None else float(floor_density_g_cm3)
         else:
             attempts = 5 if max_attempts is None else max(1, int(max_attempts))
-            factor = 0.86 if backoff_factor is None else float(backoff_factor)
-            floor = 0.32 if floor_density_g_cm3 is None else float(floor_density_g_cm3)
+            factor = 0.82 if backoff_factor is None else float(backoff_factor)
+            floor = 0.22 if floor_density_g_cm3 is None else float(floor_density_g_cm3)
     else:
         attempts = 3 if max_attempts is None else max(1, int(max_attempts))
         factor = 0.90 if backoff_factor is None else float(backoff_factor)

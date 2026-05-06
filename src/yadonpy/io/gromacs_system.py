@@ -315,6 +315,10 @@ def _cached_artifact_compatible(
             return False
 
     strict_missing_signatures = bool(_requires_charge_groups(species_payload) and str(kind) == "polymer")
+    trusted_cached_artifact = bool(
+        (species_payload.get("cached_artifact_dir") or species_payload.get("cached_mol_id"))
+        and not _requires_charge_groups(species_payload)
+    )
     current = _species_compatibility_context(species_payload)
 
     current_group_sig = str(current.get("charge_group_signature") or "").strip()
@@ -340,10 +344,14 @@ def _cached_artifact_compatible(
         "resp_constraints_signature",
         "psiresp_constraints_signature",
     ):
-        current_sig = str(current.get(key) or rep_ctx.get(key) or "").strip()
-        if current_sig:
-            cached_sig = str(meta.get(key) or "").strip()
-            if not cached_sig or cached_sig != current_sig:
+        species_sig = str(current.get(key) or "").strip()
+        rep_sig = str(rep_ctx.get(key) or "").strip()
+        cached_sig = str(meta.get(key) or "").strip()
+        if species_sig:
+            if not cached_sig or cached_sig != species_sig:
+                return False
+        elif rep_sig and not trusted_cached_artifact:
+            if not cached_sig or cached_sig != rep_sig:
                 return False
 
     current_atom_sig = str(rep_ctx.get("atom_order_signature") or "").strip()
@@ -353,7 +361,15 @@ def _cached_artifact_compatible(
             if strict_missing_signatures:
                 return False
         elif cached_atom_sig != current_atom_sig:
-            return False
+            # Coordinate-only fragments reloaded from intermediate GROMACS
+            # artifacts often lose RDKit-only atom props such as ``ff_type``.
+            # Their atom-order signature can therefore differ from the cached
+            # source molecule even though the topology/gro artifact is still the
+            # correct source of truth for a neutral generated polymer chain. Keep
+            # the strict check for localized-charge/residue-mapped species where
+            # atom-index identity is chemically meaningful.
+            if strict_missing_signatures or _requires_charge_groups(species_payload):
+                return False
 
     return True
 

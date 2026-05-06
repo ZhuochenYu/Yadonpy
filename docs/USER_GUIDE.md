@@ -230,6 +230,14 @@ large or long jobs to coarser 10-50 ps output and matching RDF/MSD settings. Use
 when you need dense trajectories for short-time dynamics or final publication
 audits.
 
+When an older run already contains an overly dense trajectory, the analyzer also
+protects post-processing time by increasing the read-time frame stride instead
+of rewriting the `.xtc`. The resolved runtime policy is saved as
+`06_analysis/analysis_runtime_policy.json`. The main controls are
+global `MAX_ANALYSIS_FRAMES` plus section-specific `MAX_RDF_FRAMES`,
+`MAX_MSD_FRAMES`, `MAX_CELL_FRAMES`, and `MAX_POLYMER_METRIC_FRAMES`;
+`analysis_profile="full"` disables this automatic runtime thinning.
+
 Dielectric constants are available through `dielectric()`, which calls
 `gmx dipoles` and reads the final static dielectric estimate from
 `06_analysis/dielectric.json`. On remote machines with more than one GROMACS,
@@ -302,7 +310,27 @@ result = yp.build_cmcna_graphite_electrolyte_stack(
     relax=relax,
     policy=policy,
 )
+
+followup = yp.run_sandwich_nvt_followup(
+    result,
+    work_dir="./work_cmcna_sandwich/07_nvt_followup",
+    time_ns=4.0,
+    temp=318.15,
+)
+
+profile = yp.analyze_sandwich_interface(
+    work_dir="./work_cmcna_sandwich",
+    analysis_profile="interface_fast",
+)
 ```
+
+The follow-up starts from the accepted stack geometry and uses a compact
+20 ps + 20 ps 1 fs no-constraints / constrained handoff before the requested
+constrained NVT observation. The default keeps graphite frozen during the bridge
+and uses balanced GPU offload. For bonded graphite slabs that should move
+naturally, set `SandwichRelaxationSpec(stack_freeze_group=None)` for stack
+release and call `run_sandwich_nvt_followup(..., freeze_group=None)` so GROMACS
+can keep bonded/update/PME on GPU throughout the dynamic stages.
 
 The builder writes `00_interface_design/interface_design.json` before expensive
 phase rebuilding, then records stack attempts, charge balance, minimum-distance
@@ -311,6 +339,23 @@ checks, phase order, density windows, and acceptance status in
 `prepare_graphite_substrate`, `calibrate_*_bulk_phase`, `build_*_interphase`,
 and `release_graphite_*_electrolyte_stack` remain available when you need to
 inspect or resume a specific step manually.
+The interface profile helper writes `06_analysis/interface_profile/` with
+`z_density_profiles.csv`, region summaries, enrichment, Li coordination states,
+and anisotropic MSD. Treat `Dxy` as the main interface transport metric; `Dz` is
+a confined-direction mobility diagnostic, not a bulk diffusion coefficient.
+Example 08 keeps only one PEO and one CMC-Na public script; developer matrix and
+autofix harnesses live under `tools/example08_autofix/` rather than in the
+public example directory.
+
+### Example script standard
+
+New examples should follow the Example 02 pattern: use explicit imports, put
+user-editable settings at the top instead of driving ordinary runs through many
+environment variables, keep `if __name__ == "__main__"` linear, write all
+artifacts under a restartable `work_dir`, prefer MolDB-ready molecules with
+`prefer_db=True` and `require_ready=True`, and avoid hiding the scientific
+workflow behind local framework helpers. Developer automation belongs under
+`tools/`, not inside public example folders.
 
 ## 7. Literature Benchmarks
 

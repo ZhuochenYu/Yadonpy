@@ -653,6 +653,36 @@ def test_handoff_bond_geometry_detects_and_repairs_pbc_split_molecule(tmp_path):
     assert after["max_bond_nm"] < 0.2
 
 
+def test_handoff_canonicalization_respects_nonperiodic_z(tmp_path):
+    gro, top = _write_diatomic_topology(tmp_path)
+    gro.write_text(
+        '\n'.join(
+            [
+                'xy periodic only',
+                '    2',
+                '    1MOL     A    1   0.950   0.100   1.200',
+                '    1MOL     B    2   0.050   0.100   1.200',
+                '   1.00000   1.00000   1.00000',
+            ]
+        )
+        + '\n',
+        encoding='utf-8',
+    )
+
+    repaired = normalize_gro_molecules_inplace(
+        top=top,
+        gro=gro,
+        periodic_dimensions=(True, True, False),
+    )
+    lines = gro.read_text(encoding='utf-8').splitlines()
+    z_values = [float(lines[2][36:44]), float(lines[3][36:44])]
+    x_values = [float(lines[2][20:28]), float(lines[3][20:28])]
+
+    assert repaired["applied"] is True
+    assert min(z_values) > 1.0
+    assert abs(x_values[1] - x_values[0]) < 0.2
+
+
 def test_handoff_bond_geometry_uses_constraints_section(tmp_path):
     gro, top = _write_diatomic_topology(tmp_path)
     itp = tmp_path / "molecules" / "MOL.itp"

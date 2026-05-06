@@ -699,6 +699,7 @@ def equilibrate_bulk_with_eq21(
     final_npt_ns: float = 0.0,
     final_npt_mdp_overrides=None,
     eq21_exec_kwargs: dict[str, Any] | None = None,
+    restart: bool | None = None,
 ) -> BulkEq21Outcome:
     eqmd_job = eq.EQ21step(ac, work_dir=work_dir)
     export = eqmd_job.ensure_system_exported()
@@ -709,6 +710,14 @@ def equilibrate_bulk_with_eq21(
         raise RuntimeError(f"{label} scaled export topology is invalid before EQ21: {'; '.join(export_issues)}")
     if raw_export_issues:
         raise RuntimeError(f"{label} raw export topology is invalid before EQ21: {'; '.join(raw_export_issues)}")
+
+    final_npt_gro = Path(work_dir) / "05_npt_production" / "01_npt" / "md.gro"
+    if bool(restart) and float(final_npt_ns) > 0.0 and final_npt_gro.exists():
+        return BulkEq21Outcome(
+            final_cell=ac,
+            system_export=export,
+            raw_system_meta=raw_export_root / "system_meta.json",
+        )
 
     exec_kwargs = dict(eq21_exec_kwargs or {})
     ac = eqmd_job.exec(

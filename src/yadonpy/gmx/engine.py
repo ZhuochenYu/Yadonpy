@@ -550,6 +550,8 @@ class GromacsRunner:
             needles = (
                 "update groups can not be used",
                 "update groups cannot be used",
+                "update task can not run on the gpu",
+                "update task cannot run on the gpu",
                 "cannot use gpu update",
                 "can not use gpu update",
                 "gpu update is not supported",

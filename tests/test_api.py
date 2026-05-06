@@ -119,6 +119,7 @@ def test_top_level_api_exports_mechanics_helpers():
     assert 'format_mechanics_result_summary' in api.__all__
     assert 'print_mechanics_result_summary' in api.__all__
     assert 'audit_oplsaa_reference' in api.__all__
+    assert 'run_sandwich_nvt_followup' in api.__all__
     assert hasattr(yadonpy, 'resolve_prepared_system')
     assert hasattr(yadonpy, 'run_tg_scan_gmx')
     assert hasattr(yadonpy, 'run_elongation_gmx')
@@ -131,11 +132,13 @@ def test_top_level_api_exports_mechanics_helpers():
     assert hasattr(api, 'build_polymer_electrolyte_interphase')
     assert hasattr(api, 'release_graphite_polymer_electrolyte_stack')
     assert hasattr(api, 'build_cmcna_graphite_electrolyte_stack')
+    assert hasattr(api, 'run_sandwich_nvt_followup')
     assert hasattr(api, 'print_interface_result_summary')
     assert hasattr(yadonpy, 'GraphiteSubstrateSpec')
     assert hasattr(yadonpy, 'PolymerSlabSpec')
     assert hasattr(yadonpy, 'ElectrolyteSlabSpec')
     assert hasattr(yadonpy, 'SandwichRelaxationSpec')
+    assert hasattr(yadonpy, 'SandwichNvtFollowupResult')
     assert hasattr(yadonpy, 'InterfaceBuildPolicy')
 
 

@@ -114,11 +114,23 @@ def _minimal_image_delta(delta: float, box_len: float) -> float:
     return float(delta - box_len * round(float(delta) / float(box_len)))
 
 
+def periodic_dimensions_from_pbc(pbc: object) -> tuple[bool, bool, bool]:
+    """Return which Cartesian dimensions are periodic for a GROMACS ``pbc`` value."""
+
+    mode = str(pbc or "xyz").strip().lower()
+    if mode in {"no", "none", "false", "0"}:
+        return (False, False, False)
+    if mode == "xy":
+        return (True, True, False)
+    return (True, True, True)
+
+
 def _unwrap_fragment_coords(
     coords_nm: list[tuple[float, float, float]],
     *,
     bonds: list[tuple[int, int]],
     box_nm: tuple[float, float, float],
+    periodic_dimensions: tuple[bool, bool, bool] = (True, True, True),
 ) -> list[list[float]]:
     coords = [[float(x), float(y), float(z)] for x, y, z in coords_nm]
     if len(coords) <= 1 or not bonds:
@@ -151,19 +163,27 @@ def _unwrap_fragment_coords(
                 # molecules when the second/third bond also crosses PBC.
                 delta = [coords[nxt][dim] - out[idx][dim] for dim in range(3)]
                 for dim, box_len in enumerate(box_nm):
-                    delta[dim] = _minimal_image_delta(delta[dim], float(box_len))
+                    if bool(periodic_dimensions[dim]):
+                        delta[dim] = _minimal_image_delta(delta[dim], float(box_len))
                 out[nxt] = [out[idx][dim] + delta[dim] for dim in range(3)]
                 seen[nxt] = True
                 stack.append(nxt)
     return out
 
 
-def _wrap_molecule_com_into_box(coords_nm: list[list[float]], box_nm: tuple[float, float, float]) -> list[list[float]]:
+def _wrap_molecule_com_into_box(
+    coords_nm: list[list[float]],
+    box_nm: tuple[float, float, float],
+    *,
+    periodic_dimensions: tuple[bool, bool, bool] = (True, True, True),
+) -> list[list[float]]:
     if not coords_nm:
         return coords_nm
     out = [list(xyz) for xyz in coords_nm]
     natoms = float(len(out))
     for dim, box_len in enumerate(box_nm):
+        if not bool(periodic_dimensions[dim]):
+            continue
         box_len = float(box_len)
         if box_len <= 0.0:
             continue
@@ -180,6 +200,7 @@ def normalize_gro_molecules_inplace(
     *,
     top: Path,
     gro: Path,
+    periodic_dimensions: tuple[bool, bool, bool] = (True, True, True),
 ) -> dict[str, Any]:
     """Rewrite a GRO file so topology-defined molecules are geometrically whole.
 
@@ -217,9 +238,14 @@ def normalize_gro_molecules_inplace(
                     [tuple(atom.xyz_nm) for atom in block],
                     bonds=list(moltype.bonds),
                     box_nm=frame.box_nm,
+                    periodic_dimensions=tuple(bool(x) for x in periodic_dimensions),
                 )
                 if natoms > 1 and moltype.bonds:
-                    coords = _wrap_molecule_com_into_box(coords, frame.box_nm)
+                    coords = _wrap_molecule_com_into_box(
+                        coords,
+                        frame.box_nm,
+                        periodic_dimensions=tuple(bool(x) for x in periodic_dimensions),
+                    )
                     normalized_molecules += 1
                 for atom, xyz in zip(block, coords):
                     atoms_out.append(

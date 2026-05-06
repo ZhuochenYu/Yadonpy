@@ -113,6 +113,10 @@ class SandwichRelaxationSpec:
     stacked_pre_nvt_ps: float = 20.0
     stacked_z_relax_ps: float = 80.0
     stacked_exchange_ps: float = 120.0
+    stack_freeze_group: str | None = "GRAPHITE"
+    stack_release_graphite_final: bool = True
+    stack_frozen_gpu_offload_mode: str = "balanced"
+    stack_final_gpu_offload_mode: str = "full"
 
 
 @dataclass(frozen=True)
@@ -126,6 +130,7 @@ class InterfaceBuildPolicy:
     max_stack_rescue_rounds: int = 1
     min_atom_distance_nm: float = 0.055
     charge_tolerance_e: float = 1.0e-3
+    max_core_gap_nm: float = 2.0
 
 
 @dataclass(frozen=True)
@@ -213,6 +218,20 @@ class StackReleaseResult:
     route: str = "screening"
     notes: tuple[str, ...] = ()
     sandwich_result: GraphitePolymerElectrolyteSandwichResult | None = field(default=None, repr=False, compare=False)
+
+
+@dataclass(frozen=True)
+class SandwichNvtFollowupResult:
+    work_dir: Path
+    summary_path: Path
+    final_gro: Path
+    tpr: Path
+    xtc: Path
+    edr: Path
+    top: Path
+    ndx: Path
+    stack_checks: dict[str, object] = field(default_factory=dict)
+    log_scan: dict[str, object] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

@@ -57,6 +57,31 @@ These presets keep the simulation in the `1万–3万` atom range while matching
 - `EO:Li = 12.5:1`
 - `melt_temp_k = 400 K`
 
+JACS 2024 EC/DEC + LiPF6 OPLS-AA comparison workflow:
+
+```bash
+cd examples/02_polymer_electrolyte
+RESTART_STATUS=1 \
+YADONPY_OPLS_CHARGE_MODE=resp \
+PROD_ENSEMBLE=nvt \
+COUNT_EC=134 COUNT_EMC=0 COUNT_DEC=100 SALT_PAIRS=22 \
+TEMP_K=300 PRESS_BAR=1 \
+PROD_NS=80 PROD_DT_PS=0.00125 PROD_CONSTRAINTS=none \
+LI_CHARGE_SCALE=0.75 PF6_CHARGE_SCALE=0.75 \
+INITIAL_DENSITY_G_CM3=0.20 MAX_ADDITIONAL_ROUNDS=4 \
+PERFORMANCE_PROFILE=auto ANALYSIS_PROFILE=transport_fast \
+python benchmark_carbonate_lipf6_oplsaa.py
+```
+
+This route follows the JACS 2024 EC/DEC + 1 M LiPF6 simulation setup
+(`10.1021/jacs.3c11589`) more closely by using OPLS-AA/LigParGen-style
+nonbonded and bonded parameters while preserving YadonPy MolDB adaptive RESP
+charges for EC/DEC/PF6. `YADONPY_OPLS_CHARGE_MODE=opls` remains available for
+a native-OPLS charge control, but the default comparison route uses our RESP
+charges. For PF6 specifically, the OPLS benchmark copies OPLS atom types and LJ
+parameters onto the MolDB DRIH-bonded PF6 record without replacing RESP charges
+unless native OPLS charges are explicitly requested.
+
 Screening comparison helper:
 
 ```bash
@@ -96,6 +121,11 @@ Transport notes:
 - The resolved policy is written into `05_*_production/summary.json` and the
   benchmark metadata. Explicit `TRAJ_PS`, `ENERGY_PS`, `LOG_PS`,
   `RDF_FRAME_STRIDE`, `RDF_BIN_NM`, or `RDF_RMAX_NM` values always override auto.
+- For older dense trajectories, analysis also applies runtime frame thinning and
+  writes the effective settings to `06_analysis/analysis_runtime_policy.json`.
+  Tune this with global `MAX_ANALYSIS_FRAMES` or section-specific
+  `MAX_RDF_FRAMES`, `MAX_MSD_FRAMES`, `MAX_CELL_FRAMES`, and
+  `MAX_POLYMER_METRIC_FRAMES`.
 - Set `PERFORMANCE_PROFILE=full ANALYSIS_PROFILE=full` to restore dense output,
   all-site RDF, and full polymer metrics.
 - `DIELECTRIC_ANALYSIS=1` runs `AnalyzeResult.dielectric()` via `gmx dipoles`.

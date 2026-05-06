@@ -511,7 +511,7 @@ def _recipe_trust_periodic_xy(repo_root: Path) -> dict[str, object]:
 
 
 def _recipe_repair_harness(repo_root: Path) -> dict[str, object]:
-    path = repo_root / "examples/08_graphite_polymer_electrolyte_sandwich/run_iteration_matrix.py"
+    path = repo_root / "tools/example08_autofix/run_iteration_matrix.py"
     changed = False
     changed |= _replace_once(
         path,
@@ -528,7 +528,7 @@ def _recipe_repair_harness(repo_root: Path) -> dict[str, object]:
         "                        cwd=str(BASE_DIR),\n",
         "                        cwd=str(REPO_ROOT),\n",
     )
-    return {"status": "applied" if changed else "noop", "files": ["examples/08_graphite_polymer_electrolyte_sandwich/run_iteration_matrix.py"] if changed else []}
+    return {"status": "applied" if changed else "noop", "files": ["tools/example08_autofix/run_iteration_matrix.py"] if changed else []}
 
 
 def _recipe_reduce_release_gap(repo_root: Path) -> dict[str, object]:
@@ -628,7 +628,7 @@ def _needs_periodic_xy_fix(signature: dict[str, object], repo_root: Path) -> boo
 def _needs_harness_fix(signature: dict[str, object], repo_root: Path) -> bool:
     return str(signature.get("primary_failure_class")) == "runtime_import_failure" and not _file_contains(
         repo_root,
-        "examples/08_graphite_polymer_electrolyte_sandwich/run_iteration_matrix.py",
+        "tools/example08_autofix/run_iteration_matrix.py",
         'env["PYTHONPATH"]',
     )
 
@@ -637,8 +637,8 @@ RECIPES: tuple[RecipeSpec, ...] = (
     RecipeSpec(
         name="repair_harness_import_sync_runtime_wiring",
         risk="low",
-        files=("examples/08_graphite_polymer_electrolyte_sandwich/run_iteration_matrix.py",),
-        tests=("python -m py_compile examples/08_graphite_polymer_electrolyte_sandwich/run_iteration_matrix.py",),
+        files=("tools/example08_autofix/run_iteration_matrix.py",),
+        tests=("python -m py_compile tools/example08_autofix/run_iteration_matrix.py",),
         push_allowed=True,
         selector=_needs_harness_fix,
         applier=_recipe_repair_harness,
@@ -796,7 +796,7 @@ def _build_push_safety_report(
     code_files = [
         path
         for path in stats["files"]
-        if path.startswith(("src/", "examples/08_graphite_polymer_electrolyte_sandwich/", "tests/"))
+        if path.startswith(("src/", "examples/08_graphite_polymer_electrolyte_sandwich/", "tools/example08_autofix/", "tests/"))
     ]
     failures: list[str] = []
     if not push.enabled:
@@ -861,7 +861,7 @@ def _run_remote_round(*, config: AutofixConfig, remote_round_dir: str) -> dict[s
         f"rm -rf {shlex.quote(remote_round_dir)} && "
         f"mkdir -p {shlex.quote(remote_round_dir)} && "
         f"cd {shlex.quote(config.remote.repo_root)} && "
-        f"{config.remote.conda_prefix} python examples/08_graphite_polymer_electrolyte_sandwich/run_iteration_matrix.py "
+        f"{config.remote.conda_prefix} python tools/example08_autofix/run_iteration_matrix.py "
         f"--mode observe --base-dir {shlex.quote(remote_round_dir)} "
         f"--hours {float(config.matrix.hours_per_round):.3f} "
         f"--max-iterations {int(config.matrix.max_iterations_per_round)} "

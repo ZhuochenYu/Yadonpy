@@ -55,11 +55,22 @@ def test_select_diffusive_window_rejects_plateau():
     t_ps = np.linspace(0.0, 1000.0, 201)
     msd_nm2 = 0.02 * np.power(np.maximum(t_ps, 1.0), 0.6)
     fit = select_diffusive_window(t_ps, msd_nm2)
-    assert fit["D_m2_s"] is not None
+    assert fit["D_m2_s"] is None
+    assert fit["apparent_D_m2_s"] is not None
     assert fit["selection_basis"] == "loglog_slope_closest_to_one"
     assert fit["status"] == "subdiffusive_risk"
     assert fit["confidence"] == "low"
     assert fit["alpha_mean"] < 1.0
+
+
+def test_select_diffusive_window_does_not_accept_marginal_subdiffusion():
+    t_ps = np.linspace(0.0, 1000.0, 201)
+    msd_nm2 = 0.02 * np.power(np.maximum(t_ps, 1.0), 0.82)
+    fit = select_diffusive_window(t_ps, msd_nm2)
+    assert fit["status"] == "subdiffusive_risk"
+    assert fit["D_m2_s"] is None
+    assert fit["apparent_D_m2_s"] is not None
+    assert fit["alpha_mean"] < 0.90
 
 
 def test_compute_msd_series_respects_begin_end_window(monkeypatch):
@@ -929,6 +940,82 @@ def test_msd_transport_fast_selects_transport_species_and_default_metrics(tmp_pa
     assert set(out["PEO"]["metrics"]) == {"chain_com_msd"}
     assert len(calls) == 2
     assert out["_analysis"]["analysis_profile"] == "transport_fast"
+
+
+def test_msd_transport_fast_honors_policy_selected_neutral_species(tmp_path: Path, monkeypatch):
+    work_dir = tmp_path
+    system_dir = work_dir / "02_system"
+    summary_dir = work_dir / "05_npt_production"
+    system_dir.mkdir(parents=True, exist_ok=True)
+    summary_dir.mkdir(parents=True, exist_ok=True)
+    for name in ("system.gro", "system_meta.json", "residue_map.json", "charge_groups.json"):
+        (system_dir / name).write_text("{}\n", encoding="utf-8")
+    (summary_dir / "summary.json").write_text(
+        json.dumps(
+            {
+                "performance_policy": {
+                    "analysis_profile": "transport_fast",
+                    "policy_level": "fast",
+                    "performance_profile": "auto",
+                    "traj_ps": 10.0,
+                    "msd_selected_species": ["SOL"],
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    xtc = work_dir / "md.xtc"
+    xtc.write_text("x\n", encoding="utf-8")
+
+    analyzer = AnalyzeResult(work_dir=work_dir, tpr=work_dir / "md.tpr", xtc=xtc, edr=work_dir / "md.edr", top=work_dir / "system.top", ndx=work_dir / "system.ndx")
+    monkeypatch.setattr(analyzer, "_system_dir", lambda: system_dir)
+    monkeypatch.setattr(analyzer, "_analysis_xtc_path", lambda: xtc)
+    monkeypatch.setattr(analyzer, "_transport_geometry_mode", lambda geometry="auto": "3d")
+
+    analyzer_mod = __import__("yadonpy.sim.analyzer", fromlist=["parse_system_top"])
+    monkeypatch.setattr(analyzer_mod, "parse_system_top", lambda top: object())
+    monkeypatch.setattr(
+        analyzer_mod,
+        "build_msd_metric_catalog",
+        lambda topo, system_dir: {
+            "Li": {
+                "kind": "ion",
+                "smiles": "[Li+]",
+                "n_molecules": 2,
+                "natoms": 1,
+                "formal_charge_e": 1.0,
+                "default_metric": "ion_atomic_msd",
+                "metrics": {"ion_atomic_msd": {"groups": [object()]}},
+            },
+            "SOL": {
+                "kind": "solvent",
+                "smiles": "CO",
+                "n_molecules": 3,
+                "natoms": 6,
+                "formal_charge_e": 0.0,
+                "default_metric": "molecule_com_msd",
+                "metrics": {"molecule_com_msd": {"groups": [object()]}},
+            },
+        },
+    )
+    monkeypatch.setattr(
+        analyzer_mod,
+        "compute_msd_series",
+        lambda *, group_specs, **kwargs: {
+            "t_ps": np.asarray([0.0, 1.0, 2.0]),
+            "msd_nm2": np.asarray([0.0, 0.1, 0.2]),
+            "geometry": "3d",
+            "n_groups": len(group_specs),
+            "fit": {"D_m2_s": 1.0e-10, "D_nm2_ps": 1.0e-4, "status": "ok", "confidence": "high"},
+            "preprocessing": {},
+        },
+    )
+    monkeypatch.setattr(analyzer_mod, "plot_msd_series", lambda **kwargs: {})
+    monkeypatch.setattr(analyzer_mod, "plot_msd_series_summary", lambda **kwargs: None)
+
+    out = analyzer.msd(analysis_profile="auto")
+    assert set(k for k in out if not k.startswith("_")) == {"Li", "SOL"}
+    assert out["SOL"]["default_metric"] == "molecule_com_msd"
 
 
 def test_dielectric_runs_gmx_dipoles_and_writes_summary(tmp_path: Path, monkeypatch):

@@ -69,6 +69,15 @@ def _normalize_charge_mode(raw: str | None) -> str:
     return "resp"
 
 
+def _normalize_production_ensemble(raw: str | None) -> str:
+    token = str(raw or "npt").strip().lower()
+    if token in {"nvt", "canonical"}:
+        return "nvt"
+    if token in {"npt", "isothermal-isobaric", "isothermal_isobaric"}:
+        return "npt"
+    raise ValueError(f"Unsupported production ensemble: {raw!r}")
+
+
 def _json_prop(mol, key: str) -> dict[str, Any] | None:
     value = read_json_prop(mol, key)
     return value if isinstance(value, dict) else None
@@ -169,9 +178,10 @@ def _assign_builtin_opls_ion(ff: OPLSAA, smiles: str, *, label: str):
     return mol
 
 
-def _load_pf6_with_builtin_charges(*, ion_ff: OPLSAA, repo_db_dir: Path):
+def _load_pf6_with_opls_parameters(*, ion_ff: OPLSAA, repo_db_dir: Path, charge_mode: str):
     gaff_ff = GAFF2_mod()
     last_exc: Exception | None = None
+    use_opls_charges = str(charge_mode).strip().lower() == "opls"
     opls_probe = ion_ff.mol(PF6_SMILES, charge="opls", require_ready=False, prefer_db=False)
     if not ion_ff.assign_ptypes(opls_probe, charge="opls"):
         raise RuntimeError("Cannot build the PF6 OPLS-AA atom-type probe from SMILES.")
@@ -199,16 +209,19 @@ def _load_pf6_with_builtin_charges(*, ion_ff: OPLSAA, repo_db_dir: Path):
                 dst_atom.SetProp("ff_type", src_atom.GetProp("ff_type"))
                 dst_atom.SetDoubleProp("ff_sigma", src_atom.GetDoubleProp("ff_sigma"))
                 dst_atom.SetDoubleProp("ff_epsilon", src_atom.GetDoubleProp("ff_epsilon"))
-                dst_atom.SetDoubleProp("AtomicCharge", src_atom.GetDoubleProp("AtomicCharge"))
+                if use_opls_charges:
+                    dst_atom.SetDoubleProp("AtomicCharge", src_atom.GetDoubleProp("AtomicCharge"))
                 if src_atom.HasProp("ff_desc"):
                     dst_atom.SetProp("ff_desc", src_atom.GetProp("ff_desc"))
             pf6.SetProp("ff_name", str(ion_ff.name))
             pf6.SetProp("ff_class", str(ion_ff.ff_class))
             pf6.SetProp("pair_style", str(ion_ff.pair_style))
-            print(
-                "[OPLS-AA] loaded PF6 bonded topology from "
-                f"{db_label} db and replaced atom types / charges with built-in OPLS-AA values"
+            charge_note = (
+                "replaced charges with built-in OPLS-AA values"
+                if use_opls_charges
+                else "preserved MolDB RESP charges"
             )
+            print(f"[OPLS-AA] loaded PF6 bonded topology from {db_label} db, copied OPLS-AA LJ/types, and {charge_note}")
             return pf6
         except Exception as exc:
             last_exc = exc
@@ -615,6 +628,7 @@ PF6_SMILES = "F[P-](F)(F)(F)(F)F"
 temp_k = _env_float("TEMP_K", 298.15)
 press_bar = _env_float("PRESS_BAR", 1.0)
 prod_ns = _env_float("PROD_NS", 5.0)
+prod_ensemble = _normalize_production_ensemble(os.environ.get("PROD_ENSEMBLE"))
 initial_density_g_cm3 = _env_float("INITIAL_DENSITY_G_CM3", 0.05)
 max_additional_rounds = _env_int("MAX_ADDITIONAL_ROUNDS", 4)
 prod_constraints = _normalize_constraints(os.environ.get("PROD_CONSTRAINTS"), default="h-bonds")
@@ -650,14 +664,15 @@ if __name__ == "__main__":
     emc = _load_ready_opls_species(ff, EMC_SMILES, label="EMC", repo_db_dir=REPO_DB_DIR, charge_mode=charge_mode)
     dec = _load_ready_opls_species(ff, DEC_SMILES, label="DEC", repo_db_dir=REPO_DB_DIR, charge_mode=charge_mode)
     li = _assign_builtin_opls_ion(ion_ff, LI_SMILES, label="Li")
-    pf6 = _load_pf6_with_builtin_charges(ion_ff=ion_ff, repo_db_dir=REPO_DB_DIR)
+    pf6 = _load_pf6_with_opls_parameters(ion_ff=ion_ff, repo_db_dir=REPO_DB_DIR, charge_mode=charge_mode)
 
     solvent_charge_method = "RESP2" if charge_mode == "resp2" else "RESP"
+    pf6_charge_method = "opls" if charge_mode == "opls" else "RESP"
     _stamp_charge_route(ec, charge_method=solvent_charge_method, prefer_db=True, require_db=True, require_ready=True)
     _stamp_charge_route(emc, charge_method=solvent_charge_method, prefer_db=True, require_db=True, require_ready=True)
     _stamp_charge_route(dec, charge_method=solvent_charge_method, prefer_db=True, require_db=True, require_ready=True)
     _stamp_charge_route(li, charge_method="opls", prefer_db=False, require_db=False, require_ready=False)
-    _stamp_charge_route(pf6, charge_method="RESP", prefer_db=True, require_db=True, require_ready=True)
+    _stamp_charge_route(pf6, charge_method=pf6_charge_method, prefer_db=True, require_db=True, require_ready=True)
 
     species_rows = [
         summarize_rdkit_species_forcefield(ec, label="EC", moltype_hint="EC", charge_scale=1.0),
@@ -684,10 +699,11 @@ if __name__ == "__main__":
             "charge_mode": charge_mode,
             "solvent_charge_method": solvent_charge_method,
             "resolved_qm_recipes": solvent_routes,
-            "pf6_charge_method": "RESP",
+            "pf6_charge_method": pf6_charge_method,
             "species": ["EC", "EMC", "DEC", "Li", "PF6"],
             "counts": {"EC": count_ec, "EMC": count_emc, "DEC": count_dec, "Li": salt_pairs, "PF6": salt_pairs},
             "charge_scale": {"EC": 1.0, "EMC": 1.0, "DEC": 1.0, "Li": li_charge_scale, "PF6": pf6_charge_scale},
+            "production_ensemble": prod_ensemble,
             "expected_diffusion_trend": "EMC > DEC > EC (literature-guided target for mixed linear/cyclic carbonate electrolyte)",
             "neutral_charge_issues": neutral_charge_issues,
         },
@@ -763,20 +779,33 @@ if __name__ == "__main__":
         analy.get_all_prop(temp=temp_k, press=press_bar, save=True)
         result = analy.check_eq()
 
-    npt = eq.NPT(ac, work_dir=work_root)
-    ac = npt.exec(
-        temp=temp_k,
-        press=press_bar,
-        mpi=mpi,
-        omp=omp,
-        gpu=gpu,
-        gpu_id=gpu_id,
-        time=prod_ns,
-        dt_ps=prod_dt_ps,
-        constraints=prod_constraints,
-    )
+    if prod_ensemble == "nvt":
+        prod_step = eq.NVT(ac, work_dir=work_root)
+        ac = prod_step.exec(
+            temp=temp_k,
+            mpi=mpi,
+            omp=omp,
+            gpu=gpu,
+            gpu_id=gpu_id,
+            time=prod_ns,
+            dt_ps=prod_dt_ps,
+            constraints=prod_constraints,
+        )
+    else:
+        prod_step = eq.NPT(ac, work_dir=work_root)
+        ac = prod_step.exec(
+            temp=temp_k,
+            press=press_bar,
+            mpi=mpi,
+            omp=omp,
+            gpu=gpu,
+            gpu_id=gpu_id,
+            time=prod_ns,
+            dt_ps=prod_dt_ps,
+            constraints=prod_constraints,
+        )
 
-    analy = npt.analyze()
+    analy = prod_step.analyze()
     basic = analy.get_all_prop(temp=temp_k, press=press_bar, save=True)
     rdf = analy.rdf(center_mol=li)
     msd = analy.msd()

@@ -159,6 +159,20 @@ def analyze_interface_transport(**kwargs):
     return _analyze_interface_transport(**kwargs)
 
 
+def analyze_sandwich_interface(**kwargs):
+    """Thin wrapper around :func:`yadonpy.interface.analyze_sandwich_interface`."""
+    from .interface import analyze_sandwich_interface as _analyze_sandwich_interface
+
+    return _analyze_sandwich_interface(**kwargs)
+
+
+def run_sandwich_nvt_followup(*args, **kwargs):
+    """Thin wrapper around :func:`yadonpy.interface.run_sandwich_nvt_followup`."""
+    from .interface import run_sandwich_nvt_followup as _run_sandwich_nvt_followup
+
+    return _run_sandwich_nvt_followup(*args, **kwargs)
+
+
 def print_interface_result_summary(*args, **kwargs):
     """Thin wrapper around :func:`yadonpy.interface.print_interface_result_summary`."""
     from .interface import print_interface_result_summary as _print_interface_result_summary
@@ -380,6 +394,7 @@ __all__ = [
     'audit_default_moldb_sync',
     'audit_oplsaa_reference',
     'analyze_interface_transport',
+    'analyze_sandwich_interface',
     'assign_charges',
     'assign_forcefield',
     'build_graphite',
@@ -414,6 +429,7 @@ __all__ = [
     'release_graphite_cmc_electrolyte_stack',
     'release_graphite_polymer_electrolyte_stack',
     'resolve_prepared_system',
+    'run_sandwich_nvt_followup',
     'run_elongation_gmx',
     'run_tg_scan_gmx',
 ]
