@@ -126,6 +126,10 @@ Transport notes:
   Tune this with global `MAX_ANALYSIS_FRAMES` or section-specific
   `MAX_RDF_FRAMES`, `MAX_MSD_FRAMES`, `MAX_CELL_FRAMES`, and
   `MAX_POLYMER_METRIC_FRAMES`.
+- Polymer MSD means chain center-of-mass self diffusion by default. The analyzer
+  reconstructs whole chains from bonded connectivity before PBC unwrapping, and
+  only accepts diffusion fits whose log-log slope is near one over a sufficiently
+  long window.
 - Set `PERFORMANCE_PROFILE=full ANALYSIS_PROFILE=full` to restore dense output,
   all-site RDF, and full polymer metrics.
 - `DIELECTRIC_ANALYSIS=1` runs `AnalyzeResult.dielectric()` via `gmx dipoles`.

@@ -305,6 +305,7 @@ class GromacsRunner:
         cpi: Optional[Path] = None,
         checkpoint_minutes: Optional[float] = None,
         mdrun_extra_args: Optional[Sequence[str]] = None,
+        allow_cpu_fallback_on_gpu_error: bool = True,
         # "auto" is generally the safest default across clusters; "on" can
         # over-constrain pinning policies under some schedulers/cgroups.
         pin: str = "auto",
@@ -344,9 +345,15 @@ class GromacsRunner:
         args += ["-stepout", "10000"]
 
 
-        # Pinning improves CPU-side efficiency on most nodes.
+        # Pinning improves CPU-side efficiency on most nodes. Keep the public
+        # default conservative, but allow cluster runs to opt into explicit
+        # pinning without changing every workflow script.
+        pin = os.environ.get("YADONPY_MDRUN_PIN", str(pin)).strip() or str(pin)
         if self._tool_has_option("mdrun", "-pin", cwd=cwd):
             args += ["-pin", str(pin)]
+        pinoffset = os.environ.get("YADONPY_MDRUN_PINOFFSET")
+        if pinoffset not in (None, "") and self._tool_has_option("mdrun", "-pinoffset", cwd=cwd):
+            args += ["-pinoffset", str(pinoffset).strip()]
 
         # Always write an explicit log file for debugging.
         if self._tool_has_option("mdrun", "-g", cwd=cwd):
@@ -589,8 +596,33 @@ class GromacsRunner:
                 else:
                     del cmd[j : j + 1]
 
-        def _fallback_to_cpu(reason: str) -> None:
+        def _raise_cpu_fallback_blocked(reason: str, tail: str, rc: int) -> None:
+            desc = f"exit code {rc}"
+            if rc < 0:
+                sig = -rc
+                try:
+                    sname = signal.Signals(sig).name
+                except Exception:
+                    sname = "UNKNOWN"
+                desc = f"terminated by signal {sig} ({sname})"
+            raise GromacsError(
+                "GROMACS mdrun GPU offload failed and CPU fallback is disabled\n"
+                f"  cmd: {self.exec.gmx_cmd} {_render(args)}\n"
+                f"  cwd: {str(cwd)}\n"
+                f"  reason: {reason} ({desc})\n"
+                "  hint: set ALLOW_CPU_FALLBACK_PRODUCTION=1 only if a slow CPU production run is intentional.\n"
+                f"  output tail:\n{tail}"
+            )
+
+        def _fallback_to_cpu(reason: str, *, tail: str, rc: int) -> None:
             nonlocal uses_gpu
+            if not bool(allow_cpu_fallback_on_gpu_error):
+                blocked_reason = (
+                    reason.replace("Falling back to CPU kernels for this stage.", "CPU fallback is disabled; hard-stopping this stage.")
+                    if "Falling back to CPU kernels for this stage." in reason
+                    else f"{reason} CPU fallback is disabled; hard-stopping this stage."
+                )
+                _raise_cpu_fallback_blocked(blocked_reason, tail, rc)
             self._log(reason)
             for key in ("-nb", "-bonded", "-update", "-pme", "-pmefft"):
                 _replace_kv(args, key, "cpu")
@@ -668,7 +700,9 @@ class GromacsRunner:
             if uses_gpu and _is_user_input_error(tail):
                 _fallback_to_cpu(
                     "[WARN] GPU offload appears unsupported/misconfigured on this node. "
-                    "Falling back to CPU kernels for this stage."
+                    "Falling back to CPU kernels for this stage.",
+                    tail=tail,
+                    rc=rc,
                 )
                 continue
 
@@ -678,7 +712,9 @@ class GromacsRunner:
             if uses_gpu and _is_cuda_error(tail, rc):
                 _fallback_to_cpu(
                     "[WARN] Detected CUDA/internal GPU runtime failure during mdrun. "
-                    "Falling back to CPU kernels for this stage."
+                    "Falling back to CPU kernels for this stage.",
+                    tail=tail,
+                    rc=rc,
                 )
                 continue
 
@@ -788,6 +824,8 @@ class GromacsRunner:
         ndx: Path,
         group: str,
         out_xvg: Path,
+        mol: bool = False,
+        out_mol_xvg: Optional[Path] = None,
         # NOTE: gmx msd enforces -dt <= -trestart, where -dt is effectively the
         # trajectory frame interval. Some GROMACS versions default -trestart to
         # 10 ps, which can break MSD on trajectories written every 20 ps or more.
@@ -828,9 +866,12 @@ class GromacsRunner:
         # (we also generate a nojump trajectory upstream).
         if self._tool_has_option("msd", "-pbc", cwd=cwd):
             args += ["-pbc", "nojump"]
-        # NOTE (v0.5.23): Do NOT add `-mol` by default.
-        # Users may prefer atom-based MSD (especially for polymers / custom selections)
-        # and `-mol` can change the meaning of the group selection.
+        # Do NOT add `-mol` by default because it changes the meaning of the
+        # selection.  Polymer-chain diffusion workflows can opt in explicitly;
+        # then GROMACS computes one COM diffusion constant per molecule in the
+        # selected group, matching the standard chain self-diffusion definition.
+        if bool(mol):
+            args += ["-mol", str(out_mol_xvg or out_xvg.with_name(out_xvg.stem + "_mol.xvg"))]
         if rmcomm and self._tool_has_option("msd", "-rmcomm", cwd=cwd):
             args += ["-rmcomm"]
         if begin_ps is not None:

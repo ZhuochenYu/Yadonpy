@@ -114,6 +114,26 @@ _DONOR_H_LJ_FLOOR = {
     "opls_172": (0.053792, 0.019665),
     "opls_188": (0.053792, 0.019665),
 }
+_OPLSAA_PROFILES = {"strict", "refine", "legacy"}
+
+
+def _normalize_oplsaa_profile(profile: object | None) -> str:
+    token = str(profile or "strict").strip().lower()
+    if token in {"", "default", "source", "source-driven", "source_driven"}:
+        token = "strict"
+    if token in {"compat", "compatible", "fallback"}:
+        token = "legacy"
+    if token not in _OPLSAA_PROFILES:
+        raise ValueError(f"Unsupported OPLS-AA assignment profile: {profile!r} (expected strict, refine, or legacy)")
+    return token
+
+
+def _profile_allows_refine(profile: object | None) -> bool:
+    return _normalize_oplsaa_profile(profile) in {"refine", "legacy"}
+
+
+def _profile_allows_legacy(profile: object | None) -> bool:
+    return _normalize_oplsaa_profile(profile) == "legacy"
 
 
 def _param_source(param):
@@ -216,11 +236,12 @@ class OPLSAA(GAFF):
     Atom typing is done via an external JSON SMARTS rule table.
     """
 
-    def __init__(self, db_file=None):
+    def __init__(self, db_file=None, *, profile: str = "strict"):
         if db_file is None:
             db_file = str(ff_data_path("ff_dat", "oplsaa.json"))
         super().__init__(db_file)
         self.name = 'oplsaa'
+        self.assignment_profile = _normalize_oplsaa_profile(profile)
         self.rule_table_summary = validate_oplsaa_rule_table(self.param.pt.keys())
         if self.rule_table_summary["unknown_types"]:
             raise ValueError(
@@ -258,6 +279,7 @@ class OPLSAA(GAFF):
         polyelectrolyte_mode: bool | None = None,
         polyelectrolyte_detection: str | None = None,
         resp_profile: str | None = None,
+        profile: str | None = None,
     ):
         """Create a lightweight MolSpec handle for OPLS-AA workflows.
 
@@ -291,6 +313,7 @@ class OPLSAA(GAFF):
                         pass
                 return mol
 
+        assignment_profile = _normalize_oplsaa_profile(profile or self.assignment_profile)
         try:
             return self.mol_rdkit(
                 smiles_or_psmiles,
@@ -307,7 +330,7 @@ class OPLSAA(GAFF):
             )
         except Exception as exc:
             charge_token = str(charge or "").strip().upper()
-            if charge_token != "RESP":
+            if charge_token != "RESP" or assignment_profile == "strict":
                 raise
             utils.radon_print(
                 f"RESP-ready MolDB entry unavailable for {smiles_or_psmiles}; "
@@ -482,7 +505,102 @@ class OPLSAA(GAFF):
             return True
         return False
 
-    def _assign_ptypes_subset(self, mol, atom_indices, charge=None):
+    @staticmethod
+    def _is_pf6_like(mol) -> bool:
+        """Return True for a PF6- graph, including legacy Mol2 formal-charge variants."""
+
+        try:
+            if mol is None or int(mol.GetNumAtoms()) != 7:
+                return False
+            phosphorus = [atom for atom in mol.GetAtoms() if atom.GetSymbol() == "P"]
+            fluorine = [atom for atom in mol.GetAtoms() if atom.GetSymbol() == "F"]
+            if len(phosphorus) != 1 or len(fluorine) != 6:
+                return False
+            center = phosphorus[0]
+            neighbors = list(center.GetNeighbors())
+            return int(center.GetDegree()) == 6 and all(nb.GetSymbol() == "F" for nb in neighbors)
+        except Exception:
+            return False
+
+    def _ensure_drih_bonded_fragment(self, mol, *, bonded_work_dir=None) -> None:
+        """Ensure a DRIH bond/angle patch exists for PF6-like polyhedral ions.
+
+        OPLS-AA nonbonded typing covers PF6-, but the bonded terms should be
+        supplied by YadonPy's DRIH patch so every electrolyte workflow gets the
+        same stiff octahedral ion treatment as GAFF/GAFF2 workflows.
+        """
+
+        if self._has_precomputed_bonded_fragment(mol):
+            return
+        if not self._is_pf6_like(mol):
+            raise RuntimeError("DRIH auto-generation is currently limited to PF6-like AX6 ions in OPLS-AA.")
+
+        from pathlib import Path
+        from ..core import naming
+        from ..sim import qm
+
+        mol_name = "PF6"
+        try:
+            mol_name = naming.get_name(mol) or mol_name
+        except Exception:
+            pass
+        if bonded_work_dir is None:
+            bonded_work_dir = (Path.cwd() / ".yadonpy_cache" / "bonded" / str(mol_name)).resolve()
+        bdir = Path(bonded_work_dir).expanduser().resolve()
+
+        try:
+            smiles_hint = None
+            if mol.HasProp("_YADONPY_CANONICAL"):
+                smiles_hint = mol.GetProp("_YADONPY_CANONICAL")
+            utils.ensure_3d_coords(mol, smiles_hint=smiles_hint, engine="openbabel")
+        except Exception:
+            pass
+
+        qm.bond_angle_params_drih(
+            mol,
+            work_dir=str(bdir),
+            log_name=str(mol_name),
+            smiles_hint=(mol.GetProp("_YADONPY_CANONICAL") if mol.HasProp("_YADONPY_CANONICAL") else None),
+        )
+
+        if not self._has_precomputed_bonded_fragment(mol):
+            raise RuntimeError("DRIH generation did not leave a bonded fragment on the molecule.")
+        try:
+            mol.SetProp("_yadonpy_bonded_method", "DRIH")
+            mol.SetProp("_yadonpy_bonded_signature", "drih")
+        except Exception:
+            pass
+
+    @staticmethod
+    def _refresh_polyelectrolyte_metadata_if_needed(mol, *, requested: bool = False, detection: str = "auto") -> None:
+        """Mirror GAFF metadata refresh so OPLS-AA polymers export charge groups reliably."""
+
+        try:
+            from ..core.polyelectrolyte import annotate_polyelectrolyte_metadata
+
+            has_polyelectrolyte_props = False
+            if hasattr(mol, "HasProp"):
+                for key in (
+                    "_yadonpy_charge_groups_json",
+                    "_yadonpy_resp_constraints_json",
+                    "_yadonpy_polyelectrolyte_summary_json",
+                ):
+                    if mol.HasProp(key):
+                        has_polyelectrolyte_props = True
+                        break
+            molecule_formal_charge = int(sum(int(atom.GetFormalCharge()) for atom in mol.GetAtoms()))
+            smiles_hint = ""
+            try:
+                smiles_hint = Chem.MolToSmiles(mol, isomericSmiles=True)
+            except Exception:
+                smiles_hint = ""
+            if bool(requested) or has_polyelectrolyte_props or molecule_formal_charge != 0 or "*" in smiles_hint:
+                annotate_polyelectrolyte_metadata(mol, detection=str(detection or "auto"))
+        except Exception:
+            pass
+
+    def _assign_ptypes_subset(self, mol, atom_indices, charge=None, *, profile: str | None = None):
+        profile = _normalize_oplsaa_profile(profile or self.assignment_profile)
         if self._has_implicit_h(mol):
             utils.radon_print(
                 'OPLS-AA SMARTS typing requires explicit hydrogens (Chem.AddHs). '
@@ -534,6 +652,8 @@ class OPLSAA(GAFF):
                 utils.radon_print(f'OPLS-AA typing failed: nonbonded type {rule.opls} not found in oplsaa.json', level=3)
                 return False, set()
             self.set_ptype(atom, rule.opls)
+            if _profile_allows_refine(profile) and rule.opls in _DONOR_H_LJ_FLOOR:
+                self._apply_donor_h_lj_floor(atom, rule.opls)
             try:
                 atom.SetProp("ff_desc", str(rule.desc))
             except Exception:
@@ -556,7 +676,8 @@ class OPLSAA(GAFF):
             pass
         return int(bond.GetBeginAtomIdx()) in affected_atoms or int(bond.GetEndAtomIdx()) in affected_atoms
 
-    def _refresh_local_bonded_terms(self, mol, *, affected_atoms: set[int]) -> bool:
+    def _refresh_local_bonded_terms(self, mol, *, affected_atoms: set[int], profile: str | None = None) -> bool:
+        profile = _normalize_oplsaa_profile(profile or self.assignment_profile)
         result = True
 
         for bond in mol.GetBonds():
@@ -568,9 +689,17 @@ class OPLSAA(GAFF):
                 utils.radon_print("ff_btype missing on atoms. Did you run assign_ptypes first?", level=3)
                 return False
             tokens = (a1.GetProp("ff_btype"), a2.GetProp("ff_btype"))
-            param = self._lookup_bond_param(tokens)
+            param = self._lookup_bond_param(tokens, profile=profile)
             if param is None:
                 utils.radon_print(f'Cannot assign bond parameters for {tokens[0]},{tokens[1]}', level=2)
+                self._record_missing_bonded_param(
+                    mol,
+                    kind="bond",
+                    tokens=tokens,
+                    atom_indices=[a1.GetIdx(), a2.GetIdx()],
+                    profile=profile,
+                    context="refresh_local_bonded_terms",
+                )
                 result = False
                 continue
             self.set_btype(bond, param)
@@ -598,11 +727,19 @@ class OPLSAA(GAFF):
                         center.GetProp("ff_btype"),
                         right.GetProp("ff_btype"),
                     )
-                    param = self._lookup_angle_param(tokens)
+                    param = self._lookup_angle_param(tokens, profile=profile)
                     if param is None:
                         utils.radon_print(
                             f'Cannot assign angle parameters for {tokens[0]},{tokens[1]},{tokens[2]}',
                             level=2,
+                        )
+                        self._record_missing_bonded_param(
+                            mol,
+                            kind="angle",
+                            tokens=tokens,
+                            atom_indices=[left.GetIdx(), center.GetIdx(), right.GetIdx()],
+                            profile=profile,
+                            context="refresh_local_bonded_terms",
                         )
                         result = False
                         continue
@@ -633,11 +770,19 @@ class OPLSAA(GAFF):
                         k.GetProp("ff_btype"),
                         l.GetProp("ff_btype"),
                     )
-                    param = self._lookup_dihedral_param(tokens)
+                    param = self._lookup_dihedral_param(tokens, profile=profile)
                     if param is None:
                         utils.radon_print(
                             f'Cannot assign dihedral parameters for {tokens[0]},{tokens[1]},{tokens[2]},{tokens[3]}',
                             level=2,
+                        )
+                        self._record_missing_bonded_param(
+                            mol,
+                            kind="dihedral",
+                            tokens=tokens,
+                            atom_indices=[i.GetIdx(), j.GetIdx(), k.GetIdx(), l.GetIdx()],
+                            profile=profile,
+                            context="refresh_local_bonded_terms",
                         )
                         result = False
                         continue
@@ -656,7 +801,64 @@ class OPLSAA(GAFF):
         dihedrals = getattr(mol, "dihedrals", {}) or {}
         return (f"{a},{b},{c},{d}" in dihedrals) or (f"{d},{c},{b},{a}" in dihedrals)
 
-    def _fill_missing_bonded_terms(self, mol, atom_indices: set[int] | None = None) -> bool:
+    @staticmethod
+    def _clear_missing_bonded_audit(mol) -> None:
+        try:
+            if mol.HasProp("_yadonpy_oplsaa_missing_bonded_json"):
+                mol.ClearProp("_yadonpy_oplsaa_missing_bonded_json")
+        except Exception:
+            pass
+
+    @staticmethod
+    def _record_missing_bonded_param(
+        mol,
+        *,
+        kind: str,
+        tokens,
+        atom_indices,
+        profile: str,
+        context: str,
+    ) -> None:
+        """Persist missing bonded terms so audits do not depend on log scraping."""
+
+        try:
+            existing = json.loads(mol.GetProp("_yadonpy_oplsaa_missing_bonded_json")) if mol.HasProp("_yadonpy_oplsaa_missing_bonded_json") else []
+            if not isinstance(existing, list):
+                existing = []
+        except Exception:
+            existing = []
+        rec = {
+            "kind": str(kind),
+            "tokens": [str(x) for x in tokens],
+            "atom_indices": [int(x) for x in atom_indices],
+            "profile": str(profile),
+            "context": str(context),
+        }
+        signature = (
+            rec["kind"],
+            tuple(rec["tokens"]),
+            tuple(rec["atom_indices"]),
+            rec["context"],
+        )
+        seen = {
+            (
+                str(item.get("kind")),
+                tuple(str(x) for x in item.get("tokens", [])),
+                tuple(int(x) for x in item.get("atom_indices", [])),
+                str(item.get("context")),
+            )
+            for item in existing
+            if isinstance(item, dict)
+        }
+        if signature not in seen:
+            existing.append(rec)
+            try:
+                mol.SetProp("_yadonpy_oplsaa_missing_bonded_json", json.dumps(existing, ensure_ascii=False))
+            except Exception:
+                pass
+
+    def _fill_missing_bonded_terms(self, mol, atom_indices: set[int] | None = None, *, profile: str | None = None) -> bool:
+        profile = _normalize_oplsaa_profile(profile or self.assignment_profile)
         result = True
         scope = None if atom_indices is None else {int(idx) for idx in atom_indices}
 
@@ -684,11 +886,19 @@ class OPLSAA(GAFF):
                         center.GetProp("ff_btype"),
                         right.GetProp("ff_btype"),
                     )
-                    param = self._lookup_angle_param(tokens)
+                    param = self._lookup_angle_param(tokens, profile=profile)
                     if param is None:
                         utils.radon_print(
                             f'Cannot assign angle parameters for {tokens[0]},{tokens[1]},{tokens[2]}',
                             level=2,
+                        )
+                        self._record_missing_bonded_param(
+                            mol,
+                            kind="angle",
+                            tokens=tokens,
+                            atom_indices=[left.GetIdx(), center_idx, right.GetIdx()],
+                            profile=profile,
+                            context="fill_missing_bonded_terms",
                         )
                         result = False
                         continue
@@ -714,11 +924,19 @@ class OPLSAA(GAFF):
                         k.GetProp("ff_btype"),
                         l.GetProp("ff_btype"),
                     )
-                    param = self._lookup_dihedral_param(tokens)
+                    param = self._lookup_dihedral_param(tokens, profile=profile)
                     if param is None:
                         utils.radon_print(
                             f'Cannot assign dihedral parameters for {tokens[0]},{tokens[1]},{tokens[2]},{tokens[3]}',
                             level=2,
+                        )
+                        self._record_missing_bonded_param(
+                            mol,
+                            kind="dihedral",
+                            tokens=tokens,
+                            atom_indices=[i.GetIdx(), j.GetIdx(), k.GetIdx(), l.GetIdx()],
+                            profile=profile,
+                            context="fill_missing_bonded_terms",
                         )
                         result = False
                         continue
@@ -726,7 +944,8 @@ class OPLSAA(GAFF):
 
         return result
 
-    def refresh_polymer_junction_terms(self, mol, charge=None, *, radius: int = 2):
+    def refresh_polymer_junction_terms(self, mol, charge=None, *, radius: int = 2, profile: str | None = None):
+        profile = _normalize_oplsaa_profile(profile or self.assignment_profile)
         new_bonds = self._new_bond_endpoints(mol)
         if not new_bonds:
             return True
@@ -735,7 +954,7 @@ class OPLSAA(GAFF):
 
         endpoints = {idx for pair in new_bonds for idx in pair}
         workset = self._collect_graph_neighborhood(mol, endpoints, radius=radius)
-        ok, changed_atoms = self._assign_ptypes_subset(mol, workset, charge=charge)
+        ok, changed_atoms = self._assign_ptypes_subset(mol, workset, charge=charge, profile=profile)
         if not ok:
             return False
 
@@ -748,12 +967,12 @@ class OPLSAA(GAFF):
             f'and {len(affected_atoms)} affected atom(s).',
             level=1,
         )
-        result = self._refresh_local_bonded_terms(mol, affected_atoms=affected_atoms)
+        result = self._refresh_local_bonded_terms(mol, affected_atoms=affected_atoms, profile=profile)
         # The inherited polymer topology may still contain sparse holes in
         # remote angle/dihedral records after repeated atom deletions and index
         # remapping. Fill only the missing bonded terms without disturbing the
         # existing ones.
-        result = self._fill_missing_bonded_terms(mol) and result
+        result = self._fill_missing_bonded_terms(mol, profile=profile) and result
         return result
 
     def _resolve_spec(self, mol):
@@ -780,6 +999,8 @@ class OPLSAA(GAFF):
                     basis_set=spec.basis_set,
                     method=spec.method,
                     resp_profile=spec.resp_profile,
+                    polyelectrolyte_mode=spec.polyelectrolyte_mode,
+                    polyelectrolyte_detection=spec.polyelectrolyte_detection,
                 )
             except Exception as exc:
                 charge_token = str(getattr(spec, "charge", "") or "").strip().upper()
@@ -798,6 +1019,8 @@ class OPLSAA(GAFF):
                         basis_set=spec.basis_set,
                         method=spec.method,
                         resp_profile=spec.resp_profile,
+                        polyelectrolyte_mode=spec.polyelectrolyte_mode,
+                        polyelectrolyte_detection=spec.polyelectrolyte_detection,
                     )
                     try:
                         resolved.SetProp("_yadonpy_charge_fallback", "opls")
@@ -817,7 +1040,7 @@ class OPLSAA(GAFF):
             return resolved
         return mol
 
-    def ff_assign(self, mol, charge=None, retryMDL=True, useMDL=True, report: bool = True, **charge_kwargs):
+    def ff_assign(self, mol, charge=None, retryMDL=True, useMDL=True, report: bool = True, profile: str | None = None, **charge_kwargs):
         """
         OPLSAA.ff_assign
 
@@ -835,6 +1058,9 @@ class OPLSAA(GAFF):
         """
         from ..core import calc, naming
 
+        assignment_profile = _normalize_oplsaa_profile(
+            profile or charge_kwargs.pop("assignment_profile", None) or charge_kwargs.pop("oplsaa_profile", None) or self.assignment_profile
+        )
         mol = self._resolve_spec(mol)
         try:
             current_name = naming.get_name(mol, default=None)
@@ -845,13 +1071,31 @@ class OPLSAA(GAFF):
         except Exception:
             pass
         try:
-            if naming.try_restore_assigned_mol(mol, depth=2, ff_name=self.name):
+            mol.SetProp("_yadonpy_oplsaa_profile", assignment_profile)
+            self._clear_missing_bonded_audit(mol)
+        except Exception:
+            pass
+        bonded_override = self._normalize_bonded_override(charge_kwargs.get("bonded"))
+        auto_pf6_drih = False
+        if bonded_override is None and self._is_pf6_like(mol):
+            bonded_override = "drih"
+            auto_pf6_drih = True
+
+        try:
+            # A cached OPLS-AA assignment may have been written before the PF6
+            # DRIH policy existed.  When a bonded override is active, recompute
+            # locally so we can verify that the requested patch is present.
+            if bonded_override is None and naming.try_restore_assigned_mol(mol, depth=2, ff_name=self.name):
+                self._refresh_polyelectrolyte_metadata_if_needed(
+                    mol,
+                    requested=bool(charge_kwargs.get("polyelectrolyte_mode", False)),
+                    detection=str(charge_kwargs.get("polyelectrolyte_detection", "auto") or "auto"),
+                )
                 if report:
                     print_ff_assignment_report(mol, ff_obj=self)
                 return mol
         except Exception:
             pass
-        bonded_override = self._normalize_bonded_override(charge_kwargs.get("bonded"))
         preserve_prebuilt_bonded = bool(
             bonded_override in ("drih", "mseminario") and self._has_precomputed_bonded_fragment(mol)
         )
@@ -866,6 +1110,8 @@ class OPLSAA(GAFF):
                 mol.SetProp("_yadonpy_bonded_explicit", "1")
                 mol.SetProp("_yadonpy_bonded_requested", str(bonded_override))
                 mol.SetProp("_yadonpy_bonded_signature", str(bonded_override))
+                if auto_pf6_drih:
+                    mol.SetProp("_yadonpy_bonded_auto", "pf6_drih")
                 if preserve_prebuilt_bonded:
                     mol.SetProp(
                         "_yadonpy_bonded_method",
@@ -873,9 +1119,21 @@ class OPLSAA(GAFF):
                     )
             except Exception:
                 pass
+        if bonded_override == "drih" and not preserve_prebuilt_bonded:
+            self._ensure_drih_bonded_fragment(
+                mol,
+                bonded_work_dir=charge_kwargs.get("bonded_work_dir"),
+            )
+            preserve_prebuilt_bonded = bool(self._has_precomputed_bonded_fragment(mol))
         effective_charge = self._normalize_charge_mode(charge)
         fallback_to_opls = False
         if effective_charge is None and not self._has_complete_atomic_charges(mol):
+            if assignment_profile == "strict":
+                raise RuntimeError(
+                    "OPLS-AA strict profile requires complete pre-existing atomic charges. "
+                    "Pass charge='opls' explicitly to use built-in OPLS-AA charges, or use profile='refine'/'legacy' "
+                    "for the historical automatic charge fallback."
+                )
             effective_charge = 'opls'
             fallback_to_opls = True
 
@@ -895,7 +1153,7 @@ class OPLSAA(GAFF):
         if self._has_reusable_existing_assignment(mol, ff_name=self.name):
             has_new_bond = self._has_marked_new_bond(mol)
             if has_new_bond:
-                result = self.refresh_polymer_junction_terms(mol, charge=effective_charge)
+                result = self.refresh_polymer_junction_terms(mol, charge=effective_charge, profile=assignment_profile)
             elif effective_charge == "opls":
                 result = self._assign_opls_charges_from_existing_types(mol)
             else:
@@ -903,19 +1161,25 @@ class OPLSAA(GAFF):
             if result and report:
                 print_ff_assignment_report(mol, ff_obj=self)
             if result:
+                self._apply_atom_refinements(mol, profile=assignment_profile)
+                self._refresh_polyelectrolyte_metadata_if_needed(
+                    mol,
+                    requested=bool(charge_kwargs.get("polyelectrolyte_mode", False)),
+                    detection=str(charge_kwargs.get("polyelectrolyte_detection", "auto") or "auto"),
+                )
                 try:
                     naming.auto_export_assigned_mol(mol, depth=2)
                 except Exception:
                     pass
             return mol if result else False
 
-        result = self.assign_ptypes(mol, charge=effective_charge)
+        result = self.assign_ptypes(mol, charge=effective_charge, profile=assignment_profile)
         if result and not preserve_prebuilt_bonded:
-            result = self.assign_btypes(mol)
+            result = self.assign_btypes(mol, profile=assignment_profile)
         if result and not preserve_prebuilt_bonded:
-            result = self.assign_atypes(mol)
+            result = self.assign_atypes(mol, profile=assignment_profile)
         if result and not preserve_prebuilt_bonded:
-            result = self.assign_dtypes(mol)
+            result = self.assign_dtypes(mol, profile=assignment_profile)
         if result and not preserve_prebuilt_bonded:
             result = self.assign_itypes(mol)
         if result and preserve_prebuilt_bonded:
@@ -934,13 +1198,13 @@ class OPLSAA(GAFF):
             Chem.rdmolops.Kekulize(mol, clearAromaticFlags=True)
             Chem.rdmolops.SetAromaticity(mol, model=Chem.rdmolops.AromaticityModel.AROMATICITY_MDL)
 
-            result = self.assign_ptypes(mol, charge=effective_charge)
+            result = self.assign_ptypes(mol, charge=effective_charge, profile=assignment_profile)
             if result and not preserve_prebuilt_bonded:
-                result = self.assign_btypes(mol)
+                result = self.assign_btypes(mol, profile=assignment_profile)
             if result and not preserve_prebuilt_bonded:
-                result = self.assign_atypes(mol)
+                result = self.assign_atypes(mol, profile=assignment_profile)
             if result and not preserve_prebuilt_bonded:
-                result = self.assign_dtypes(mol)
+                result = self.assign_dtypes(mol, profile=assignment_profile)
             if result and not preserve_prebuilt_bonded:
                 result = self.assign_itypes(mol)
             if result and effective_charge is not None and effective_charge != 'opls':
@@ -950,6 +1214,13 @@ class OPLSAA(GAFF):
 
         if result and report:
             print_ff_assignment_report(mol, ff_obj=self)
+        if result:
+            self._apply_atom_refinements(mol, profile=assignment_profile)
+            self._refresh_polyelectrolyte_metadata_if_needed(
+                mol,
+                requested=bool(charge_kwargs.get("polyelectrolyte_mode", False)),
+                detection=str(charge_kwargs.get("polyelectrolyte_detection", "auto") or "auto"),
+            )
         if result:
             try:
                 naming.auto_export_assigned_mol(mol, depth=2)
@@ -966,7 +1237,32 @@ class OPLSAA(GAFF):
                 return True
         return False
 
-    def assign_ptypes(self, mol, charge=None):
+    @staticmethod
+    def _apply_donor_h_lj_floor(atom, opls_type: str) -> bool:
+        if opls_type not in _DONOR_H_LJ_FLOOR:
+            return False
+        sigma_floor, epsilon_floor = _DONOR_H_LJ_FLOOR[opls_type]
+        sigma_now = float(atom.GetDoubleProp("ff_sigma")) if atom.HasProp("ff_sigma") else 0.0
+        epsilon_now = float(atom.GetDoubleProp("ff_epsilon")) if atom.HasProp("ff_epsilon") else 0.0
+        if sigma_now <= 0.0 and epsilon_now <= 0.0:
+            atom.SetDoubleProp("ff_sigma", float(sigma_floor))
+            atom.SetDoubleProp("ff_epsilon", float(epsilon_floor))
+            atom.SetProp("ff_provenance", "local_refine:donor_h_lj_floor")
+            return True
+        return False
+
+    @classmethod
+    def _apply_atom_refinements(cls, mol, *, profile: str | None = None) -> None:
+        if not _profile_allows_refine(profile):
+            return
+        for atom in mol.GetAtoms():
+            try:
+                ff_type = atom.GetProp("ff_type")
+            except Exception:
+                continue
+            cls._apply_donor_h_lj_floor(atom, ff_type)
+
+    def assign_ptypes(self, mol, charge=None, *, profile: str | None = None):
         """
         Assign particle types (nonbonded) using SMARTS rules.
 
@@ -976,7 +1272,9 @@ class OPLSAA(GAFF):
           - ff_sigma/ff_epsilon : from oplsaa.json particle_types
           - AtomicCharge (if charge='opls')
         """
+        profile = _normalize_oplsaa_profile(profile or self.assignment_profile)
         mol.SetProp('pair_style', self.pair_style)
+        mol.SetProp('_yadonpy_oplsaa_profile', profile)
 
         if self._has_implicit_h(mol):
             utils.radon_print(
@@ -1007,7 +1305,8 @@ class OPLSAA(GAFF):
                     continue
                 chosen[idx] = rule
 
-        self._apply_special_inorganic_type_fallbacks(mol, chosen)
+        if _profile_allows_legacy(profile):
+            self._apply_special_inorganic_type_fallbacks(mol, chosen)
 
         # Check coverage
         ok = True
@@ -1036,14 +1335,8 @@ class OPLSAA(GAFF):
                 return False
 
             self.set_ptype(a, opls_type)
-            if opls_type in _DONOR_H_LJ_FLOOR:
-                sigma_floor, epsilon_floor = _DONOR_H_LJ_FLOOR[opls_type]
-                sigma_now = float(a.GetDoubleProp("ff_sigma")) if a.HasProp("ff_sigma") else 0.0
-                epsilon_now = float(a.GetDoubleProp("ff_epsilon")) if a.HasProp("ff_epsilon") else 0.0
-                if sigma_now <= 0.0 and epsilon_now <= 0.0:
-                    a.SetDoubleProp("ff_sigma", float(sigma_floor))
-                    a.SetDoubleProp("ff_epsilon", float(epsilon_floor))
-                    a.SetProp("ff_provenance", "local_refine:donor_h_lj_floor")
+            if _profile_allows_refine(profile):
+                self._apply_donor_h_lj_floor(a, opls_type)
             source = _param_source(self.param.pt[opls_type])
             if source:
                 a.SetProp("ff_source", source)
@@ -1120,8 +1413,9 @@ class OPLSAA(GAFF):
             except Exception:
                 pass
 
-    def _find_param(self, mapping, tokens):
+    def _find_param(self, mapping, tokens, *, profile: str | None = None):
         """Find the best bonded parameter for a token tuple."""
+        profile = _normalize_oplsaa_profile(profile or self.assignment_profile)
         key = ','.join(tokens)
         if key in mapping:
             return mapping[key], 'exact'
@@ -1130,15 +1424,16 @@ class OPLSAA(GAFF):
         if rkey in mapping:
             return mapping[rkey], 'reverse'
 
-        for alias_tokens in _iter_btype_alias_token_sets(tokens):
-            if alias_tokens == tuple(tokens):
-                continue
-            key = ','.join(alias_tokens)
-            if key in mapping:
-                return mapping[key], 'alias'
-            rkey = ','.join(reversed(alias_tokens))
-            if rkey in mapping:
-                return mapping[rkey], 'alias-reverse'
+        if _profile_allows_refine(profile):
+            for alias_tokens in _iter_btype_alias_token_sets(tokens):
+                if alias_tokens == tuple(tokens):
+                    continue
+                key = ','.join(alias_tokens)
+                if key in mapping:
+                    return mapping[key], 'alias'
+                rkey = ','.join(reversed(alias_tokens))
+                if rkey in mapping:
+                    return mapping[rkey], 'alias-reverse'
 
         best_obj = None
         best_score = None
@@ -1179,14 +1474,16 @@ class OPLSAA(GAFF):
 
         return None
 
-    def _special_angle_param(self, tokens):
+    def _special_angle_param(self, tokens, *, profile: str | None = None):
+        if not _profile_allows_refine(profile or self.assignment_profile):
+            return None
         # Cyclic carbonates (EC/PC) in the classic OPLS bonded tables are known
         # to miss the OS-C-OS angle even though the dedicated nonbonded types
         # exist (opls_771-779).  We keep the OPLS force constant from the nearest
         # available carbonyl-carbon angle (O,C,OS) and use the published EC/PC
         # equilibrium angle 110.6 degrees for the missing OS-C-OS term.
         if tuple(tokens) == ('OS', 'C', 'OS'):
-            base, _ = self._find_param(self.param.at, ('O', 'C', 'OS'))
+            base, _ = self._find_param(self.param.at, ('O', 'C', 'OS'), profile=profile)
             if base is None:
                 return None
 
@@ -1228,7 +1525,7 @@ class OPLSAA(GAFF):
         if base_tokens is None:
             return None
 
-        base, _ = self._find_param(self.param.at, base_tokens)
+        base, _ = self._find_param(self.param.at, base_tokens, profile=profile)
         if base is None:
             return None
 
@@ -1247,7 +1544,9 @@ class OPLSAA(GAFF):
             provenance='special_angle_fallback',
         )
 
-    def _special_bond_param(self, tokens):
+    def _special_bond_param(self, tokens, *, profile: str | None = None):
+        if not _profile_allows_refine(profile or self.assignment_profile):
+            return None
         fallback_map = {
             # Methoxide / thiolate methyl groups use the ordinary CT-HC bond.
             ('C3', 'HC'): ('CT', 'HC'),
@@ -1259,7 +1558,7 @@ class OPLSAA(GAFF):
         if base_tokens is None:
             return None
 
-        base, _ = self._find_param(self.param.bt, base_tokens)
+        base, _ = self._find_param(self.param.bt, base_tokens, profile=profile)
         if base is None:
             return None
 
@@ -1278,7 +1577,9 @@ class OPLSAA(GAFF):
             provenance='special_bond_fallback',
         )
 
-    def _special_dihedral_param(self, tokens):
+    def _special_dihedral_param(self, tokens, *, profile: str | None = None):
+        if not _profile_allows_refine(profile or self.assignment_profile):
+            return None
         # Cyclic carbonates (EC/PC) also miss the CT-OS-C-OS family in the
         # bonded tables.  Reuse the nearest carbonyl analogue that is already in
         # OPLS-AA: CT-OS-C-O (and its reverse orientation).
@@ -1323,7 +1624,7 @@ class OPLSAA(GAFF):
         if base_tokens is None:
             return None
 
-        base, _ = self._find_param(self.param.dt, base_tokens)
+        base, _ = self._find_param(self.param.dt, base_tokens, profile=profile)
         if base is None:
             return None
 
@@ -1342,25 +1643,29 @@ class OPLSAA(GAFF):
             provenance='special_dihedral_fallback',
         )
 
-    def _lookup_bond_param(self, tokens):
-        param, _ = self._find_param(self.param.bt, tokens)
+    def _lookup_bond_param(self, tokens, *, profile: str | None = None):
+        profile = _normalize_oplsaa_profile(profile or self.assignment_profile)
+        param, _ = self._find_param(self.param.bt, tokens, profile=profile)
         if param is not None:
             return param
-        return self._special_bond_param(tokens)
+        return self._special_bond_param(tokens, profile=profile)
 
-    def _lookup_angle_param(self, tokens):
-        param, _ = self._find_param(self.param.at, tokens)
+    def _lookup_angle_param(self, tokens, *, profile: str | None = None):
+        profile = _normalize_oplsaa_profile(profile or self.assignment_profile)
+        param, _ = self._find_param(self.param.at, tokens, profile=profile)
         if param is not None:
             return param
-        return self._special_angle_param(tokens)
+        return self._special_angle_param(tokens, profile=profile)
 
-    def _lookup_dihedral_param(self, tokens):
-        param, _ = self._find_param(self.param.dt, tokens)
+    def _lookup_dihedral_param(self, tokens, *, profile: str | None = None):
+        profile = _normalize_oplsaa_profile(profile or self.assignment_profile)
+        param, _ = self._find_param(self.param.dt, tokens, profile=profile)
         if param is not None:
             return param
-        return self._special_dihedral_param(tokens)
+        return self._special_dihedral_param(tokens, profile=profile)
 
-    def assign_btypes(self, mol):
+    def assign_btypes(self, mol, *, profile: str | None = None):
+        profile = _normalize_oplsaa_profile(profile or self.assignment_profile)
         mol.SetProp('bond_style', self.bond_style)
         result = True
 
@@ -1372,9 +1677,17 @@ class OPLSAA(GAFF):
                 return False
 
             tokens = (a1.GetProp('ff_btype'), a2.GetProp('ff_btype'))
-            param = self._lookup_bond_param(tokens)
+            param = self._lookup_bond_param(tokens, profile=profile)
             if param is None:
                 utils.radon_print(f'Cannot assign bond parameters for {tokens[0]},{tokens[1]}', level=2)
+                self._record_missing_bonded_param(
+                    mol,
+                    kind="bond",
+                    tokens=tokens,
+                    atom_indices=[a1.GetIdx(), a2.GetIdx()],
+                    profile=profile,
+                    context="assign_btypes",
+                )
                 result = False
                 continue
             self.set_btype(b, param)
@@ -1392,7 +1705,8 @@ class OPLSAA(GAFF):
             b.SetProp("ff_provenance", str(provenance))
         return True
 
-    def assign_atypes(self, mol):
+    def assign_atypes(self, mol, *, profile: str | None = None):
+        profile = _normalize_oplsaa_profile(profile or self.assignment_profile)
         mol.SetProp('angle_style', self.angle_style)
         setattr(mol, 'angles', {})
 
@@ -1410,9 +1724,17 @@ class OPLSAA(GAFF):
                     i = nbrs[a_idx]
                     k = nbrs[c_idx]
                     tokens = (i.GetProp('ff_btype'), j.GetProp('ff_btype'), k.GetProp('ff_btype'))
-                    param = self._lookup_angle_param(tokens)
+                    param = self._lookup_angle_param(tokens, profile=profile)
                     if param is None:
                         utils.radon_print(f'Cannot assign angle parameters for {tokens[0]},{tokens[1]},{tokens[2]}', level=2)
+                        self._record_missing_bonded_param(
+                            mol,
+                            kind="angle",
+                            tokens=tokens,
+                            atom_indices=[i.GetIdx(), j.GetIdx(), k.GetIdx()],
+                            profile=profile,
+                            context="assign_atypes",
+                        )
                         result = False
                         continue
                     self.set_atype(mol, i.GetIdx(), j.GetIdx(), k.GetIdx(), param)
@@ -1433,7 +1755,8 @@ class OPLSAA(GAFF):
         mol.angles[key] = angle
         return True
 
-    def assign_dtypes(self, mol):
+    def assign_dtypes(self, mol, *, profile: str | None = None):
+        profile = _normalize_oplsaa_profile(profile or self.assignment_profile)
         mol.SetProp('dihedral_style', self.dihedral_style)
         setattr(mol, 'dihedrals', {})
 
@@ -1464,11 +1787,19 @@ class OPLSAA(GAFF):
                         k.GetProp('ff_btype'),
                         l.GetProp('ff_btype'),
                     )
-                    param = self._lookup_dihedral_param(tokens)
+                    param = self._lookup_dihedral_param(tokens, profile=profile)
                     if param is None:
                         utils.radon_print(
                             f'Cannot assign dihedral parameters for {tokens[0]},{tokens[1]},{tokens[2]},{tokens[3]}',
                             level=2,
+                        )
+                        self._record_missing_bonded_param(
+                            mol,
+                            kind="dihedral",
+                            tokens=tokens,
+                            atom_indices=[a, b, c, d],
+                            profile=profile,
+                            context="assign_dtypes",
                         )
                         result = False
                         continue

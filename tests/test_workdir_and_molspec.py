@@ -405,6 +405,56 @@ def test_write_molecule_artifacts_records_order_sensitive_compatibility_signatur
     assert meta["residue_signature"]
 
 
+def test_localized_polymer_cache_fingerprint_tracks_charge_signature():
+    mol_a = _make_poly_like_localized_mol()
+    mol_b = Chem.Mol(mol_a)
+    atom0 = mol_b.GetAtomWithIdx(0)
+    atom0.SetDoubleProp("AtomicCharge", float(atom0.GetDoubleProp("AtomicCharge")) + 0.123456)
+    atom0.SetDoubleProp("RESP", float(atom0.GetDoubleProp("RESP")) + 0.123456)
+
+    assert _fingerprint_mol(mol_a, "gaff2_mod") != _fingerprint_mol(mol_b, "gaff2_mod")
+
+
+def test_cached_polymer_artifact_compatibility_rejects_stale_charge_signature(tmp_path: Path):
+    current = _make_poly_like_localized_mol()
+    cached_dir = _write_minimal_species_artifacts(
+        tmp_path / "cached_poly_charge",
+        mol_name="PolyPE",
+        charges=[float(atom.GetDoubleProp("AtomicCharge")) for atom in current.GetAtoms()],
+    )
+    meta = {
+        "n_atoms": int(current.GetNumAtoms()),
+        **_artifact_meta_compatibility_fields(current, mol_name="PolyPE"),
+    }
+    (cached_dir / "meta.json").write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+    species_payload = {
+        "name": "PolyPE",
+        "natoms": int(current.GetNumAtoms()),
+        "charge_groups": get_charge_groups(current),
+        "polyelectrolyte_summary": get_polyelectrolyte_summary(current),
+        "residue_map": build_residue_map(current, mol_name="PolyPE"),
+        "polyelectrolyte_mode": True,
+    }
+
+    assert gromacs_system_mod._cached_artifact_compatible(
+        cached_dir,
+        species_payload=species_payload,
+        kind="polymer",
+        rep_mol=current,
+        mol_name="PolyPE",
+    )
+
+    meta["charge_signature"] = "stale-charge-sig"
+    (cached_dir / "meta.json").write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+    assert not gromacs_system_mod._cached_artifact_compatible(
+        cached_dir,
+        species_payload=species_payload,
+        kind="polymer",
+        rep_mol=current,
+        mol_name="PolyPE",
+    )
+
+
 def test_gro_atom_line_wraps_overflow_indices_without_shifting_coordinates():
     line = format_system_gro_atom_line(
         resnr=100000,

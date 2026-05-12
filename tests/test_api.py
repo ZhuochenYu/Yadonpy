@@ -107,7 +107,13 @@ def test_top_level_api_exports_mechanics_helpers():
     assert hasattr(yadonpy, 'doctor')
     assert hasattr(yadonpy, 'AnalyzeResult')
     assert hasattr(api, 'audit_oplsaa_reference')
+    assert hasattr(api, 'audit_oplsaa_assignment')
+    assert hasattr(api, 'audit_bundled_oplsaa_parameter_sanity')
+    assert hasattr(api, 'oplsaa_stability_preflight')
     assert hasattr(yadonpy, 'audit_oplsaa_reference')
+    assert hasattr(yadonpy, 'audit_oplsaa_assignment')
+    assert hasattr(yadonpy, 'audit_bundled_oplsaa_parameter_sanity')
+    assert hasattr(yadonpy, 'oplsaa_stability_preflight')
     assert hasattr(api, 'resolve_prepared_system')
     assert hasattr(api, 'run_tg_scan_gmx')
     assert hasattr(api, 'run_elongation_gmx')
@@ -119,6 +125,9 @@ def test_top_level_api_exports_mechanics_helpers():
     assert 'format_mechanics_result_summary' in api.__all__
     assert 'print_mechanics_result_summary' in api.__all__
     assert 'audit_oplsaa_reference' in api.__all__
+    assert 'audit_oplsaa_assignment' in api.__all__
+    assert 'audit_bundled_oplsaa_parameter_sanity' in api.__all__
+    assert 'oplsaa_stability_preflight' in api.__all__
     assert 'run_sandwich_nvt_followup' in api.__all__
     assert hasattr(yadonpy, 'resolve_prepared_system')
     assert hasattr(yadonpy, 'run_tg_scan_gmx')

@@ -30,14 +30,14 @@ _REVERSE_TYPE_MAP = {
 _CURRENT_LOCAL_REFINES = (
     {
         "kind": "donor_h_lj_floor",
-        "classification": "unsafe_heuristic",
-        "details": "Hydroxyl donor hydrogen LJ floor is still materialized locally in OPLS-AA typing.",
+        "classification": "refine_profile_only",
+        "details": "Hydroxyl donor hydrogen LJ floor is available only in explicit OPLS-AA refine/legacy profiles.",
         "source": "local_refine",
     },
     {
         "kind": "special_bonded_fallbacks",
-        "classification": "local_refine",
-        "details": "Token-based bonded fallbacks in oplsaa.py should be reviewed against Moltemplate/GROMACS references.",
+        "classification": "refine_profile_only",
+        "details": "Token-based bonded fallbacks are disabled in strict OPLS-AA assignment and available only in explicit refine/legacy profiles.",
         "source": "local_refine",
     },
 )
@@ -78,6 +78,16 @@ _GROMACS_IMPROPER_TEMPLATE_DEFAULTS = {
         "source": "gromacs_oplsaa",
     },
 }
+_BUNDLED_OPLSAA_HARMONIC_SENTINELS = {
+    "bonds": {
+        "CT,HC": {"k": 284512.0, "r0": 0.109},
+        "CT,CT": {"k": 224262.4, "r0": 0.1529},
+    },
+    "angles": {
+        "HC,CT,HC": {"k": 276.144, "theta0": 107.8},
+        "CT,CT,CT": {"k": 488.2728, "theta0": 112.7},
+    },
+}
 
 
 def _repo_root() -> Path:
@@ -112,6 +122,240 @@ def _extract_source_from_row(row: dict[str, Any]) -> str | None:
 
 def _load_current_oplsaa_db() -> dict[str, Any]:
     return json.loads(ff_data_path("ff_dat", "oplsaa.json").read_text(encoding="utf-8"))
+
+
+def audit_bundled_oplsaa_parameter_sanity() -> dict[str, Any]:
+    """Check bundled OPLS-AA data for common unit-conversion regressions.
+
+    The most damaging historical failure mode is importing LAMMPS/moltemplate
+    harmonic K values as if GROMACS lacked the 0.5 prefactor.  That makes
+    bonds/angles exactly twice as stiff in exported GROMACS topologies.  The
+    sentinels below are small, stable OPLS terms that catch that regression
+    without needing the external reference checkout.
+    """
+
+    db = _load_current_oplsaa_db()
+    bond_map = {str(row.get("tag")): row for row in db.get("bond_types", [])}
+    angle_map = {str(row.get("tag")): row for row in db.get("angle_types", [])}
+    mismatches: list[dict[str, Any]] = []
+
+    def _check(section: str, mapping: dict[str, dict[str, Any]], sentinels: dict[str, dict[str, float]]) -> None:
+        for tag, expected in sentinels.items():
+            row = mapping.get(tag)
+            if row is None:
+                mismatches.append({"section": section, "tag": tag, "reason": "missing"})
+                continue
+            for key, expected_value in expected.items():
+                actual = float(row.get(key, float("nan")))
+                if not math.isclose(actual, float(expected_value), rel_tol=1.0e-8, abs_tol=1.0e-8):
+                    ratio = actual / float(expected_value) if expected_value else None
+                    mismatches.append(
+                        {
+                            "section": section,
+                            "tag": tag,
+                            "key": key,
+                            "actual": actual,
+                            "expected": float(expected_value),
+                            "ratio": ratio,
+                            "reason": "value_mismatch",
+                        }
+                    )
+
+    _check("bond_types", bond_map, _BUNDLED_OPLSAA_HARMONIC_SENTINELS["bonds"])
+    _check("angle_types", angle_map, _BUNDLED_OPLSAA_HARMONIC_SENTINELS["angles"])
+
+    notes = db.get("unit_notes", {}) if isinstance(db.get("unit_notes"), dict) else {}
+    forms = db.get("gromacs_function_forms", {}) if isinstance(db.get("gromacs_function_forms"), dict) else {}
+    return {
+        "ok": not mismatches,
+        "mismatches": mismatches,
+        "unit_notes": {
+            "bond_k": notes.get("bond_k"),
+            "angle_k": notes.get("angle_k"),
+            "dihedral_k": notes.get("dihedral_k"),
+        },
+        "gromacs_function_forms": forms,
+        "sentinels": _BUNDLED_OPLSAA_HARMONIC_SENTINELS,
+    }
+
+
+def _prop(obj: Any, name: str, default: Any = None) -> Any:
+    try:
+        if hasattr(obj, "HasProp") and obj.HasProp(name):
+            return obj.GetProp(name)
+    except Exception:
+        pass
+    return default
+
+
+def _double_prop(obj: Any, name: str, default: float | None = None) -> float | None:
+    try:
+        if hasattr(obj, "HasProp") and obj.HasProp(name):
+            return float(obj.GetDoubleProp(name))
+    except Exception:
+        pass
+    return default
+
+
+def _contains_local_refine(value: Any) -> bool:
+    return "local_refine" in str(value or "").lower() or "fallback" in str(value or "").lower()
+
+
+def _is_pf6_like_mol(mol) -> bool:
+    try:
+        if mol is None or int(mol.GetNumAtoms()) != 7:
+            return False
+        p_atoms = [atom for atom in mol.GetAtoms() if atom.GetSymbol() == "P"]
+        f_atoms = [atom for atom in mol.GetAtoms() if atom.GetSymbol() == "F"]
+        if len(p_atoms) != 1 or len(f_atoms) != 6:
+            return False
+        center = p_atoms[0]
+        return int(center.GetDegree()) == 6 and all(nb.GetSymbol() == "F" for nb in center.GetNeighbors())
+    except Exception:
+        return False
+
+
+def audit_oplsaa_assignment(mol, *, strict: bool | None = None) -> dict[str, Any]:
+    """Audit a prepared OPLS-AA molecule without changing it.
+
+    The audit intentionally distinguishes source-backed assignments from local
+    refinement/legacy fallbacks.  It is cheap enough to run in unit tests and in
+    workflow summaries before launching expensive MD.
+    """
+
+    profile = str(_prop(mol, "_yadonpy_oplsaa_profile", "unknown"))
+    missing_nonbonded: list[dict[str, Any]] = []
+    local_refines: list[dict[str, Any]] = []
+    atom_type_counts: dict[str, int] = {}
+    net_charge = 0.0
+
+    for atom in mol.GetAtoms():
+        idx = int(atom.GetIdx())
+        ff_type = _prop(atom, "ff_type")
+        ff_btype = _prop(atom, "ff_btype")
+        if ff_type:
+            atom_type_counts[str(ff_type)] = atom_type_counts.get(str(ff_type), 0) + 1
+        sigma = _double_prop(atom, "ff_sigma")
+        epsilon = _double_prop(atom, "ff_epsilon")
+        charge = _double_prop(atom, "AtomicCharge", 0.0)
+        net_charge += float(charge or 0.0)
+        if not ff_type or not ff_btype:
+            missing_nonbonded.append({"atom_index": idx, "symbol": atom.GetSymbol(), "reason": "missing_type"})
+        elif sigma is None or epsilon is None:
+            missing_nonbonded.append({"atom_index": idx, "symbol": atom.GetSymbol(), "ff_type": ff_type, "reason": "missing_lj"})
+        source = _prop(atom, "ff_source")
+        provenance = _prop(atom, "ff_provenance")
+        if _contains_local_refine(source) or _contains_local_refine(provenance):
+            local_refines.append(
+                {
+                    "kind": "atom",
+                    "atom_index": idx,
+                    "symbol": atom.GetSymbol(),
+                    "ff_type": ff_type,
+                    "source": source,
+                    "provenance": provenance,
+                }
+            )
+
+    external_bonded = {
+        "method": _prop(mol, "_yadonpy_bonded_method"),
+        "has_bonded_itp": bool(_prop(mol, "_yadonpy_bonded_itp")),
+        "has_bonded_json": bool(_prop(mol, "_yadonpy_bonded_json")),
+        "covered_bond_count": 0,
+    }
+    has_external_bonded_patch = bool(external_bonded["has_bonded_itp"] or external_bonded["has_bonded_json"])
+    missing_bonded: list[dict[str, Any]] = []
+    try:
+        recorded_missing = json.loads(_prop(mol, "_yadonpy_oplsaa_missing_bonded_json", "[]") or "[]")
+        if isinstance(recorded_missing, list):
+            for item in recorded_missing:
+                if isinstance(item, dict):
+                    missing_bonded.append(
+                        {
+                            "kind": str(item.get("kind") or "bonded"),
+                            "tokens": [str(x) for x in item.get("tokens", [])],
+                            "atoms": [int(x) for x in item.get("atom_indices", [])],
+                            "profile": str(item.get("profile") or profile),
+                            "context": str(item.get("context") or "assignment"),
+                            "reason": "missing_source_bonded_parameter",
+                        }
+                    )
+    except Exception:
+        pass
+    for bond in mol.GetBonds():
+        if not _prop(bond, "ff_type"):
+            if has_external_bonded_patch:
+                external_bonded["covered_bond_count"] += 1
+            else:
+                missing_bonded.append(
+                    {
+                        "kind": "bond",
+                        "atoms": [int(bond.GetBeginAtomIdx()), int(bond.GetEndAtomIdx())],
+                        "symbols": [bond.GetBeginAtom().GetSymbol(), bond.GetEndAtom().GetSymbol()],
+                    }
+                )
+        provenance = _prop(bond, "ff_provenance")
+        source = _prop(bond, "ff_source")
+        if _contains_local_refine(source) or _contains_local_refine(provenance):
+            local_refines.append(
+                {
+                    "kind": "bond",
+                    "atoms": [int(bond.GetBeginAtomIdx()), int(bond.GetEndAtomIdx())],
+                    "ff_type": _prop(bond, "ff_type"),
+                    "source": source,
+                    "provenance": provenance,
+                }
+            )
+
+    for container_name, kind in (("angles", "angle"), ("dihedrals", "dihedral"), ("impropers", "improper")):
+        container = getattr(mol, container_name, {}) or {}
+        for key, term in container.items():
+            ff = getattr(term, "ff", None)
+            source = getattr(ff, "source", None)
+            provenance = getattr(ff, "provenance", None)
+            if _contains_local_refine(source) or _contains_local_refine(provenance):
+                local_refines.append(
+                    {
+                        "kind": kind,
+                        "key": str(key),
+                        "ff_type": getattr(ff, "type", None),
+                        "source": source,
+                        "provenance": provenance,
+                    }
+                )
+
+    pf6 = None
+    if _is_pf6_like_mol(mol):
+        center = next(atom for atom in mol.GetAtoms() if atom.GetSymbol() == "P")
+        conf = mol.GetConformer() if mol.GetNumConformers() else None
+        p_f_nm: list[float] = []
+        if conf is not None:
+            cp = conf.GetAtomPosition(center.GetIdx())
+            for nb in center.GetNeighbors():
+                fp = conf.GetAtomPosition(nb.GetIdx())
+                p_f_nm.append(float(math.dist((cp.x, cp.y, cp.z), (fp.x, fp.y, fp.z))) * 0.1)
+        pf6 = {
+            "center_atom": int(center.GetIdx()),
+            "bonded_method": _prop(mol, "_yadonpy_bonded_method"),
+            "has_bonded_itp": bool(_prop(mol, "_yadonpy_bonded_itp")),
+            "has_bonded_json": bool(_prop(mol, "_yadonpy_bonded_json")),
+            "p_f_bond_nm": p_f_nm,
+        }
+
+    strict_requested = (str(profile).lower() == "strict") if strict is None else bool(strict)
+    return {
+        "profile": profile,
+        "atom_count": int(mol.GetNumAtoms()),
+        "atom_type_counts": atom_type_counts,
+        "net_charge": float(net_charge),
+        "missing_nonbonded": missing_nonbonded,
+        "missing_bonded": missing_bonded,
+        "local_refines": local_refines,
+        "external_bonded": external_bonded if has_external_bonded_patch else None,
+        "pf6": pf6,
+        "assignment_complete": not missing_nonbonded and not missing_bonded,
+        "strict_source_clean": (not missing_nonbonded and not missing_bonded and (not strict_requested or not local_refines)),
+    }
 
 
 def discover_gromacs_oplsaa_root() -> Path | None:
@@ -327,7 +571,9 @@ def _parse_moltemplate_reference(par_path: Path | None, lt_path: Path | None) ->
         tag = ",".join(tokens)
         refs["bond_types"][tag] = {
             "tag": tag,
-            "k": float(match.group(2)) * _KCAL_TO_KJ * 400.0,
+            # LAMMPS harmonic bonds use E = K (r-r0)^2 in kcal/mol/A^2.
+            # GROMACS funct=1 uses E = 0.5 k (r-r0)^2 in kJ/mol/nm^2.
+            "k": float(match.group(2)) * _KCAL_TO_KJ * 200.0,
             "r0": float(match.group(3)) * _ANGSTROM_TO_NM,
             "source": "moltemplate_oplsaa2024",
         }
@@ -339,7 +585,10 @@ def _parse_moltemplate_reference(par_path: Path | None, lt_path: Path | None) ->
         tag = ",".join(tokens)
         refs["angle_types"][tag] = {
             "tag": tag,
-            "k": float(match.group(2)) * _KCAL_TO_KJ * 4.0,
+            # LAMMPS harmonic angles use E = K (theta-theta0)^2 in
+            # kcal/mol/rad^2; GROMACS funct=1 has the same 0.5 prefactor as
+            # bonds and stores k in kJ/mol/rad^2.
+            "k": float(match.group(2)) * _KCAL_TO_KJ * 2.0,
             "theta0": float(match.group(3)),
             "source": "moltemplate_oplsaa2024",
         }
@@ -545,6 +794,7 @@ def audit_oplsaa_reference(
     moltemplate_par_path: str | Path | None = None,
     moltemplate_lt_path: str | Path | None = None,
     charge: str = "opls",
+    assignment_profile: str = "strict",
     export_topology: bool = False,
 ) -> dict[str, Any]:
     """Audit YadonPy's current OPLS-AA data and, optionally, an assigned molecule."""
@@ -554,6 +804,7 @@ def audit_oplsaa_reference(
     current_bonds = {str(row["tag"]): dict(row) for row in current_db.get("bond_types", [])}
     current_angles = {str(row["tag"]): dict(row) for row in current_db.get("angle_types", [])}
     current_dihedrals = {str(row["tag"]): dict(row) for row in current_db.get("dihedral_types", [])}
+    bundled_parameter_sanity = audit_bundled_oplsaa_parameter_sanity()
 
     gmx_root = Path(gromacs_root).expanduser().resolve() if gromacs_root else discover_gromacs_oplsaa_root()
     par_default, lt_default = discover_moltemplate_reference_paths()
@@ -654,6 +905,7 @@ def audit_oplsaa_reference(
     }
 
     report: dict[str, Any] = {
+        "bundled_parameter_sanity": bundled_parameter_sanity,
         "defaults_parity": defaults_parity,
         "atomtype_lj_parity": {
             "gromacs_atomtype_count": len(gmx_atomtypes),
@@ -676,7 +928,11 @@ def audit_oplsaa_reference(
     if assigned_mol is None and smiles:
         from .oplsaa import OPLSAA
 
-        assigned_mol = OPLSAA().ff_assign(Chem.AddHs(Chem.MolFromSmiles(smiles)), charge=charge, report=False)
+        assigned_mol = OPLSAA(profile=assignment_profile).ff_assign(
+            Chem.AddHs(Chem.MolFromSmiles(smiles)),
+            charge=charge,
+            report=False,
+        )
     if assigned_mol:
         report["assignment"] = _gather_assignment_summary(assigned_mol)
         if export_topology:
@@ -685,6 +941,8 @@ def audit_oplsaa_reference(
 
 
 __all__ = [
+    "audit_oplsaa_assignment",
+    "audit_bundled_oplsaa_parameter_sanity",
     "audit_oplsaa_reference",
     "discover_gromacs_oplsaa_root",
     "discover_moltemplate_reference_paths",

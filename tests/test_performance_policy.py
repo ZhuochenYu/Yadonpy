@@ -143,6 +143,7 @@ def test_analyzer_auto_profile_reads_production_policy(tmp_path: Path):
     )
 
     assert analyzer._resolve_analysis_profile("auto") == "minimal"
+    assert analyzer._resolve_analysis_profile(None) == "minimal"
     assert analyzer._analysis_policy_cache_meta()["output_traj_ps"] == pytest.approx(50.0)
 
 

@@ -11,6 +11,10 @@ Targets (as coded):
 - Charge scaling: polymer and all ions scaled by 0.8
 - RDF center: Li+
 - Analysis style: independent `rdf()`, `msd()`, and `sigma()` calls
+- MSD semantics: ions use atomic MSD, small molecules use molecular COM MSD,
+  and CMC uses independent chain COM MSD rather than atom/residue MSD. Molecule
+  and chain COM metrics use `gmx msd -n system.ndx -mol` when the ndx group maps
+  cleanly to topology molecules; local diagnostics stay on the Python backend.
 
 ## Run
 
@@ -51,19 +55,50 @@ python run_cmcna_random_copolymer_dtd_from_moldb.py
 - If a production stage fails, the script writes `failure_diagnostics.json` into the selected work directory.
 
 ## Leaner Production Output
-The production presets now support lower write frequency without changing the post-processing formulas.
+The benchmark scripts support automatic output and analysis thinning without
+changing the MD physics. For long CMC runs, prefer:
 
 ```bash
-YADONPY_PROD_TRAJ_PS=2 \
-YADONPY_PROD_ENERGY_PS=2 \
-YADONPY_PROD_LOG_PS=2 \
-YADONPY_PROD_TRR_PS= \
-YADONPY_PROD_VELOCITY_PS= \
-YADONPY_PROD_CPT_MIN=5 \
-python run_cmcna_random_copolymer_dtd_from_moldb.py
+PERFORMANCE_PROFILE=auto ANALYSIS_PROFILE=auto \
+python benchmark_cmcna_carbonate_lipf6_bulk.py
 ```
 
-- `YADONPY_PROD_TRAJ_PS` controls compressed trajectory spacing.
-- `YADONPY_PROD_ENERGY_PS` / `YADONPY_PROD_LOG_PS` control thermo output.
-- Leave `YADONPY_PROD_TRR_PS` and `YADONPY_PROD_VELOCITY_PS` empty to disable production `trr`/velocity output.
+- The resolved output cadence is written to production `summary.json`.
+- Dense old trajectories are downsampled at read time for RDF/MSD/cell metrics;
+  the effective stride is written to `06_analysis/analysis_runtime_policy.json`.
+- Explicit `TRAJ_PS`, `ENERGY_PS`, `LOG_PS`, or `ANALYSIS_PROFILE=full` still
+  override auto when dense final-analysis output is needed.
 - `YADONPY_PROD_CPT_MIN` forces earlier production checkpoints so LINCS fallback can resume from `md.cpt` instead of dying on missing checkpoint files.
+
+## 100 ns CMC-Na Bulk Benchmark
+The script `benchmark_cmcna_carbonate_lipf6_bulk.py` is the recommended
+script-first entry for comparing CMC-Na swollen by 1 M LiPF6 in
+EC:EMC:DEC = 3:2:5 by mass at 318.15 K.
+
+```bash
+# GAFF2 + MERZ ions + RESP, 0.7 charge scaling
+YADONPY_FORCEFIELD=gaff2 \
+YADONPY_CHARGE_SCALE=0.7 \
+PERFORMANCE_PROFILE=auto ANALYSIS_PROFILE=auto \
+python benchmark_cmcna_carbonate_lipf6_bulk.py
+
+# OPLS-AA assignment diagnostics, with explicit refine profile
+YADONPY_FORCEFIELD=oplsaa \
+YADONPY_OPLSAA_PROFILE=refine \
+YADONPY_CHARGE_SCALE=0.7 \
+PERFORMANCE_PROFILE=auto ANALYSIS_PROFILE=auto \
+python benchmark_cmcna_carbonate_lipf6_bulk.py
+```
+
+The transport table reports `Li`, `Na`, `PF6`, EC/EMC/DEC, and CMC rows. For
+CMC, use `chain_com_msd` for whole-chain self diffusion. `residue_com_msd` and
+`charged_group_com_msd` are local mobility diagnostics.
+
+OPLS-AA for this mixed polyelectrolyte/electrolyte benchmark is still stricter
+than the GAFF2 path: the default OPLS production timestep is currently `1 fs`
+with stronger LINCS settings and `conservative` GPU offload (`nb/pme` on GPU,
+`bonded/update` on CPU). Remote CMC diagnostics showed that `balanced` and
+`full` GPU offload can trigger CUDA illegal-address failures for current
+refine-profile CMC assignments. Keep this default until each parameter set has
+passed a short preflight. Override `YADONPY_PROD_DT_PS=0.002` or
+`YADONPY_GPU_OFFLOAD_MODE=balanced/full` only for explicit stability tests.

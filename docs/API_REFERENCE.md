@@ -239,6 +239,22 @@ Transport semantics:
   `06_analysis/analysis_runtime_policy.json`; caps can be tuned with
   global `MAX_ANALYSIS_FRAMES` or section-specific `MAX_RDF_FRAMES`,
   `MAX_MSD_FRAMES`, `MAX_CELL_FRAMES`, and `MAX_POLYMER_METRIC_FRAMES`.
+- MSD uses a hybrid backend rather than a plain atom-index average. Metrics
+  marked `gmx_msd_mol_equivalent=true` are delegated to
+  `gmx msd -n system.ndx -mol` so GROMACS splits the ndx selection into topology
+  molecules and computes COM MSD. YadonPy keeps metadata selection, cache keys,
+  local diagnostics, and adaptive log-log fit selection.
+- Polymer diffusion uses each independent polymer molecule's chain COM MSD
+  (`chain_com_msd`) by default, not atom/residue MSD.  The preferred GROMACS
+  backend uses topology molecules from the ndx selection; the Python fallback
+  reconstructs whole chains from the bonded graph before unwrapping.
+- `residue_com_msd` and `charged_group_com_msd` are intentionally kept as local
+  polymer mobility diagnostics. They should not be used as the polymer chain
+  self-diffusion coefficient.
+- Diffusion fits are selected from the log-log slope trace, but candidate
+  windows must also satisfy minimum point and duration requirements
+  (`min_fit_points`, `min_fit_duration_ps`).  Short slope-islands are reported
+  as apparent diffusion diagnostics rather than promoted to formal `D_m2_s`.
 - `analysis_profile="minimal"` is the most aggressive screening mode: necessary
   transport species only, coarser RDF, and default MSD metrics only.
 - `analysis_profile="interface_fast"` is for graphite/polymer/electrolyte stacks.

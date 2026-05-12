@@ -1427,13 +1427,33 @@ def _clear_new_bond_marks(mol):
             continue
 
 
+def _has_external_bonded_patch(mol):
+    if mol is None or not hasattr(mol, 'HasProp'):
+        return False
+    for key in (
+        '_yadonpy_bonded_itp',
+        '_yadonpy_bonded_json',
+        '_yadonpy_mseminario_itp',
+        '_yadonpy_mseminario_json',
+    ):
+        try:
+            if mol.HasProp(key) and str(mol.GetProp(key)).strip():
+                return True
+        except Exception:
+            continue
+    return False
+
+
 def _rw_finalize_bonded_terms(mol):
     if mol is None:
         return None
     has_new_bond = _has_marked_new_bond(mol)
     has_angles = bool(getattr(mol, 'angles', {}) or {})
     has_dihedrals = bool(getattr(mol, 'dihedrals', {}) or {})
-    skip_bonded_refresh = bool(not has_new_bond and has_angles and (mol.GetNumAtoms() < 4 or has_dihedrals))
+    skip_bonded_refresh = bool(
+        (not has_new_bond and has_angles and (mol.GetNumAtoms() < 4 or has_dihedrals))
+        or (not has_new_bond and _has_external_bonded_patch(mol))
+    )
     ff_name = None
     try:
         if hasattr(mol, 'HasProp') and mol.HasProp('ff_name'):

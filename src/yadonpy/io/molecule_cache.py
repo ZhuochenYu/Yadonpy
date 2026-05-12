@@ -111,8 +111,12 @@ def _fingerprint_mol(mol, ff_name: str) -> str:
         atom_sig = str(compat.get("atom_order_signature") or "")
         group_sig = str(compat.get("charge_group_signature") or "")
         residue_sig = str(compat.get("residue_signature") or "")
+        _charge_abs, charge_sig = _mol_charge_abs_and_sig(mol)
         if atom_sig and group_sig:
-            key = f"{ff_name}|bonded|{bonded_sig}|ordered|{atom_sig}|groups|{group_sig}|residues|{residue_sig}"
+            key = (
+                f"{ff_name}|bonded|{bonded_sig}|ordered|{atom_sig}|groups|{group_sig}|"
+                f"residues|{residue_sig}|charge|{charge_sig}"
+            )
             return hashlib.sha1(key.encode("utf-8")).hexdigest()[:16]
 
     smiles = _mol_smiles_hint(mol)

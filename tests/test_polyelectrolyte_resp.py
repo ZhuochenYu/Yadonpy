@@ -84,6 +84,41 @@ POL 3
     assert report["groups"][0]["atom_indices"] == [1, 2]
 
 
+def test_scale_itp_charge_groups_neutralizes_declared_remainder():
+    itp = """[ moleculetype ]
+POL 3
+
+[ atoms ]
+1 C 1 RES C1 1 -0.10 12.011
+2 O 1 RES O1 1 -0.45 15.999
+3 O 1 RES O2 1 -0.45 15.999
+4 C 1 RES C2 1 -0.25 12.011
+5 H 1 RES H1 1 0.05 1.008
+"""
+    scaled, report = _scale_itp_charge_groups(
+        itp,
+        [{"group_id": "g1", "atom_indices": [1, 2], "formal_charge": -1}],
+        0.7,
+        neutral_remainder_indices=[0, 3, 4],
+        neutral_remainder_charge=0.0,
+    )
+
+    charges = []
+    in_atoms = False
+    for raw in scaled.splitlines():
+        stripped = raw.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            in_atoms = stripped.strip("[]").strip().lower() == "atoms"
+            continue
+        if in_atoms and stripped and not stripped.startswith(";"):
+            charges.append(float(stripped.split()[6]))
+
+    assert sum(charges[1:3]) == pytest.approx(-0.7, abs=1.0e-8)
+    assert charges[0] + charges[3] + charges[4] == pytest.approx(0.0, abs=1.0e-8)
+    assert sum(charges) == pytest.approx(-0.7, abs=1.0e-8)
+    assert report["neutral_remainder"]["target_total_charge"] == pytest.approx(0.0)
+
+
 def test_rewrite_preserve_residues_keeps_polymer_residue_names():
     itp = """[ moleculetype ]
 POL 3

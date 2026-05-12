@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -49,6 +50,7 @@ class GroupSpec:
     formal_charge_e: float = 0.0
     component_key: Optional[str] = None
     component_label: Optional[str] = None
+    bond_pairs_local: Optional[np.ndarray] = None
 
 
 def _normalize_geometry_mode(mode: str | None) -> str:
@@ -196,10 +198,67 @@ def _make_group_coordinates_whole(coords_nm: np.ndarray, box_lengths_nm: np.ndar
     return ref + corrected
 
 
+def _make_group_coordinates_whole_by_bonds(
+    coords_nm: np.ndarray,
+    box_lengths_nm: np.ndarray,
+    bond_pairs_local: np.ndarray,
+) -> np.ndarray:
+    """Make a molecular group whole using its bonded graph.
+
+    This is important for polymer chain COM diffusion.  A long chain can span
+    more than half the box, so anchoring every atom directly to atom 0 is not
+    safe.  Walking along bonded edges keeps each local bond minimum-imaged and
+    reconstructs a continuous per-frame molecule before the COM is computed.
+    """
+
+    coords = np.asarray(coords_nm, dtype=float)
+    box = np.asarray(box_lengths_nm, dtype=float)
+    bonds = np.asarray(bond_pairs_local if bond_pairs_local is not None else [], dtype=int)
+    if coords.ndim != 3 or coords.shape[1] < 2 or bonds.size == 0:
+        return _make_group_coordinates_whole(coords, box)
+    if box.ndim != 2 or box.shape[0] != coords.shape[0] or box.shape[1] < 3:
+        return np.asarray(coords, dtype=float)
+
+    n_atoms = int(coords.shape[1])
+    adj: list[list[int]] = [[] for _ in range(n_atoms)]
+    for pair in bonds.reshape(-1, 2):
+        i = int(pair[0])
+        j = int(pair[1])
+        if 0 <= i < n_atoms and 0 <= j < n_atoms and i != j:
+            adj[i].append(j)
+            adj[j].append(i)
+
+    out = np.array(coords, copy=True)
+    visited = np.zeros(n_atoms, dtype=bool)
+    box3 = box[:, :3]
+    valid = np.isfinite(box3) & (box3 > 1.0e-12)
+    box_safe = np.where(valid, box3, 1.0)
+
+    for root in range(n_atoms):
+        if visited[root]:
+            continue
+        visited[root] = True
+        queue = [root]
+        while queue:
+            cur = queue.pop(0)
+            for nb in adj[cur]:
+                if visited[nb]:
+                    continue
+                delta = coords[:, nb, :] - coords[:, cur, :]
+                shift = box3 * np.round(delta / box_safe)
+                out[:, nb, :] = out[:, cur, :] + delta - np.where(valid, shift, 0.0)
+                visited[nb] = True
+                queue.append(nb)
+    return out
+
+
 def _should_make_group_whole_for_com(spec: GroupSpec) -> bool:
     idx = np.asarray(spec.atom_indices_0, dtype=int)
     if idx.size < 2:
         return False
+    bonds = np.asarray(spec.bond_pairs_local if spec.bond_pairs_local is not None else [], dtype=int)
+    if bonds.size:
+        return True
     kind = str(spec.species_kind or "").strip().lower()
     # Compact molecules and residue/charged-group fragments are safe to repair
     # by direct minimum image to an anchor atom.  Very long polymer chains can
@@ -285,9 +344,13 @@ def _canonicalize_smiles_like(value: Any) -> str:
     if not s:
         return ""
     try:
-        from rdkit import Chem
+        from rdkit import Chem, RDLogger
 
-        mol = Chem.MolFromSmiles(s)
+        RDLogger.DisableLog("rdApp.error")
+        try:
+            mol = Chem.MolFromSmiles(s)
+        finally:
+            RDLogger.EnableLog("rdApp.error")
         if mol is not None:
             return Chem.MolToSmiles(mol, isomericSmiles=True)
     except Exception:
@@ -333,13 +396,32 @@ def resolve_moltypes_from_mols(system_dir: Path, mol_or_mols: Any) -> list[str]:
     objs = list(mol_or_mols) if isinstance(mol_or_mols, (list, tuple, set)) else [mol_or_mols]
     want = {_mol_to_smiles(obj) for obj in objs}
     want = {s for s in want if s}
+    # Polymer objects often do not round-trip through a stable canonical SMILES
+    # after random-walk construction/termination.  Accepting explicit moltype
+    # strings lets workflow scripts request the same species names written to
+    # system_meta.json, mirroring how users select groups from a GROMACS index.
+    want_names = {str(obj).strip() for obj in objs if isinstance(obj, str) and str(obj).strip()}
     if not want:
-        return []
+        if not want_names:
+            return []
     out: list[str] = []
     for sp in species:
+        mt = sp.get("moltype") or sp.get("mol_name") or sp.get("mol_id")
+        mt_s = str(mt or "").strip()
+        aliases = {
+            mt_s,
+            str(sp.get("mol_name") or "").strip(),
+            str(sp.get("mol_id") or "").strip(),
+            str(sp.get("name") or "").strip(),
+        }
+        if want_names and any(alias in want_names for alias in aliases if alias):
+            if mt_s:
+                out.append(mt_s)
+            continue
+        if not want:
+            continue
         sp_smi = _canonicalize_smiles_like(sp.get("smiles", ""))
         if sp_smi in want:
-            mt = sp.get("moltype") or sp.get("mol_name") or sp.get("mol_id")
             if mt:
                 out.append(str(mt))
     return sorted(set(out))
@@ -422,6 +504,12 @@ def build_msd_metric_catalog(top: SystemTopology, system_dir: Path) -> dict[str,
         formal_charge = float(sp["formal_charge_e"])
         metrics: dict[str, dict[str, Any]] = {}
         default_metric = None
+        local_bonds = np.asarray(
+            [(int(ai) - 1, int(aj) - 1) for ai, aj in getattr(sp.get("moleculetype"), "bonds", []) or []],
+            dtype=int,
+        )
+        if local_bonds.size == 0:
+            local_bonds = np.zeros((0, 2), dtype=int)
 
         if natoms == 1 and abs(formal_charge) > 1.0e-12:
             groups = []
@@ -437,7 +525,14 @@ def build_msd_metric_catalog(top: SystemTopology, system_dir: Path) -> dict[str,
                         formal_charge_e=float(formal_charge),
                     )
                 )
-            metrics["ion_atomic_msd"] = {"group_kind": "ion_atomic", "groups": groups}
+            metrics["ion_atomic_msd"] = {
+                "group_kind": "ion_atomic",
+                "observable": "single_atom_self_msd",
+                "selection_source": "topology_molecules",
+                "gmx_msd_mol_equivalent": False,
+                "interpretation": "Single-atom ions are tracked directly; no COM construction is needed.",
+                "groups": groups,
+            }
             default_metric = "ion_atomic_msd"
         else:
             groups = []
@@ -451,9 +546,20 @@ def build_msd_metric_catalog(top: SystemTopology, system_dir: Path) -> dict[str,
                         atom_indices_0=np.asarray(inst["atom_indices_0"], dtype=int),
                         masses=masses,
                         formal_charge_e=float(formal_charge),
+                        bond_pairs_local=local_bonds,
                     )
                 )
-            metrics["molecule_com_msd"] = {"group_kind": "molecule_com", "groups": groups}
+            metrics["molecule_com_msd"] = {
+                "group_kind": "molecule_com",
+                "observable": "topology_molecule_com_self_msd",
+                "selection_source": "topology_molecules",
+                "gmx_msd_mol_equivalent": True,
+                "interpretation": (
+                    "Each topology molecule instance is converted to a mass-weighted COM, "
+                    "matching the intended observable of `gmx msd -mol` for the same moltype group."
+                ),
+                "groups": groups,
+            }
             default_metric = "molecule_com_msd"
 
         if kind == "polymer":
@@ -468,9 +574,20 @@ def build_msd_metric_catalog(top: SystemTopology, system_dir: Path) -> dict[str,
                         atom_indices_0=np.asarray(inst["atom_indices_0"], dtype=int),
                         masses=masses,
                         formal_charge_e=float(formal_charge),
+                        bond_pairs_local=local_bonds,
                     )
                 )
-            metrics["chain_com_msd"] = {"group_kind": "chain_com", "groups": chain_groups}
+            metrics["chain_com_msd"] = {
+                "group_kind": "chain_com",
+                "observable": "polymer_chain_com_self_msd",
+                "selection_source": "topology_molecules",
+                "gmx_msd_mol_equivalent": True,
+                "interpretation": (
+                    "Polymer self-diffusion is computed from each independent chain COM. "
+                    "This assumes each chain is a separate topology molecule."
+                ),
+                "groups": chain_groups,
+            }
             default_metric = "chain_com_msd"
 
             residue_map = sp.get("residue_map") or {}
@@ -496,7 +613,17 @@ def build_msd_metric_catalog(top: SystemTopology, system_dir: Path) -> dict[str,
                         )
                     )
             if residue_groups:
-                metrics["residue_com_msd"] = {"group_kind": "residue_com", "groups": residue_groups}
+                metrics["residue_com_msd"] = {
+                    "group_kind": "residue_com",
+                    "observable": "polymer_residue_com_local_msd",
+                    "selection_source": "residue_map_metadata",
+                    "gmx_msd_mol_equivalent": False,
+                    "interpretation": (
+                        "Residue COM MSD is a local segmental-mobility diagnostic, "
+                        "not a whole-chain self-diffusion coefficient."
+                    ),
+                    "groups": residue_groups,
+                }
 
         charge_groups = list(sp.get("charge_groups") or [])
         if charge_groups:
@@ -526,7 +653,17 @@ def build_msd_metric_catalog(top: SystemTopology, system_dir: Path) -> dict[str,
                         )
                     )
             if cg_specs:
-                metrics["charged_group_com_msd"] = {"group_kind": "charged_group_com", "groups": cg_specs}
+                metrics["charged_group_com_msd"] = {
+                    "group_kind": "charged_group_com",
+                    "observable": "charged_group_com_local_msd",
+                    "selection_source": "charge_group_metadata",
+                    "gmx_msd_mol_equivalent": False,
+                    "interpretation": (
+                        "Charged-group COM MSD tracks local ionized motifs for conductivity diagnostics; "
+                        "it should not be interpreted as whole-polymer diffusion."
+                    ),
+                    "groups": cg_specs,
+                }
 
         out[moltype] = {
             "moltype": moltype,
@@ -855,7 +992,11 @@ def load_group_positions(
             w = w / float(np.sum(w))
             coords = xyz[:, idx, :]
             if _should_make_group_whole_for_com(spec):
-                coords = _make_group_coordinates_whole(coords, box[:, :3])
+                bonds = np.asarray(spec.bond_pairs_local if spec.bond_pairs_local is not None else [], dtype=int)
+                if bonds.size:
+                    coords = _make_group_coordinates_whole_by_bonds(coords, box[:, :3], bonds)
+                else:
+                    coords = _make_group_coordinates_whole(coords, box[:, :3])
             chunk_pos[:, gi, :] = np.tensordot(coords, w, axes=(1, 0))
         times.append(np.asarray(trj.time, dtype=float))
         pos_chunks.append(chunk_pos)
@@ -984,6 +1125,8 @@ def select_diffusive_window(
     secondary_tol: float = 0.25,
     accepted_alpha_min: float = 0.90,
     accepted_alpha_max: float = 1.15,
+    min_fit_fraction: float = 0.25,
+    min_fit_points: int = 12,
     geometry: str = "3d",
 ) -> dict[str, Any]:
     """Select a formal diffusion window from a log-log MSD slope trace.
@@ -993,6 +1136,11 @@ def select_diffusive_window(
     is available we still report the best apparent slope for diagnostics, but
     keep ``D_m2_s`` unset so downstream transport summaries do not silently use
     subdiffusive or superdiffusive data.
+
+    A near-one exponent is necessary but not sufficient.  Candidate windows must
+    also span a meaningful fraction of the trajectory with enough points; this
+    prevents short accidental "linear islands" from being treated as a reliable
+    diffusion regime.
     """
 
     t = np.asarray(t_ps, dtype=float)
@@ -1014,6 +1162,10 @@ def select_diffusive_window(
         "apparent_D_nm2_ps": None,
         "apparent_D_m2_s": None,
         "warning": None,
+        "fit_n_points": 0,
+        "min_fit_points": int(max(1, min_fit_points)),
+        "min_fit_duration_ps": None,
+        "min_fit_fraction": float(min_fit_fraction),
         "geometry": "3d" if _normalize_geometry_mode(geometry) == "auto" else _normalize_geometry_mode(geometry),
     }
     if t.size < 12 or y.size != t.size:
@@ -1029,7 +1181,19 @@ def select_diffusive_window(
     log_t = np.log(tv)
     log_y = np.log(np.maximum(y_s, 1.0e-30))
     alpha = np.gradient(log_y, log_t)
-    min_run = max(8, int(round(0.1 * tv.size)))
+    total_duration_ps = float(tv[-1] - tv[0]) if tv.size >= 2 else 0.0
+    median_dt_ps = float(np.median(np.diff(tv))) if tv.size >= 2 else 0.0
+    # The fitting window should be statistically meaningful, not just visually
+    # convenient.  Polymer and concentrated electrolyte MSD curves often contain
+    # short slope~1 patches before the true long-time regime has emerged.
+    min_run = max(int(min_fit_points), int(math.ceil(float(min_fit_fraction) * float(tv.size))))
+    min_run = min(int(min_run), int(tv.size))
+    min_duration_ps = max(
+        float(min_fit_fraction) * max(total_duration_ps, 0.0),
+        10.0 * max(median_dt_ps, 0.0),
+    )
+    out["min_fit_points"] = int(min_run)
+    out["min_fit_duration_ps"] = float(min_duration_ps)
 
     candidates: list[dict[str, Any]] = []
     for tol, confidence in ((primary_tol, "high"), (secondary_tol, "medium")):
@@ -1041,7 +1205,8 @@ def select_diffusive_window(
             end_here = (not flag or idx == ok.size - 1) and start is not None
             if end_here:
                 end = idx if flag and idx == ok.size - 1 else idx - 1
-                if end - start + 1 >= min_run:
+                duration_ps = float(tv[end] - tv[start]) if end >= start else 0.0
+                if end - start + 1 >= min_run and duration_ps >= min_duration_ps:
                     tt = tv[start : end + 1]
                     yy = yv[start : end + 1]
                     slope, intercept = np.polyfit(tt, yy, 1)
@@ -1063,6 +1228,7 @@ def select_diffusive_window(
                                 "alpha_std": float(np.std(alpha_slice)),
                                 "alpha_deviation": float(abs(float(np.mean(alpha_slice)) - float(alpha_target))),
                                 "duration_ps": float(tt[-1] - tt[0]),
+                                "fit_n_points": int(tt.size),
                                 "selection_basis": "loglog_slope_closest_to_one",
                             }
                         )
@@ -1103,21 +1269,23 @@ def select_diffusive_window(
                 "alpha_std": float(np.std(alpha_slice)),
                 "alpha_deviation": float(abs(float(np.mean(alpha_slice)) - float(alpha_target))),
                 "duration_ps": float(tt[-1] - tt[0]),
+                "fit_n_points": int(tt.size),
                 "selection_basis": "loglog_slope_closest_to_one",
                 "warning": "closest_loglog_slope_window",
             }
         )
 
-    def _score(item: dict[str, Any]) -> tuple[float, int, float, float]:
+    def _score(item: dict[str, Any]) -> tuple[int, float, float, float]:
         conf_rank = {"high": 0, "medium": 1, "low": 2}.get(str(item.get("confidence") or "low"), 3)
         return (
-            float(item.get("alpha_deviation", float("inf"))),
             int(conf_rank),
+            float(item.get("alpha_deviation", float("inf"))),
             -float(item.get("duration_ps", 0.0)),
             -float(item.get("fit_r2", float("-inf"))),
         )
 
     best = sorted(candidates, key=_score)[0]
+    best_duration_ps = float(best.get("duration_ps", 0.0))
     best.pop("duration_ps", None)
     out.update(best)
     alpha_mean = float(best.get("alpha_mean")) if best.get("alpha_mean") is not None else float("nan")
@@ -1150,6 +1318,15 @@ def select_diffusive_window(
                 out["warning"] = "alpha_below_formal_diffusion_threshold"
             else:
                 out["warning"] = "alpha_above_formal_diffusion_threshold"
+    if out["status"] == "ok" and best_duration_ps < min_duration_ps:
+        # This branch should normally be unreachable because candidates are
+        # filtered by duration, but keeping the guard makes future scoring
+        # changes safe.
+        out["status"] = "window_too_short"
+        out["confidence"] = "low"
+        out["warning"] = "fit_window_shorter_than_minimum"
+        out["D_nm2_ps"] = None
+        out["D_m2_s"] = None
     return out
 
 

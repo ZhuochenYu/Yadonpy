@@ -614,8 +614,11 @@ species_only = _env_bool("SPECIES_ONLY", False)
 build_only = _env_bool("BUILD_ONLY", False)
 export_only = _env_bool("EXPORT_ONLY", False)
 
-ff = OPLSAA()
-ion_ff = OPLSAA()
+oplsaa_profile = _env_text("OPLSAA_PROFILE", "strict")
+gpu_offload_mode = _env_text("GPU_OFFLOAD_MODE", "auto")
+
+ff = OPLSAA(profile=oplsaa_profile)
+ion_ff = OPLSAA(profile=oplsaa_profile)
 
 charge_mode = _normalize_charge_mode(os.environ.get("YADONPY_OPLS_CHARGE_MODE"))
 
@@ -697,6 +700,8 @@ if __name__ == "__main__":
         "metadata": {
             "benchmark_name": "carbonate_lipf6_oplsaa",
             "charge_mode": charge_mode,
+            "oplsaa_profile": oplsaa_profile,
+            "gpu_offload_mode": gpu_offload_mode,
             "solvent_charge_method": solvent_charge_method,
             "resolved_qm_recipes": solvent_routes,
             "pf6_charge_method": pf6_charge_method,
@@ -752,7 +757,15 @@ if __name__ == "__main__":
         print(f"[EXPORT-ONLY] Exported 02_system at {exported.system_top.parent}")
         raise SystemExit(0)
 
-    ac = eqmd.exec(temp=temp_k, press=press_bar, mpi=mpi, omp=omp, gpu=gpu, gpu_id=gpu_id)
+    ac = eqmd.exec(
+        temp=temp_k,
+        press=press_bar,
+        mpi=mpi,
+        omp=omp,
+        gpu=gpu,
+        gpu_id=gpu_id,
+        gpu_offload_mode=gpu_offload_mode,
+    )
     latest_equilibrated_gro = eqmd.final_gro()
     analy = eqmd.analyze()
     analy.get_all_prop(temp=temp_k, press=press_bar, save=True)
@@ -769,6 +782,7 @@ if __name__ == "__main__":
             omp=omp,
             gpu=gpu,
             gpu_id=gpu_id,
+            gpu_offload_mode=gpu_offload_mode,
             constraints="none",
             start_gro=latest_equilibrated_gro,
             skip_rebuild=True,
@@ -790,6 +804,7 @@ if __name__ == "__main__":
             time=prod_ns,
             dt_ps=prod_dt_ps,
             constraints=prod_constraints,
+            gpu_offload_mode=gpu_offload_mode,
         )
     else:
         prod_step = eq.NPT(ac, work_dir=work_root)
@@ -803,12 +818,15 @@ if __name__ == "__main__":
             time=prod_ns,
             dt_ps=prod_dt_ps,
             constraints=prod_constraints,
+            gpu_offload_mode=gpu_offload_mode,
         )
 
     analy = prod_step.analyze()
     basic = analy.get_all_prop(temp=temp_k, press=press_bar, save=True)
-    rdf = analy.rdf(center_mol=li)
-    msd = analy.msd()
+    msd_species = [ec, emc, dec]
+    if salt_pairs > 0:
+        msd_species.extend([li, pf6])
+    msd = analy.msd(mols=msd_species)
     msd_block_diagnostic = _msd_block_diffusion_diagnostic(
         analy,
         full_msd=msd,
@@ -816,7 +834,20 @@ if __name__ == "__main__":
         min_block_ps=msd_block_min_ps,
     )
     _dump_json(analysis_dir / "msd_block_diffusion.json", msd_block_diagnostic)
-    sigma = analy.sigma(msd=msd, temp_k=temp_k, eh_mode="gmx_current_only")
+    if salt_pairs > 0:
+        rdf = analy.rdf(center_mol=li)
+        sigma = analy.sigma(msd=msd, temp_k=temp_k, eh_mode="gmx_current_only")
+    else:
+        rdf = {}
+        sigma = {
+            "sigma_ne_upper_bound_S_m": None,
+            "sigma_eh_total_S_m": None,
+            "haven_ratio": None,
+            "eh": {
+                "confidence": "not_applicable",
+                "quality_note": "No salt pairs were requested; skipped Li-centered RDF and conductivity analysis.",
+            },
+        }
 
     summary = {
         "metadata": species_summary["metadata"],

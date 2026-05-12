@@ -5327,7 +5327,7 @@
   },
   {
     "element": "H",
-    "btype": "H",
+    "btype": "H~",
     "opls": "opls_1064",
     "smarts": "[#1][Si]",
     "charge": -0.01,

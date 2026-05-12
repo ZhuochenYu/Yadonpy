@@ -16,6 +16,7 @@ from yadonpy.sim.preset.eq import (
     _find_latest_equilibrated_gro,
     _next_additional_round,
     _resolve_production_bridge_ps,
+    _system_needs_gentle_oplsaa_pre_nvt,
     cell_meta_contains_polymer,
     select_relaxation_strategy,
 )
@@ -95,6 +96,39 @@ def test_eq21_npt_time_scale_can_be_overridden():
 
     assert stage_03['time_ps'] == 75.0
     assert final_stage['time_ps'] == 1200.0
+
+
+def test_eq21_pre_nvt_dt_can_be_gentler_than_base_dt():
+    cfg = EQ21ProtocolConfig(dt_ps=0.001, pre_nvt_dt_ps=0.0005, pre_nvt_ps=10.0)
+    records = _build_eq21_records(318.15, 1.0, final_ns=0.8, cfg=cfg)
+    params = _eq21_params_payload(318.15, 1.0, final_ns=0.8, cfg=cfg)
+
+    pre = _find(records, "02_preNVT")
+    assert pre["dt_ps"] == 0.0005
+    assert pre["nsteps"] == 20000
+    assert pre["safety_mode"] == "pre-thermalize-gentle"
+    assert params["pre_nvt_dt_ps"] == 0.0005
+
+
+def test_oplsaa_polyelectrolyte_export_requests_gentle_pre_nvt():
+    from pathlib import Path
+
+    class _Export:
+        system_meta = Path("missing-system-meta.json")
+        species = [
+            {
+                "name": "CMC",
+                "ff_name": "oplsaa",
+                "kind": "polymer",
+                "polyelectrolyte_mode": True,
+                "charge_groups": [{"target_charge": -1.0}],
+            }
+        ]
+
+    assert _system_needs_gentle_oplsaa_pre_nvt(_Export()) is True
+
+    _Export.species = [{"name": "CMC", "ff_name": "gaff2", "kind": "polymer", "polyelectrolyte_mode": True}]
+    assert _system_needs_gentle_oplsaa_pre_nvt(_Export()) is False
 
 
 def test_cell_meta_contains_polymer_distinguishes_liquids():

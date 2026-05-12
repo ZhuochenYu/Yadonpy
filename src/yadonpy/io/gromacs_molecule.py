@@ -30,6 +30,43 @@ def _format_gro_atom_line(*, resnr: int, resname: str, atomname: str, atomnr: in
     )
 
 
+def _safe_gromacs_resname(resname: str, default_resname: str) -> str:
+    """Return a residue name that avoids GROMACS' built-in biomolecule aliases."""
+
+    raw = str(resname or default_resname or "MOL").strip() or "MOL"
+    token = raw[:5].strip() or "MOL"
+    # Generic polymer repeat-unit names such as RU2 are convenient internally,
+    # but GROMACS classifies RU* as RNA-like residues.  Use an equivalent
+    # YadonPy repeat-unit prefix in topology artifacts to keep logs and
+    # downstream group detection unambiguous.
+    if token.upper().startswith("RU"):
+        token = "YU" + token[2:]
+    return token[:5]
+
+
+def _safe_gromacs_atomname(atom, atom_index: int, atomname: str) -> str:
+    """Return an atom name that fits the five-character GRO field.
+
+    Force-field type names such as ``opls_188`` are valid atom *types*, but they
+    are too long for GRO atom names and get truncated to ``opls_``.  Writing a
+    compact element/index atom name keeps the GRO and ITP atom-name fields
+    synchronized while preserving the full force-field type in the ITP type
+    column.
+    """
+
+    raw = str(atomname or "").strip()
+    if raw and len(raw) <= 5 and not raw.lower().startswith("opls_"):
+        return raw
+    try:
+        elem = str(atom.GetSymbol() or "X").strip().upper() or "X"
+    except Exception:
+        elem = "X"
+    elem = elem[:2] if len(elem) > 1 else elem[:1]
+    width = max(5 - len(elem), 1)
+    number = int(atom_index) % (10**width)
+    return f"{elem}{number}"[:5]
+
+
 def invalid_bond_parameter_lines(itp_text: str) -> list[str]:
     """Return `[ bonds ]` rows with missing or non-positive harmonic parameters."""
 
@@ -74,7 +111,11 @@ def _canon_angle_key(i: int, j: int, k: int) -> tuple[int, int, int]:
 
 def _parse_itp_bonds_angles(
     path: Path,
-) -> tuple[dict[tuple[int, int], tuple[float, float]], dict[tuple[int, int, int], tuple[float, float]]]:
+) -> tuple[
+    dict[tuple[int, int], tuple[float, float]],
+    dict[tuple[int, int, int], tuple[float, float]],
+    set[tuple[int, int, int]],
+]:
     """Parse a small .itp fragment and extract bond/angle parameters.
 
     The fragment is expected to contain (optionally) `[ bonds ]` and `[ angles ]`
@@ -83,15 +124,17 @@ def _parse_itp_bonds_angles(
     Returns:
         bond_map: (i,j) -> (r0_nm, k_kj_per_nm2)
         angle_map: (i,j,k) -> (theta0_deg, k_kj_per_rad2)
+        linear_angle_keys: canonical angle keys with theta0 >= 179.5 deg
     """
 
     bond_map: dict[tuple[int, int], tuple[float, float]] = {}
     angle_map: dict[tuple[int, int, int], tuple[float, float]] = {}
+    linear_angle_keys: set[tuple[int, int, int]] = set()
 
     try:
         txt = path.read_text(encoding="utf-8", errors="ignore").splitlines()
     except Exception:
-        return bond_map, angle_map
+        return bond_map, angle_map, linear_angle_keys
 
     sec = None
     for raw in txt:
@@ -129,11 +172,14 @@ def _parse_itp_bonds_angles(
                 kidx = int(toks[2])
                 theta0 = float(toks[4])
                 kk = float(toks[5])
-                angle_map[_canon_angle_key(i, j, kidx)] = (theta0, kk)
+                key = _canon_angle_key(i, j, kidx)
+                angle_map[key] = (theta0, kk)
+                if theta0 >= 179.5:
+                    linear_angle_keys.add(key)
             except Exception:
                 continue
 
-    return bond_map, angle_map
+    return bond_map, angle_map, linear_angle_keys
 
 
 def _apply_bond_angle_patch_from_fragment(itp_path: Path, fragment_path: Path, *, method: str = "mseminario") -> bool:
@@ -144,9 +190,10 @@ def _apply_bond_angle_patch_from_fragment(itp_path: Path, fragment_path: Path, *
     force constants without duplicating bonds/angles.
     """
 
-    bond_map, angle_map = _parse_itp_bonds_angles(fragment_path)
+    bond_map, angle_map, linear_angle_keys = _parse_itp_bonds_angles(fragment_path)
     if not bond_map and not angle_map:
         return False
+    drop_linear_angles = str(method or "").strip().lower() == "drih"
 
     try:
         lines = itp_path.read_text(encoding="utf-8", errors="ignore").splitlines(True)
@@ -196,6 +243,14 @@ def _apply_bond_angle_patch_from_fragment(itp_path: Path, fragment_path: Path, *
                     j = int(toks[1])
                     kidx = int(toks[2])
                     key = _canon_angle_key(i, j, kidx)
+                    current_theta0 = float(toks[4])
+                    if drop_linear_angles and (key in linear_angle_keys or current_theta0 >= 179.5):
+                        # GROMACS ordinary harmonic angles are singular at
+                        # exact 180 degrees.  DRIH AX6 patches retain
+                        # octahedral stiffness through center-ligand bonds and
+                        # cis angles; trans angles are deliberately removed.
+                        changed = True
+                        continue
                     if key in angle_map:
                         th0, kk = angle_map[key]
                         toks[4] = f"{th0:.3f}"
@@ -260,10 +315,14 @@ def _atom_residue_fields(atom, *, atom_index: int, default_resnr: int, default_r
             resnr = int(info.GetResidueNumber())
         except Exception:
             resnr = int(default_resnr)
-        resname = str(info.GetResidueName()).strip() or str(default_resname)
-        atomname = str(info.GetName()).strip() or f"{atom.GetSymbol()}{atom_index}"
+        resname = _safe_gromacs_resname(str(info.GetResidueName()).strip(), str(default_resname))
+        atomname = _safe_gromacs_atomname(atom, atom_index, str(info.GetName()).strip() or f"{atom.GetSymbol()}{atom_index}")
         return resnr, resname, atomname
-    return int(default_resnr), str(default_resname), f"{atom.GetSymbol()}{atom_index}"
+    return (
+        int(default_resnr),
+        _safe_gromacs_resname(str(default_resname), str(default_resname)),
+        _safe_gromacs_atomname(atom, atom_index, f"{atom.GetSymbol()}{atom_index}"),
+    )
 
 
 def write_gro_from_rdkit(mol, out_gro: Path, mol_name: str) -> None:

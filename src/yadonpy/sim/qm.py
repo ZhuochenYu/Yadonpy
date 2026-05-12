@@ -2225,6 +2225,7 @@ def bond_angle_params_drih(
     angles = []
     n_cis = 0
     n_trans = 0
+    n_trans_skipped = 0
     for a in range(len(lig_idxs)):
         for b in range(a + 1, len(lig_idxs)):
             i = int(lig_idxs[a])
@@ -2240,9 +2241,14 @@ def bond_angle_params_drih(
             ang = float(np.degrees(np.arccos(cosang)))
             if cn == 6:
                 if ang > 150.0:
-                    th0 = 180.0
-                    kk = float(k_trans_eff)
-                    n_trans += 1
+                    # Do not export exact 180 degree harmonic angles to
+                    # GROMACS.  The ordinary angle force has a sin(theta)
+                    # denominator and can become numerically singular at
+                    # perfectly linear geometries.  The 12 cis angles plus
+                    # six center-ligand bonds are sufficient to keep AX6 ions
+                    # octahedral without risking step-0 crashes.
+                    n_trans_skipped += 1
+                    continue
                 else:
                     th0 = 90.0
                     kk = float(k_cis_eff)
@@ -2270,6 +2276,8 @@ def bond_angle_params_drih(
             "k_angle_linear_kj_mol_rad2": float(k_trans_eff),
             "n_cis_angles": int(n_cis),
             "n_trans_angles": int(n_trans),
+            "n_trans_angles_skipped_for_gromacs": int(n_trans_skipped),
+            "linear_angle_policy": "skip_exact_180_harmonic_angles",
         },
         "bonds": bonds,
         "angles": angles,

@@ -464,3 +464,7 @@ class RunResources:
     use_gpu: bool = True
     gpu_id: Optional[str] = None
     gpu_offload_mode: str = "full"
+    # Production-scale GPU failures should not silently become very long CPU
+    # runs unless the caller explicitly opts into that slow-but-possibly-useful
+    # debugging behavior.
+    allow_cpu_fallback_on_gpu_error: bool = True

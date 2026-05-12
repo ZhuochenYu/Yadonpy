@@ -12,6 +12,7 @@ import concurrent.futures as confu
 import json
 import math
 import os
+import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -57,6 +58,7 @@ from ..gmx.analysis.structured import (
     compute_site_rdf,
     detect_first_shell,
     resolve_moltypes_from_mols,
+    select_diffusive_window,
 )
 from ..gmx.analysis.rg_convergence import find_rg_convergence, plot_rg_convergence_svg
 from ..gmx.topology import parse_system_top, SystemTopology
@@ -509,7 +511,7 @@ class AnalyzeResult:
 
     @staticmethod
     def _normalize_analysis_profile(profile: Optional[str]) -> str:
-        token = str(profile or "full").strip().lower()
+        token = str(profile or "auto").strip().lower()
         if token in {"auto", "default"}:
             return "auto"
         if token in {"fast", "screening", "transport", "transport-fast", "transport_fast"}:
@@ -541,6 +543,22 @@ class AnalyzeResult:
         return None
 
     def _resolve_analysis_profile(self, profile: Optional[str]) -> str:
+        """Resolve user-facing analysis profile semantics.
+
+        ``None`` keeps the historical behavior for ad-hoc analysis calls: if a
+        production summary exists, reuse its policy; otherwise run the full
+        analysis.  Explicit ``"auto"`` is more opinionated and falls back to
+        ``transport_fast`` when no production policy is available, which is the
+        desired behavior for benchmark scripts and remote screening jobs.
+        """
+
+        if profile is None:
+            policy = self._read_performance_policy()
+            if isinstance(policy, dict):
+                resolved = self._normalize_analysis_profile(str(policy.get("analysis_profile") or "transport_fast"))
+                if resolved != "auto":
+                    return resolved
+            return "full"
         normalized = self._normalize_analysis_profile(profile)
         if normalized != "auto":
             return normalized
@@ -658,6 +676,13 @@ class AnalyzeResult:
         return out
 
     def _analysis_frame_cap(self, section: str) -> int:
+        """Return the frame budget for an analysis section.
+
+        The cap is deliberately applied at read time rather than by rewriting
+        trajectories.  This lets old dense 2 ps trajectories remain untouched
+        while RDF/MSD/cell/polymer metrics become affordable on long runs.
+        """
+
         section_key = str(section or "analysis").strip().upper()
         defaults = {
             "RDF": 10_000,
@@ -1463,6 +1488,152 @@ class AnalyzeResult:
         except Exception:
             pass
         return xtc_path
+
+    def _trajectory_frame_interval_ps(self) -> Optional[float]:
+        """Return the coordinate frame interval from the production MDP."""
+
+        mdp_path = Path(self.tpr).with_suffix(".mdp")
+        if not mdp_path.exists():
+            return None
+        kv = self._read_mdp_kv(mdp_path)
+        try:
+            dt_ps = float(kv.get("dt", "0"))
+        except Exception:
+            dt_ps = 0.0
+        nst_raw = kv.get("nstxout-compressed") or kv.get("nstxout") or "0"
+        try:
+            nst = int(float(nst_raw))
+        except Exception:
+            nst = 0
+        if dt_ps <= 0.0 or nst <= 0:
+            return None
+        return float(dt_ps) * float(nst)
+
+    def _ndx_group_names(self) -> set[str]:
+        names: set[str] = set()
+        try:
+            for raw in Path(self.ndx).read_text(encoding="utf-8", errors="replace").splitlines():
+                line = raw.strip()
+                if line.startswith("[") and line.endswith("]"):
+                    names.add(line.strip("[]").strip())
+        except Exception:
+            return set()
+        return names
+
+    def _moltype_msd_index_group(self, moltype: str) -> Optional[str]:
+        names = self._ndx_group_names()
+        candidates = [str(moltype), f"MOL_{moltype}"]
+        for name in candidates:
+            if name in names:
+                return name
+        lower_map = {name.lower(): name for name in names}
+        for name in candidates:
+            hit = lower_map.get(str(name).lower())
+            if hit:
+                return hit
+        return None
+
+    def _compute_gmx_mol_msd_series(
+        self,
+        *,
+        moltype: str,
+        metric_name: str,
+        metric_entry: Mapping[str, Any],
+        outdir: Path,
+        geometry_mode: str,
+        begin_ps: Optional[float],
+        end_ps: Optional[float],
+        frame_stride: int,
+    ) -> Optional[dict[str, Any]]:
+        """Use `gmx msd -n system.ndx -mol` for topology-molecule COM MSD.
+
+        GROMACS already knows how to split an index selection into topology
+        molecules and compute their COM MSD.  We use it for metrics whose
+        catalog declares `gmx_msd_mol_equivalent=True`, then keep YadonPy's
+        own log-log window selection so the quality gates stay consistent.
+        """
+
+        if not bool(metric_entry.get("gmx_msd_mol_equivalent", False)):
+            return None
+        if str(geometry_mode).strip().lower() not in {"3d", "xy"}:
+            return None
+        group = self._moltype_msd_index_group(str(moltype))
+        if not group:
+            return None
+        if not Path(self.tpr).exists() or not Path(self.xtc).exists() or not Path(self.ndx).exists():
+            return None
+
+        safe_metric = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(metric_name))
+        safe_moltype = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(moltype))
+        xvg_path = outdir / f"gmx_msd_{safe_moltype}_{safe_metric}.xvg"
+        mol_xvg_path = outdir / f"gmx_msd_{safe_moltype}_{safe_metric}_per_molecule.xvg"
+        runner = GromacsRunner()
+        args = [
+            "msd",
+            "-s",
+            str(self.tpr),
+            "-f",
+            str(self.xtc),
+            "-n",
+            str(self.ndx),
+            "-o",
+            str(xvg_path),
+            "-mol",
+            str(mol_xvg_path),
+        ]
+        if begin_ps is not None:
+            args += ["-b", f"{float(begin_ps):.8g}"]
+        if end_ps is not None:
+            args += ["-e", f"{float(end_ps):.8g}"]
+        frame_interval = self._trajectory_frame_interval_ps()
+        effective_dt = None
+        if frame_interval is not None and int(frame_stride or 1) > 1:
+            effective_dt = float(frame_interval) * float(max(1, int(frame_stride or 1)))
+            args += ["-dt", f"{effective_dt:.8g}"]
+        trestart = self._auto_msd_trestart_ps()
+        if effective_dt is not None and effective_dt > 0.0:
+            n = max(1, int(math.ceil(float(trestart) / float(effective_dt))))
+            trestart = float(n) * float(effective_dt)
+        args += ["-trestart", f"{float(trestart):.8g}"]
+        if str(geometry_mode).strip().lower() == "xy":
+            args += ["-lateral", "z"]
+
+        runner.run(args, stdin_text=f"{group}\n")
+        xvg = read_xvg(xvg_path)
+        df = xvg.df
+        if df.shape[1] < 2:
+            raise ValueError(f"gmx msd produced no MSD series: {xvg_path}")
+        t_ps = df.iloc[:, 0].to_numpy(dtype=float)
+        msd_nm2 = df.iloc[:, 1].to_numpy(dtype=float)
+        if t_ps.size and float(t_ps[0]) != 0.0:
+            t_ps = t_ps - float(t_ps[0])
+        geometry = "xy" if str(geometry_mode).strip().lower() == "xy" else "3d"
+        fit = select_diffusive_window(t_ps, msd_nm2, geometry=geometry)
+        frame_interval_out = float(np.median(np.diff(t_ps))) if t_ps.size >= 2 else None
+        return {
+            "t_ps": np.asarray(t_ps, dtype=float),
+            "msd_nm2": np.asarray(msd_nm2, dtype=float),
+            "fit": fit,
+            "frame_interval_ps": frame_interval_out,
+            "n_groups": int(len(list(metric_entry.get("groups") or []))),
+            "component_metrics": {},
+            "preprocessing": {
+                "backend": "gromacs_msd_mol",
+                "gmx_command": " ".join(["gmx", *map(str, args)]),
+                "index_group": str(group),
+                "index_file": str(self.ndx),
+                "trajectory": str(self.xtc),
+                "xvg": str(xvg_path),
+                "per_molecule_xvg": str(mol_xvg_path),
+                "trestart_ps": float(trestart),
+                "dt_ps": effective_dt,
+                "frame_stride": int(max(1, frame_stride or 1)),
+                "drift_correction_mode": "gromacs_default",
+            },
+            "geometry": geometry,
+            "trajectory_time_start_ps": float(begin_ps) if begin_ps is not None else None,
+            "trajectory_time_end_ps": float(end_ps) if end_ps is not None else None,
+        }
 
     def _is_interface_like_system(self) -> bool:
         markers = [
@@ -2420,9 +2591,17 @@ class AnalyzeResult:
         drift: str = "auto",
         selection_mode: str = "default",
         analysis_profile: Optional[str] = None,
+        backend: str = "auto",
         resume: bool = False,
     ) -> Dict[str, Any]:
-        """Compute adaptive MSD metrics with physically explicit semantics."""
+        """Compute adaptive MSD metrics with physically explicit semantics.
+
+        Ions are tracked by atomic positions, small molecules by molecular COM,
+        and polymers by independent chain COM.  The chain COM path is important:
+        polymer self-diffusion is a whole-chain property, while residue and
+        charged-group MSDs are local mobility diagnostics.
+        """
+
         profile = self._resolve_analysis_profile(analysis_profile)
         if str(policy).strip().lower() == "legacy":
             self._analysis_log("MSD policy=legacy requested; falling back to per-moltype atom-group MSD.", level=2)
@@ -2437,10 +2616,16 @@ class AnalyzeResult:
                 drift=drift,
                 selection_mode=selection_mode,
                 analysis_profile=profile,
+                backend=backend,
                 resume=resume,
             )
 
         geometry_mode = self._transport_geometry_mode(geometry)
+        backend_mode = str(backend or "auto").strip().lower()
+        if backend_mode not in {"auto", "python", "gromacs", "gmx"}:
+            backend_mode = "auto"
+        if backend_mode == "gmx":
+            backend_mode = "gromacs"
         t_all = self._section_begin(
             "MSD analysis",
             detail=(
@@ -2448,6 +2633,7 @@ class AnalyzeResult:
                 f" | profile={profile}"
                 f" | geometry={geometry_mode} | unwrap={str(unwrap).strip().lower() or 'auto'}"
                 f" | drift={str(drift).strip().lower() or 'auto'} | selection_mode={selection_mode}"
+                f" | backend={backend_mode}"
             ),
         )
         topo = parse_system_top(self.top)
@@ -2489,6 +2675,7 @@ class AnalyzeResult:
             "unwrap": str(unwrap).strip().lower() or "auto",
             "drift": str(drift).strip().lower() or "auto",
             "selection_mode": str(selection_mode or "default"),
+            "backend": str(backend_mode),
             "frame_stride": int(msd_frame_stride),
         }
         expected_cache_meta.update(self._analysis_policy_cache_meta())
@@ -2516,12 +2703,15 @@ class AnalyzeResult:
 
         res: Dict[str, Any] = {}
         overlay_series: Dict[str, tuple[np.ndarray, np.ndarray]] = {}
-        total = len([mt for mt in metric_catalog.keys() if selected_moltypes is None or mt in selected_moltypes])
+        selected_catalog_items = [
+            (mt, entry)
+            for mt, entry in metric_catalog.items()
+            if selected_moltypes is None or mt in selected_moltypes
+        ]
+        total = len(selected_catalog_items)
         self._item("msd_species", total)
 
-        for idx, (moltype, entry) in enumerate(metric_catalog.items(), start=1):
-            if selected_moltypes is not None and moltype not in selected_moltypes:
-                continue
+        for idx, (moltype, entry) in enumerate(selected_catalog_items, start=1):
             title = self._progress_title("MSD", idx, total)
             t0 = self._step_begin(title, detail=f"moltype={moltype}")
             species_rec: Dict[str, Any] = {
@@ -2602,6 +2792,28 @@ class AnalyzeResult:
                 if not group_specs:
                     continue
                 try:
+                    metric_data = None
+                    if backend_mode != "python":
+                        try:
+                            metric_data = self._compute_gmx_mol_msd_series(
+                                moltype=str(moltype),
+                                metric_name=str(metric_name),
+                                metric_entry=metric_entry,
+                                outdir=outdir,
+                                geometry_mode=geometry_mode,
+                                begin_ps=begin_ps,
+                                end_ps=end_ps,
+                                frame_stride=int(msd_frame_stride),
+                            )
+                        except Exception as e:
+                            if backend_mode == "gromacs":
+                                raise
+                            self._step_warn(
+                                f"MSD gmx -mol backend for {moltype}:{metric_name}",
+                                detail=f"{e}; falling back to Python",
+                            )
+                            metric_data = None
+                    if metric_data is None:
                         metric_data = compute_msd_series(
                             gro_path=self._system_dir() / "system.gro",
                             xtc_path=xtc_for_msd,
@@ -2644,6 +2856,10 @@ class AnalyzeResult:
                 )
                 metric_rec: Dict[str, Any] = {
                     "group_kind": str(metric_entry.get("group_kind") or metric_name),
+                    "observable": str(metric_entry.get("observable") or metric_name),
+                    "selection_source": str(metric_entry.get("selection_source") or "metadata"),
+                    "gmx_msd_mol_equivalent": bool(metric_entry.get("gmx_msd_mol_equivalent", False)),
+                    "interpretation": str(metric_entry.get("interpretation") or ""),
                     "geometry": str(metric_data.get("geometry") or geometry_mode),
                     "n_groups": int(metric_data.get("n_groups") or 0),
                     "frame_interval_ps": metric_data.get("frame_interval_ps"),
@@ -2653,6 +2869,10 @@ class AnalyzeResult:
                     "series_csv": str(csv_path),
                     "fit_t_start_ps": fit.get("fit_t_start_ps"),
                     "fit_t_end_ps": fit.get("fit_t_end_ps"),
+                    "fit_n_points": fit.get("fit_n_points"),
+                    "min_fit_points": fit.get("min_fit_points"),
+                    "min_fit_duration_ps": fit.get("min_fit_duration_ps"),
+                    "min_fit_fraction": fit.get("min_fit_fraction"),
                     "fit_r2": fit.get("fit_r2"),
                     "fit_slope_nm2_ps": fit.get("fit_slope_nm2_ps"),
                     "fit_intercept_nm2": fit.get("fit_intercept_nm2"),
@@ -2690,6 +2910,10 @@ class AnalyzeResult:
                             "series_csv": str(comp_csv),
                             "fit_t_start_ps": comp.get("fit_t_start_ps"),
                             "fit_t_end_ps": comp.get("fit_t_end_ps"),
+                            "fit_n_points": comp.get("fit_n_points"),
+                            "min_fit_points": comp.get("min_fit_points"),
+                            "min_fit_duration_ps": comp.get("min_fit_duration_ps"),
+                            "min_fit_fraction": comp.get("min_fit_fraction"),
                             "fit_r2": comp.get("fit_r2"),
                             "fit_slope_nm2_ps": comp.get("fit_slope_nm2_ps"),
                             "fit_intercept_nm2": comp.get("fit_intercept_nm2"),

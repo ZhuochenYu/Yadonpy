@@ -65,6 +65,8 @@ def _normalize_gpu_offload_mode(mode: object) -> str:
         return "balanced"
     if token in {"conservative", "safe"}:
         return "conservative"
+    if token in {"nb-only", "nb_only", "pme-cpu", "pme_cpu", "no-pme-gpu", "no_pme_gpu"}:
+        return "nb-only"
     if token in {"cpu", "none"}:
         return "cpu"
     raise ValueError(f"Unsupported gpu_offload_mode={mode!r}")
@@ -290,6 +292,45 @@ class EquilibrationJob:
         return None
 
     @staticmethod
+    def _parse_minimization_max_force(stage_dir: Path, *, gro: Path | None = None, deffnm: str = "md") -> dict[str, object] | None:
+        log_path = Path(stage_dir) / f"{deffnm}.log"
+        if not log_path.exists():
+            return None
+        try:
+            text = log_path.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            return None
+        match = None
+        for raw in text.splitlines():
+            m = re.search(r"Maximum force\s*=\s*([0-9.+\-Ee]+)\s+on atom\s+(\d+)", raw)
+            if m:
+                match = m
+        if match is None:
+            return None
+        force = float(match.group(1))
+        atom_index_1based = int(match.group(2))
+        record: dict[str, object] = {
+            "force_kj_mol_nm": force,
+            "atom_index_1based": atom_index_1based,
+        }
+        if gro is not None and Path(gro).exists():
+            try:
+                lines = Path(gro).read_text(encoding="utf-8", errors="replace").splitlines()
+                atom_line = lines[atom_index_1based + 1]
+                record["gro_atom"] = {
+                    "resid": atom_line[0:5].strip(),
+                    "resname": atom_line[5:10].strip(),
+                    "atomname": atom_line[10:15].strip(),
+                    "atomnr": atom_line[15:20].strip(),
+                    "x_nm": float(atom_line[20:28]),
+                    "y_nm": float(atom_line[28:36]),
+                    "z_nm": float(atom_line[36:44]),
+                }
+            except Exception as exc:
+                record["gro_atom_error"] = str(exc)
+        return record
+
+    @staticmethod
     def _lincs_retry_state_path(stage_dir: Path) -> Path:
         return Path(stage_dir) / "lincs_fallback_state.json"
 
@@ -472,7 +513,8 @@ class EquilibrationJob:
             "resources",
             f"ntmpi={self.resources.ntmpi} | ntomp={self.resources.ntomp} | "
             f"gpu={bool(self.resources.use_gpu)} | gpu_id={self.resources.gpu_id} | "
-            f"gpu_offload_mode={_normalize_gpu_offload_mode(self.resources.gpu_offload_mode)}",
+            f"gpu_offload_mode={_normalize_gpu_offload_mode(self.resources.gpu_offload_mode)} | "
+            f"allow_cpu_fallback_on_gpu_error={bool(self.resources.allow_cpu_fallback_on_gpu_error)}",
         )
         summary_path = out / "summary.json"
         summary: dict = load_json(summary_path) or {"job": "EquilibrationJob", "out_dir": str(out), "stages": []}
@@ -486,6 +528,7 @@ class EquilibrationJob:
                 "gpu": bool(self.resources.use_gpu),
                 "gpu_id": self.resources.gpu_id,
                 "gpu_offload_mode": _normalize_gpu_offload_mode(self.resources.gpu_offload_mode),
+                "allow_cpu_fallback_on_gpu_error": bool(self.resources.allow_cpu_fallback_on_gpu_error),
             },
         }
         summary["provenance"] = workflow_provenance
@@ -719,6 +762,14 @@ class EquilibrationJob:
                     "pmefft": "gpu",
                     "update": "cpu",
                 }
+            elif stage_use_gpu and gpu_offload_mode == "nb-only":
+                stage_offload_kwargs = {
+                    "nb": "gpu",
+                    "bonded": "cpu",
+                    "pme": "cpu",
+                    "pmefft": "cpu",
+                    "update": "cpu",
+                }
             elif stage_use_gpu and gpu_offload_mode == "balanced":
                 stage_offload_kwargs = {
                     "nb": "gpu",
@@ -805,6 +856,7 @@ class EquilibrationJob:
                     append=True,
                     cpi=out_cpt,
                     checkpoint_minutes=st.checkpoint_minutes,
+                    allow_cpu_fallback_on_gpu_error=bool(self.resources.allow_cpu_fallback_on_gpu_error),
                 )
                 current_gro = out_gro
                 current_cpt = out_cpt if out_cpt.exists() else None
@@ -844,6 +896,7 @@ class EquilibrationJob:
                     append=True,
                     cpi=out_cpt,
                     checkpoint_minutes=st.checkpoint_minutes,
+                    allow_cpu_fallback_on_gpu_error=bool(self.resources.allow_cpu_fallback_on_gpu_error),
                 )
                 current_gro = out_gro
                 current_cpt = out_cpt if out_cpt.exists() else None
@@ -1002,6 +1055,7 @@ class EquilibrationJob:
                             gpu_id=self.resources.gpu_id,
                             append=True,
                             checkpoint_minutes=st.checkpoint_minutes,
+                            allow_cpu_fallback_on_gpu_error=bool(self.resources.allow_cpu_fallback_on_gpu_error),
                             **stage_mdrun_kwargs,
                         )
                     except Exception as e:
@@ -1043,6 +1097,7 @@ class EquilibrationJob:
                                 gpu_id=self.resources.gpu_id,
                                 append=False,
                                 checkpoint_minutes=st.checkpoint_minutes,
+                                allow_cpu_fallback_on_gpu_error=bool(self.resources.allow_cpu_fallback_on_gpu_error),
                                 **stage_mdrun_kwargs,
                             )
                             stage_runtime_tpr = retry_tpr
@@ -1145,6 +1200,7 @@ class EquilibrationJob:
                                 append=True,
                                 cpi=out_cpt,
                                 checkpoint_minutes=st.checkpoint_minutes,
+                                allow_cpu_fallback_on_gpu_error=bool(self.resources.allow_cpu_fallback_on_gpu_error),
                                 **stage_mdrun_kwargs,
                             )
                             try:
@@ -1293,6 +1349,10 @@ class EquilibrationJob:
                 "lincs_fallback": stage_lincs_fallback,
                 "checkpoint_handoff_fallback": stage_checkpoint_handoff_fallback,
             }
+            if st.kind in ("minim", "em"):
+                max_force_diag = self._parse_minimization_max_force(stage_dir, gro=out_gro, deffnm=deffnm)
+                if max_force_diag is not None:
+                    stage_record["max_force_hotspot"] = max_force_diag
 
             edr = stage_dir / f"{deffnm}.edr"
             if edr.exists():
@@ -1414,3 +1474,113 @@ class EquilibrationJob:
         if not p.exists():
             raise FileNotFoundError(f"Missing {p} (enable nstxout/nstvout in mdp to write TRR)")
         return p
+
+
+def oplsaa_stability_preflight(
+    *,
+    gro: Path,
+    top: Path,
+    out_dir: Path,
+    ndx: Path | None = None,
+    temperature_k: float = 318.15,
+    pressure_bar: float = 1.0,
+    time_ps: float = 20.0,
+    ntomp: int | None = None,
+    ntmpi: int | None = 1,
+    gpu: bool = True,
+    gpu_id: str | None = None,
+    gpu_offload_mode: str = "full",
+    runner: GromacsRunner | None = None,
+    restart: bool | None = None,
+) -> dict[str, object]:
+    """Run a short OPLS-AA stability matrix before expensive production.
+
+    The matrix starts every trial from the same input GRO/TOP so a failed 2 fs
+    trial cannot contaminate the next diagnostic.  It is intentionally small:
+    callers can use the returned JSON to decide whether `2 fs + h-bonds` is safe
+    for a given topology/initial structure.
+    """
+
+    out = safe_mkdir(Path(out_dir))
+    runner = runner or GromacsRunner()
+    trial_specs = (
+        ("01_nvt_1fs_none", 0.001, "none", 4, 12),
+        ("02_nvt_1fs_hbonds", 0.001, "h-bonds", 4, 12),
+        ("03_nvt_2fs_hbonds", 0.002, "h-bonds", 4, 12),
+    )
+    summary: dict[str, object] = {
+        "kind": "oplsaa_stability_preflight",
+        "input_gro": str(gro),
+        "topology": str(top),
+        "temperature_k": float(temperature_k),
+        "pressure_bar": float(pressure_bar),
+        "time_ps": float(time_ps),
+        "trials": [],
+    }
+    summary_path = out / "oplsaa_preflight_summary.json"
+
+    for name, dt_ps, constraints, lincs_iter, lincs_order in trial_specs:
+        p = default_mdp_params()
+        p.update(
+            {
+                "dt": float(dt_ps),
+                "nsteps": max(1, int(round(float(time_ps) / float(dt_ps)))),
+                "constraints": _normalize_constraints_mode(constraints),
+                "constraint_algorithm": "lincs" if _constraints_use_lincs(constraints) else "none",
+                "lincs_iter": int(lincs_iter),
+                "lincs_order": int(lincs_order),
+                "ref_t": float(temperature_k),
+                "gen_temp": float(temperature_k),
+                "gen_vel": "yes",
+                "gen_seed": -1,
+                "nstxout-compressed": max(1, int(round(10.0 / float(dt_ps)))),
+                "nstenergy": max(1, int(round(10.0 / float(dt_ps)))),
+                "nstlog": max(1, int(round(10.0 / float(dt_ps)))),
+            }
+        )
+        template = NVT_MDP if _constraints_use_lincs(constraints) else NVT_NO_CONSTRAINTS_MDP
+        stage = EqStage(
+            name,
+            "nvt",
+            MdpSpec(template, p),
+            strict_constraints=True,
+            gpu_offload_mode=str(gpu_offload_mode),
+        )
+        trial_dir = out / name
+        record: dict[str, object] = {
+            "name": name,
+            "dt_ps": float(dt_ps),
+            "constraints": str(constraints),
+            "lincs_iter": int(lincs_iter),
+            "lincs_order": int(lincs_order),
+            "dir": str(trial_dir),
+        }
+        try:
+            job = EquilibrationJob(
+                gro=Path(gro),
+                top=Path(top),
+                ndx=Path(ndx) if ndx else None,
+                out_dir=trial_dir,
+                stages=[stage],
+                runner=runner,
+                resources=RunResources(
+                    ntomp=ntomp,
+                    ntmpi=ntmpi,
+                    use_gpu=bool(gpu),
+                    gpu_id=gpu_id,
+                    gpu_offload_mode=str(gpu_offload_mode),
+                    allow_cpu_fallback_on_gpu_error=False,
+                ),
+            )
+            job.run(restart=restart)
+            record["ok"] = True
+        except Exception as exc:
+            record["ok"] = False
+            record["error"] = str(exc)
+        summary["trials"].append(record)
+        atomic_write_json(summary_path, summary)
+
+    trials = summary.get("trials", [])
+    summary["two_fs_hbonds_ok"] = bool(trials and isinstance(trials, list) and trials[-1].get("ok"))
+    atomic_write_json(summary_path, summary)
+    return summary

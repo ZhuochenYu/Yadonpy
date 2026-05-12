@@ -14,6 +14,7 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
+import os
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
@@ -53,6 +54,19 @@ def _fmt_elapsed(seconds: float) -> str:
 
 def _preset_item(label: str, value: object) -> None:
     _preset_log(f"[ITEM] {label:<18}: {value}")
+
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    raw = os.environ.get(str(name))
+    if raw is None:
+        return bool(default)
+    return str(raw).strip().lower() in {"1", "true", "yes", "on", "y"}
+
+
+def _allow_production_cpu_fallback() -> bool:
+    """Return whether production may intentionally continue on CPU after GPU failure."""
+
+    return _env_flag("ALLOW_CPU_FALLBACK_PRODUCTION", False)
 
 
 def _preset_section(title: str, *, detail: Optional[str] = None) -> float:
@@ -383,8 +397,12 @@ def _normalize_gpu_offload_mode(mode: object) -> str:
         return "auto"
     if token in {"full", "default"}:
         return "full"
+    if token in {"balanced", "bonded-gpu", "bonded_gpu"}:
+        return "balanced"
     if token in {"conservative", "safe"}:
         return "conservative"
+    if token in {"nb-only", "nb_only", "pme-cpu", "pme_cpu", "no-pme-gpu", "no_pme_gpu"}:
+        return "nb-only"
     if token in {"cpu", "none"}:
         return "cpu"
     raise ValueError(f"Unsupported gpu_offload_mode={mode!r}")
@@ -599,6 +617,43 @@ def _estimate_atom_count_for_policy(ac: object, exp: SystemExportResult | None =
         except Exception:
             pass
     return None
+
+
+def _system_needs_gentle_oplsaa_pre_nvt(exp: SystemExportResult | None) -> bool:
+    """Return True for OPLS-AA polyelectrolyte cells that need a softer start.
+
+    CMC-Na/OPLS-AA test systems showed that the first unconstrained NVT can
+    blow up at 1 fs even when the same topology is stable after a short 0.5 fs
+    settling segment.  Restrict the automatic timestep reduction to systems
+    that explicitly advertise both OPLS-AA parameters and localized polymer
+    charge metadata, so ordinary GAFF/solvent workflows keep their historical
+    schedule.
+    """
+
+    if exp is None:
+        return False
+    try:
+        species = list(exp.species or [])
+    except Exception:
+        species = []
+    if not species:
+        try:
+            payload = json.loads(Path(exp.system_meta).read_text(encoding="utf-8"))
+            raw_species = payload.get("species") if isinstance(payload, dict) else []
+            species = list(raw_species or []) if isinstance(raw_species, list) else []
+        except Exception:
+            species = []
+    for row in species:
+        if not isinstance(row, dict):
+            continue
+        ff_name = str(row.get("ff_name") or row.get("forcefield") or row.get("ff") or "").strip().lower()
+        if "opls" not in ff_name:
+            continue
+        is_polyion = bool(row.get("polyelectrolyte_mode")) or bool(row.get("charge_groups"))
+        is_polymer = str(row.get("kind") or "").strip().lower() in {"polymer", "polyelectrolyte"}
+        if is_polyion or is_polymer:
+            return True
+    return False
 
 
 def _write_production_policy_summary(run_dir: Path, policy: IOAnalysisPolicy) -> None:
@@ -939,6 +994,7 @@ class EQ21ProtocolConfig:
     p_max_bar: float = 50000.0
     p_anneal_bar: float = 1.0
     dt_ps: float = 0.001
+    pre_nvt_dt_ps: Optional[float] = None
     pre_nvt_ps: float = 10.0
     tau_t_ps: float = 0.1
     tau_p_ps: float = 1.0
@@ -971,6 +1027,22 @@ def _eq21_stage_dt_ps(ensemble: str, temperature_k: Optional[float], pressure_ba
     if ensemble == 'NPT' and p >= max(0.01 * float(cfg.p_max_bar), 500.0):
         return min(dt, 0.00075)
     return dt
+
+
+def _eq21_pre_nvt_dt_ps(cfg: EQ21ProtocolConfig) -> float:
+    """Resolve the unconstrained pre-NVT timestep.
+
+    The formal EQ21 ladder is normally run with ``dt_ps`` as the base
+    timestep.  Some OPLS-AA polyelectrolyte cells are fragile during the first
+    unconstrained thermalization because ionized polymer side groups and X-H
+    vibrations can turn small residual packing strain into a fast local blow-up.
+    ``pre_nvt_dt_ps`` lets the workflow use a gentler first NVT without changing
+    the rest of EQ21 or the production timestep.
+    """
+
+    if cfg.pre_nvt_dt_ps is not None:
+        return min(float(cfg.pre_nvt_dt_ps), float(cfg.dt_ps))
+    return _eq21_stage_dt_ps('NVT', cfg.t_anneal_k, None, cfg)
 
 
 def _eq21_stage_tau_t_ps(temperature_k: Optional[float], cfg: EQ21ProtocolConfig) -> float:
@@ -1029,7 +1101,7 @@ def _build_eq21_records(temp: float, press: float, *, final_ns: float, cfg: EQ21
     p_anneal = float(press if press is not None else cfg.p_anneal_bar)
     t_max = float(cfg.t_max_k)
     p_max = float(cfg.p_max_bar)
-    pre_dt = _eq21_stage_dt_ps('NVT', t_anneal, None, cfg)
+    pre_dt = _eq21_pre_nvt_dt_ps(cfg)
     pre_tau_t = _eq21_stage_tau_t_ps(t_anneal, cfg)
 
     recs: list[dict[str, Any]] = [
@@ -1074,7 +1146,7 @@ def _build_eq21_records(temp: float, press: float, *, final_ns: float, cfg: EQ21
             "tau_p_ps": None,
             "compressibility_bar_inv": None,
             "velocity_reseed": True,
-            "safety_mode": "pre-thermalize",
+            "safety_mode": "pre-thermalize-gentle" if cfg.pre_nvt_dt_ps is not None else "pre-thermalize",
             "notes": "Short pre-equilibration NVT before the formal 21-step ladder; this is the only stage that re-generates velocities by default.",
         },
     ]
@@ -1170,6 +1242,7 @@ def _eq21_params_payload(temp: float, press: float, *, final_ns: float, cfg: EQ2
         "p_max_bar": float(cfg.p_max_bar),
         "p_anneal_bar": float(press if press is not None else cfg.p_anneal_bar),
         "dt_ps": float(cfg.dt_ps),
+        "pre_nvt_dt_ps": (None if cfg.pre_nvt_dt_ps is None else float(cfg.pre_nvt_dt_ps)),
         "pre_nvt_ps": float(cfg.pre_nvt_ps),
         "final_stage_ns": float(final_ns),
         "tau_t_ps": float(cfg.tau_t_ps),
@@ -1184,6 +1257,7 @@ def _eq21_params_payload(temp: float, press: float, *, final_ns: float, cfg: EQ2
             "The 21-step protocol follows the provided Tmax/Tanal/Pmax/Panal ladder, translated to GROMACS NVT/NPT stages.",
             "EQ21 stages use constraints=none, so the preset does not invoke LINCS internally.",
             "Robust mode preserves the formal ladder but uses stage chaining, smaller dt at hot/high-pressure stages, and a softened barostat schedule for intermediate densification steps.",
+            "pre_nvt_dt_ps can be smaller than the base dt for fragile OPLS-AA polyelectrolytes; later EQ21 stages still use the regular robust dt policy.",
             "All NPT stages are lengthened by eq21_npt_time_scale (default 2.0) to give the box more time to densify and remove cavities without making pressure coupling more aggressive.",
         ],
     }
@@ -1266,6 +1340,7 @@ def _write_eq21_schedule(run_dir: Path, records: list[dict[str, Any]], params: d
         f"- Pmax = {params['p_max_bar']} bar\n",
         f"- Panal = {params['p_anneal_bar']} bar\n",
         f"- base dt = {params['dt_ps']} ps\n",
+        f"- pre-NVT dt = {params.get('pre_nvt_dt_ps') if params.get('pre_nvt_dt_ps') is not None else params['dt_ps']} ps\n",
         f"- pre-NVT = {params['pre_nvt_ps']} ps\n",
         f"- final EQ21 stage = {params['final_stage_ns']} ns\n",
         f"- robust = {bool(params.get('robust', True))}\n",
@@ -2973,6 +3048,7 @@ class EQ21step:
         eq21_pmax: float = 50000.0,
         eq21_panal: Optional[float] = None,
         eq21_dt_ps: float = 0.001,
+        eq21_pre_nvt_dt_ps: Optional[float] = None,
         eq21_pre_nvt_ps: float = 10.0,
         eq21_tau_t_ps: float = 0.1,
         eq21_tau_p_ps: float = 1.0,
@@ -2987,6 +3063,7 @@ class EQ21step:
         eq21_final_extend_ns: float = 0.2,
         eq21_final_extend_density_slope_per_ps: float = 5.0e-2,
         eq21_final_extend_density_delta_kg_m3: float = 2.0,
+        gpu_offload_mode: str = "full",
     ):
         """Run the EQ21 multi-stage equilibration.
 
@@ -3018,12 +3095,17 @@ class EQ21step:
         if time is not None:
             final_ns = float(time)
 
+        resolved_pre_nvt_dt_ps = None if eq21_pre_nvt_dt_ps is None else float(eq21_pre_nvt_dt_ps)
+        if resolved_pre_nvt_dt_ps is None and _system_needs_gentle_oplsaa_pre_nvt(exp):
+            resolved_pre_nvt_dt_ps = min(float(eq21_dt_ps), 0.0005)
+
         cfg = EQ21ProtocolConfig(
             t_max_k=float(eq21_tmax),
             t_anneal_k=float(temp if eq21_tanal is None else eq21_tanal),
             p_max_bar=float(eq21_pmax),
             p_anneal_bar=float(press if eq21_panal is None else eq21_panal),
             dt_ps=float(eq21_dt_ps),
+            pre_nvt_dt_ps=resolved_pre_nvt_dt_ps,
             pre_nvt_ps=float(eq21_pre_nvt_ps),
             tau_t_ps=float(eq21_tau_t_ps),
             tau_p_ps=float(eq21_tau_p_ps),
@@ -3054,11 +3136,15 @@ class EQ21step:
             f"slope>{float(eq21_final_extend_density_slope_per_ps):.4g} kg/m^3/ps | "
             f"delta>{float(eq21_final_extend_density_delta_kg_m3):.4g} kg/m^3",
         )
-        _preset_item("resources", f"mpi={int(mpi)} | omp={int(omp)} | gpu={int(gpu)} | gpu_id={gpu_id}")
+        resolved_gpu_offload_mode = _normalize_gpu_offload_mode(gpu_offload_mode)
+        _preset_item(
+            "resources",
+            f"mpi={int(mpi)} | omp={int(omp)} | gpu={int(gpu)} | gpu_id={gpu_id} | gpu_offload_mode={resolved_gpu_offload_mode}",
+        )
         _print_eq21_schedule(stage_records, params)
 
         use_gpu, gid = _parse_gpu_args(gpu, gpu_id)
-        res = RunResources(ntmpi=int(mpi), ntomp=int(omp), use_gpu=use_gpu, gpu_id=gid)
+        res = RunResources(ntmpi=int(mpi), ntomp=int(omp), use_gpu=use_gpu, gpu_id=gid, gpu_offload_mode=resolved_gpu_offload_mode)
         job = EquilibrationJob(gro=exp.system_gro, top=exp.system_top, provenance_ndx=exp.system_ndx, out_dir=run_dir, stages=stages, resources=res)
 
         final_dir = run_dir / stages[-1].name if stages else run_dir
@@ -3076,6 +3162,7 @@ class EQ21step:
                 "eq21_pmax": float(cfg.p_max_bar),
                 "eq21_panal": float(cfg.p_anneal_bar),
                 "eq21_dt_ps": float(cfg.dt_ps),
+                "eq21_pre_nvt_dt_ps": (None if cfg.pre_nvt_dt_ps is None else float(cfg.pre_nvt_dt_ps)),
                 "eq21_pre_nvt_ps": float(cfg.pre_nvt_ps),
                 "eq21_tau_t_ps": float(cfg.tau_t_ps),
                 "eq21_tau_p_ps": float(cfg.tau_p_ps),
@@ -3090,6 +3177,7 @@ class EQ21step:
                 "eq21_final_extend_ns": float(eq21_final_extend_ns),
                 "eq21_final_extend_density_slope_per_ps": float(eq21_final_extend_density_slope_per_ps),
                 "eq21_final_extend_density_delta_kg_m3": float(eq21_final_extend_density_delta_kg_m3),
+                "gpu_offload_mode": str(resolved_gpu_offload_mode),
             },
             description="EQ21step pre-EM + pre-NVT + 21-step equilibration",
         )
@@ -4296,6 +4384,7 @@ class NPT(EQ21step):
         _preset_item("lincs_order", int(lincs_order) if lincs_order is not None else None)
         resolved_gpu_offload_mode = _resolve_production_gpu_offload_mode(self.ac, gpu_offload_mode)
         resolved_bridge_ps = _resolve_production_bridge_ps(self.ac, bridge_ps)
+        allow_cpu_fallback = _allow_production_cpu_fallback()
         _preset_item(
             "performance_policy",
             f"{policy.policy_level} | profile={policy.performance_profile} | "
@@ -4310,6 +4399,7 @@ class NPT(EQ21step):
             f"cpt={float(checkpoint_min):.2f} min"
         )
         _preset_item("gpu_offload_mode", resolved_gpu_offload_mode)
+        _preset_item("cpu_fallback", "allowed" if allow_cpu_fallback else "disabled for production GPU failures")
         _preset_item(
             "bridge",
             f"{float(resolved_bridge_ps):.1f} ps | dt={float(bridge_dt_fs):.3f} fs | "
@@ -4372,6 +4462,7 @@ class NPT(EQ21step):
             use_gpu=use_gpu,
             gpu_id=gid,
             gpu_offload_mode=resolved_gpu_offload_mode,
+            allow_cpu_fallback_on_gpu_error=allow_cpu_fallback,
         )
         job = EquilibrationJob(gro=start_gro, top=exp.system_top, provenance_ndx=exp.system_ndx, out_dir=run_dir, stages=stages, resources=res)
 
@@ -4397,6 +4488,7 @@ class NPT(EQ21step):
                 "performance_policy": json.dumps(policy.to_dict(), sort_keys=True, default=str),
                 "checkpoint_min": float(checkpoint_min),
                 "gpu_offload_mode": resolved_gpu_offload_mode,
+                "allow_cpu_fallback_on_gpu_error": bool(allow_cpu_fallback),
                 "bridge_ps": float(resolved_bridge_ps),
                 "bridge_dt_fs": float(bridge_dt_fs),
                 "bridge_lincs_iter": int(bridge_lincs_iter),
@@ -4547,6 +4639,7 @@ class NVT(EQ21step):
         resolved_gpu_offload_mode = _resolve_production_gpu_offload_mode(self.ac, gpu_offload_mode)
         resolved_bridge_ps = _resolve_production_bridge_ps(self.ac, bridge_ps)
         resolved_density_control = _resolve_nvt_density_control(self.ac, density_control)
+        allow_cpu_fallback = _allow_production_cpu_fallback()
         _preset_item("density_control", bool(resolved_density_control))
         _preset_item("density_frac_last", float(density_frac_last))
         _preset_item(
@@ -4563,6 +4656,7 @@ class NVT(EQ21step):
             f"cpt={float(checkpoint_min):.2f} min"
         )
         _preset_item("gpu_offload_mode", resolved_gpu_offload_mode)
+        _preset_item("cpu_fallback", "allowed" if allow_cpu_fallback else "disabled for production GPU failures")
         _preset_item(
             "bridge",
             f"{float(resolved_bridge_ps):.1f} ps | dt={float(bridge_dt_fs):.3f} fs | "
@@ -4737,6 +4831,7 @@ class NVT(EQ21step):
             use_gpu=use_gpu,
             gpu_id=gid,
             gpu_offload_mode=resolved_gpu_offload_mode,
+            allow_cpu_fallback_on_gpu_error=allow_cpu_fallback,
         )
         job = EquilibrationJob(gro=scaled_gro, top=exp.system_top, provenance_ndx=exp.system_ndx, out_dir=run_dir, stages=stages, resources=res)
 
@@ -4761,6 +4856,7 @@ class NVT(EQ21step):
                 "performance_policy": json.dumps(policy.to_dict(), sort_keys=True, default=str),
                 "checkpoint_min": float(checkpoint_min),
                 "gpu_offload_mode": resolved_gpu_offload_mode,
+                "allow_cpu_fallback_on_gpu_error": bool(allow_cpu_fallback),
                 "bridge_ps": float(resolved_bridge_ps),
                 "bridge_dt_fs": float(bridge_dt_fs),
                 "bridge_lincs_iter": int(bridge_lincs_iter),

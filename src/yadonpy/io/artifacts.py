@@ -129,6 +129,23 @@ def _residue_signature(residue_map: Any) -> str | None:
     return _stable_signature({"residues": residues, "atoms": atoms})
 
 
+def _charge_signature_context(mol) -> Dict[str, Any]:
+    """Return charge cache-validation metadata for the current RDKit molecule."""
+
+    try:
+        _prop, charges = core_utils.select_best_charge_property(mol)
+        qs = [round(float(q), 6) for q in charges]
+    except Exception:
+        qs = []
+    if not qs:
+        return {}
+    payload = ",".join(f"{x:.6f}" for x in qs).encode("utf-8")
+    return {
+        "charge_abs_sum": float(sum(abs(x) for x in qs)),
+        "charge_signature": hashlib.sha1(payload).hexdigest()[:16],
+    }
+
+
 def _molecule_compatibility_context(mol, *, mol_name: str | None = None) -> Dict[str, Any]:
     context: Dict[str, Any] = {}
 
@@ -172,6 +189,8 @@ def _molecule_compatibility_context(mol, *, mol_name: str | None = None) -> Dict
     except Exception:
         context["_localized_charge_groups"] = False
 
+    context.update(_charge_signature_context(mol))
+
     profile = read_text_prop(mol, RESP_PROFILE_PROP)
     if profile:
         context["resp_profile"] = str(profile).strip().lower()
@@ -205,10 +224,13 @@ def _artifact_meta_compatibility_fields(mol, *, mol_name: str | None = None) -> 
         "qm_recipe_signature",
         "resp_constraints_signature",
         "psiresp_constraints_signature",
+        "charge_signature",
     ):
         value = context.get(key)
         if value:
             meta[key] = str(value)
+    if context.get("charge_abs_sum") is not None:
+        meta["charge_abs_sum"] = str(float(context["charge_abs_sum"]))
     return meta
 
 
@@ -268,6 +290,25 @@ def _reapply_bonded_patch_to_mol(mol) -> None:
     except Exception:
         pass
 
+
+
+def _has_external_bonded_patch(mol) -> bool:
+    """Return True when bond/angle terms should come from a stored QM patch."""
+
+    if mol is None or not hasattr(mol, "HasProp"):
+        return False
+    for key in (
+        "_yadonpy_bonded_itp",
+        "_yadonpy_bonded_json",
+        "_yadonpy_mseminario_itp",
+        "_yadonpy_mseminario_json",
+    ):
+        try:
+            if mol.HasProp(key) and str(mol.GetProp(key)).strip():
+                return True
+        except Exception:
+            continue
+    return False
 
 
 def _ensure_bonded_terms_for_export(mol, ff_name: str) -> None:
@@ -341,6 +382,9 @@ def _ensure_bonded_terms_for_export(mol, ff_name: str) -> None:
             ff_obj.assign_ptypes(mol)
     except Exception:
         pass
+    if _has_external_bonded_patch(mol):
+        _reapply_bonded_patch_to_mol(mol)
+        return
     try:
         if (not has_valid_bonds) and hasattr(ff_obj, "assign_btypes"):
             ff_obj.assign_btypes(mol)

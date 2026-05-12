@@ -1640,7 +1640,8 @@ if __name__ == "__main__":
         include_polymer_metrics=bool(io_policy.include_polymer_metrics),
         analysis_profile=io_policy.analysis_profile,
     )
-    msd = analy.msd(analysis_profile=io_policy.analysis_profile)
+    msd_species = list(cell_mols)
+    msd = analy.msd(mols=msd_species, analysis_profile=io_policy.analysis_profile)
     msd_block_diagnostic = _msd_block_diffusion_diagnostic(
         analy,
         full_msd=msd,

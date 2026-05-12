@@ -7,7 +7,7 @@ import pytest
 
 from yadonpy.gmx.mdp_templates import MINIM_CG_MDP, MINIM_STEEP_MDP, MdpSpec, NVT_MDP, default_mdp_params
 from yadonpy.gmx.workflows._util import RunResources, gro_topology_bond_geometry, normalize_gro_molecules_inplace
-from yadonpy.gmx.workflows.eq import EqStage, EquilibrationJob, StageLincsRetryPolicy
+from yadonpy.gmx.workflows.eq import EqStage, EquilibrationJob, StageLincsRetryPolicy, oplsaa_stability_preflight
 from yadonpy.interface import InterfaceProtocol
 
 
@@ -29,6 +29,47 @@ class FakeRunner:
         cwd = Path(cwd)
         (cwd / f'{deffnm}.gro').write_text('fake gro\n', encoding='utf-8')
         (cwd / f'{deffnm}.cpt').write_text('fake cpt\n', encoding='utf-8')
+
+
+def test_oplsaa_stability_preflight_builds_1fs_and_2fs_hbonds_matrix(tmp_path: Path, monkeypatch):
+    gro = tmp_path / "in.gro"
+    top = tmp_path / "system.top"
+    gro.write_text("dummy\n", encoding="utf-8")
+    top.write_text("dummy\n", encoding="utf-8")
+    calls = []
+
+    def fake_run(self, *, restart=None):
+        stage = self.stages[0]
+        calls.append(
+            {
+                "stage": stage.name,
+                "dt": float(stage.mdp.params["dt"]),
+                "constraints": stage.mdp.params["constraints"],
+                "lincs_iter": int(stage.mdp.params["lincs_iter"]),
+                "lincs_order": int(stage.mdp.params["lincs_order"]),
+                "allow_cpu_fallback": bool(self.resources.allow_cpu_fallback_on_gpu_error),
+            }
+        )
+        Path(self.out_dir).mkdir(parents=True, exist_ok=True)
+        return Path(self.out_dir) / "summary.json"
+
+    monkeypatch.setattr(EquilibrationJob, "run", fake_run)
+
+    summary = oplsaa_stability_preflight(
+        gro=gro,
+        top=top,
+        out_dir=tmp_path / "preflight",
+        time_ps=2.0,
+        ntomp=2,
+        gpu_id="0",
+    )
+
+    assert [c["dt"] for c in calls] == [0.001, 0.001, 0.002]
+    assert [c["constraints"] for c in calls] == ["none", "h-bonds", "h-bonds"]
+    assert all(c["lincs_iter"] == 4 and c["lincs_order"] == 12 for c in calls)
+    assert all(c["allow_cpu_fallback"] is False for c in calls)
+    assert summary["two_fs_hbonds_ok"] is True
+    assert (tmp_path / "preflight" / "oplsaa_preflight_summary.json").is_file()
 
 
 class FakeMinimRunner(FakeRunner):
@@ -374,7 +415,14 @@ def test_equilibration_job_conservative_gpu_mode_passes_single_offload_override(
         out_dir=tmp_path / 'eq_job_conservative',
         stages=[stage],
         runner=runner,
-        resources=RunResources(ntmpi=1, ntomp=2, use_gpu=True, gpu_id='0', gpu_offload_mode='conservative'),
+        resources=RunResources(
+            ntmpi=1,
+            ntomp=2,
+            use_gpu=True,
+            gpu_id='0',
+            gpu_offload_mode='conservative',
+            allow_cpu_fallback_on_gpu_error=False,
+        ),
     )
 
     summary_path = job.run(restart=False)
@@ -389,6 +437,62 @@ def test_equilibration_job_conservative_gpu_mode_passes_single_offload_override(
     assert kwargs['pme'] == 'gpu'
     assert kwargs['pmefft'] == 'gpu'
     assert kwargs['update'] == 'cpu'
+    assert kwargs['allow_cpu_fallback_on_gpu_error'] is False
+
+    summary = json.loads(summary_path.read_text(encoding='utf-8'))
+    assert summary['provenance']['resources']['allow_cpu_fallback_on_gpu_error'] is False
+
+
+def test_equilibration_job_balanced_gpu_mode_keeps_bonded_gpu_and_update_cpu(tmp_path, monkeypatch):
+    import yadonpy.gmx.workflows.eq as eqmod
+
+    monkeypatch.setattr(eqmod, 'pbc_mol_fix_inplace', lambda *args, **kwargs: {'applied': False, 'error': None})
+    monkeypatch.setattr(eqmod, 'write_mol2_from_top_gro_parmed', lambda **kwargs: None)
+
+    gro = tmp_path / 'input.gro'
+    top = tmp_path / 'input.top'
+    gro.write_text('fake input gro\n', encoding='utf-8')
+    top.write_text('fake input top\n', encoding='utf-8')
+
+    params = default_mdp_params()
+    params.update(
+        {
+            'nsteps': 1000,
+            'dt': 0.001,
+            'ref_t': 300.0,
+            'gen_vel': 'no',
+        }
+    )
+    stage = EqStage(name='01_md', kind='md', mdp=MdpSpec(NVT_MDP, params))
+    runner = FakeConservativeGpuRunner()
+    job = EquilibrationJob(
+        gro=gro,
+        top=top,
+        out_dir=tmp_path / 'eq_job_balanced',
+        stages=[stage],
+        runner=runner,
+        resources=RunResources(
+            ntmpi=1,
+            ntomp=2,
+            use_gpu=True,
+            gpu_id='0',
+            gpu_offload_mode='balanced',
+            allow_cpu_fallback_on_gpu_error=False,
+        ),
+    )
+
+    summary_path = job.run(restart=False)
+
+    assert summary_path.exists()
+    kwargs = runner.mdrun_records[0]
+    assert kwargs['use_gpu'] is True
+    assert kwargs['prefer_gpu_update'] is False
+    assert kwargs['nb'] == 'gpu'
+    assert kwargs['bonded'] == 'gpu'
+    assert kwargs['pme'] == 'gpu'
+    assert kwargs['pmefft'] == 'gpu'
+    assert kwargs['update'] == 'cpu'
+    assert kwargs['allow_cpu_fallback_on_gpu_error'] is False
 
 
 def test_equilibration_job_retries_unconstrained_stage_without_checkpoint_handoff_after_sigsegv(tmp_path, monkeypatch):

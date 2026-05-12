@@ -2,7 +2,16 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from yadonpy.ff.oplsaa_reference import audit_oplsaa_reference
+from yadonpy.ff.oplsaa_reference import audit_bundled_oplsaa_parameter_sanity, audit_oplsaa_reference
+
+
+def test_bundled_oplsaa_parameter_sanity_catches_legacy_harmonic_scale():
+    report = audit_bundled_oplsaa_parameter_sanity()
+
+    assert report["ok"] is True
+    assert report["mismatches"] == []
+    assert report["sentinels"]["bonds"]["CT,HC"]["k"] == 284512.0
+    assert report["sentinels"]["angles"]["HC,CT,HC"]["k"] == 276.144
 
 
 def test_oplsaa_reference_audit_reads_fake_gromacs_and_moltemplate_sources(tmp_path: Path):
@@ -45,5 +54,6 @@ def test_oplsaa_reference_audit_reads_fake_gromacs_and_moltemplate_sources(tmp_p
     )
 
     assert report["defaults_parity"]["matches"] is True
+    assert report["bundled_parameter_sanity"]["ok"] is True
     assert "improper_O_C_X_Y" in report["improper_template_parity"]["available_in_gromacs"]
     assert report["improper_template_parity"]["template_usage"]["improper_O_C_X_Y"][0]["residue"] == "ARG"

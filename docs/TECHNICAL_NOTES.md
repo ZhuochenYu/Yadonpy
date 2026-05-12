@@ -29,10 +29,37 @@ YadonPy’s packaged OPLS-AA data was refreshed from the upstream `moltemplate` 
 
 - Lennard-Jones `sigma`: Angstrom -> nm via `0.1`
 - Lennard-Jones `epsilon`: kcal/mol -> kJ/mol via `4.184`
-- Bond `k`: converted to GROMACS harmonic form via `k * 4.184 * 400`
+- Bond `k`: converted to GROMACS harmonic function-1 form via `k * 4.184 * 200`
 - Bond `r0`: Angstrom -> nm via `0.1`
-- Angle `k`: converted to GROMACS harmonic form via `k * 4.184 * 4`
+- Angle `k`: converted to GROMACS harmonic function-1 form via `k * 4.184 * 2`
 - Dihedral Fourier terms: `abs(Vn) * 4.184 / 2`, with phase determined from the OPLS sign convention
+
+The `200` and `2` factors are intentional. LAMMPS/moltemplate harmonic bond and
+angle coefficients use an energy form without the leading `0.5`; GROMACS
+function 1 uses `0.5 * k * dx^2`. Using `400`/`4` would make the exported
+GROMACS bond and angle terms exactly twice as stiff. The helper
+`audit_bundled_oplsaa_parameter_sanity()` checks sentinel terms such as
+`CT-HC` and `HC-CT-HC` to catch this regression before launching MD.
+
+### OPLS-AA polyelectrolyte EQ21 start-up
+
+For CMC-Na / carbonate / LiPF6 test systems, the unstable part of the workflow
+was not the final `2 fs + h-bonds` production setting.  The failure occurred
+during the first unconstrained EQ21 NVT thermalization: multi-chain CMC-Na cells
+could develop local X-H / ionized-side-group instabilities at `1 fs`, while the
+same EM output survived a short `0.5 fs` pre-NVT and then continued at `1 fs`.
+
+YadonPy therefore applies a narrow automatic safeguard:
+
+- if the exported system metadata contains an OPLS-AA species with
+  `polyelectrolyte_mode=True` or localized charge groups,
+- and the user did not explicitly set `eq21_pre_nvt_dt_ps`,
+- EQ21 resolves `02_preNVT` to `min(eq21_dt_ps, 0.0005 ps)`.
+
+Later EQ21 stages still use the normal robust timestep policy, and production
+can still use the default `h-bonds + 2 fs` setting after the constrained-settle
+bridge.  This is a start-up stabilization policy, not a change to the intended
+production ensemble.
 
 ## 2. Si-H Parameter Provenance
 

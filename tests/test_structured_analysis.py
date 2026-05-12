@@ -16,6 +16,7 @@ from yadonpy.gmx.analysis.auto_plot import plot_msd_series, plot_rdf_cn_series
 from yadonpy.gmx.analysis.structured import (
     _compute_mobile_drift_series,
     GroupSpec,
+    build_msd_metric_catalog,
     build_ne_conductivity_from_msd,
     build_site_map,
     compute_msd_series,
@@ -71,6 +72,21 @@ def test_select_diffusive_window_does_not_accept_marginal_subdiffusion():
     assert fit["D_m2_s"] is None
     assert fit["apparent_D_m2_s"] is not None
     assert fit["alpha_mean"] < 0.90
+
+
+def test_select_diffusive_window_rejects_too_short_linear_island():
+    t_ps = np.linspace(0.0, 1000.0, 201)
+    msd_nm2 = 0.02 * np.power(np.maximum(t_ps, 1.0), 0.65)
+    island = (t_ps >= 420.0) & (t_ps <= 520.0)
+    base = float(msd_nm2[np.where(t_ps >= 420.0)[0][0]])
+    msd_nm2[island] = base + 0.004 * (t_ps[island] - 420.0)
+
+    fit = select_diffusive_window(t_ps, msd_nm2)
+
+    assert fit["min_fit_duration_ps"] >= 240.0
+    assert fit["min_fit_points"] >= 50
+    assert fit["D_m2_s"] is None
+    assert fit["status"] in {"subdiffusive_risk", "superdiffusive_risk", "no_formal_diffusion"}
 
 
 def test_compute_msd_series_respects_begin_end_window(monkeypatch):
@@ -151,6 +167,150 @@ def test_preprocess_group_positions_makes_small_molecule_com_whole_across_pbc(mo
     assert x[0] == pytest.approx(10.0)
     assert x[1] == pytest.approx(10.3)
     assert x[1] - x[0] == pytest.approx(0.3)
+
+
+def test_preprocess_group_positions_makes_polymer_chain_com_whole_with_bond_graph(monkeypatch, tmp_path: Path):
+    class _FakeTrajectory:
+        time = np.asarray([0.0, 1.0], dtype=float)
+        unitcell_lengths = np.asarray([[10.0, 10.0, 10.0], [10.0, 10.0, 10.0]], dtype=float)
+        xyz = np.asarray(
+            [
+                [[9.7, 0.0, 0.0], [0.1, 0.0, 0.0], [0.5, 0.0, 0.0]],
+                [[9.9, 0.0, 0.0], [0.3, 0.0, 0.0], [0.7, 0.0, 0.0]],
+            ],
+            dtype=float,
+        )
+
+    fake_md = types.SimpleNamespace(iterload=lambda *args, **kwargs: iter([_FakeTrajectory()]))
+    monkeypatch.setitem(sys.modules, "mdtraj", fake_md)
+
+    spec = GroupSpec(
+        group_id="PEO:chain:0",
+        label="PEO",
+        moltype="PEO",
+        species_kind="polymer",
+        atom_indices_0=np.asarray([0, 1, 2], dtype=int),
+        masses=np.asarray([1.0, 1.0, 1.0], dtype=float),
+        bond_pairs_local=np.asarray([[0, 1], [1, 2]], dtype=int),
+    )
+
+    out = preprocess_group_positions(
+        gro_path=tmp_path / "system.gro",
+        xtc_path=tmp_path / "md.xtc",
+        top_path=tmp_path / "system.top",
+        system_dir=tmp_path / "02_system",
+        group_specs=[spec],
+        unwrap="auto",
+        drift="off",
+    )
+
+    x = np.asarray(out["positions_nm"], dtype=float)[:, 0, 0]
+    assert x[0] == pytest.approx((9.7 + 10.1 + 10.5) / 3.0)
+    assert x[1] == pytest.approx((9.9 + 10.3 + 10.7) / 3.0)
+    assert x[1] - x[0] == pytest.approx(0.2)
+
+
+def test_msd_metric_catalog_uses_topology_molecule_instances_for_polymer_chains(tmp_path: Path):
+    system_dir = tmp_path / "02_system"
+    system_dir.mkdir(parents=True, exist_ok=True)
+    (system_dir / "system_meta.json").write_text(
+        json.dumps({"species": [{"moltype": "PEO", "smiles": "*CCO*", "kind": "polymer"}]}, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    (system_dir / "residue_map.json").write_text(json.dumps({"species": []}, indent=2) + "\n", encoding="utf-8")
+    (system_dir / "charge_groups.json").write_text(json.dumps({"species": []}, indent=2) + "\n", encoding="utf-8")
+    top = SystemTopology(
+        moleculetypes={
+            "PEO": MoleculeType(
+                name="PEO",
+                atomtypes=["C", "C", "O"],
+                atomnames=["C1", "C2", "O1"],
+                charges=[0.0, 0.0, 0.0],
+                masses=[12.011, 12.011, 15.999],
+                bonds=[(1, 2), (2, 3)],
+            )
+        },
+        molecules=[("PEO", 2)],
+    )
+
+    catalog = build_msd_metric_catalog(top, system_dir)
+    peo = catalog["PEO"]
+    chain_metric = peo["metrics"]["chain_com_msd"]
+    groups = chain_metric["groups"]
+
+    assert peo["default_metric"] == "chain_com_msd"
+    assert chain_metric["observable"] == "polymer_chain_com_self_msd"
+    assert chain_metric["selection_source"] == "topology_molecules"
+    assert chain_metric["gmx_msd_mol_equivalent"] is True
+    assert len(groups) == 2
+    assert np.array_equal(groups[0].atom_indices_0, np.asarray([0, 1, 2]))
+    assert np.array_equal(groups[1].atom_indices_0, np.asarray([3, 4, 5]))
+    assert np.array_equal(groups[0].bond_pairs_local, np.asarray([[0, 1], [1, 2]]))
+
+
+def test_msd_metric_catalog_marks_residue_and_charge_group_msd_as_local_diagnostics(tmp_path: Path):
+    system_dir = tmp_path / "02_system"
+    system_dir.mkdir(parents=True, exist_ok=True)
+    (system_dir / "system_meta.json").write_text(
+        json.dumps({"species": [{"moltype": "CMC", "smiles": "*CO*", "kind": "polymer", "formal_charge": -1.0}]}, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    (system_dir / "residue_map.json").write_text(
+        json.dumps(
+            {
+                "species": [
+                    {
+                        "moltype": "CMC",
+                        "residue_map": {
+                            "residues": [
+                                {"residue_number": 1, "residue_name": "CMC", "atom_indices": [0, 1]},
+                            ]
+                        },
+                    }
+                ]
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (system_dir / "charge_groups.json").write_text(
+        json.dumps(
+            {
+                "species": [
+                    {
+                        "moltype": "CMC",
+                        "charge_groups": [
+                            {"label": "carboxylate", "formal_charge": -1.0, "atom_indices": [1, 2]},
+                        ],
+                    }
+                ]
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    top = SystemTopology(
+        moleculetypes={
+            "CMC": MoleculeType(
+                name="CMC",
+                atomtypes=["C", "O", "O"],
+                atomnames=["C1", "O1", "O2"],
+                charges=[0.0, -0.5, -0.5],
+                masses=[12.011, 15.999, 15.999],
+                bonds=[(1, 2), (1, 3)],
+            )
+        },
+        molecules=[("CMC", 1)],
+    )
+
+    metrics = build_msd_metric_catalog(top, system_dir)["CMC"]["metrics"]
+
+    assert metrics["residue_com_msd"]["gmx_msd_mol_equivalent"] is False
+    assert metrics["residue_com_msd"]["selection_source"] == "residue_map_metadata"
+    assert metrics["charged_group_com_msd"]["gmx_msd_mol_equivalent"] is False
+    assert metrics["charged_group_com_msd"]["selection_source"] == "charge_group_metadata"
 
 
 def test_detect_first_shell_returns_confident_minimum():
@@ -464,6 +624,28 @@ def test_resolve_moltypes_from_mols_uses_smiles_from_system_meta(tmp_path: Path)
     (system_dir / "charge_groups.json").write_text(json.dumps({"species": []}, indent=2) + "\n", encoding="utf-8")
     li = Chem.MolFromSmiles("[Li+]")
     assert resolve_moltypes_from_mols(system_dir, li) == ["Li"]
+
+
+def test_resolve_moltypes_from_mols_accepts_explicit_moltype_names(tmp_path: Path):
+    system_dir = tmp_path / "02_system"
+    system_dir.mkdir(parents=True, exist_ok=True)
+    (system_dir / "system_meta.json").write_text(
+        json.dumps(
+            {
+                "species": [
+                    {"moltype": "CMC", "smiles": "*CCO*", "kind": "polymer"},
+                    {"moltype": "EC", "smiles": "O=C1OCCO1", "kind": "solvent"},
+                ]
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (system_dir / "residue_map.json").write_text(json.dumps({"species": []}, indent=2) + "\n", encoding="utf-8")
+    (system_dir / "charge_groups.json").write_text(json.dumps({"species": []}, indent=2) + "\n", encoding="utf-8")
+    assert resolve_moltypes_from_mols(system_dir, ["CMC"]) == ["CMC"]
+    assert resolve_moltypes_from_mols(system_dir, ["CMC", "EC"]) == ["CMC", "EC"]
 
 
 def test_plot_series_helpers_emit_svg(tmp_path: Path):
@@ -1016,6 +1198,91 @@ def test_msd_transport_fast_honors_policy_selected_neutral_species(tmp_path: Pat
     out = analyzer.msd(analysis_profile="auto")
     assert set(k for k in out if not k.startswith("_")) == {"Li", "SOL"}
     assert out["SOL"]["default_metric"] == "molecule_com_msd"
+
+
+def test_msd_uses_gmx_mol_backend_for_topology_molecule_com_metrics(tmp_path: Path, monkeypatch):
+    work_dir = tmp_path
+    system_dir = work_dir / "02_system"
+    system_dir.mkdir(parents=True, exist_ok=True)
+    for name in ("system.gro", "system_meta.json", "residue_map.json", "charge_groups.json"):
+        (system_dir / name).write_text("{}\n", encoding="utf-8")
+    for name in ("md.tpr", "md.xtc", "md.edr", "system.top"):
+        (work_dir / name).write_text("x\n", encoding="utf-8")
+    (work_dir / "md.mdp").write_text("dt = 0.002\nnstxout-compressed = 5000\n", encoding="utf-8")
+    (work_dir / "system.ndx").write_text("[ PEO ]\n1 2 3 4\n", encoding="utf-8")
+
+    analyzer = AnalyzeResult(
+        work_dir=work_dir,
+        tpr=work_dir / "md.tpr",
+        xtc=work_dir / "md.xtc",
+        edr=work_dir / "md.edr",
+        top=work_dir / "system.top",
+        ndx=work_dir / "system.ndx",
+    )
+    monkeypatch.setattr(analyzer, "_system_dir", lambda: system_dir)
+    monkeypatch.setattr(analyzer, "_transport_geometry_mode", lambda geometry="auto": "3d")
+    monkeypatch.setattr(analyzer, "_resolve_species_moltypes", lambda mols: ["PEO"])
+
+    analyzer_mod = __import__("yadonpy.sim.analyzer", fromlist=["GromacsRunner"])
+    monkeypatch.setattr(analyzer_mod, "parse_system_top", lambda top: object())
+    monkeypatch.setattr(
+        analyzer_mod,
+        "build_msd_metric_catalog",
+        lambda topo, system_dir: {
+            "PEO": {
+                "kind": "polymer",
+                "smiles": "*CCO*",
+                "n_molecules": 2,
+                "natoms": 4,
+                "formal_charge_e": 0.0,
+                "default_metric": "chain_com_msd",
+                "metrics": {
+                    "chain_com_msd": {
+                        "group_kind": "chain_com",
+                        "observable": "polymer_chain_com_self_msd",
+                        "gmx_msd_mol_equivalent": True,
+                        "groups": [object(), object()],
+                    }
+                },
+            }
+        },
+    )
+    monkeypatch.setattr(
+        analyzer_mod,
+        "compute_msd_series",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("Python MSD backend should not run")),
+    )
+    monkeypatch.setattr(analyzer_mod, "plot_msd_series", lambda **kwargs: {})
+    monkeypatch.setattr(analyzer_mod, "plot_msd_series_summary", lambda **kwargs: None)
+
+    calls: list[dict[str, object]] = []
+
+    class _FakeRunner:
+        def run(self, args, *, stdin_text=None, **kwargs):
+            calls.append({"args": list(args), "stdin_text": stdin_text})
+            out = Path(args[args.index("-o") + 1])
+            lines = ['@    xaxis  label "Time (ps)"', '@    yaxis  label "MSD (nm\\S2\\N)"']
+            for i in range(30):
+                t = float(i * 10)
+                lines.append(f"{t:.1f} {0.01 * t:.8f}")
+            out.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            mol_out = Path(args[args.index("-mol") + 1])
+            mol_out.write_text("0 0\n", encoding="utf-8")
+
+    monkeypatch.setattr(analyzer_mod, "GromacsRunner", _FakeRunner)
+
+    out = analyzer.msd(mols=["PEO"], analysis_profile="full", backend="auto")
+
+    assert len(calls) == 1
+    args = calls[0]["args"]
+    assert args[:1] == ["msd"]
+    assert "-n" in args
+    assert "-mol" in args
+    assert calls[0]["stdin_text"] == "PEO\n"
+    metric = out["PEO"]["metrics"]["chain_com_msd"]
+    assert metric["preprocessing"]["backend"] == "gromacs_msd_mol"
+    assert metric["preprocessing"]["index_group"] == "PEO"
+    assert metric["gmx_msd_mol_equivalent"] is True
 
 
 def test_dielectric_runs_gmx_dipoles_and_writes_summary(tmp_path: Path, monkeypatch):

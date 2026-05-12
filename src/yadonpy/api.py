@@ -222,6 +222,27 @@ def audit_oplsaa_reference(**kwargs):
     return _audit_oplsaa_reference(**kwargs)
 
 
+def audit_bundled_oplsaa_parameter_sanity():
+    """Check the bundled OPLS-AA table for common unit-conversion regressions."""
+    from .ff.oplsaa_reference import audit_bundled_oplsaa_parameter_sanity as _audit_sanity
+
+    return _audit_sanity()
+
+
+def audit_oplsaa_assignment(mol, **kwargs):
+    """Audit one OPLS-AA assigned molecule for missing terms and local refinements."""
+    from .ff.oplsaa_reference import audit_oplsaa_assignment as _audit_oplsaa_assignment
+
+    return _audit_oplsaa_assignment(mol, **kwargs)
+
+
+def oplsaa_stability_preflight(**kwargs):
+    """Run the short GROMACS OPLS-AA 1 fs/2 fs stability preflight matrix."""
+    from .gmx.workflows.eq import oplsaa_stability_preflight as _oplsaa_stability_preflight
+
+    return _oplsaa_stability_preflight(**kwargs)
+
+
 def build_graphite_peo_electrolyte_sandwich(**kwargs):
     """Thin wrapper around :func:`yadonpy.interface.sandwich.build_graphite_peo_electrolyte_sandwich`."""
     from .interface.sandwich import build_graphite_peo_electrolyte_sandwich as _build_sandwich
@@ -392,6 +413,8 @@ def parameterize_smiles(
 
 __all__ = [
     'audit_default_moldb_sync',
+    'audit_bundled_oplsaa_parameter_sanity',
+    'audit_oplsaa_assignment',
     'audit_oplsaa_reference',
     'analyze_interface_transport',
     'analyze_sandwich_interface',
@@ -422,6 +445,7 @@ __all__ = [
     'list_forcefields',
     'load_from_moldb',
     'mol_from_smiles',
+    'oplsaa_stability_preflight',
     'parameterize_smiles',
     'prepare_graphite_substrate',
     'print_interface_result_summary',

@@ -30,6 +30,8 @@ from .interface import BulkCalibrationResult, ElectrolyteSlabSpec, GraphitePrepa
 from .runtime import get_run_options, set_run_options, run_options  # noqa: F401
 from .api import (  # noqa: F401
     audit_default_moldb_sync,
+    audit_bundled_oplsaa_parameter_sanity,
+    audit_oplsaa_assignment,
     audit_oplsaa_reference,
     analyze_interface_transport,
     analyze_sandwich_interface,
@@ -60,6 +62,7 @@ from .api import (  # noqa: F401
     list_forcefields,
     load_from_moldb,
     mol_from_smiles,
+    oplsaa_stability_preflight,
     parameterize_smiles,
     prepare_graphite_substrate,
     print_interface_result_summary,
@@ -79,6 +82,8 @@ __all__ = [
     'AnalyzeResult',
     'IOAnalysisPolicy',
     'audit_default_moldb_sync',
+    'audit_bundled_oplsaa_parameter_sanity',
+    'audit_oplsaa_assignment',
     'audit_oplsaa_reference',
     'analyze_interface_transport',
     'analyze_sandwich_interface',
@@ -122,6 +127,7 @@ __all__ = [
     'load_from_moldb',
     'mol_from_smiles',
     'MoleculeSpec',
+    'oplsaa_stability_preflight',
     'parameterize_smiles',
     'PolymerSlabSpec',
     'prepare_graphite_substrate',

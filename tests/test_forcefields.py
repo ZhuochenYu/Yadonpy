@@ -10,9 +10,14 @@ from yadonpy.moldb import MolDB
 from yadonpy.ff.report import render_ff_assignment_report
 from yadonpy.ff.gaff2_mod import GAFF2_mod
 from yadonpy.ff.oplsaa import OPLSAA, validate_oplsaa_rule_table
-from yadonpy.ff.oplsaa_reference import audit_oplsaa_reference
+from yadonpy.ff.oplsaa_reference import (
+    _parse_moltemplate_reference,
+    audit_oplsaa_assignment,
+    audit_oplsaa_reference,
+)
 from yadonpy.core.resources import ff_data_path
 from yadonpy.io.gmx import write_gmx
+from yadonpy.io.gromacs_molecule import _apply_bond_angle_patch_from_fragment, _atom_residue_fields
 from yadonpy.io.gromacs_top import defaults_for_ff_name
 
 
@@ -63,6 +68,23 @@ def _assert_hydroxyl_donor_angles_present(mol):
     assert missing == [], f"Missing O-H angle terms for donor hydrogens: {missing[:20]}"
 
 
+def test_gromacs_atom_and_residue_names_avoid_opls_truncation_and_rna_aliases():
+    mol = Chem.AddHs(Chem.MolFromSmiles("CO"))
+    atom = mol.GetAtomWithIdx(0)
+    info = Chem.AtomPDBResidueInfo()
+    info.SetName("opls_188")
+    info.SetResidueName("RU2")
+    info.SetResidueNumber(7)
+    atom.SetMonomerInfo(info)
+
+    resnr, resname, atomname = _atom_residue_fields(atom, atom_index=1, default_resnr=1, default_resname="MOL")
+
+    assert resnr == 7
+    assert resname == "YU2"
+    assert len(atomname) <= 5
+    assert not atomname.startswith("opls_")
+
+
 def test_oplsaa_defaults_use_jorgensen_rule():
     defaults = defaults_for_ff_name("oplsaa")
     assert defaults.comb_rule == 3
@@ -82,8 +104,47 @@ def test_write_gmx_uses_oplsaa_defaults_block(tmp_path: Path):
     assert "1  3  yes  0.500000  0.5000000000" in top_txt
 
 
-def test_oplsaa_materializes_small_lj_floor_for_hydroxyl_donor_hydrogens():
+def test_oplsaa_strict_profile_does_not_materialize_hydroxyl_donor_lj_floor():
     ff = OPLSAA()
+    mol = ff.ff_assign(Chem.AddHs(Chem.MolFromSmiles("OCCO")), charge="opls", report=False)
+    assert mol is not False
+    audit = audit_oplsaa_assignment(mol)
+    assert audit["profile"] == "strict"
+    assert audit["local_refines"] == []
+    donor_h = [atom for atom in mol.GetAtoms() if atom.GetProp("ff_type") in _OPLSAA_DONOR_H_TYPES]
+    assert donor_h
+    assert any(atom.GetDoubleProp("ff_sigma") == 0.0 and atom.GetDoubleProp("ff_epsilon") == 0.0 for atom in donor_h)
+
+
+def test_oplsaa_assignment_audit_reports_recorded_missing_bonded_terms():
+    ff = OPLSAA(profile="refine")
+    mol = ff.ff_assign(Chem.AddHs(Chem.MolFromSmiles("OCCO")), charge="opls", report=False)
+    assert mol is not False
+
+    OPLSAA._record_missing_bonded_param(
+        mol,
+        kind="dihedral",
+        tokens=("OS", "CT", "C_3", "O2"),
+        atom_indices=(0, 1, 2, 3),
+        profile="refine",
+        context="unit_test",
+    )
+    audit = audit_oplsaa_assignment(mol, strict=True)
+
+    assert audit["assignment_complete"] is False
+    assert audit["strict_source_clean"] is False
+    assert {
+        "kind": "dihedral",
+        "tokens": ["OS", "CT", "C_3", "O2"],
+        "atoms": [0, 1, 2, 3],
+        "profile": "refine",
+        "context": "unit_test",
+        "reason": "missing_source_bonded_parameter",
+    } in audit["missing_bonded"]
+
+
+def test_oplsaa_refine_profile_materializes_small_lj_floor_for_hydroxyl_donor_hydrogens():
+    ff = OPLSAA(profile="refine")
     mol = ff.ff_assign(Chem.AddHs(Chem.MolFromSmiles("OCCO")), charge="opls", report=False)
     assert mol is not False
     donor_h = []
@@ -99,11 +160,12 @@ def test_oplsaa_materializes_small_lj_floor_for_hydroxyl_donor_hydrogens():
             )
     assert donor_h, "Expected at least one OPLS-AA hydroxyl donor hydrogen"
     assert all(sigma > 0.0 and epsilon > 0.0 for _, sigma, epsilon in donor_h)
+    assert audit_oplsaa_assignment(mol)["local_refines"]
     _assert_hydroxyl_donor_angles_present(mol)
 
 
 def test_oplsaa_assigns_source_backed_planar_improper_for_acetate():
-    ff = OPLSAA()
+    ff = OPLSAA(profile="refine")
     mol = ff.ff_assign(Chem.AddHs(Chem.MolFromSmiles("CC(=O)[O-]")), charge="opls", report=False)
 
     assert mol is not False
@@ -114,7 +176,7 @@ def test_oplsaa_assigns_source_backed_planar_improper_for_acetate():
 
 
 def test_oplsaa_assigns_amide_angles_and_planar_impropers():
-    ff = OPLSAA()
+    ff = OPLSAA(profile="refine")
     mol = ff.ff_assign(Chem.AddHs(Chem.MolFromSmiles("CC(=O)N")), charge="opls", report=False)
 
     assert mol is not False
@@ -126,7 +188,7 @@ def test_oplsaa_assigns_amide_angles_and_planar_impropers():
 
 
 def test_oplsaa_assigns_guanidinium_angles_and_planar_impropers():
-    ff = OPLSAA()
+    ff = OPLSAA(profile="refine")
     mol = ff.ff_assign(Chem.AddHs(Chem.MolFromSmiles("NC(=[NH2+])N")), charge="opls", report=False)
 
     assert mol is not False
@@ -137,7 +199,7 @@ def test_oplsaa_assigns_guanidinium_angles_and_planar_impropers():
 
 
 def test_write_gmx_exports_oplsaa_impropers_as_gromacs_dihedral_funct4(tmp_path: Path):
-    ff = OPLSAA()
+    ff = OPLSAA(profile="refine")
     mol = ff.ff_assign(Chem.AddHs(Chem.MolFromSmiles("CC(=O)[O-]")), charge="opls", report=False)
     assert mol is not False
 
@@ -150,12 +212,39 @@ def test_write_gmx_exports_oplsaa_impropers_as_gromacs_dihedral_funct4(tmp_path:
 
 
 def test_oplsaa_reference_audit_tracks_assignment_and_topology_for_acetate():
-    report = audit_oplsaa_reference(smiles="CC(=O)[O-]", export_topology=True)
+    report = audit_oplsaa_reference(
+        smiles="CC(=O)[O-]",
+        export_topology=True,
+        charge="opls",
+        assignment_profile="refine",
+    )
 
     assert report["defaults_parity"]["matches"] is True
     assert report["assignment"]["assignment_complete"] is True
     assert report["topology"]["topology_complete"] is True
     assert "donor_h_lj_floor" in {item["kind"] for item in report["locally_patched"]}
+
+
+def test_moltemplate_oplsaa_harmonic_terms_convert_to_gromacs_function_one(tmp_path: Path):
+    lt_path = tmp_path / "oplsaa.lt"
+    lt_path.write_text(
+        "\n".join(
+            [
+                "bond_coeff @bond:CT_HC 340.0 1.09",
+                "angle_coeff @angle:HC_CT_HC 33.0 107.8",
+                "dihedral_coeff @dihedral:HC_CT_CT_HC 0.0 0.0 0.3 0.0",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    refs = _parse_moltemplate_reference(None, lt_path)
+
+    assert refs["bond_types"]["CT,HC"]["r0"] == pytest.approx(0.109)
+    assert refs["bond_types"]["CT,HC"]["k"] == pytest.approx(340.0 * 4.184 * 200.0)
+    assert refs["angle_types"]["HC,CT,HC"]["theta0"] == pytest.approx(107.8)
+    assert refs["angle_types"]["HC,CT,HC"]["k"] == pytest.approx(33.0 * 4.184 * 2.0)
+    assert refs["dihedral_types"]["HC,CT,CT,HC"]["k"] == pytest.approx([0.3 * 4.184 / 2.0])
 
 
 def test_gaff2_mod_assigns_silicon_atom_types():
@@ -269,8 +358,8 @@ def test_oplsaa_assign_ptypes_from_external_rule_table():
     assert any(atom.GetProp("ff_type") == "opls_154" for atom in mol.GetAtoms())
 
 
-def test_oplsaa_mol_defaults_to_resp_then_falls_back_to_builtin_path(monkeypatch):
-    ff = OPLSAA()
+def test_oplsaa_legacy_mol_defaults_to_resp_then_falls_back_to_builtin_path(monkeypatch):
+    ff = OPLSAA(profile="legacy")
     calls = []
 
     def fake_mol_rdkit(smiles, **kwargs):
@@ -294,6 +383,20 @@ def test_oplsaa_mol_defaults_to_resp_then_falls_back_to_builtin_path(monkeypatch
     assert mol.GetProp("_yadonpy_charge_fallback") == "opls"
 
 
+def test_oplsaa_strict_mol_does_not_silently_fallback_to_builtin_path(monkeypatch):
+    ff = OPLSAA()
+
+    def fake_mol_rdkit(smiles, **kwargs):
+        if kwargs.get("require_ready"):
+            raise RuntimeError("no RESP-ready variant")
+        return Chem.AddHs(Chem.MolFromSmiles(smiles))
+
+    monkeypatch.setattr(ff, "mol_rdkit", fake_mol_rdkit)
+
+    with pytest.raises(RuntimeError, match="no RESP-ready variant"):
+        ff.mol("CCO")
+
+
 def test_molspec_resp_profile_is_forwarded_to_moldb_loader(monkeypatch):
     ff = GAFF2_mod()
     calls = []
@@ -315,7 +418,7 @@ def test_molspec_resp_profile_is_forwarded_to_moldb_loader(monkeypatch):
 
 
 def test_oplsaa_default_resp_handle_falls_back_to_builtin_charges_when_resp_is_unavailable():
-    ff = OPLSAA()
+    ff = OPLSAA(profile="legacy")
 
     assigned = ff.ff_assign(ff.mol("C[N+](C)(C)C"), report=False)
 
@@ -327,6 +430,13 @@ def test_oplsaa_default_resp_handle_falls_back_to_builtin_charges_when_resp_is_u
     assert abs(sum(atom_charges) - 1.0) < 1.0e-8
     assert assigned.HasProp("_yadonpy_charge_fallback")
     assert assigned.GetProp("_yadonpy_charge_fallback") == "opls"
+
+
+def test_oplsaa_strict_resp_handle_fails_when_resp_is_unavailable():
+    ff = OPLSAA()
+
+    with pytest.raises(RuntimeError):
+        ff.mol("C[N+](C)(C)C")
 
 
 def test_oplsaa2024_integrates_new_particles_and_rules():
@@ -389,6 +499,40 @@ def test_oplsaa_assigns_pf6_with_builtin_ion_types():
     assert abs(sum(atom_charges) + 1.0) < 1.0e-8
 
 
+def test_oplsaa_auto_applies_drih_to_pf6_without_script_sidecar(tmp_path: Path, monkeypatch):
+    from yadonpy.sim import qm
+
+    def _fake_drih(mol, *, work_dir, log_name=None, smiles_hint=None):
+        out_dir = Path(work_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        itp = out_dir / "bonded_drih_patch.itp"
+        js = out_dir / "bonded_drih_params.json"
+        itp.write_text("; fake DRIH patch for unit test\n[ bonds ]\n", encoding="utf-8")
+        js.write_text('{"meta": {"method": "DRIH"}}\n', encoding="utf-8")
+        mol.SetProp("_yadonpy_bonded_itp", str(itp))
+        mol.SetProp("_yadonpy_bonded_json", str(js))
+        mol.SetProp("_yadonpy_bonded_method", "DRIH")
+
+    monkeypatch.setattr(qm, "bond_angle_params_drih", _fake_drih)
+    ff = OPLSAA()
+    pf6 = Chem.MolFromSmiles("F[P-](F)(F)(F)(F)F")
+
+    assigned = ff.ff_assign(
+        pf6,
+        charge="opls",
+        report=False,
+        bonded_work_dir=tmp_path / "pf6_drih",
+    )
+
+    assert assigned is not False
+    assert assigned.GetProp("_yadonpy_bonded_method") == "DRIH"
+    assert assigned.GetProp("_yadonpy_bonded_auto") == "pf6_drih"
+    assert Path(assigned.GetProp("_yadonpy_bonded_itp")).is_file()
+    atom_types = [atom.GetProp("ff_type") for atom in assigned.GetAtoms()]
+    assert atom_types.count("opls_786") == 6
+    assert atom_types.count("opls_785") == 1
+
+
 @pytest.mark.parametrize(
     ("smiles", "expected_charge"),
     [
@@ -438,7 +582,7 @@ def test_oplsaa_assigns_hydroxide_when_explicit_hydrogen_is_materialized():
     ],
 )
 def test_oplsaa_assigns_supported_organic_ions(smiles, expected_charge):
-    ff = OPLSAA()
+    ff = OPLSAA(profile="refine")
     base = Chem.MolFromSmiles(smiles)
     mol = Chem.AddHs(base) if base.GetNumAtoms() > 1 else base
 
@@ -516,10 +660,90 @@ def test_oplsaa_assigns_moldb_backed_pf6_with_preserved_drih_bonded_fragment():
     assert assigned.HasProp("_yadonpy_bonded_json")
 
 
+def test_oplsaa_preserves_resp_charges_when_auto_pf6_drih_uses_moldb():
+    ff = OPLSAA()
+    repo_db_dir = Path(__file__).resolve().parents[1] / "moldb"
+    pf6 = ff.mol_rdkit(
+        "F[P-](F)(F)(F)(F)F",
+        db_dir=repo_db_dir,
+        charge="RESP",
+        require_ready=True,
+        prefer_db=True,
+    )
+    before = [atom.GetDoubleProp("AtomicCharge") for atom in pf6.GetAtoms()]
+
+    assigned = ff.ff_assign(pf6, charge=None, report=False)
+
+    assert assigned is not False
+    after = [atom.GetDoubleProp("AtomicCharge") for atom in assigned.GetAtoms()]
+    assert after == before
+    assert assigned.GetProp("_yadonpy_bonded_method") == "DRIH"
+    assert Path(assigned.GetProp("_yadonpy_bonded_itp")).is_file()
+
+
+def test_drih_patch_removes_exact_linear_angles_for_gromacs(tmp_path: Path):
+    itp = tmp_path / "PF6.itp"
+    itp.write_text(
+        "[ angles ]\n"
+        "1 2 3 1 180.000 8472.45\n"
+        "1 2 4 1 90.000 2853.20\n",
+        encoding="utf-8",
+    )
+    fragment = tmp_path / "bonded_drih_patch.itp"
+    fragment.write_text(
+        "[ angles ]\n"
+        "1 2 3 1 180.000 8472.45\n"
+        "1 2 4 1 90.000 2853.20\n",
+        encoding="utf-8",
+    )
+
+    assert _apply_bond_angle_patch_from_fragment(itp, fragment, method="DRIH") is True
+    text = itp.read_text(encoding="utf-8")
+
+    assert "180.000" not in text
+    assert "90.000" in text
+
+
+def test_pf6_drih_patch_prevents_oplsaa_native_bonded_repair(monkeypatch):
+    from yadonpy.io import artifacts as artifacts_mod
+    from yadonpy.io import gromacs_system as gromacs_system_mod
+
+    ff = OPLSAA()
+    repo_db_dir = Path(__file__).resolve().parents[1] / "moldb"
+    pf6 = ff.mol_rdkit(
+        "F[P-](F)(F)(F)(F)F",
+        db_dir=repo_db_dir,
+        charge="RESP",
+        require_ready=True,
+        prefer_db=True,
+    )
+    assigned = ff.ff_assign(pf6, charge=None, report=False)
+    assert assigned is not False
+    assert assigned.GetProp("_yadonpy_bonded_method") == "DRIH"
+
+    # Simulate fragment/cache serialization that keeps the bonded patch paths
+    # but loses Python-level angle containers.  Repair helpers must respect the
+    # DRIH patch instead of attempting native OPLS F-P-F angle typing.
+    setattr(assigned, "angles", {})
+    setattr(assigned, "dihedrals", {})
+
+    def _fail_native_angle_typing(self, mol):  # pragma: no cover - only runs on regression
+        raise AssertionError("native OPLS-AA angle typing should not run for DRIH PF6")
+
+    monkeypatch.setattr(OPLSAA, "assign_atypes", _fail_native_angle_typing)
+    gromacs_system_mod._ensure_bonded_terms_from_types(assigned, "oplsaa")
+    assert assigned.GetProp("_yadonpy_bonded_method") == "DRIH"
+
+    setattr(assigned, "angles", {})
+    setattr(assigned, "dihedrals", {})
+    artifacts_mod._ensure_bonded_terms_for_export(assigned, "oplsaa")
+    assert assigned.GetProp("_yadonpy_bonded_method") == "DRIH"
+
+
 def test_oplsaa_pf6_structural_fallback_handles_legacy_positive_p_mol2_graph():
     from rdkit.Chem import rdmolfiles
 
-    ff = OPLSAA()
+    ff = OPLSAA(profile="legacy")
     mol2_path = Path(__file__).resolve().parents[1] / "moldb" / "objects" / "a262cd2921905bc6" / "best.mol2"
     pf6 = rdmolfiles.MolFromMol2File(str(mol2_path), sanitize=False, removeHs=False)
     assert pf6 is not None
@@ -531,7 +755,7 @@ def test_oplsaa_pf6_structural_fallback_handles_legacy_positive_p_mol2_graph():
 
 
 def test_oplsaa_assigns_acyclic_carbonates_with_fallback_bonded_terms():
-    ff = OPLSAA()
+    ff = OPLSAA(profile="refine")
 
     for smiles in ("CCOC(=O)OC", "CCOC(=O)OCC"):
         mol = Chem.AddHs(Chem.MolFromSmiles(smiles))
@@ -541,8 +765,15 @@ def test_oplsaa_assigns_acyclic_carbonates_with_fallback_bonded_terms():
         assert assigned.dihedrals
 
 
-def test_oplsaa_assigns_resp_backed_cmc_carboxylate_monomers_from_repo_moldb():
+def test_oplsaa_strict_rejects_acyclic_carbonate_when_source_bonded_terms_are_missing():
     ff = OPLSAA()
+    mol = Chem.AddHs(Chem.MolFromSmiles("CCOC(=O)OC"))
+
+    assert ff.ff_assign(mol, charge="opls", report=False) is False
+
+
+def test_oplsaa_assigns_resp_backed_cmc_carboxylate_monomers_from_repo_moldb():
+    ff = OPLSAA(profile="refine")
     repo_db_dir = Path(__file__).resolve().parents[1] / "moldb"
 
     for smiles in (
@@ -568,10 +799,11 @@ def test_oplsaa_assigns_resp_backed_cmc_carboxylate_monomers_from_repo_moldb():
         assert len(assigned.angles) > 0
         assert len(assigned.dihedrals) > 0
         assert before == after
+        assert assigned.HasProp("_yadonpy_polyelectrolyte_summary_json")
 
 
 def test_oplsaa_assigns_dtd_cyclic_sulfate_with_targeted_rules():
-    ff = OPLSAA()
+    ff = OPLSAA(profile="refine")
     dtd = Chem.AddHs(Chem.MolFromSmiles("O=S1(=O)OC=CO1"))
 
     assigned = ff.ff_assign(dtd, charge="opls", report=False)
@@ -611,7 +843,7 @@ def test_oplsaa_polymer_junction_refresh_reuses_existing_monomer_assignment(caps
 
 
 def test_oplsaa_assigns_resp_backed_cmc_short_copolymer_without_losing_types_or_charges():
-    ff = OPLSAA()
+    ff = OPLSAA(profile="refine")
     repo_db_dir = Path(__file__).resolve().parents[1] / "moldb"
 
     monomers = []
@@ -652,12 +884,72 @@ def test_oplsaa_assigns_resp_backed_cmc_short_copolymer_without_losing_types_or_
     assert len(getattr(assigned_polymer, "angles", {})) > 0
     assert len(getattr(assigned_polymer, "dihedrals", {})) > 0
     assert all(atom.HasProp("ff_type") and atom.HasProp("ff_btype") for atom in assigned_polymer.GetAtoms())
+    assert assigned_polymer.HasProp("_yadonpy_polyelectrolyte_summary_json")
     _assert_nonzero_opls_lj_for_materialized_types(assigned_polymer)
     _assert_hydroxyl_donor_angles_present(assigned_polymer)
 
 
+def test_oplsaa_molspec_resolution_forwards_polyelectrolyte_metadata(monkeypatch):
+    from yadonpy.core.molspec import MolSpec
+
+    ff = OPLSAA(profile="refine")
+    captured = {}
+
+    def _fake_mol_rdkit(smiles, **kwargs):
+        captured.update(kwargs)
+        mol = Chem.AddHs(Chem.MolFromSmiles("CC(=O)[O-]"))
+        mol.SetProp("_Name", kwargs.get("name") or "ACETATE")
+        for atom in mol.GetAtoms():
+            atom.SetDoubleProp("AtomicCharge", 0.0)
+        return mol
+
+    monkeypatch.setattr(ff, "mol_rdkit", _fake_mol_rdkit)
+    spec = MolSpec(
+        "CC(=O)[O-]",
+        name="ACETATE",
+        charge="RESP",
+        polyelectrolyte_mode=True,
+        polyelectrolyte_detection="auto",
+    )
+
+    assigned = ff.ff_assign(spec, charge="opls", report=False)
+
+    assert assigned is not False
+    assert captured["polyelectrolyte_mode"] is True
+    assert captured["polyelectrolyte_detection"] == "auto"
+
+
+def test_oplsaa_restore_path_refreshes_polyelectrolyte_metadata(monkeypatch):
+    from yadonpy.core import naming
+
+    mol = Chem.MolFromSmiles("*OCC(=O)[O-]")
+    assert mol is not None
+
+    def _fake_restore(restored, *args, **kwargs):
+        restored.SetProp("ff_name", "oplsaa")
+        restored.SetProp("ff_class", "opls")
+        for atom in restored.GetAtoms():
+            atom.SetProp("ff_type", "opls_999")
+            atom.SetDoubleProp("AtomicCharge", 0.0)
+        return True
+
+    monkeypatch.setattr(naming, "try_restore_assigned_mol", _fake_restore)
+
+    assigned = OPLSAA().ff_assign(
+        mol,
+        charge="RESP",
+        polyelectrolyte_mode=True,
+        polyelectrolyte_detection="auto",
+        report=False,
+    )
+
+    assert assigned is mol
+    assert assigned.HasProp("_yadonpy_polyelectrolyte_summary_json")
+    assert assigned.HasProp("_yadonpy_charge_groups_json")
+
+
 def test_oplsaa_random_walk_restart_cache_preserves_lj_parameters(tmp_path):
-    ff = OPLSAA()
+    ff = OPLSAA(profile="refine")
     monomer = ff.mol("*OCC*", require_ready=False, prefer_db=False)
     monomer = ff.ff_assign(monomer, charge="opls", report=False)
 

@@ -246,6 +246,16 @@ def _species_compatibility_context(species_payload: Mapping[str, Any]) -> dict[s
     if isinstance(resp_constraints, Mapping) and resp_constraints:
         context["resp_constraints_signature"] = _stable_signature(dict(resp_constraints))
 
+    charge_sig = str(species_payload.get("charge_signature") or "").strip()
+    if charge_sig:
+        context["charge_signature"] = charge_sig
+    charge_abs = species_payload.get("charge_abs_sum")
+    if charge_abs is not None:
+        try:
+            context["charge_abs_sum"] = float(charge_abs)
+        except Exception:
+            pass
+
     for key in ("resp_profile", "qm_recipe"):
         value = species_payload.get(key)
         if not value:
@@ -338,6 +348,19 @@ def _cached_artifact_compatible(
             return False
 
     rep_ctx = _molecule_compatibility_context(rep_mol, mol_name=mol_name) if rep_mol is not None else {}
+    current_charge_sig = str(current.get("charge_signature") or "").strip()
+    rep_charge_sig = str(rep_ctx.get("charge_signature") or "").strip()
+    cached_charge_sig = str(meta.get("charge_signature") or "").strip()
+    if current_charge_sig:
+        if not cached_charge_sig or cached_charge_sig != current_charge_sig:
+            return False
+    elif rep_charge_sig and not trusted_cached_artifact:
+        if not cached_charge_sig:
+            if strict_missing_signatures or str(kind) == "polymer":
+                return False
+        elif cached_charge_sig != rep_charge_sig:
+            return False
+
     for key in (
         "resp_profile",
         "qm_recipe_signature",
@@ -765,6 +788,9 @@ def _ensure_bonded_terms_from_types(mol, ff_name: str) -> None:
             ff.assign_ptypes(mol)
     except Exception:
         pass
+    if _has_external_bonded_patch(mol):
+        _reapply_bonded_patch_to_mol(mol)
+        return
     try:
         if (not has_valid_bonds) and hasattr(ff, "assign_btypes"):
             ff.assign_btypes(mol)
@@ -788,6 +814,25 @@ def _ensure_bonded_terms_from_types(mol, ff_name: str) -> None:
         pass
 
     _reapply_bonded_patch_to_mol(mol)
+
+
+def _has_external_bonded_patch(mol) -> bool:
+    """Return True when molecule-level bonded terms are supplied by QM patch files."""
+
+    if mol is None or not hasattr(mol, "HasProp"):
+        return False
+    for key in (
+        "_yadonpy_bonded_itp",
+        "_yadonpy_bonded_json",
+        "_yadonpy_mseminario_itp",
+        "_yadonpy_mseminario_json",
+    ):
+        try:
+            if mol.HasProp(key) and str(mol.GetProp(key)).strip():
+                return True
+        except Exception:
+            continue
+    return False
 
 
 def _reapply_bonded_patch_to_mol(mol) -> None:
@@ -1021,7 +1066,14 @@ def _scale_itp_charges(itp_text: str, scale: float, atom_indices: list[int] | No
     return "\n".join(out_lines) + ("\n" if itp_text.endswith("\n") else "")
 
 
-def _scale_itp_charge_groups(itp_text: str, groups: list[dict[str, Any]], scale: float) -> tuple[str, dict[str, Any]]:
+def _scale_itp_charge_groups(
+    itp_text: str,
+    groups: list[dict[str, Any]],
+    scale: float,
+    *,
+    neutral_remainder_indices: list[int] | None = None,
+    neutral_remainder_charge: float = 0.0,
+) -> tuple[str, dict[str, Any]]:
     if abs(float(scale) - 1.0) < 1.0e-12 or not groups:
         return itp_text, {"scale": float(scale), "groups": [], "fallback": None}
 
@@ -1047,6 +1099,7 @@ def _scale_itp_charge_groups(itp_text: str, groups: list[dict[str, Any]], scale:
             continue
 
     report = {"scale": float(scale), "groups": [], "fallback": None}
+    changed_group_atoms: set[int] = set()
     for grp in groups:
         group_indices = [int(i) + 1 for i in grp.get("atom_indices", [])]
         if not group_indices:
@@ -1067,6 +1120,7 @@ def _scale_itp_charge_groups(itp_text: str, groups: list[dict[str, Any]], scale:
             new_vals = [delta for _ in orig]
         for atom_no, q in zip(present, new_vals):
             atom_rows[atom_no]["cols"][6] = f"{float(q):.8f}"
+            changed_group_atoms.add(int(atom_no))
         report["groups"].append(
             {
                 "group_id": grp.get("group_id"),
@@ -1077,6 +1131,26 @@ def _scale_itp_charge_groups(itp_text: str, groups: list[dict[str, Any]], scale:
                 "target_total_charge": float(target_total),
             }
         )
+
+    if neutral_remainder_indices is not None:
+        remainder_atom_nos = [int(i) + 1 for i in neutral_remainder_indices]
+        present = [i for i in remainder_atom_nos if i in atom_rows and i not in changed_group_atoms]
+        if present:
+            orig_vals = [float(atom_rows[atom_no]["cols"][6]) for atom_no in present]
+            orig_total = float(sum(orig_vals))
+            target_total = float(neutral_remainder_charge) * float(scale)
+            delta = (target_total - orig_total) / float(len(present))
+            new_vals = [q + delta for q in orig_vals]
+            for atom_no, q in zip(present, new_vals):
+                atom_rows[atom_no]["cols"][6] = f"{float(q):.8f}"
+            report["neutral_remainder"] = {
+                "atom_indices": [int(i) - 1 for i in present],
+                "formal_charge": float(neutral_remainder_charge),
+                "original_total_charge": float(orig_total),
+                "scaled_total_charge": float(sum(new_vals)),
+                "target_total_charge": float(target_total),
+                "uniform_delta": float(delta),
+            }
 
     for atom_no, info in atom_rows.items():
         raw = lines[info["line_index"]]
@@ -1963,18 +2037,23 @@ def export_system_from_cell_meta(
                 from ..core import utils
                 rep_mol = utils.mol_from_smiles(smiles)
 
-            if ff_obj is not None:
-                bonded_req = None
-                try:
-                    if sp.get('bonded_requested'):
-                        bonded_req = str(sp.get('bonded_requested')).strip()
-                    elif bool(sp.get('bonded_explicit')) and sp.get('bonded_method'):
-                        bonded_req = str(sp.get('bonded_method')).strip()
-                except Exception:
+                if ff_obj is not None:
                     bonded_req = None
-                ok = bool(ff_obj.ff_assign(rep_mol, bonded=bonded_req) if bonded_req else ff_obj.ff_assign(rep_mol))
-                if not ok:
-                    raise RuntimeError("ff_assign failed")
+                    try:
+                        if sp.get('bonded_requested'):
+                            bonded_req = str(sp.get('bonded_requested')).strip()
+                        elif bool(sp.get('bonded_explicit')) and sp.get('bonded_method'):
+                            bonded_req = str(sp.get('bonded_method')).strip()
+                    except Exception:
+                        bonded_req = None
+                    assign_kwargs = {}
+                    if str(species_ff_name).strip().lower() == "oplsaa" and str(species_charge_method).strip().lower() == "opls":
+                        assign_kwargs["charge"] = "opls"
+                    if bonded_req:
+                        assign_kwargs["bonded"] = bonded_req
+                    ok = bool(ff_obj.ff_assign(rep_mol, **assign_kwargs))
+                    if not ok:
+                        raise RuntimeError("ff_assign failed")
         except Exception as e:
             raise RuntimeError(
                 f"Failed to resolve species[{i}] from MolDB. "
@@ -2129,7 +2208,51 @@ def export_system_from_cell_meta(
             except Exception:
                 pre_scale_correction = None
         if use_group_scaling:
-            itp_text, scale_report = _scale_itp_charge_groups(itp_text, charge_groups, scale=float(scale))
+            pe_summary = sp.get("polyelectrolyte_summary") if isinstance(sp.get("polyelectrolyte_summary"), Mapping) else {}
+            constraints_meta = sp.get("resp_constraints") if isinstance(sp.get("resp_constraints"), Mapping) else {}
+            neutral_remainder_indices = None
+            neutral_remainder_charge = 0.0
+            neutral_remainder_declared = False
+            neutral_remainder_allowed = (
+                str(kind).strip().lower() == "polymer"
+                or (isinstance(pe_summary, Mapping) and bool(pe_summary.get("is_polymer")))
+            )
+            if neutral_remainder_allowed and isinstance(constraints_meta, Mapping) and (
+                "neutral_remainder_indices" in constraints_meta or "neutral_remainder_charge" in constraints_meta
+            ):
+                raw_neutral = constraints_meta.get("neutral_remainder_indices")
+                if raw_neutral is None:
+                    raw_neutral = constraints_meta.get("neutral_remainder")
+                if isinstance(raw_neutral, list):
+                    neutral_remainder_indices = [int(i) for i in raw_neutral]
+                try:
+                    neutral_remainder_charge = float(constraints_meta.get("neutral_remainder_charge", 0.0))
+                except Exception:
+                    neutral_remainder_charge = 0.0
+                neutral_remainder_declared = neutral_remainder_indices is not None
+            elif isinstance(pe_summary, Mapping):
+                raw_neutral = pe_summary.get("neutral_remainder_indices")
+                if raw_neutral is None:
+                    raw_neutral = pe_summary.get("neutral_remainder")
+                if neutral_remainder_allowed and isinstance(raw_neutral, list):
+                    neutral_remainder_indices = [int(i) for i in raw_neutral]
+                    try:
+                        neutral_remainder_charge = float(pe_summary.get("neutral_remainder_charge"))
+                    except Exception:
+                        try:
+                            formal_total = float(pe_summary.get("molecule_formal_charge", sp.get("formal_charge", 0.0)))
+                            group_total = sum(float(grp.get("formal_charge", 0.0)) for grp in (charge_groups or []))
+                            neutral_remainder_charge = float(formal_total - group_total)
+                        except Exception:
+                            neutral_remainder_charge = 0.0
+                    neutral_remainder_declared = True
+            itp_text, scale_report = _scale_itp_charge_groups(
+                itp_text,
+                charge_groups,
+                scale=float(scale),
+                neutral_remainder_indices=neutral_remainder_indices if neutral_remainder_declared else None,
+                neutral_remainder_charge=float(neutral_remainder_charge),
+            )
         else:
             itp_text = _scale_itp_charges(itp_text, scale=float(scale))
             scale_report = {"scale": float(scale), "groups": [], "fallback": ("whole_molecule_scale" if effective_polyelectrolyte_mode else None)}

@@ -191,6 +191,18 @@ This keeps the defaults physically aligned:
 
 - bulk systems use drift-corrected `3D` diffusion by default;
 - sandwich and slab systems use drift-corrected `xy` diffusion by default;
+- MSD uses a topology-molecule strategy by default: ions are tracked by atom
+  position, small molecules by molecule COM, and polymers by each independent
+  chain COM;
+- `gmx msd -n system.ndx -mol` is used automatically for molecule/chain COM
+  metrics that are exactly equivalent to GROMACS topology molecules; YadonPy
+  still handles species selection, caching, local charged-group diagnostics,
+  and adaptive long-time fitting;
+- polymer self-diffusion is reported from each independent chain COM, while
+  residue and charged-group MSDs remain local mobility diagnostics;
+- adaptive diffusion fitting requires both a near-one log-log MSD slope and a
+  sufficiently long fit window, so short accidental linear patches are not
+  promoted to formal diffusion coefficients;
 - `sigma_ne_upper_bound_S_m` is reported explicitly as an upper bound;
 - `sigma_eh_total_S_m` is the preferred total conductivity when a stable EH fit exists;
 - `haven_ratio` is written whenever both values are available.
@@ -294,6 +306,13 @@ independent analyses rather than a loose collection of plots.
 - `MSD` defaults are geometry-aware:
   - bulk: drift-corrected `3D`
   - sandwich/slab: drift-corrected `xy`
+- Polymer `MSD` uses independent chain center-of-mass trajectories for the
+  self-diffusion coefficient. Atom, residue, and charged-group MSDs are useful
+  local mobility diagnostics, but they are not whole-chain diffusion.
+- Diffusion fits are chosen from the long-time MSD region with a log-log slope
+  near one and a minimum duration/point count. If the run never reaches that
+  regime, YadonPy reports apparent mobility diagnostics and leaves formal
+  `D_m2_s` unset.
 - `Nernst-Einstein` conductivity is reported as
   `sigma_ne_upper_bound_S_m`, not as the default true conductivity.
 - `Einstein-Helfand` conductivity is reported as `sigma_eh_total_S_m` when a

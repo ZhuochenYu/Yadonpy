@@ -249,6 +249,20 @@ This keeps the defaults physically aligned:
 - bulk systems use drift-corrected `3D` diffusion by default;
 - sandwich and slab systems use drift-corrected `xy` diffusion by default;
 - wrapped trajectories are normalized before transport analysis;
+- MSD uses a topology-molecule strategy by default: single-atom ions use atom
+  trajectories, molecular ions and solvents use molecule COM trajectories, and
+  polymers use independent chain COM trajectories;
+- `gmx msd -n system.ndx -mol` is used automatically for molecule/chain COM
+  metrics that are exactly equivalent to GROMACS topology molecules; Python
+  remains the backend for ions, charged-group/residue diagnostics, interface
+  metadata, caching, and adaptive-fit orchestration;
+- polymer diffusion is reported from each chain center-of-mass MSD by default;
+  the preferred backend lets GROMACS split the selected ndx group into topology
+  molecules, while the Python fallback uses bonded-graph whole-chain
+  reconstruction before unwrapping;
+- adaptive diffusion fits require a sufficiently long time window as well as a
+  near-one log-log MSD slope, so short accidental linear islands are not treated
+  as reliable diffusion coefficients;
 - `sigma_ne_upper_bound_S_m` is treated explicitly as an upper bound;
 - `sigma_eh_total_S_m` is preferred when a stable EH fit exists;
 - `haven_ratio` is reported whenever both conductivities are available.
@@ -257,6 +271,13 @@ Practical interpretation:
 
 - A large `sigma_ne_upper_bound_S_m` with a much smaller `sigma_eh_total_S_m`
   usually means ion correlations are strong.
+- For polymers, treat `chain_com_msd` as the self-diffusion observable. Use
+  `residue_com_msd` and charged-site MSDs to discuss local segmental or
+  functional-group mobility, not whole-chain transport.
+- If `D_m2_s` is missing but `apparent_D_m2_s` is present, the trajectory did
+  not contain a sufficiently long formal diffusion window. This is common for
+  slow polymers or short screening trajectories and is safer than fitting an
+  early subdiffusive regime.
 - `RDF` stays independent because it is the only routine analysis that needs a
   center species and coordination-shell semantics.
 - In interface systems, do not interpret the default diffusion coefficient as a
