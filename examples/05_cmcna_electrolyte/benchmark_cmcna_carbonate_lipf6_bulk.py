@@ -415,6 +415,7 @@ gpu_offload_mode = _env_text("YADONPY_GPU_OFFLOAD_MODE", gpu_offload_default)
 eq_gpu_offload_mode = _env_text("YADONPY_EQ_GPU_OFFLOAD_MODE", gpu_offload_mode)
 performance_profile = _env_text("PERFORMANCE_PROFILE", "auto")
 analysis_profile = _env_text("ANALYSIS_PROFILE", "auto")
+trajectory_format = _env_text("TRAJECTORY_FORMAT", os.environ.get("YADONPY_TRAJECTORY_FORMAT", "auto"))
 
 eq21_final_ns = _env_float("YADONPY_EQ21_FINAL_NS", 0.8)
 eq21_npt_time_scale = _env_float("YADONPY_EQ21_NPT_TIME_SCALE", 2.0)
@@ -683,6 +684,7 @@ def main() -> int:
         "gpu_offload_mode": gpu_offload_mode,
         "performance_profile": performance_profile,
         "analysis_profile": analysis_profile,
+        "trajectory_format": trajectory_format,
     }
     if prod_ensemble != "nvt":
         prod_kwargs["press"] = press

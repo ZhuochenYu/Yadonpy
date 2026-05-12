@@ -173,6 +173,14 @@ and matching fast-analysis defaults. Set `PERFORMANCE_PROFILE=full` or explicit
 `TRAJ_PS` / `ENERGY_PS` / `LOG_PS` values when you need dense trajectories for
 short-time dynamics.
 
+Coordinate output is XTC-only by default because compressed coordinates are much
+smaller and faster to post-process than full-precision TRR. If a study really
+needs TRR coordinates, set `TRAJECTORY_FORMAT=trr`; this disables XTC and writes
+coordinate frames to `md.trr` using the same adaptive cadence. Use
+`TRAJECTORY_FORMAT=xtc_trr` only for targeted diagnostics, and keep
+`TRR_PS` / `VELOCITY_PS` coarse, because TRR and velocity output can become the
+dominant storage and analysis cost on 60-500 ns, 40k+ atom jobs.
+
 Post-processing has a second safety layer for legacy dense trajectories: in
 `auto`, `transport_fast`, and `minimal` modes, YadonPy estimates the trajectory
 frame count from the production `.mdp` and automatically increases the read-time

@@ -230,6 +230,14 @@ large or long jobs to coarser 10-50 ps output and matching RDF/MSD settings. Use
 when you need dense trajectories for short-time dynamics or final publication
 audits.
 
+YadonPy writes compressed XTC coordinates by default and leaves TRR off. That is
+intentional: TRR is full precision, can be much larger than XTC, and usually
+slows down both storage and post-processing for transport screening. If a
+workflow needs TRR-only coordinates, set `TRAJECTORY_FORMAT=trr`; the same auto
+cadence controls `md.trr`, XTC is disabled, and the analyzer will read TRR when
+no XTC exists. Use `TRAJECTORY_FORMAT=xtc_trr` only for short diagnostics or
+explicitly coarse `TRR_PS` output.
+
 When an older run already contains an overly dense trajectory, the analyzer also
 protects post-processing time by increasing the read-time frame stride instead
 of rewriting the `.xtc`. The resolved runtime policy is saved as

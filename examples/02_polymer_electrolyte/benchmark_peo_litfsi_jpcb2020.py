@@ -154,6 +154,7 @@ tfsi_resp_profile = _env_text("TFSI_RESP_PROFILE", "adaptive")
 
 performance_profile = _env_text("PERFORMANCE_PROFILE", "auto")
 analysis_profile_requested = _normalize_analysis_profile(_env_text("ANALYSIS_PROFILE", "auto"))
+trajectory_format_setting = _env_text("TRAJECTORY_FORMAT", os.environ.get("YADONPY_TRAJECTORY_FORMAT", "auto"))
 traj_ps_setting = _env_text("TRAJ_PS", os.environ.get("YADONPY_PROD_TRAJ_PS", "auto"))
 energy_ps_setting = _env_text("ENERGY_PS", os.environ.get("YADONPY_PROD_ENERGY_PS", "auto"))
 log_ps_setting = _env_text("LOG_PS", os.environ.get("YADONPY_PROD_LOG_PS", "auto"))
@@ -364,6 +365,7 @@ def _run_case(root, case: dict, peo, li, tfsi, ff_variant: str) -> dict:
         atom_count=int(estimated_atoms),
         performance_profile=performance_profile,
         analysis_profile=analysis_profile_requested,
+        trajectory_format=trajectory_format_setting,
         traj_ps=traj_ps_setting,
         energy_ps=energy_ps_setting,
         log_ps=log_ps_setting,
@@ -448,6 +450,7 @@ def _run_case(root, case: dict, peo, li, tfsi, ff_variant: str) -> dict:
         log_ps=io_policy.log_ps,
         trr_ps=io_policy.trr_ps,
         velocity_ps=io_policy.velocity_ps,
+        trajectory_format=io_policy.trajectory_format,
         performance_profile=io_policy.performance_profile,
         analysis_profile=io_policy.analysis_profile,
         max_trajectory_frames=io_policy.max_trajectory_frames,

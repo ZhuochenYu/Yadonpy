@@ -68,6 +68,9 @@ python benchmark_cmcna_carbonate_lipf6_bulk.py
   the effective stride is written to `06_analysis/analysis_runtime_policy.json`.
 - Explicit `TRAJ_PS`, `ENERGY_PS`, `LOG_PS`, or `ANALYSIS_PROFILE=full` still
   override auto when dense final-analysis output is needed.
+- Default coordinate output is XTC-only. Set `TRAJECTORY_FORMAT=trr` for
+  deliberate TRR-only runs; avoid `TRAJECTORY_FORMAT=xtc_trr` on 100 ns CMC
+  systems unless `TRR_PS` is very coarse.
 - `YADONPY_PROD_CPT_MIN` forces earlier production checkpoints so LINCS fallback can resume from `md.cpt` instead of dying on missing checkpoint files.
 
 ## 100 ns CMC-Na Bulk Benchmark

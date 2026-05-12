@@ -32,6 +32,7 @@ from yadonpy.diagnostics import doctor
 from yadonpy.ff import GAFF2, GAFF2_mod, MERZ
 from yadonpy.sim.analyzer import AnalyzeResult
 from yadonpy.sim import qm
+from yadonpy.sim.performance import resolve_io_analysis_policy
 from yadonpy.sim.preset import eq
 
 
@@ -169,11 +170,14 @@ omp = _env_int("YADONPY_OMP", 14)
 gpu = _env_int("YADONPY_GPU", 1)
 gpu_id = _env_int("YADONPY_GPU_ID", 0)
 prod_ns = _env_float("YADONPY_PROD_NS", 20.0)
-prod_traj_ps = _env_float("YADONPY_PROD_TRAJ_PS", 2.0)
-prod_energy_ps = _env_float("YADONPY_PROD_ENERGY_PS", 2.0)
-prod_log_ps = _env_optional_float("YADONPY_PROD_LOG_PS")
-prod_trr_ps = _env_optional_float("YADONPY_PROD_TRR_PS")
-prod_velocity_ps = _env_optional_float("YADONPY_PROD_VELOCITY_PS")
+prod_traj_ps = _env_text("YADONPY_PROD_TRAJ_PS", os.environ.get("TRAJ_PS", "auto"))
+prod_energy_ps = _env_text("YADONPY_PROD_ENERGY_PS", os.environ.get("ENERGY_PS", "auto"))
+prod_log_ps = _env_text("YADONPY_PROD_LOG_PS", os.environ.get("LOG_PS", "auto"))
+prod_trr_ps = os.environ.get("YADONPY_PROD_TRR_PS", os.environ.get("TRR_PS"))
+prod_velocity_ps = os.environ.get("YADONPY_PROD_VELOCITY_PS", os.environ.get("VELOCITY_PS"))
+performance_profile = _env_text("PERFORMANCE_PROFILE", "auto")
+analysis_profile = _env_text("ANALYSIS_PROFILE", "auto")
+trajectory_format = _env_text("TRAJECTORY_FORMAT", os.environ.get("YADONPY_TRAJECTORY_FORMAT", "auto"))
 prod_checkpoint_min = _env_float("YADONPY_PROD_CPT_MIN", 5.0)
 msd_drift = _env_text("YADONPY_MSD_DRIFT", "off")
 msd_compare_drift_off = _env_flag(
@@ -836,6 +840,19 @@ def main() -> int:
         print("[WARNING] Did not reach an equilibrium state after EQ21 + Additional cycles.")
 
     # ---------------- Production + analysis ----------------
+    estimated_atoms = int(ac.GetNumAtoms()) if hasattr(ac, "GetNumAtoms") else None
+    io_policy = resolve_io_analysis_policy(
+        prod_ns=float(prod_ns),
+        atom_count=estimated_atoms,
+        performance_profile=performance_profile,
+        analysis_profile=analysis_profile,
+        trajectory_format=trajectory_format,
+        traj_ps=prod_traj_ps,
+        energy_ps=prod_energy_ps,
+        log_ps=prod_log_ps,
+        trr_ps=prod_trr_ps,
+        velocity_ps=prod_velocity_ps,
+    )
     prod_runner: eq.NPT | eq.NVT
     if prod_ensemble == "nvt":
         prod_runner = eq.NVT(ac, work_dir=wd)
@@ -848,11 +865,14 @@ def main() -> int:
             "gpu": gpu,
             "gpu_id": gpu_id,
             "time": prod_ns,
-            "traj_ps": prod_traj_ps,
-            "energy_ps": prod_energy_ps,
-            "log_ps": prod_log_ps,
-            "trr_ps": prod_trr_ps,
-            "velocity_ps": prod_velocity_ps,
+            "traj_ps": io_policy.traj_ps,
+            "energy_ps": io_policy.energy_ps,
+            "log_ps": io_policy.log_ps,
+            "trr_ps": io_policy.trr_ps,
+            "velocity_ps": io_policy.velocity_ps,
+            "trajectory_format": io_policy.trajectory_format,
+            "performance_profile": io_policy.performance_profile,
+            "analysis_profile": io_policy.analysis_profile,
             "checkpoint_min": prod_checkpoint_min,
             "gpu_offload_mode": gpu_offload_mode,
             "bridge_ps": prod_bridge_ps,
@@ -873,11 +893,14 @@ def main() -> int:
             "gpu": gpu,
             "gpu_id": gpu_id,
             "time": prod_ns,
-            "traj_ps": prod_traj_ps,
-            "energy_ps": prod_energy_ps,
-            "log_ps": prod_log_ps,
-            "trr_ps": prod_trr_ps,
-            "velocity_ps": prod_velocity_ps,
+            "traj_ps": io_policy.traj_ps,
+            "energy_ps": io_policy.energy_ps,
+            "log_ps": io_policy.log_ps,
+            "trr_ps": io_policy.trr_ps,
+            "velocity_ps": io_policy.velocity_ps,
+            "trajectory_format": io_policy.trajectory_format,
+            "performance_profile": io_policy.performance_profile,
+            "analysis_profile": io_policy.analysis_profile,
             "checkpoint_min": prod_checkpoint_min,
             "gpu_offload_mode": gpu_offload_mode,
             "bridge_ps": prod_bridge_ps,

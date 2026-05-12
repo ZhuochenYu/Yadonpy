@@ -34,6 +34,37 @@ def _normalize_profile(value: object, *, default: str = AUTO) -> str:
     return aliases[token]
 
 
+def _normalize_trajectory_format(value: object, *, default: str = AUTO) -> str:
+    """Normalize the coordinate-trajectory stream selection.
+
+    The default is intentionally compressed XTC only.  Full-precision TRR is
+    useful for selected diagnostics, but it is often an order of magnitude
+    larger than XTC and can dominate both storage and post-processing time.
+    """
+
+    token = str(default if value is None else value).strip().lower().replace("-", "_")
+    if token in {"", "default", "auto"}:
+        token = "xtc"
+    aliases = {
+        "xtc": "xtc",
+        "compressed": "xtc",
+        "compressed_xtc": "xtc",
+        "trr": "trr",
+        "full_precision": "trr",
+        "fullprecision": "trr",
+        "xtc_trr": "xtc_trr",
+        "trr_xtc": "xtc_trr",
+        "both": "xtc_trr",
+        "all": "xtc_trr",
+        "none": "none",
+        "off": "none",
+        "no": "none",
+    }
+    if token not in aliases:
+        raise ValueError(f"Unsupported trajectory_format setting: {value!r}")
+    return aliases[token]
+
+
 def _is_auto(value: object) -> bool:
     if value is None:
         return True
@@ -92,9 +123,17 @@ class IOAnalysisPolicy:
     analysis_profile:
         Effective analyzer profile to pass to ``AnalyzeResult``. ``minimal`` is
         intentionally more aggressive than ``transport_fast``.
-    traj_ps, energy_ps, log_ps:
+    trajectory_format:
+        Coordinate trajectory stream selection.  ``"xtc"`` writes compressed
+        coordinates only, ``"trr"`` writes full-precision TRR coordinates only,
+        and ``"xtc_trr"`` writes both with TRR kept conservative by default.
+    traj_ps:
+        Primary coordinate output interval in picoseconds.  This remains the
+        backwards-compatible name used by summaries; see ``xtc_ps`` and
+        ``trr_ps`` for the actual GROMACS streams.
+    xtc_ps, energy_ps, log_ps:
         GROMACS output intervals in picoseconds for compressed trajectory,
-        energy, and log streams.
+        energy, and log streams. ``None`` disables compressed XTC output.
     trr_ps, velocity_ps:
         Optional TRR coordinate and velocity intervals. ``None`` disables those
         heavy outputs.
@@ -119,7 +158,9 @@ class IOAnalysisPolicy:
     performance_profile: str
     policy_level: str
     analysis_profile: str
+    trajectory_format: str
     traj_ps: float
+    xtc_ps: float | None
     energy_ps: float
     log_ps: float
     trr_ps: float | None
@@ -138,6 +179,7 @@ class IOAnalysisPolicy:
     max_atom_frames: float
     reasons: list[str]
     overrides: dict[str, Any]
+    large_file_warnings: list[str]
 
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-serializable dictionary for workflow summaries."""
@@ -260,6 +302,7 @@ def resolve_io_analysis_policy(
     atom_count: int | None = None,
     performance_profile: object = AUTO,
     analysis_profile: object = AUTO,
+    trajectory_format: object = AUTO,
     traj_ps: object = AUTO,
     energy_ps: object = AUTO,
     log_ps: object = AUTO,
@@ -290,9 +333,14 @@ def resolve_io_analysis_policy(
         ``"auto"`` follows the tier. Explicit ``"full"``,
         ``"transport_fast"``/``"fast"``, or ``"minimal"`` override analyzer
         behavior without changing MD physics.
+    trajectory_format:
+        Coordinate stream selection: ``"auto"``/``"xtc"`` writes compressed
+        XTC only, ``"trr"`` writes full-precision TRR only, and ``"xtc_trr"``
+        writes both.  TRR is never enabled by default because it is large.
     traj_ps, energy_ps, log_ps:
         Output intervals in ps. Numeric values override the policy; ``"auto"``
-        keeps the tier default.
+        keeps the tier default. ``traj_ps`` is the primary coordinate cadence,
+        then ``trajectory_format`` maps it onto XTC and/or TRR streams.
     trr_ps, velocity_ps:
         Optional TRR and velocity output intervals in ps. ``None`` disables
         these large files unless the caller explicitly opts in.
@@ -335,6 +383,10 @@ def resolve_io_analysis_policy(
 
     defaults = _defaults_for_level(level)
     overrides: dict[str, Any] = {}
+    large_file_warnings: list[str] = []
+    resolved_trajectory_format = _normalize_trajectory_format(trajectory_format, default=AUTO)
+    if not _is_auto(trajectory_format):
+        overrides["trajectory_format"] = resolved_trajectory_format
 
     resolved_traj_ps = float(defaults["traj_ps"])
     if not _is_auto(traj_ps):
@@ -370,12 +422,33 @@ def resolve_io_analysis_policy(
         resolved_log_ps = resolved_energy_ps if maybe_log is None else float(maybe_log)
         overrides["log_ps"] = resolved_log_ps
 
-    resolved_trr_ps = None if trr_ps is None or _is_auto(trr_ps) else float(trr_ps)
-    if resolved_trr_ps is not None:
+    explicit_trr = trr_ps is not None and not _is_auto(trr_ps)
+    resolved_trr_ps = None if not explicit_trr else float(trr_ps)
+    if explicit_trr:
         overrides["trr_ps"] = resolved_trr_ps
     resolved_velocity_ps = None if velocity_ps is None or _is_auto(velocity_ps) else float(velocity_ps)
     if resolved_velocity_ps is not None:
         overrides["velocity_ps"] = resolved_velocity_ps
+        large_file_warnings.append("velocity_trr_output_enabled")
+
+    if resolved_trajectory_format == "xtc":
+        resolved_xtc_ps = float(resolved_traj_ps)
+    elif resolved_trajectory_format == "trr":
+        resolved_xtc_ps = None
+        if resolved_trr_ps is None:
+            resolved_trr_ps = float(resolved_traj_ps)
+        large_file_warnings.append("trr_full_precision_coordinates_enabled")
+    elif resolved_trajectory_format == "xtc_trr":
+        resolved_xtc_ps = float(resolved_traj_ps)
+        if resolved_trr_ps is None:
+            # Keep optional TRR coarse unless the user explicitly asks for a
+            # dense interval.  This avoids surprise multi-GB files on long runs.
+            resolved_trr_ps = float(max(resolved_traj_ps, 50.0))
+        large_file_warnings.append("trr_full_precision_coordinates_enabled")
+    else:
+        resolved_xtc_ps = None
+        if resolved_trr_ps is None:
+            large_file_warnings.append("coordinate_trajectory_disabled")
 
     requested_analysis = _normalize_profile(analysis_profile, default=AUTO)
     if requested_analysis == "auto":
@@ -415,7 +488,9 @@ def resolve_io_analysis_policy(
         performance_profile=perf,
         policy_level=level,
         analysis_profile=resolved_analysis,
+        trajectory_format=resolved_trajectory_format,
         traj_ps=float(resolved_traj_ps),
+        xtc_ps=None if resolved_xtc_ps is None else float(resolved_xtc_ps),
         energy_ps=float(resolved_energy_ps),
         log_ps=float(resolved_log_ps),
         trr_ps=resolved_trr_ps,
@@ -434,4 +509,5 @@ def resolve_io_analysis_policy(
         max_atom_frames=float(max_atom_frames_f),
         reasons=list(dict.fromkeys(reasons)),
         overrides=overrides,
+        large_file_warnings=list(dict.fromkeys(large_file_warnings)),
     )

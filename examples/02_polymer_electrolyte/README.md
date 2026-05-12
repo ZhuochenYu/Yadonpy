@@ -121,6 +121,10 @@ Transport notes:
 - The resolved policy is written into `05_*_production/summary.json` and the
   benchmark metadata. Explicit `TRAJ_PS`, `ENERGY_PS`, `LOG_PS`,
   `RDF_FRAME_STRIDE`, `RDF_BIN_NM`, or `RDF_RMAX_NM` values always override auto.
+- Coordinate output is compressed XTC by default. Use `TRAJECTORY_FORMAT=trr`
+  only when you specifically need TRR-only coordinates; this disables XTC and
+  keeps the same adaptive cadence. `TRAJECTORY_FORMAT=xtc_trr` should be reserved
+  for short diagnostics because TRR grows quickly on long electrolyte runs.
 - For older dense trajectories, analysis also applies runtime frame thinning and
   writes the effective settings to `06_analysis/analysis_runtime_policy.json`.
   Tune this with global `MAX_ANALYSIS_FRAMES` or section-specific

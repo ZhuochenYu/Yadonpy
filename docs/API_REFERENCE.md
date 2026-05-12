@@ -298,6 +298,13 @@ production length and system size, then records the resolved cadence and analysi
 policy in `05_*_production/summary.json`. Explicit numeric `traj_ps`,
 `energy_ps`, `log_ps`, `trr_ps`, or `velocity_ps` always override the policy.
 
+The default coordinate stream is compressed XTC only. This keeps large screening
+runs manageable because full-precision TRR is much larger and slower to analyze.
+Set `trajectory_format="trr"` or `TRAJECTORY_FORMAT=trr` when you deliberately
+want TRR-only coordinates; `AnalyzeResult` will use `md.trr` if `md.xtc` is
+absent. Set `trajectory_format="xtc_trr"` only for short diagnostics or
+explicitly coarse `trr_ps` values.
+
 - `migration()` is the preferred high-level migration workflow for:
   - pure electrolytes,
   - polymer-electrolyte composites,

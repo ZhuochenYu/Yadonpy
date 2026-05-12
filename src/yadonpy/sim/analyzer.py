@@ -274,7 +274,9 @@ class AnalyzeResult:
             hits.sort(key=lambda x: x.stat().st_mtime, reverse=True)
             return hits[0]
 
-        # Resolve core artifacts first
+        # Resolve core artifacts first.  ``self.xtc`` is the generic coordinate
+        # trajectory path for analysis calls; it may point to a TRR when the
+        # production policy explicitly disabled compressed XTC output.
         self.tpr = _resolve_missing(self.tpr, suffix=".tpr")
         self.xtc = _resolve_missing(self.xtc, suffix=".xtc")
         self.edr = _resolve_missing(self.edr, suffix=".edr")
@@ -282,6 +284,14 @@ class AnalyzeResult:
         # Optional artifacts
         if self.trr is not None:
             self.trr = _resolve_missing(self.trr, suffix=".trr")
+        if not Path(self.xtc).exists():
+            if self.trr is not None and Path(self.trr).exists():
+                self.xtc = Path(self.trr)
+            else:
+                trr_hit = _resolve_missing(Path(self.xtc).with_suffix(".trr"), suffix=".trr")
+                if trr_hit.exists():
+                    self.trr = trr_hit
+                    self.xtc = trr_hit
 
     @classmethod
     def from_work_dir(cls, work_dir: Path | str) -> "AnalyzeResult":
@@ -323,7 +333,10 @@ class AnalyzeResult:
         top = system_dir / "system.top"
         ndx = system_dir / "system.ndx"
         tpr = _latest(".tpr")
-        xtc = _latest(".xtc")
+        try:
+            xtc = _latest(".xtc")
+        except FileNotFoundError:
+            xtc = _latest(".trr")
         edr = _latest(".edr")
         try:
             trr = _latest(".trr")
@@ -577,6 +590,9 @@ class AnalyzeResult:
             "performance_policy_level": policy.get("policy_level"),
             "performance_profile": policy.get("performance_profile"),
             "output_traj_ps": policy.get("traj_ps"),
+            "output_xtc_ps": policy.get("xtc_ps"),
+            "output_trr_ps": policy.get("trr_ps"),
+            "trajectory_format": policy.get("trajectory_format"),
         }
 
     def _policy_selected_msd_moltypes(self, metric_catalog: Mapping[str, Any]) -> set[str]:
@@ -642,7 +658,13 @@ class AnalyzeResult:
             try:
                 dt_ps = float(kv.get("dt", "0"))
                 nsteps = int(float(kv.get("nsteps", "0")))
-                nst = int(float(kv.get("nstxout-compressed") or kv.get("nstxout") or "0"))
+                nst_candidates = []
+                for key in ("nstxout-compressed", "nstxout"):
+                    try:
+                        nst_candidates.append(int(float(kv.get(key, "0"))))
+                    except Exception:
+                        pass
+                nst = next((value for value in nst_candidates if value > 0), 0)
             except Exception:
                 dt_ps, nsteps, nst = 0.0, 0, 0
             if dt_ps > 0.0 and nsteps > 0 and nst > 0:
@@ -1452,11 +1474,15 @@ class AnalyzeResult:
         except Exception:
             dt = 0.0
 
-        nst_raw = kv.get("nstxout-compressed") or kv.get("nstxout") or "0"
-        try:
-            nst = int(float(nst_raw))
-        except Exception:
-            nst = 0
+        nst = 0
+        for key in ("nstxout-compressed", "nstxout"):
+            try:
+                maybe = int(float(kv.get(key, "0")))
+            except Exception:
+                maybe = 0
+            if maybe > 0:
+                nst = maybe
+                break
 
         if dt > 0 and nst > 0:
             # Frame interval written to the compressed trajectory (xtc).

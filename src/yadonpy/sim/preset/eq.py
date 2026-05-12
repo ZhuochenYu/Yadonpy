@@ -571,14 +571,16 @@ def _interval_ps_to_nsteps(dt_ps: float, interval_ps: Optional[float], *, disabl
 def _apply_production_output_cadence(
     params: dict[str, object],
     *,
-    traj_ps: float,
+    traj_ps: Optional[float],
     energy_ps: float,
     log_ps: Optional[float],
     trr_ps: Optional[float],
     velocity_ps: Optional[float],
 ) -> None:
     dt_ps = float(params["dt"])
-    params["nstxout"] = _interval_ps_to_nsteps(dt_ps, float(traj_ps))
+    # ``nstxout`` in YadonPy's templates maps to ``nstxout-compressed`` (XTC).
+    # It may be disabled when users explicitly select TRR-only coordinates.
+    params["nstxout"] = _interval_ps_to_nsteps(dt_ps, traj_ps, disabled_value=0)
     params["nstenergy"] = _interval_ps_to_nsteps(dt_ps, float(energy_ps))
     params["nstlog"] = _interval_ps_to_nsteps(dt_ps, float(log_ps) if log_ps is not None else float(energy_ps))
     params["nstxout_trr"] = _interval_ps_to_nsteps(dt_ps, trr_ps, disabled_value=0)
@@ -672,6 +674,26 @@ def _write_production_policy_summary(run_dir: Path, policy: IOAnalysisPolicy) ->
         pass
 
 
+def _format_ps_interval(value: Optional[float]) -> str:
+    return "off" if value is None else f"{float(value):.3f} ps"
+
+
+def _production_required_outputs(final_dir: Path, policy: IOAnalysisPolicy) -> list[Path]:
+    """Return restart markers that match the active coordinate stream.
+
+    Production normally writes compressed ``md.xtc``.  When a caller explicitly
+    asks for TRR-only coordinates, requiring ``md.xtc`` would make an otherwise
+    successful run look incomplete to the restart layer.
+    """
+
+    outputs = [final_dir / "md.tpr", final_dir / "md.edr", final_dir / "md.gro"]
+    if policy.xtc_ps is not None:
+        outputs.append(final_dir / "md.xtc")
+    if policy.trr_ps is not None or policy.velocity_ps is not None:
+        outputs.append(final_dir / "md.trr")
+    return outputs
+
+
 def _prepare_production_mdp_params(
     *,
     base_params: dict[str, object],
@@ -679,7 +701,7 @@ def _prepare_production_mdp_params(
     constraints: str,
     lincs_iter: int | None,
     lincs_order: int | None,
-    traj_ps: float,
+    traj_ps: Optional[float],
     energy_ps: float,
     log_ps: Optional[float],
     trr_ps: Optional[float],
@@ -705,7 +727,7 @@ def _prepare_production_mdp_params(
 
     _apply_production_output_cadence(
         params,
-        traj_ps=float(traj_ps),
+        traj_ps=traj_ps,
         energy_ps=float(energy_ps),
         log_ps=log_ps,
         trr_ps=trr_ps,
@@ -4342,6 +4364,7 @@ class NPT(EQ21step):
         gpu_offload_mode: str = "auto",
         performance_profile: str = "auto",
         analysis_profile: str = "auto",
+        trajectory_format: Union[str, None] = "auto",
         max_trajectory_frames: Optional[int] = None,
         max_atom_frames: Optional[float] = None,
         bridge_ps: Optional[float] = None,
@@ -4365,6 +4388,7 @@ class NPT(EQ21step):
             atom_count=_estimate_atom_count_for_policy(self.ac, exp),
             performance_profile=performance_profile,
             analysis_profile=analysis_profile,
+            trajectory_format=trajectory_format,
             traj_ps=traj_ps,
             energy_ps=energy_ps,
             log_ps=log_ps,
@@ -4388,16 +4412,18 @@ class NPT(EQ21step):
         _preset_item(
             "performance_policy",
             f"{policy.policy_level} | profile={policy.performance_profile} | "
-            f"analysis={policy.analysis_profile} | frames~{policy.estimated_frames}",
+            f"analysis={policy.analysis_profile} | format={policy.trajectory_format} | frames~{policy.estimated_frames}",
         )
         _preset_item(
             "output_cadence",
-            f"xtc={policy.traj_ps:.3f} ps | energy={policy.energy_ps:.3f} ps | "
+            f"xtc={_format_ps_interval(policy.xtc_ps)} | energy={policy.energy_ps:.3f} ps | "
             f"log={policy.log_ps:.3f} ps | "
-            f"trr={'off' if policy.trr_ps is None else f'{policy.trr_ps:.3f} ps'} | "
-            f"vel={'off' if policy.velocity_ps is None else f'{policy.velocity_ps:.3f} ps'} | "
+            f"trr={_format_ps_interval(policy.trr_ps)} | "
+            f"vel={_format_ps_interval(policy.velocity_ps)} | "
             f"cpt={float(checkpoint_min):.2f} min"
         )
+        if policy.large_file_warnings:
+            _preset_item("large_file_warnings", ", ".join(policy.large_file_warnings))
         _preset_item("gpu_offload_mode", resolved_gpu_offload_mode)
         _preset_item("cpu_fallback", "allowed" if allow_cpu_fallback else "disabled for production GPU failures")
         _preset_item(
@@ -4429,7 +4455,7 @@ class NPT(EQ21step):
             constraints=constraints,
             lincs_iter=lincs_iter,
             lincs_order=lincs_order,
-            traj_ps=policy.traj_ps,
+            traj_ps=policy.xtc_ps,
             energy_ps=policy.energy_ps,
             log_ps=policy.log_ps,
             trr_ps=policy.trr_ps,
@@ -4469,7 +4495,7 @@ class NPT(EQ21step):
         final_dir = run_dir / stages[-1].name
         spec = StepSpec(
             name="npt_production",
-            outputs=[final_dir / "md.tpr", final_dir / "md.xtc", final_dir / "md.edr", final_dir / "md.gro"],
+            outputs=_production_required_outputs(final_dir, policy),
             inputs={
                 "start_gro_sig": file_signature(Path(start_gro)),
                 "input_top_sig": file_signature(exp.system_top),
@@ -4481,10 +4507,12 @@ class NPT(EQ21step):
                 "lincs_iter": int(effective_lincs_iter) if effective_lincs_iter is not None else None,
                 "lincs_order": int(effective_lincs_order) if effective_lincs_order is not None else None,
                 "traj_ps": float(policy.traj_ps),
+                "xtc_ps": float(policy.xtc_ps) if policy.xtc_ps is not None else None,
                 "energy_ps": float(policy.energy_ps),
                 "log_ps": float(policy.log_ps),
                 "trr_ps": float(policy.trr_ps) if policy.trr_ps is not None else None,
                 "velocity_ps": float(policy.velocity_ps) if policy.velocity_ps is not None else None,
+                "trajectory_format": policy.trajectory_format,
                 "performance_policy": json.dumps(policy.to_dict(), sort_keys=True, default=str),
                 "checkpoint_min": float(checkpoint_min),
                 "gpu_offload_mode": resolved_gpu_offload_mode,
@@ -4595,6 +4623,7 @@ class NVT(EQ21step):
         gpu_offload_mode: str = "auto",
         performance_profile: str = "auto",
         analysis_profile: str = "auto",
+        trajectory_format: Union[str, None] = "auto",
         max_trajectory_frames: Optional[int] = None,
         max_atom_frames: Optional[float] = None,
         bridge_ps: Optional[float] = None,
@@ -4620,6 +4649,7 @@ class NVT(EQ21step):
             atom_count=_estimate_atom_count_for_policy(self.ac, exp),
             performance_profile=performance_profile,
             analysis_profile=analysis_profile,
+            trajectory_format=trajectory_format,
             traj_ps=traj_ps,
             energy_ps=energy_ps,
             log_ps=log_ps,
@@ -4645,16 +4675,18 @@ class NVT(EQ21step):
         _preset_item(
             "performance_policy",
             f"{policy.policy_level} | profile={policy.performance_profile} | "
-            f"analysis={policy.analysis_profile} | frames~{policy.estimated_frames}",
+            f"analysis={policy.analysis_profile} | format={policy.trajectory_format} | frames~{policy.estimated_frames}",
         )
         _preset_item(
             "output_cadence",
-            f"xtc={policy.traj_ps:.3f} ps | energy={policy.energy_ps:.3f} ps | "
+            f"xtc={_format_ps_interval(policy.xtc_ps)} | energy={policy.energy_ps:.3f} ps | "
             f"log={policy.log_ps:.3f} ps | "
-            f"trr={'off' if policy.trr_ps is None else f'{policy.trr_ps:.3f} ps'} | "
-            f"vel={'off' if policy.velocity_ps is None else f'{policy.velocity_ps:.3f} ps'} | "
+            f"trr={_format_ps_interval(policy.trr_ps)} | "
+            f"vel={_format_ps_interval(policy.velocity_ps)} | "
             f"cpt={float(checkpoint_min):.2f} min"
         )
+        if policy.large_file_warnings:
+            _preset_item("large_file_warnings", ", ".join(policy.large_file_warnings))
         _preset_item("gpu_offload_mode", resolved_gpu_offload_mode)
         _preset_item("cpu_fallback", "allowed" if allow_cpu_fallback else "disabled for production GPU failures")
         _preset_item(
@@ -4799,7 +4831,7 @@ class NVT(EQ21step):
             constraints=constraints,
             lincs_iter=lincs_iter,
             lincs_order=lincs_order,
-            traj_ps=policy.traj_ps,
+            traj_ps=policy.xtc_ps,
             energy_ps=policy.energy_ps,
             log_ps=policy.log_ps,
             trr_ps=policy.trr_ps,
@@ -4838,7 +4870,7 @@ class NVT(EQ21step):
         final_dir = run_dir / stages[-1].name
         spec = StepSpec(
             name="nvt_production",
-            outputs=[final_dir / "md.tpr", final_dir / "md.xtc", final_dir / "md.edr", final_dir / "md.gro"],
+            outputs=_production_required_outputs(final_dir, policy),
             inputs={
                 "start_gro_sig": file_signature(Path(scaled_gro)),
                 "input_top_sig": file_signature(exp.system_top),
@@ -4849,10 +4881,12 @@ class NVT(EQ21step):
                 "lincs_iter": int(effective_lincs_iter) if effective_lincs_iter is not None else None,
                 "lincs_order": int(effective_lincs_order) if effective_lincs_order is not None else None,
                 "traj_ps": float(policy.traj_ps),
+                "xtc_ps": float(policy.xtc_ps) if policy.xtc_ps is not None else None,
                 "energy_ps": float(policy.energy_ps),
                 "log_ps": float(policy.log_ps),
                 "trr_ps": float(policy.trr_ps) if policy.trr_ps is not None else None,
                 "velocity_ps": float(policy.velocity_ps) if policy.velocity_ps is not None else None,
+                "trajectory_format": policy.trajectory_format,
                 "performance_policy": json.dumps(policy.to_dict(), sort_keys=True, default=str),
                 "checkpoint_min": float(checkpoint_min),
                 "gpu_offload_mode": resolved_gpu_offload_mode,
