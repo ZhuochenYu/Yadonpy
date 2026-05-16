@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import hashlib
 import math
+import os
 import re
+import shutil
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -615,24 +617,53 @@ class EquilibrationJob:
             except Exception:
                 pass
 
-            # Handoff GRO files must be molecularly whole. `-pbc mol` is useful
-            # for visualization, but it can still leave bonded atoms on opposite
-            # sides of the box. That shows up as box-length LINCS failures at
-            # step 0 of the next stage, so use `-pbc whole` for simulation input.
-            pbc_gro = pbc_mol_fix_inplace(self.runner, tpr=out_tpr, traj_or_gro=out_gro, cwd=stage_dir, pbc="whole")
             periodic_dimensions = periodic_dimensions_from_pbc(pbc_mode)
+            initial_bond_check = gro_topology_bond_geometry(
+                top=self.top,
+                gro=out_gro,
+                periodic_dimensions=periodic_dimensions,
+            )
+            periodic_moltypes = tuple(str(x) for x in (initial_bond_check.get("periodic_bonded_moltypes") or []))
+            if periodic_moltypes:
+                # A covalent sheet closed through PBC is physically periodic, not
+                # a finite molecule that can be made whole.  GROMACS documents
+                # that periodic molecules are left non-whole in output; mirror
+                # that behavior and only canonicalize the finite molecule types.
+                pbc_gro = {
+                    "applied": False,
+                    "error": "skipped trjconv -pbc whole for periodic molecule types",
+                    "periodic_moltypes": list(periodic_moltypes),
+                }
+            else:
+                # Handoff GRO files for finite molecules must be molecularly
+                # whole. `-pbc mol` is useful for visualization, but it can still
+                # leave bonded atoms on opposite sides of the box. That shows up
+                # as box-length LINCS failures at step 0 of the next stage, so
+                # use `-pbc whole` for simulation input when no periodic molecule
+                # types are present.
+                pbc_gro = pbc_mol_fix_inplace(self.runner, tpr=out_tpr, traj_or_gro=out_gro, cwd=stage_dir, pbc="whole")
             whole_gro = normalize_gro_molecules_inplace(
                 top=self.top,
                 gro=out_gro,
                 periodic_dimensions=periodic_dimensions,
+                periodic_moltypes=periodic_moltypes,
             )
             if whole_gro.get("applied"):
                 self._log(
                     f"[INFO] Whole-molecule canonicalization applied to {out_gro.name} | normalized_molecules={whole_gro.get('normalized_molecules', 0)}"
                 )
+            if periodic_moltypes:
+                self._log(
+                    "[INFO] Preserved wrapped coordinates for periodic molecule types in handoff GRO | "
+                    f"moltypes={','.join(periodic_moltypes)}"
+                )
             elif whole_gro.get("error"):
                 self._log(f"[WARN] Whole-molecule canonicalization skipped for {out_gro.name}: {whole_gro.get('error')}")
-            bond_check = gro_topology_bond_geometry(top=self.top, gro=out_gro)
+            bond_check = gro_topology_bond_geometry(
+                top=self.top,
+                gro=out_gro,
+                periodic_dimensions=periodic_dimensions,
+            )
             if not bond_check.get("ok") and raw_gro.exists():
                 self._log(
                     "[WARN] Handoff GRO bond check failed after PBC cleanup; retrying from raw mdrun output. "
@@ -645,8 +676,13 @@ class EquilibrationJob:
                         top=self.top,
                         gro=out_gro,
                         periodic_dimensions=periodic_dimensions,
+                        periodic_moltypes=periodic_moltypes,
                     )
-                    bond_check = gro_topology_bond_geometry(top=self.top, gro=out_gro)
+                    bond_check = gro_topology_bond_geometry(
+                        top=self.top,
+                        gro=out_gro,
+                        periodic_dimensions=periodic_dimensions,
+                    )
                 except Exception as exc:
                     bond_check = {"ok": False, "error": str(exc), "previous": bond_check}
             if (not bond_check.get("ok")) and int(bond_check.get("checked_bonds") or 0) > 0:
@@ -658,7 +694,50 @@ class EquilibrationJob:
                 self._log(f"[WARN] Handoff GRO bond geometry could not be verified: {bond_check}")
             return {"pbc_gro": pbc_gro, "whole_gro": whole_gro, "bond_geometry": bond_check}
 
-        def _mdrun_em_minimal(*, deffnm: str, cwd: Path, ntomp: int, gpu_id: Optional[str], use_gpu: bool = False) -> None:
+        def _periodic_bonded_mdrun_policy(*, stage: EqStage, gro: Path, label: str) -> dict[str, object]:
+            periodic_dimensions = periodic_dimensions_from_pbc(stage.mdp.params.get("pbc", "xyz"))
+            check = gro_topology_bond_geometry(
+                top=self.top,
+                gro=gro,
+                periodic_dimensions=periodic_dimensions,
+            )
+            if (not check.get("ok")) and int(check.get("checked_bonds") or 0) > 0:
+                raise RuntimeError(
+                    "Input GRO has topology bonds that remain too long under the minimum-image convention; "
+                    "refusing to hide a real geometry/topology error behind mdrun options. "
+                    f"stage={stage.name} | label={label} | gro={gro} | check={check}"
+                )
+            periodic_count = int(check.get("periodic_bond_count") or 0)
+            moltypes = [str(x) for x in (check.get("periodic_bonded_moltypes") or [])]
+            if not moltypes:
+                return {"enabled": False, "bond_geometry": check, "extra_args": []}
+
+            rdd_floor = float(os.environ.get("YADONPY_MDRUN_RDD_NM") or 0.6)
+            max_mi = float(check.get("max_min_image_bond_nm") or 0.0)
+            rdd_nm = max(rdd_floor, 1.5 * max_mi)
+            rdd_text = f"{rdd_nm:.3f}".rstrip("0").rstrip(".")
+            self._log(
+                "[INFO] Periodic bonded network detected for mdrun; using explicit DD bonded radius. "
+                f"stage={stage.name} | moltypes={','.join(moltypes)} | "
+                f"periodic_bonds={periodic_count} | max_min_image_bond={max_mi:.4f} nm | -rdd {rdd_text}"
+            )
+            return {
+                "enabled": True,
+                "bond_geometry": check,
+                "extra_args": ["-rdd", rdd_text],
+                "rdd_nm": float(rdd_text),
+                "reason": "validated periodic bonded network",
+            }
+
+        def _mdrun_em_minimal(
+            *,
+            deffnm: str,
+            cwd: Path,
+            ntomp: int,
+            gpu_id: Optional[str],
+            use_gpu: bool = False,
+            mdrun_extra_args: Optional[Sequence[str]] = None,
+        ) -> None:
             """Run energy minimization with a minimal, user-friendly mdrun command.
 
             By design we keep EM command-line args lean to improve portability and
@@ -686,6 +765,8 @@ class EquilibrationJob:
                 args += ["-nb", "cpu"]
             if use_gpu and gpu_id is not None and str(gpu_id).strip() != "" and self.runner._tool_has_option("mdrun", "-gpu_id", cwd=cwd):
                 args += ["-gpu_id", str(gpu_id).strip()]
+            if mdrun_extra_args:
+                args += [str(x) for x in mdrun_extra_args]
             rc, tail = self.runner._run_capture_tee(args, cwd=cwd)
             # Very old GROMACS builds may not support -stepout; retry once without it.
             if rc != 0 and "-stepout" in args and "unknown option" in (tail or "").lower() and "-stepout" in (tail or "").lower():
@@ -715,6 +796,7 @@ class EquilibrationJob:
             stage_cutoff_events: list[dict[str, object]] = []
             stage_lincs_fallback: dict[str, object] | None = None
             stage_checkpoint_handoff_fallback: dict[str, object] | None = None
+            stage_periodic_bonded_policy: dict[str, object] | None = None
 
             def _write_stage_mdp(*, mdp: MdpSpec, gro: Path, filename: str, label: str) -> Path:
                 prepared_mdp, cutoff_info = self._apply_box_safe_cutoffs(mdp, gro=gro)
@@ -849,6 +931,7 @@ class EquilibrationJob:
                     )
                 self._log(f"[RUN] Resuming pending LINCS fallback | tpr={retry_tpr.name} | cpt={out_cpt.name}")
                 ntomp_sel, ntmpi_sel = _choose_threads(stage_use_gpu)
+                stage_periodic_bonded_policy = _periodic_bonded_mdrun_policy(stage=st, gro=current_gro, label="pending_lincs_resume")
                 self.runner.mdrun(
                     tpr=retry_tpr,
                     deffnm=deffnm,
@@ -861,6 +944,7 @@ class EquilibrationJob:
                     append=True,
                     cpi=out_cpt,
                     checkpoint_minutes=st.checkpoint_minutes,
+                    mdrun_extra_args=stage_periodic_bonded_policy.get("extra_args") or None,
                     allow_cpu_fallback_on_gpu_error=bool(self.resources.allow_cpu_fallback_on_gpu_error),
                 )
                 current_gro = out_gro
@@ -889,6 +973,7 @@ class EquilibrationJob:
             elif (not stage_has_outputs) and rst_flag and out_tpr.exists() and out_cpt.exists() and (not out_gro.exists()):
                 self._log(f"[RUN] Resuming interrupted stage from checkpoint | cpt={out_cpt.name}")
                 ntomp_sel, ntmpi_sel = _choose_threads(stage_use_gpu)
+                stage_periodic_bonded_policy = _periodic_bonded_mdrun_policy(stage=st, gro=current_gro, label="checkpoint_resume")
                 self.runner.mdrun(
                     tpr=out_tpr,
                     deffnm=deffnm,
@@ -901,6 +986,7 @@ class EquilibrationJob:
                     append=True,
                     cpi=out_cpt,
                     checkpoint_minutes=st.checkpoint_minutes,
+                    mdrun_extra_args=stage_periodic_bonded_policy.get("extra_args") or None,
                     allow_cpu_fallback_on_gpu_error=bool(self.resources.allow_cpu_fallback_on_gpu_error),
                 )
                 current_gro = out_gro
@@ -953,12 +1039,14 @@ class EquilibrationJob:
                                     cwd=stage_dir,
                                 )
                                 ntomp_sel, _ = _choose_threads(False)
+                                steep_periodic_policy = _periodic_bonded_mdrun_policy(stage=st, gro=current_gro, label="steep")
                                 _mdrun_em_minimal(
                                     deffnm=steep_deffnm,
                                     cwd=stage_dir,
                                     ntomp=int(ntomp_sel or 1),
                                     gpu_id=self.resources.gpu_id,
                                     use_gpu=False,
+                                    mdrun_extra_args=steep_periodic_policy.get("extra_args") or None,
                                 )
 
                             bridge_deffnm = "md_steep_hbonds"
@@ -993,12 +1081,14 @@ class EquilibrationJob:
                                         cwd=stage_dir,
                                     )
                                     ntomp_sel, _ = _choose_threads(False)
+                                    bridge_periodic_policy = _periodic_bonded_mdrun_policy(stage=st, gro=bridge_input_gro, label="steep_hbonds")
                                     _mdrun_em_minimal(
                                         deffnm=bridge_deffnm,
                                         cwd=stage_dir,
                                         ntomp=int(ntomp_sel or 1),
                                         gpu_id=self.resources.gpu_id,
                                         use_gpu=False,
+                                        mdrun_extra_args=bridge_periodic_policy.get("extra_args") or None,
                                     )
                                 except Exception as e:
                                     if _is_constraint_failure(e):
@@ -1048,6 +1138,9 @@ class EquilibrationJob:
                     stage_mdrun_kwargs = dict(stage_offload_kwargs)
                     if st.kind in ("minim", "em") and "nb" not in stage_mdrun_kwargs:
                         stage_mdrun_kwargs["nb"] = "cpu"
+                    stage_periodic_bonded_policy = _periodic_bonded_mdrun_policy(stage=st, gro=gro_for_main, label="main")
+                    if stage_periodic_bonded_policy.get("extra_args"):
+                        stage_mdrun_kwargs["mdrun_extra_args"] = stage_periodic_bonded_policy.get("extra_args")
                     try:
                         self.runner.mdrun(
                             tpr=tpr,
@@ -1262,12 +1355,14 @@ class EquilibrationJob:
                                 cwd=stage_dir,
                             )
                             ntomp_sel, _ = _choose_threads(False)
+                            fallback_periodic_policy = _periodic_bonded_mdrun_policy(stage=st, gro=gro_for_main, label="constraint_fallback")
                             _mdrun_em_minimal(
                                 deffnm=deffnm,
                                 cwd=stage_dir,
                                 ntomp=int(ntomp_sel or 1),
                                 gpu_id=self.resources.gpu_id,
                                 use_gpu=False,
+                                mdrun_extra_args=fallback_periodic_policy.get("extra_args") or None,
                             )
                         else:
                             raise
@@ -1353,6 +1448,7 @@ class EquilibrationJob:
                 "auto_cutoff_adjustments": stage_cutoff_events,
                 "lincs_fallback": stage_lincs_fallback,
                 "checkpoint_handoff_fallback": stage_checkpoint_handoff_fallback,
+                "periodic_bonded_mdrun_policy": stage_periodic_bonded_policy,
             }
             if st.kind in ("minim", "em"):
                 max_force_diag = self._parse_minimization_max_force(stage_dir, gro=out_gro, deffnm=deffnm)

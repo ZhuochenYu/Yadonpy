@@ -13,7 +13,7 @@ import math
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, Sequence
 
 from ..topology import parse_system_top
 
@@ -196,17 +196,75 @@ def _wrap_molecule_com_into_box(
     return out
 
 
+def _has_periodic_bond_cycle(
+    coords_nm: list[tuple[float, float, float]],
+    *,
+    bonds: list[tuple[int, int]],
+    box_nm: tuple[float, float, float],
+    periodic_dimensions: tuple[bool, bool, bool],
+) -> bool:
+    """Return True when bonded image shifts are inconsistent around a cycle."""
+
+    if len(coords_nm) <= 1 or not bonds or not any(periodic_dimensions):
+        return False
+
+    adjacency: list[list[tuple[int, tuple[int, int, int]]]] = [[] for _ in range(len(coords_nm))]
+    for ai, aj in bonds:
+        i = int(ai) - 1
+        j = int(aj) - 1
+        if i < 0 or j < 0 or i >= len(coords_nm) or j >= len(coords_nm):
+            continue
+        delta = [float(coords_nm[j][dim]) - float(coords_nm[i][dim]) for dim in range(3)]
+        shift: list[int] = [0, 0, 0]
+        for dim, box_len in enumerate(box_nm):
+            if bool(periodic_dimensions[dim]) and float(box_len) > 0.0:
+                shift[dim] = int(round(float(delta[dim]) / float(box_len)))
+        s = (int(shift[0]), int(shift[1]), int(shift[2]))
+        adjacency[i].append((j, s))
+        adjacency[j].append((i, (-s[0], -s[1], -s[2])))
+
+    assigned: list[tuple[int, int, int] | None] = [None] * len(coords_nm)
+    for root in range(len(coords_nm)):
+        if assigned[root] is not None:
+            continue
+        assigned[root] = (0, 0, 0)
+        stack = [root]
+        while stack:
+            idx = stack.pop()
+            base = assigned[idx]
+            if base is None:
+                continue
+            for nxt, edge_shift in adjacency[idx]:
+                # x_j_image = x_j - edge_shift * box, so the image index
+                # assigned to j is the current image minus this bond shift.
+                expected = (
+                    int(base[0] - edge_shift[0]),
+                    int(base[1] - edge_shift[1]),
+                    int(base[2] - edge_shift[2]),
+                )
+                if assigned[nxt] is None:
+                    assigned[nxt] = expected
+                    stack.append(nxt)
+                elif assigned[nxt] != expected:
+                    return True
+    return False
+
+
 def normalize_gro_molecules_inplace(
     *,
     top: Path,
     gro: Path,
     periodic_dimensions: tuple[bool, bool, bool] = (True, True, True),
+    periodic_moltypes: Sequence[str] | None = None,
 ) -> dict[str, Any]:
     """Rewrite a GRO file so topology-defined molecules are geometrically whole.
 
     This is a best-effort canonicalization step for stage-to-stage handoff. It
     does not alter topology or box vectors; it only unwraps bonded fragments via
     the system topology and keeps each molecule COM close to the primary box.
+    Molecule types listed in ``periodic_moltypes`` are intentionally left in
+    their wrapped periodic representation, because a covalent network that
+    couples to its own periodic image cannot be made whole as a finite molecule.
     """
 
     top = Path(top)
@@ -222,6 +280,8 @@ def normalize_gro_molecules_inplace(
     atoms_out: list[_GroAtomRecord] = []
     cursor = 0
     normalized_molecules = 0
+    skipped_periodic_molecules = 0
+    periodic_names = {str(x) for x in (periodic_moltypes or [])}
     try:
         for molname, count in topo.molecules:
             moltype = topo.moleculetypes.get(str(molname))
@@ -234,6 +294,11 @@ def normalize_gro_molecules_inplace(
                     raise ValueError(
                         f"Atom count mismatch while canonicalizing {molname}: expected {natoms}, got {len(block)}"
                     )
+                if str(molname) in periodic_names:
+                    atoms_out.extend(block)
+                    skipped_periodic_molecules += 1
+                    cursor += natoms
+                    continue
                 coords = _unwrap_fragment_coords(
                     [tuple(atom.xyz_nm) for atom in block],
                     bonds=list(moltype.bonds),
@@ -265,9 +330,21 @@ def normalize_gro_molecules_inplace(
         if "yadonpy_whole" not in title:
             title = f"{title[:63]} | yadonpy_whole"
         _write_gro_frame(gro, _GroFrameRecord(title=title, atoms=atoms_out, box_nm=frame.box_nm))
-        return {"applied": bool(normalized_molecules > 0), "error": None, "normalized_molecules": int(normalized_molecules)}
+        return {
+            "applied": bool(normalized_molecules > 0),
+            "error": None,
+            "normalized_molecules": int(normalized_molecules),
+            "skipped_periodic_molecules": int(skipped_periodic_molecules),
+            "periodic_moltypes": sorted(periodic_names),
+        }
     except Exception as exc:
-        return {"applied": False, "error": str(exc), "normalized_molecules": 0}
+        return {
+            "applied": False,
+            "error": str(exc),
+            "normalized_molecules": 0,
+            "skipped_periodic_molecules": int(skipped_periodic_molecules),
+            "periodic_moltypes": sorted(periodic_names),
+        }
 
 
 def gro_topology_bond_geometry(
@@ -275,12 +352,15 @@ def gro_topology_bond_geometry(
     top: Path,
     gro: Path,
     max_bond_nm_threshold: float = 0.8,
+    periodic_dimensions: tuple[bool, bool, bool] | None = None,
 ) -> dict[str, Any]:
-    """Check direct topology bond lengths in a GRO handoff structure.
+    """Check topology bond lengths in a GRO handoff structure.
 
     GROMACS can fail at step 0 if a handoff GRO contains a molecule split across
     the periodic boundary: LINCS then sees a normal X-H bond as a box-length
     constraint. This lightweight check catches that before the next stage starts.
+    When ``periodic_dimensions`` is provided, bonds are validated with the same
+    minimum-image convention that GROMACS uses for periodic bonded networks.
     """
 
     top = Path(top)
@@ -294,9 +374,15 @@ def gro_topology_bond_geometry(
         return {"ok": False, "error": str(exc)}
 
     cursor = 0
-    max_bond_nm = 0.0
+    dims = tuple(bool(x) for x in periodic_dimensions) if periodic_dimensions is not None else (False, False, False)
+    max_direct_bond_nm = 0.0
+    max_min_image_bond_nm = 0.0
     worst: dict[str, Any] | None = None
+    worst_direct: dict[str, Any] | None = None
     checked = 0
+    periodic_bond_count = 0
+    broken_bond_count = 0
+    periodic_moltypes: set[str] = set()
     try:
         for molname, count in topo.molecules:
             moltype = topo.moleculetypes.get(str(molname))
@@ -316,10 +402,28 @@ def gro_topology_bond_geometry(
                         continue
                     xi = block[i].xyz_nm
                     xj = block[j].xyz_nm
-                    dist = math.sqrt(sum((float(xj[dim]) - float(xi[dim])) ** 2 for dim in range(3)))
+                    delta = [float(xj[dim]) - float(xi[dim]) for dim in range(3)]
+                    direct_dist = math.sqrt(sum(float(v) ** 2 for v in delta))
+                    mi_delta = list(delta)
+                    for dim, box_len in enumerate(frame.box_nm):
+                        if bool(dims[dim]):
+                            mi_delta[dim] = _minimal_image_delta(mi_delta[dim], float(box_len))
+                    min_image_dist = math.sqrt(sum(float(v) ** 2 for v in mi_delta))
                     checked += 1
-                    if dist > max_bond_nm:
-                        max_bond_nm = float(dist)
+                    if direct_dist > max_direct_bond_nm:
+                        max_direct_bond_nm = float(direct_dist)
+                        worst_direct = {
+                            "molname": str(molname),
+                            "mol_index": int(mol_idx),
+                            "atom_i": int(cursor + i + 1),
+                            "atom_j": int(cursor + j + 1),
+                            "bond_i": int(ai),
+                            "bond_j": int(aj),
+                            "distance_nm": float(direct_dist),
+                            "min_image_distance_nm": float(min_image_dist),
+                        }
+                    if min_image_dist > max_min_image_bond_nm:
+                        max_min_image_bond_nm = float(min_image_dist)
                         worst = {
                             "molname": str(molname),
                             "mol_index": int(mol_idx),
@@ -327,21 +431,50 @@ def gro_topology_bond_geometry(
                             "atom_j": int(cursor + j + 1),
                             "bond_i": int(ai),
                             "bond_j": int(aj),
-                            "distance_nm": float(dist),
+                            "distance_nm": float(min_image_dist),
+                            "direct_distance_nm": float(direct_dist),
                         }
+                    if direct_dist > max_bond_nm_threshold and min_image_dist <= max_bond_nm_threshold:
+                        periodic_bond_count += 1
+                    if min_image_dist > max_bond_nm_threshold:
+                        broken_bond_count += 1
+                if _has_periodic_bond_cycle(
+                    [tuple(atom.xyz_nm) for atom in block],
+                    bonds=list(moltype.bonds),
+                    box_nm=frame.box_nm,
+                    periodic_dimensions=dims,
+                ):
+                    periodic_moltypes.add(str(molname))
                 cursor += natoms
         if cursor != len(frame.atoms):
             raise ValueError(f"Unparsed atoms remain in {gro}: parsed {cursor}, total {len(frame.atoms)}")
     except Exception as exc:
-        return {"ok": False, "error": str(exc), "checked_bonds": int(checked), "max_bond_nm": float(max_bond_nm)}
+        return {
+            "ok": False,
+            "error": str(exc),
+            "checked_bonds": int(checked),
+            "max_bond_nm": float(max_min_image_bond_nm),
+            "max_min_image_bond_nm": float(max_min_image_bond_nm),
+            "max_direct_bond_nm": float(max_direct_bond_nm),
+            "periodic_bond_count": int(periodic_bond_count),
+            "broken_bond_count": int(broken_bond_count),
+            "periodic_bonded_moltypes": sorted(periodic_moltypes),
+        }
 
     threshold = float(max_bond_nm_threshold)
     return {
-        "ok": bool(max_bond_nm <= threshold),
+        "ok": bool(broken_bond_count == 0),
         "checked_bonds": int(checked),
-        "max_bond_nm": float(max_bond_nm),
+        "max_bond_nm": float(max_min_image_bond_nm),
+        "max_min_image_bond_nm": float(max_min_image_bond_nm),
+        "max_direct_bond_nm": float(max_direct_bond_nm),
         "threshold_nm": threshold,
         "worst": worst,
+        "worst_direct": worst_direct,
+        "periodic_dimensions": [bool(x) for x in dims],
+        "periodic_bond_count": int(periodic_bond_count),
+        "broken_bond_count": int(broken_bond_count),
+        "periodic_bonded_moltypes": sorted(periodic_moltypes),
     }
 
 

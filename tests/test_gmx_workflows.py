@@ -15,6 +15,7 @@ class FakeRunner:
     def __init__(self):
         self.grompp_calls = 0
         self.mdrun_calls = 0
+        self.mdrun_kwargs = []
         self.logs = []
 
     def _log(self, msg: str) -> None:
@@ -26,9 +27,177 @@ class FakeRunner:
 
     def mdrun(self, *, deffnm: str, cwd: Path, **kwargs) -> None:
         self.mdrun_calls += 1
+        self.mdrun_kwargs.append(dict(kwargs))
         cwd = Path(cwd)
         (cwd / f'{deffnm}.gro').write_text('fake gro\n', encoding='utf-8')
         (cwd / f'{deffnm}.cpt').write_text('fake cpt\n', encoding='utf-8')
+
+
+def _write_periodic_two_atom_system(tmp_path: Path) -> tuple[Path, Path]:
+    mol_dir = tmp_path / "molecules"
+    mol_dir.mkdir(parents=True, exist_ok=True)
+    (mol_dir / "GRAPH.itp").write_text(
+        "\n".join(
+            [
+                "[ moleculetype ]",
+                "GRAPH 3",
+                "",
+                "[ atoms ]",
+                "1 c 1 GRA C1 1 0.0 12.011",
+                "2 c 1 GRA C2 1 0.0 12.011",
+                "",
+                "[ bonds ]",
+                "1 2 1",
+                "",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    top = tmp_path / "system.top"
+    top.write_text(
+        '#include "molecules/GRAPH.itp"\n\n[ system ]\nperiodic graphite smoke\n\n[ molecules ]\nGRAPH 1\n',
+        encoding="utf-8",
+    )
+    gro = tmp_path / "system.gro"
+    gro.write_text(
+        "\n".join(
+            [
+                "periodic two atom graphite",
+                "    2",
+                "    1GRA    C1    1   0.950   0.100   0.100",
+                "    1GRA    C2    2   0.050   0.100   0.100",
+                "   1.00000   1.00000   1.00000",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return gro, top
+
+
+def _write_periodic_ring_system(tmp_path: Path) -> tuple[Path, Path]:
+    mol_dir = tmp_path / "molecules"
+    mol_dir.mkdir(parents=True, exist_ok=True)
+    (mol_dir / "GRAPH.itp").write_text(
+        "\n".join(
+            [
+                "[ moleculetype ]",
+                "GRAPH 3",
+                "",
+                "[ atoms ]",
+                "1 c 1 GRA C1 1 0.0 12.011",
+                "2 c 1 GRA C2 1 0.0 12.011",
+                "3 c 1 GRA C3 1 0.0 12.011",
+                "4 c 1 GRA C4 1 0.0 12.011",
+                "",
+                "[ bonds ]",
+                "1 2 1",
+                "2 3 1",
+                "3 4 1",
+                "4 1 1",
+                "",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    top = tmp_path / "system.top"
+    top.write_text(
+        '#include "molecules/GRAPH.itp"\n\n[ system ]\nperiodic graphite ring smoke\n\n[ molecules ]\nGRAPH 1\n',
+        encoding="utf-8",
+    )
+    gro = tmp_path / "system.gro"
+    gro.write_text(
+        "\n".join(
+            [
+                "periodic four atom ring",
+                "    4",
+                "    1GRA    C1    1   0.050   0.100   0.100",
+                "    1GRA    C2    2   0.350   0.100   0.100",
+                "    1GRA    C3    3   0.650   0.100   0.100",
+                "    1GRA    C4    4   0.950   0.100   0.100",
+                "   1.00000   1.00000   1.00000",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return gro, top
+
+
+def test_bond_geometry_validates_periodic_bonds_by_minimum_image(tmp_path: Path):
+    gro, top = _write_periodic_two_atom_system(tmp_path)
+
+    raw = gro_topology_bond_geometry(top=top, gro=gro)
+    pbc = gro_topology_bond_geometry(top=top, gro=gro, periodic_dimensions=(True, False, False))
+
+    assert raw["ok"] is False
+    assert raw["max_direct_bond_nm"] == pytest.approx(0.9)
+    assert pbc["ok"] is True
+    assert pbc["max_min_image_bond_nm"] == pytest.approx(0.1)
+    assert pbc["periodic_bond_count"] == 1
+    assert pbc["periodic_bonded_moltypes"] == []
+
+
+def test_bond_geometry_detects_topologically_periodic_bond_cycle(tmp_path: Path):
+    gro, top = _write_periodic_ring_system(tmp_path)
+
+    pbc = gro_topology_bond_geometry(top=top, gro=gro, periodic_dimensions=(True, False, False))
+
+    assert pbc["ok"] is True
+    assert pbc["periodic_bond_count"] == 1
+    assert pbc["periodic_bonded_moltypes"] == ["GRAPH"]
+
+
+def test_normalize_gro_skips_periodic_molecule_types(tmp_path: Path):
+    gro, top = _write_periodic_two_atom_system(tmp_path)
+    before = gro.read_text(encoding="utf-8")
+
+    result = normalize_gro_molecules_inplace(
+        top=top,
+        gro=gro,
+        periodic_dimensions=(True, False, False),
+        periodic_moltypes=("GRAPH",),
+    )
+
+    assert result["skipped_periodic_molecules"] == 1
+    assert result["normalized_molecules"] == 0
+    assert "   0.950" in gro.read_text(encoding="utf-8")
+    assert "   0.050" in gro.read_text(encoding="utf-8")
+    assert "0.950   0.100   0.100" in before
+
+
+def test_periodic_bonded_preflight_passes_rdd_to_mdrun(tmp_path: Path):
+    gro, top = _write_periodic_ring_system(tmp_path)
+    runner = FakeRunner()
+    params = default_mdp_params()
+    params.update(
+        {
+            "nsteps": 1,
+            "dt": 0.001,
+            "pbc": "xyz",
+            "periodic-molecules": "yes",
+            "constraints": "none",
+            "gen_vel": "no",
+        }
+    )
+    stage = EqStage(name="01_md", kind="md", mdp=MdpSpec(NVT_MDP, params))
+    job = EquilibrationJob(
+        gro=gro,
+        top=top,
+        out_dir=tmp_path / "eq_periodic",
+        stages=[stage],
+        resources=RunResources(ntomp=2, ntmpi=1, use_gpu=False),
+        runner=runner,
+    )
+
+    job.run(restart=False)
+
+    assert runner.mdrun_calls == 1
+    assert runner.mdrun_kwargs[0]["mdrun_extra_args"] == ["-rdd", "0.6"]
+    summary = json.loads((tmp_path / "eq_periodic" / "01_md" / "summary.json").read_text(encoding="utf-8"))
+    assert summary["periodic_bonded_mdrun_policy"]["enabled"] is True
 
 
 def test_oplsaa_stability_preflight_builds_1fs_and_2fs_hbonds_matrix(tmp_path: Path, monkeypatch):
