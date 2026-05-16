@@ -22,7 +22,7 @@ from yadonpy.interface import (
     MolecularLayerSpec,
     analyze_layer_stack_interface,
     build_layer_stack,
-    run_layer_stack_nvt,
+    run_layer_stack_relaxation,
 )
 from yadonpy.runtime import set_run_options
 
@@ -135,7 +135,7 @@ if __name__ == "__main__":
         time_series_analysis=False,
     )
     if run_sampling:
-        nvt = run_layer_stack_nvt(
+        relax = run_layer_stack_relaxation(
             result,
             time_ns=sample_ns,
             temp=temp,
@@ -143,11 +143,11 @@ if __name__ == "__main__":
             omp=omp,
             gpu=gpu,
             gpu_id=gpu_id,
-            run_analysis=False,
+            run_analysis=True,
             restart=restart_status,
         )
-        print(f"nvt_summary = {nvt.summary_path}")
-        analy = nvt.analyze()
+        print(f"relaxation_summary = {relax.summary_path}")
+        analy = relax.analyze()
         interface = analy.interface(
             manifest_path=result.manifest_path,
             analysis_profile=analysis_profile,

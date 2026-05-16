@@ -11,10 +11,12 @@ from yadonpy.interface.layer_stack import (
     ElectrodeChargeSpec,
     GraphiteLayerSpec,
     LayerStackNvtResult,
+    LayerStackRelaxationResult,
     LayerStackSpec,
     MolecularLayerSpec,
     VacuumLayerSpec,
     build_layer_stack,
+    run_layer_stack_relaxation,
     run_layer_stack_nvt,
 )
 from yadonpy.io.gromacs_system import SystemExportResult
@@ -305,4 +307,82 @@ def test_run_layer_stack_nvt_uses_exported_stack_artifact(monkeypatch, tmp_path:
     assert out.xtc is None
     assert out.summary_path.exists()
     copied_ndx = (tmp_path / "nvt" / "02_system" / "system.ndx").read_text(encoding="utf-8")
+    assert "LAYER_00_GRAPHITE" in copied_ndx
+
+
+def test_run_layer_stack_relaxation_builds_fixed_xy_z_npt_workflow(monkeypatch, tmp_path: Path):
+    _patch_fake_export(monkeypatch)
+    water = utils.mol_from_smiles("O", name="WAT")
+    result = build_layer_stack(
+        stack=LayerStackSpec(
+            layers=(
+                GraphiteLayerSpec(name="GRAPHITE", nx=2, ny=2, n_layers=1),
+                MolecularLayerSpec(
+                    name="ELECTROLYTE",
+                    species=(water,),
+                    counts=(1,),
+                    thickness_nm=1.0,
+                    density_target_g_cm3=0.4,
+                    layer_kind="electrolyte",
+                ),
+            ),
+            name="relax_input",
+        ),
+        work_dir=tmp_path / "stack",
+        restart=False,
+    )
+
+    captured: dict[str, object] = {}
+
+    class DummyJob:
+        def __init__(self, *, gro, top, ndx=None, provenance_ndx=None, out_dir, stages, resources):
+            captured["gro"] = Path(gro)
+            captured["top"] = Path(top)
+            captured["ndx"] = Path(ndx)
+            captured["out_dir"] = Path(out_dir)
+            captured["stages"] = list(stages)
+            captured["resources"] = resources
+
+        def run(self, *, restart=False):
+            out_dir = Path(captured["out_dir"])
+            final = out_dir / "04_final_nvt"
+            final.mkdir(parents=True, exist_ok=True)
+            (final / "md.gro").write_text("dummy\n0\n   1.0   1.0   1.5\n", encoding="utf-8")
+            (final / "md.xtc").write_bytes(b"")
+            (out_dir / "summary.json").write_text("{}", encoding="utf-8")
+            return out_dir / "summary.json"
+
+    from yadonpy.gmx.workflows import eq as eqmod
+
+    monkeypatch.setattr(eqmod, "EquilibrationJob", DummyJob)
+    monkeypatch.setattr("yadonpy.interface.layer_stack.analyze_layer_stack_interface", lambda **kwargs: {"summary_path": str(tmp_path / "analysis.json"), "geometry_health": {"phase_order_ok": True}, "outputs": {}})
+
+    out = run_layer_stack_relaxation(
+        result,
+        work_dir=tmp_path / "relax",
+        time_ns=0.01,
+        pre_nvt_ns=0.002,
+        z_npt_ns=0.003,
+        run_analysis=True,
+        gpu=0,
+    )
+
+    stages = captured["stages"]
+    assert isinstance(out, LayerStackRelaxationResult)
+    assert [stage.name for stage in stages] == ["01_pre_minimize", "02_pre_nvt", "03_z_npt", "04_final_nvt"]
+    z_npt_mdp = stages[2].mdp.render()
+    final_nvt_mdp = stages[3].mdp.render()
+    assert "pcoupltype                = semiisotropic" in z_npt_mdp
+    assert "ref_p                     = 1 1" in z_npt_mdp
+    assert "compressibility           = 0 4.5e-05" in z_npt_mdp
+    assert "pcoupl" not in final_nvt_mdp
+    assert captured["gro"] == tmp_path / "relax" / "02_system" / "system.gro"
+    assert captured["ndx"] == tmp_path / "relax" / "02_system" / "system.ndx"
+    assert out.final_gro == tmp_path / "relax" / "05_relaxation_workflow" / "04_final_nvt" / "md.gro"
+    assert out.trajectory == tmp_path / "relax" / "05_relaxation_workflow" / "04_final_nvt" / "md.xtc"
+    summary = json.loads(out.summary_path.read_text(encoding="utf-8"))
+    assert summary["stage_order"] == ["01_pre_minimize", "02_pre_nvt", "03_z_npt", "04_final_nvt"]
+    assert summary["z_npt_mdp_overrides"]["compressibility"] == "0 4.5e-05"
+    assert (tmp_path / "relax" / "layer_stack_manifest.json").is_file()
+    copied_ndx = (tmp_path / "relax" / "02_system" / "system.ndx").read_text(encoding="utf-8")
     assert "LAYER_00_GRAPHITE" in copied_ndx

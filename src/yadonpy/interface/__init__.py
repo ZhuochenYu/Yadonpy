@@ -39,6 +39,7 @@ from .layer_stack import (
     ElectrodeChargeSpec,
     GraphiteLayerSpec,
     LayerStackNvtResult,
+    LayerStackRelaxationResult,
     LayerStackRelaxationSpec,
     LayerStackResult,
     LayerStackSpec,
@@ -46,6 +47,7 @@ from .layer_stack import (
     VacuumLayerSpec,
     analyze_layer_stack_interface,
     build_layer_stack,
+    run_layer_stack_relaxation,
     run_layer_stack_nvt,
 )
 from .postprocess import build_interface_group_catalog, export_interface_group_catalog, read_ndx_groups
@@ -91,6 +93,7 @@ __all__ = [
     "ElectrodeChargeSpec",
     "GraphiteLayerSpec",
     "LayerStackNvtResult",
+    "LayerStackRelaxationResult",
     "LayerStackRelaxationSpec",
     "LayerStackResult",
     "LayerStackSpec",
@@ -108,6 +111,7 @@ __all__ = [
     "build_layer_stack",
     "analyze_layer_stack_interface",
     "run_layer_stack_nvt",
+    "run_layer_stack_relaxation",
     "build_interface_group_catalog",
     "equilibrate_bulk_with_eq21",
     "plan_direct_polymer_matched_interface_preparation",

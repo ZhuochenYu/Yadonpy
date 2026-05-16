@@ -87,10 +87,11 @@ YadonPy currently focuses on these concrete workflows.
    Scripts cover basal graphite/electrolyte, edge graphite/electrolyte,
    graphite + CMC-Na + electrolyte, two-graphite stacks, and a fixed-charge
    graphite sweep.  The interface workflow writes layer-aware
-   `system.gro/top/ndx` files plus `layer_stack_manifest.json`, then provides
-   interface-specific post-processing for z profiles, fixed-charge EDL
-   diagnostics, penetration, adsorption, cation coordination, and anisotropic
-   in-plane transport.
+   `system.gro/top/ndx` files plus `layer_stack_manifest.json`, relaxes compact
+   stacks with pre-minimization, short pre-NVT, fixed-XY z-NPT, and final NVT,
+   then provides interface-specific post-processing for z profiles,
+   fixed-charge EDL diagnostics, penetration, adsorption, cation coordination,
+   and anisotropic in-plane transport.
 
 ## What The Toolkit Provides
 
@@ -108,7 +109,7 @@ The examples above are built from a small set of reusable components:
 - MolDB storage and reuse for molecule-level geometries, charges, bonded
   patches, and metadata. MolDB is not a complete system-topology cache.
 - GROMACS export, EQ21 equilibration, NPT/NVT production, restart/resume
-  handling, and adaptive output cadence.
+  handling, fixed-XY z-NPT layer-stack relaxation, and adaptive output cadence.
 - Analysis routines used by the examples: density/thermo summaries, RDF, MSD,
   Nernst-Einstein and Einstein-Helfand conductivity, dielectric response,
   polymer metrics, Tg fitting, uniaxial mechanics, and layer-stack interface
@@ -287,6 +288,7 @@ from yadonpy.interface import (
     MolecularLayerSpec,
     analyze_layer_stack_interface,
     build_layer_stack,
+    run_layer_stack_relaxation,
 )
 
 stack = LayerStackSpec(
@@ -314,11 +316,21 @@ profile = analyze_layer_stack_interface(
 )
 ```
 
-For sampled interfaces, use the interface analysis facade rather than bulk 3D
-transport assumptions:
+The layer density targets above define the initial geometry.  For sampled
+interfaces, let the stack relax in z before analysis: XY stays fixed by the
+graphite footprint, z is pressure-coupled, and the reported interface analysis
+uses the final NVT trajectory after that z-NPT density relaxation.
 
 ```python
-analy = nvt.analyze()
+relax = run_layer_stack_relaxation(
+    result,
+    time_ns=2.0,
+    pre_nvt_ns=0.05,
+    z_npt_ns=0.50,
+    dt_ps=0.001,
+    constraints="none",
+)
+analy = relax.analyze()
 interface = analy.interface(
     manifest_path=result.manifest_path,
     analysis_profile="interface_fast",
@@ -362,6 +374,10 @@ summary = interface.summary(time_series_analysis=True)
 - For Example 08, `Dxy` is the interface mobility metric.  `Dz` is confined
   z-direction mobility and should not be interpreted as a bulk diffusion
   coefficient.
+- Example 08 layer density settings are initial packing targets, not a claim
+  that the immediate NVT local density is already physical.  The default sampled
+  workflow uses fixed-XY, semi-isotropic z-NPT to remove vacuum-like gaps or
+  over-compressed regions before the final NVT trajectory is analyzed.
 - Example 08 interface time-series animations are disabled unless an applicable
   post-processing call explicitly receives `time_series_analysis=True`.  When
   enabled, they sample up to ten equal trajectory windows by default and write

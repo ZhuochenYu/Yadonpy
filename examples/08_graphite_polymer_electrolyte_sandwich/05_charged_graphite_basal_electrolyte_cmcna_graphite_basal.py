@@ -24,7 +24,7 @@ from yadonpy.interface import (
     MolecularLayerSpec,
     analyze_layer_stack_interface,
     build_layer_stack,
-    run_layer_stack_nvt,
+    run_layer_stack_relaxation,
 )
 from yadonpy.runtime import set_run_options
 
@@ -262,7 +262,7 @@ if __name__ == "__main__":
             time_series_analysis=False,
         )
         if run_sampling:
-            nvt = run_layer_stack_nvt(
+            relax = run_layer_stack_relaxation(
                 result,
                 time_ns=sample_ns,
                 temp=temp,
@@ -272,15 +272,15 @@ if __name__ == "__main__":
                 gpu_id=gpu_id,
                 dt_ps=0.001,
                 constraints="none",
-                run_analysis=False,
+                run_analysis=True,
                 restart=restart_status,
             )
-            print(f"[{surface_charge:+.1f} uC/cm2] nvt_summary = {nvt.summary_path}")
+            print(f"[{surface_charge:+.1f} uC/cm2] relaxation_summary = {relax.summary_path}")
 
-            # Sampled-trajectory post-processing facade. `nvt.analyze()` resolves
+            # Sampled-trajectory post-processing facade. `relax.analyze()` resolves
             # the final NVT `md.gro`, `md.tpr`, `md.edr`, topology, index file,
-            # and coordinate stream (`md.trr` by default, or `md.xtc` if the
-            # trajectory policy requested compressed coordinates).
+            # and coordinate stream (`md.xtc` by default; `md.trr` is used when
+            # the trajectory policy requests full-precision coordinates).
             #
             # The facade keeps expensive work cached per parameter set and lets
             # the script ask physical questions explicitly:
@@ -304,7 +304,7 @@ if __name__ == "__main__":
             #     cation-polymer O, cation-solvent O, and cation-anion F pairs
             #     when those sites exist, and always writes the paired CN(r)
             #     curves plus first-shell CN versus time.
-            analy = nvt.analyze()
+            analy = relax.analyze()
             interface = analy.interface(
                 manifest_path=result.manifest_path,
                 analysis_profile=analysis_profile,

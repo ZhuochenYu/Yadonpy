@@ -68,6 +68,13 @@ def run_layer_stack_nvt(*args, **kwargs):
     return _run_layer_stack_nvt(*args, **kwargs)
 
 
+def run_layer_stack_relaxation(*args, **kwargs):
+    """Thin wrapper around :func:`yadonpy.interface.run_layer_stack_relaxation`."""
+    from .interface import run_layer_stack_relaxation as _run_layer_stack_relaxation
+
+    return _run_layer_stack_relaxation(*args, **kwargs)
+
+
 def clean_md_trajectory_files(*args, **kwargs):
     """Remove large trajectory streams after analysis has finished."""
     from .sim.cleanup import clean_md_trajectory_files as _clean_md_trajectory_files
@@ -294,6 +301,7 @@ __all__ = [
     'print_mechanics_result_summary',
     'resolve_prepared_system',
     'run_layer_stack_nvt',
+    'run_layer_stack_relaxation',
     'run_elongation_gmx',
     'run_tg_scan_gmx',
 ]

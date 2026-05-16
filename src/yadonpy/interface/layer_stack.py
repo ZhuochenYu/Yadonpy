@@ -13,10 +13,12 @@ style remains close to Examples 02/05.
 
 from __future__ import annotations
 
+import csv
 from dataclasses import dataclass
 import json
 import math
 import re
+import shutil
 from pathlib import Path
 from typing import Any, Literal, Mapping, Sequence
 
@@ -233,6 +235,27 @@ class LayerStackNvtResult:
 
     def analyze(self):
         """Return an :class:`AnalyzeResult` rooted at this NVT follow-up run."""
+
+        from ..sim.analyzer import AnalyzeResult
+
+        return AnalyzeResult.from_work_dir(self.work_dir)
+
+
+@dataclass(frozen=True)
+class LayerStackRelaxationResult:
+    """Result from :func:`run_layer_stack_relaxation`."""
+
+    work_dir: Path
+    final_gro: Path | None
+    trajectory: Path | None
+    xtc: Path | None
+    trr: Path | None
+    summary_path: Path
+    analysis_summary: Path | None
+    diagnostics: dict[str, Any]
+
+    def analyze(self):
+        """Return an :class:`AnalyzeResult` rooted at this relaxation run."""
 
         from ..sim.analyzer import AnalyzeResult
 
@@ -1129,6 +1152,448 @@ def _copy_text_file(src: Path, dst: Path) -> None:
         Path(dst).write_text(Path(src).read_text(encoding="utf-8", errors="replace"), encoding="utf-8")
 
 
+def _copy_system_export_dir(result: LayerStackResult, dst: Path) -> Path:
+    """Copy a stack export so relative topology includes remain valid."""
+
+    src_dir = Path(result.system_gro).parent
+    dst = Path(dst)
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    if src_dir.is_dir():
+        shutil.copytree(src_dir, dst, dirs_exist_ok=True)
+    _copy_text_file(Path(result.system_gro), dst / "system.gro")
+    _copy_text_file(Path(result.system_top), dst / "system.top")
+    _copy_text_file(Path(result.system_ndx), dst / "system.ndx")
+    return dst
+
+
+def _ns_to_nsteps(time_ns: float, dt_ps: float) -> int:
+    return max(1, int(round(float(time_ns) * 1000.0 / max(float(dt_ps), 1.0e-12))))
+
+
+def _interval_to_nst(value: float | str | None, *, dt_ps: float, default_ps: float, disabled_if_none: bool = False) -> int:
+    if value is None:
+        return 0 if disabled_if_none else max(1, int(round(float(default_ps) / max(float(dt_ps), 1.0e-12))))
+    if isinstance(value, str):
+        token = value.strip().lower()
+        if token in {"", "auto"}:
+            ps = float(default_ps)
+        elif token in {"none", "off", "no", "false", "0"}:
+            return 0
+        else:
+            ps = float(token)
+    else:
+        ps = float(value)
+    if ps <= 0.0:
+        return 0
+    return max(1, int(round(ps / max(float(dt_ps), 1.0e-12))))
+
+
+def _layer_stack_md_params(
+    *,
+    time_ns: float,
+    dt_ps: float,
+    temp: float,
+    constraints: str,
+    pbc_mode: str,
+    gen_vel: str,
+    continuation: str,
+    traj_ps: float | str | None,
+    energy_ps: float | str | None,
+    log_ps: float | str | None,
+    trr_ps: float | str | None,
+    velocity_ps: float | str | None,
+) -> dict[str, object]:
+    from ..gmx.mdp_templates import default_mdp_params
+
+    p = default_mdp_params()
+    p.update(
+        {
+            "nsteps": _ns_to_nsteps(time_ns, dt_ps),
+            "dt": float(dt_ps),
+            "ref_t": float(temp),
+            "gen_temp": float(temp),
+            "constraints": str(constraints),
+            "pbc": str(pbc_mode or "xyz"),
+            "periodic_molecules": "yes",
+            "gen_vel": str(gen_vel),
+            "continuation": str(continuation),
+            "nstxout": _interval_to_nst(traj_ps, dt_ps=dt_ps, default_ps=20.0),
+            "nstxout_trr": _interval_to_nst(trr_ps, dt_ps=dt_ps, default_ps=20.0, disabled_if_none=True),
+            "nstvout": _interval_to_nst(velocity_ps, dt_ps=dt_ps, default_ps=20.0, disabled_if_none=True),
+            "nstenergy": _interval_to_nst(energy_ps, dt_ps=dt_ps, default_ps=10.0),
+            "nstlog": _interval_to_nst(log_ps, dt_ps=dt_ps, default_ps=10.0),
+        }
+    )
+    return p
+
+
+def _summarize_density_profile(
+    analysis_payload: dict[str, Any] | None,
+    *,
+    low_density_threshold_g_cm3: float = 0.02,
+    extended_vacuum_span_nm: float = 0.75,
+) -> dict[str, Any]:
+    outputs = (analysis_payload or {}).get("outputs") if isinstance(analysis_payload, dict) else None
+    profile_csv = Path(str((outputs or {}).get("z_density_profiles_csv") or ""))
+    if not profile_csv.is_file():
+        return {"available": False, "reason": "missing_z_density_profile"}
+
+    phase_values: dict[str, list[float]] = {}
+    totals: dict[tuple[float, float], float] = {}
+    try:
+        with profile_csv.open(newline="", encoding="utf-8") as fh:
+            for row in csv.DictReader(fh):
+                if str(row.get("entity_kind") or "").strip().lower() != "phase":
+                    continue
+                entity = str(row.get("entity") or "").strip()
+                rho = float(row.get("mass_density_g_cm3") or 0.0)
+                z_lo = float(row.get("z_lo_nm") or 0.0)
+                z_hi = float(row.get("z_hi_nm") or z_lo)
+                phase_values.setdefault(entity, []).append(rho)
+                key = (z_lo, z_hi)
+                totals[key] = float(totals.get(key, 0.0) + rho)
+    except Exception as exc:
+        return {"available": False, "reason": str(exc)}
+
+    phase_density: dict[str, dict[str, float | None]] = {}
+    for phase, values in phase_values.items():
+        arr = np.asarray(values, dtype=float)
+        if arr.size == 0:
+            continue
+        positive = arr[arr > 1.0e-6]
+        max_v = float(np.max(arr)) if arr.size else 0.0
+        rich = arr[arr >= max(1.0e-6, 0.10 * max_v)] if max_v > 0.0 else np.asarray([], dtype=float)
+        core = arr[arr >= max(1.0e-6, 0.50 * max_v)] if max_v > 0.0 else np.asarray([], dtype=float)
+        phase_density[phase] = {
+            "mean_nonzero_g_cm3": float(np.mean(positive)) if positive.size else None,
+            "rich_region_mean_g_cm3": float(np.mean(rich)) if rich.size else None,
+            "core_region_mean_g_cm3": float(np.mean(core)) if core.size else None,
+            "max_g_cm3": max_v,
+        }
+
+    bins = sorted((zlo, zhi, rho) for (zlo, zhi), rho in totals.items())
+    low = [item for item in bins if float(item[2]) < float(low_density_threshold_g_cm3)]
+    max_span = 0.0
+    if low:
+        current_lo, current_hi = float(low[0][0]), float(low[0][1])
+        for zlo, zhi, _rho in low[1:]:
+            if float(zlo) <= current_hi + 1.0e-6:
+                current_hi = max(current_hi, float(zhi))
+            else:
+                max_span = max(max_span, current_hi - current_lo)
+                current_lo, current_hi = float(zlo), float(zhi)
+        max_span = max(max_span, current_hi - current_lo)
+
+    focus = {
+        name: payload
+        for name, payload in phase_density.items()
+        if any(token in name.upper() for token in ("CMC", "ELECTROLYTE"))
+    }
+    return {
+        "available": True,
+        "phase_density_g_cm3": phase_density,
+        "focus_phase_density_g_cm3": focus,
+        "vacuum_like": {
+            "threshold_g_cm3": float(low_density_threshold_g_cm3),
+            "extended_span_threshold_nm": float(extended_vacuum_span_nm),
+            "low_density_bin_fraction": (float(len(low)) / float(len(bins))) if bins else None,
+            "max_contiguous_span_nm": float(max_span),
+            "has_extended_vacuum_like_region": bool(max_span >= float(extended_vacuum_span_nm)),
+        },
+    }
+
+
+def _relaxation_diagnostics(
+    *,
+    initial_gro: Path,
+    final_gro: Path | None,
+    top: Path,
+    analysis_payload: dict[str, Any] | None,
+) -> dict[str, Any]:
+    from ..gmx.workflows._util import gro_topology_bond_geometry, read_gro_box_nm
+
+    diagnostics: dict[str, Any] = {}
+    try:
+        initial_box = read_gro_box_nm(initial_gro)
+        diagnostics["initial_box_nm"] = list(initial_box)
+    except Exception as exc:
+        initial_box = None
+        diagnostics["initial_box_error"] = str(exc)
+    if final_gro is not None and Path(final_gro).is_file():
+        try:
+            final_box = read_gro_box_nm(final_gro)
+            diagnostics["final_box_nm"] = list(final_box)
+            if initial_box is not None and float(initial_box[2]) > 0.0:
+                diagnostics["box_z_ratio_final_over_initial"] = float(final_box[2]) / float(initial_box[2])
+        except Exception as exc:
+            diagnostics["final_box_error"] = str(exc)
+        try:
+            diagnostics["periodic_bond_geometry"] = gro_topology_bond_geometry(
+                top=top,
+                gro=Path(final_gro),
+                periodic_dimensions=(True, True, True),
+            )
+        except Exception as exc:
+            diagnostics["periodic_bond_geometry"] = {"ok": False, "error": str(exc)}
+    if isinstance(analysis_payload, dict):
+        health = analysis_payload.get("geometry_health") or {}
+        diagnostics["geometry_health"] = health
+        diagnostics["phase_order_ok"] = health.get("phase_order_ok")
+        diagnostics["adjacent_gaps_nm"] = health.get("adjacent_gaps_nm")
+        diagnostics["pbc_closing_gap_nm"] = health.get("pbc_closing_gap_nm")
+        diagnostics["density_profile"] = _summarize_density_profile(analysis_payload)
+    return diagnostics
+
+
+def run_layer_stack_relaxation(
+    result: LayerStackResult,
+    *,
+    work_dir: str | Path | None = None,
+    time_ns: float = 2.0,
+    pre_nvt_ns: float = 0.05,
+    z_npt_ns: float = 0.50,
+    final_nvt_ns: float | None = None,
+    temp: float = 318.15,
+    pressure_bar: float = 1.0,
+    z_compressibility_bar_inv: float = 4.5e-5,
+    xy_compressibility: float = 0.0,
+    mpi: int = 1,
+    omp: int = 14,
+    gpu: int = 1,
+    gpu_id: int | None = 0,
+    restart: bool | None = None,
+    dt_ps: float = 0.001,
+    constraints: str = "none",
+    traj_ps: float | str | None = "auto",
+    energy_ps: float | str | None = "auto",
+    log_ps: float | str | None = "auto",
+    trr_ps: float | str | None = None,
+    velocity_ps: float | str | None = None,
+    gpu_offload_mode: str = "full",
+    analysis_profile: str = "interface_fast",
+    run_analysis: bool = True,
+) -> LayerStackRelaxationResult:
+    """Relax an exported layer stack with pre-NVT, fixed-XY z-NPT, and final NVT.
+
+    The initial layer densities are treated as geometry targets.  The z-NPT
+    stage keeps the graphite-defined XY footprint fixed while the box length in
+    z responds to pressure; analysis is then based on the final NVT trajectory.
+    """
+
+    from ..gmx.mdp_templates import (
+        MINIM_STEEP_MDP,
+        NPT_MDP,
+        NPT_NO_CONSTRAINTS_MDP,
+        NVT_MDP,
+        NVT_NO_CONSTRAINTS_MDP,
+        MdpSpec,
+        default_mdp_params,
+    )
+    from ..gmx.workflows.eq import EqStage, EquilibrationJob
+    from ..gmx.workflows._util import RunResources
+    from ..runtime import resolve_restart
+    from .bulk_resize import fixed_xy_semiisotropic_npt_overrides
+
+    rst_flag = resolve_restart(restart)
+    run_dir = Path(work_dir).expanduser().resolve() if work_dir is not None else Path(result.work_dir) / "03_relaxation_sampling"
+    if (not rst_flag) and run_dir.exists():
+        shutil.rmtree(run_dir, ignore_errors=True)
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    system_dir = _copy_system_export_dir(result, run_dir / "02_system")
+    _copy_text_file(Path(result.manifest_path), run_dir / "layer_stack_manifest.json")
+
+    pbc_mode = str(result.stack_spec.pbc_mode or "xyz")
+    if pbc_mode == "auto":
+        pbc_mode = "xyz"
+    constraints_mode = str(constraints)
+    dynamic_template_nvt = NVT_NO_CONSTRAINTS_MDP if constraints_mode.strip().lower() == "none" else NVT_MDP
+    dynamic_template_npt = NPT_NO_CONSTRAINTS_MDP if constraints_mode.strip().lower() == "none" else NPT_MDP
+
+    minim = default_mdp_params()
+    minim.update(
+        {
+            "nsteps": 50000,
+            "emtol": 1000.0,
+            "emstep": 0.01,
+            "pbc": pbc_mode,
+            "periodic_molecules": "yes",
+            "constraints": "none",
+        }
+    )
+
+    pre_nvt = _layer_stack_md_params(
+        time_ns=float(pre_nvt_ns),
+        dt_ps=float(dt_ps),
+        temp=float(temp),
+        constraints=constraints_mode,
+        pbc_mode=pbc_mode,
+        gen_vel="yes",
+        continuation="no",
+        traj_ps=traj_ps,
+        energy_ps=energy_ps,
+        log_ps=log_ps,
+        trr_ps=trr_ps,
+        velocity_ps=velocity_ps,
+    )
+    z_npt = _layer_stack_md_params(
+        time_ns=float(z_npt_ns),
+        dt_ps=float(dt_ps),
+        temp=float(temp),
+        constraints=constraints_mode,
+        pbc_mode=pbc_mode,
+        gen_vel="no",
+        continuation="yes",
+        traj_ps=traj_ps,
+        energy_ps=energy_ps,
+        log_ps=log_ps,
+        trr_ps=trr_ps,
+        velocity_ps=velocity_ps,
+    )
+    z_npt["pcoupl"] = "C-rescale"
+    z_npt["ref_p"] = f"{float(pressure_bar):.6g} {float(pressure_bar):.6g}"
+    z_npt.update(
+        fixed_xy_semiisotropic_npt_overrides(
+            pressure_bar=float(pressure_bar),
+            z_compressibility_bar_inv=float(z_compressibility_bar_inv),
+        )
+    )
+    z_npt["compressibility"] = f"{float(xy_compressibility):.6g} {float(z_compressibility_bar_inv):.6g}"
+
+    final_nvt = _layer_stack_md_params(
+        time_ns=float(time_ns if final_nvt_ns is None else final_nvt_ns),
+        dt_ps=float(dt_ps),
+        temp=float(temp),
+        constraints=constraints_mode,
+        pbc_mode=pbc_mode,
+        gen_vel="no",
+        continuation="yes",
+        traj_ps=traj_ps,
+        energy_ps=energy_ps,
+        log_ps=log_ps,
+        trr_ps=trr_ps,
+        velocity_ps=velocity_ps,
+    )
+
+    stages = [
+        EqStage(name="01_pre_minimize", kind="minim", mdp=MdpSpec(MINIM_STEEP_MDP, minim)),
+        EqStage(name="02_pre_nvt", kind="nvt", mdp=MdpSpec(dynamic_template_nvt, pre_nvt)),
+        EqStage(name="03_z_npt", kind="npt", mdp=MdpSpec(dynamic_template_npt, z_npt)),
+        EqStage(name="04_final_nvt", kind="nvt", mdp=MdpSpec(dynamic_template_nvt, final_nvt)),
+    ]
+    use_gpu = bool(int(gpu))
+    resources = RunResources(
+        ntmpi=int(mpi),
+        ntomp=int(omp),
+        use_gpu=use_gpu,
+        gpu_id=(None if gpu_id is None else str(gpu_id)),
+        gpu_offload_mode=str(gpu_offload_mode),
+    )
+    workflow_dir = run_dir / "05_relaxation_workflow"
+    job = EquilibrationJob(
+        gro=system_dir / "system.gro",
+        top=system_dir / "system.top",
+        ndx=system_dir / "system.ndx",
+        provenance_ndx=system_dir / "system.ndx",
+        out_dir=workflow_dir,
+        stages=stages,
+        resources=resources,
+    )
+    job.run(restart=rst_flag)
+
+    final_stage_dir = workflow_dir / "04_final_nvt"
+    final_gro = (
+        final_stage_dir / "md.gro"
+        if (final_stage_dir / "md.gro").is_file()
+        else _latest_existing_file(list(workflow_dir.rglob("md.gro")))
+    )
+    xtc = (
+        final_stage_dir / "md.xtc"
+        if (final_stage_dir / "md.xtc").is_file()
+        else _latest_existing_file(list(final_stage_dir.rglob("md.xtc")))
+    )
+    trr = (
+        final_stage_dir / "md.trr"
+        if (final_stage_dir / "md.trr").is_file()
+        else _latest_existing_file(list(final_stage_dir.rglob("md.trr")))
+    )
+    trajectory = xtc if xtc is not None else trr
+
+    analysis_summary: Path | None = None
+    analysis_payload: dict[str, Any] | None = None
+    if run_analysis and final_gro is not None:
+        try:
+            analysis_payload = analyze_layer_stack_interface(
+                work_dir=run_dir,
+                system_gro=final_gro,
+                system_ndx=system_dir / "system.ndx",
+                trajectory=trajectory,
+                analysis_profile=analysis_profile,
+                compute_transport=False,
+            )
+            out_path = analysis_payload.get("summary_path") if isinstance(analysis_payload, dict) else None
+            if out_path:
+                analysis_summary = Path(out_path)
+        except Exception as exc:
+            analysis_payload = {"error": str(exc)}
+
+    diagnostics = _relaxation_diagnostics(
+        initial_gro=system_dir / "system.gro",
+        final_gro=final_gro,
+        top=system_dir / "system.top",
+        analysis_payload=analysis_payload,
+    )
+    summary_path = run_dir / "relaxation_followup_summary.json"
+    payload = {
+        "schema_version": 1,
+        "workflow": "layer_stack_relaxation",
+        "work_dir": str(run_dir),
+        "source_layer_stack": str(result.work_dir),
+        "stage_order": [stage.name for stage in stages],
+        "time_ns": {
+            "pre_nvt": float(pre_nvt_ns),
+            "z_npt": float(z_npt_ns),
+            "final_nvt": float(time_ns if final_nvt_ns is None else final_nvt_ns),
+        },
+        "temperature_K": float(temp),
+        "pressure_bar": float(pressure_bar),
+        "dt_ps": float(dt_ps),
+        "constraints": constraints_mode,
+        "z_npt_mdp_overrides": {
+            "pcoupl": "C-rescale",
+            "pcoupltype": "semiisotropic",
+            "ref_p": z_npt["ref_p"],
+            "compressibility": z_npt["compressibility"],
+        },
+        "gpu_offload_mode": str(gpu_offload_mode),
+        "resources": {"mpi": int(mpi), "omp": int(omp), "gpu": int(gpu), "gpu_id": gpu_id},
+        "artifacts": {
+            "system_gro": str(system_dir / "system.gro"),
+            "system_top": str(system_dir / "system.top"),
+            "system_ndx": str(system_dir / "system.ndx"),
+            "workflow_summary": str(workflow_dir / "summary.json"),
+            "final_gro": str(final_gro) if final_gro is not None else None,
+            "trajectory": str(trajectory) if trajectory is not None else None,
+            "xtc": str(xtc) if xtc is not None else None,
+            "trr": str(trr) if trr is not None else None,
+            "manifest": str(run_dir / "layer_stack_manifest.json"),
+        },
+        "diagnostics": diagnostics,
+        "analysis": analysis_payload,
+    }
+    summary_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    return LayerStackRelaxationResult(
+        work_dir=run_dir,
+        final_gro=final_gro,
+        trajectory=trajectory,
+        xtc=xtc,
+        trr=trr,
+        summary_path=summary_path,
+        analysis_summary=analysis_summary,
+        diagnostics=diagnostics,
+    )
+
+
 def run_layer_stack_nvt(
     result: LayerStackResult,
     *,
@@ -1373,6 +1838,7 @@ __all__ = [
     "ElectrodeChargeSpec",
     "GraphiteLayerSpec",
     "LayerStackNvtResult",
+    "LayerStackRelaxationResult",
     "LayerStackRelaxationSpec",
     "LayerStackResult",
     "LayerStackSpec",
@@ -1380,5 +1846,6 @@ __all__ = [
     "VacuumLayerSpec",
     "analyze_layer_stack_interface",
     "build_layer_stack",
+    "run_layer_stack_relaxation",
     "run_layer_stack_nvt",
 ]

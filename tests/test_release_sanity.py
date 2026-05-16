@@ -227,7 +227,7 @@ def test_example08_public_cases_are_moldb_only_for_core_species():
         assert 'qm.' not in text
         assert 'assign_charges(' not in text
         assert 'build_layer_stack(' in text
-        assert 'run_layer_stack_nvt(' in text
+        assert 'run_layer_stack_relaxation(' in text
 
 
 def test_example08_scripts_use_one_shot_builder_and_interface_summary_printer():
@@ -296,7 +296,7 @@ def test_example08_scripts_use_one_shot_builder_and_interface_summary_printer():
         assert 'penetration_species = ' in text
         assert 'adsorption_species = ' in text
         assert 'time_series_analysis = True' in text
-        assert 'analy = nvt.analyze()' in text
+        assert 'analy = relax.analyze()' in text
         assert 'interface = analy.interface(' in text
         assert 'interface.geometry_health(time_series_analysis=time_series_analysis)' in text
         assert 'interface.z_profiles(time_series_analysis=time_series_analysis)' in text
