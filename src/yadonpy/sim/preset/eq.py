@@ -756,8 +756,9 @@ def _build_production_stages(
     first_stage_gen_vel: str = "no",
     settle_constraints: bool = True,
     settle_nsteps: int = 5000,
+    pre_minimize: bool = False,
 ) -> list[EqStage]:
-    from ...gmx.mdp_templates import MINIM_STEEP_HBONDS_MDP
+    from ...gmx.mdp_templates import MINIM_STEEP_HBONDS_MDP, MINIM_STEEP_MDP
 
     dt_ps = float(params["dt"])
     constraints_mode = _normalize_constraints_mode(constraints_mode)
@@ -782,6 +783,24 @@ def _build_production_stages(
                 "minim",
                 MdpSpec(MINIM_STEEP_HBONDS_MDP, settle_params),
                 strict_constraints=True,
+            )
+        )
+        stage_index += 1
+    elif bool(pre_minimize):
+        pre_min_params = {
+            **params,
+            "nsteps": int(max(1, int(settle_nsteps))),
+            "emtol": 1000.0,
+            "emstep": 0.0005,
+            "constraints": "none",
+            "constraint_algorithm": "none",
+        }
+        stages.append(
+            EqStage(
+                f"{stage_index:02d}_pre_minimize",
+                "minim",
+                MdpSpec(MINIM_STEEP_MDP, pre_min_params),
+                strict_constraints=False,
             )
         )
         stage_index += 1
@@ -4630,6 +4649,7 @@ class NVT(EQ21step):
         bridge_dt_fs: float = 1.0,
         bridge_lincs_iter: int = 4,
         bridge_lincs_order: int = 12,
+        pre_minimize: bool = False,
         mdp_overrides: Optional[dict[str, object]] = None,
         restart: Optional[bool] = None,
         density_control: Optional[bool] = None,
@@ -4854,6 +4874,7 @@ class NVT(EQ21step):
             bridge_dt_fs=float(bridge_dt_fs),
             bridge_lincs_iter=int(bridge_lincs_iter),
             bridge_lincs_order=int(bridge_lincs_order),
+            pre_minimize=bool(pre_minimize),
         )
 
         use_gpu, gid = _parse_gpu_args(gpu, gpu_id)
@@ -4895,6 +4916,7 @@ class NVT(EQ21step):
                 "bridge_dt_fs": float(bridge_dt_fs),
                 "bridge_lincs_iter": int(bridge_lincs_iter),
                 "bridge_lincs_order": int(bridge_lincs_order),
+                "pre_minimize": bool(pre_minimize),
                 "mdp_overrides": json.dumps(mdp_overrides, sort_keys=True, default=str) if mdp_overrides else None,
                 "density_control": bool(resolved_density_control),
                 "density_frac_last": float(density_frac_last),

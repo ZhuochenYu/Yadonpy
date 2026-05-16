@@ -53,10 +53,10 @@ Use `yadonpy.sim.qm` when you need explicit control of:
 
 Use `yadonpy.interface` when the work is about:
 
-- bulk equilibration before interface assembly,
-- slab extraction from equilibrated phases,
-- interface route planning,
-- graphite-polymer-electrolyte sandwich construction.
+- generic layer-stack interface construction,
+- graphite basal/edge surfaces,
+- fixed-charge electrode sweeps,
+- layer-aware interface analysis.
 
 ## 3. Prepare Molecules from SMILES
 
@@ -257,7 +257,7 @@ post-processing can fail on newer `.tpr` files.
 This keeps the defaults physically aligned:
 
 - bulk systems use drift-corrected `3D` diffusion by default;
-- sandwich and slab systems use drift-corrected `xy` diffusion by default;
+- layer-stack and slab systems use drift-corrected `xy` diffusion by default;
 - wrapped trajectories are normalized before transport analysis;
 - MSD uses a topology-molecule strategy by default: single-atom ions use atom
   trajectories, molecular ions and solvents use molecule COM trajectories, and
@@ -303,80 +303,86 @@ Practical interpretation:
   - transition-matrix-based event flux predictions,
   - migration summary plots under `06_analysis/migration/`.
 
-## 6. Build Graphite-Polymer-Electrolyte Sandwich Systems
+## 6. Build Generic Layer-Stack Interface Systems
 
-YadonPy exposes a one-shot interface builder for the common
-`graphite -> CMC-Na -> electrolyte` stack, plus the older staged API for
-debugging individual steps. For routine CMC-Na/graphite/electrolyte work, prefer
-the one-shot path:
+YadonPy now exposes a generic `build_layer_stack(...)` engine.  Instead of
+hard-coding `graphite | polymer | electrolyte`, you provide any ordered list of
+layers: `electrolyte | graphite`, `graphite | electrolyte | graphite`,
+`graphite | CMC-Na | electrolyte`, or `vacuum | layer | layer | vacuum`.
 
-- equilibrate each phase independently,
-- treat those bulk runs as calibration for density, chain count, solvent counts, and packing backoff,
-- preserve the graphite footprint as the one lateral reference,
-- rebuild each soft phase directly on that shared XY footprint with repulsive-only Z walls and explicit vacuum,
-- assemble the stack by direct Z translation instead of relying on cut-slab periodic healing,
-- relax the combined system with a natural-contact protocol and acceptance gate.
+The builder:
 
-CMC-Na smoke-scale example:
+- plans one master XY footprint from graphite and molecular density targets,
+- packs molecular layers under that shared XY footprint,
+- keeps CMC-Na polymer and its Na+ counterions in one layer group,
+- stacks layers by z quantiles plus adaptive gaps,
+- supports explicit fixed graphite surface charge,
+- writes `layer_stack_manifest.json`, `system.gro`, `system.top`, and layer-aware `system.ndx`.
+- treats basal graphite as XY-periodic by default and edge graphite as a finite capped slab.
+
+Smoke-scale example:
 
 ```python
 import yadonpy as yp
-graphite = yp.GraphiteSubstrateSpec(nx=4, ny=4, n_layers=2)
-polymer = yp.default_cmcna_polymer_spec(dp=20)
-electrolyte = yp.default_carbonate_lipf6_electrolyte_spec()
-relax = yp.SandwichRelaxationSpec(omp=8, gpu=1, psi4_omp=8)
-policy = yp.InterfaceBuildPolicy(
-    phase_preparation="final_xy_walled",
-    stack_relaxation="natural_contact",
-    retry_profile="conservative",
+
+ff = yp.get_ff("gaff2_mod")
+ion_ff = yp.get_ff("merz")
+EC = ff.mol("O=C1OCCO1", charge="RESP", prefer_db=True, require_ready=True)
+ff.ff_assign(EC)
+Li = ion_ff.mol("[Li+]")
+ion_ff.ff_assign(Li)
+
+stack = yp.LayerStackSpec(
+    layers=(
+        yp.GraphiteLayerSpec(name="GRAPHITE", nx=6, ny=5, n_layers=3),
+        yp.MolecularLayerSpec(
+            name="ELECTROLYTE",
+            species=(EC, Li),
+            counts=(100, 10),
+            thickness_nm=4.0,
+            density_target_g_cm3=1.2,
+            layer_kind="electrolyte",
+        ),
+        yp.VacuumLayerSpec(thickness_nm=2.0),
+    )
 )
 
-result = yp.build_cmcna_graphite_electrolyte_stack(
-    work_dir="./work_cmcna_sandwich",
-    ff=yp.get_ff("gaff2_mod"),
-    ion_ff=yp.get_ff("merz"),
-    graphite=graphite,
-    polymer=polymer,
-    electrolyte=electrolyte,
-    relax=relax,
-    policy=policy,
-)
-
-followup = yp.run_sandwich_nvt_followup(
-    result,
-    work_dir="./work_cmcna_sandwich/07_nvt_followup",
-    time_ns=4.0,
-    temp=318.15,
-)
-
-profile = yp.analyze_sandwich_interface(
-    work_dir="./work_cmcna_sandwich",
+result = yp.build_layer_stack(stack=stack, work_dir="./work_layer_stack")
+profile = yp.analyze_layer_stack_interface(
+    work_dir="./work_layer_stack",
     analysis_profile="interface_fast",
 )
 ```
 
-The follow-up starts from the accepted stack geometry and uses a compact
-20 ps + 20 ps 1 fs no-constraints / constrained handoff before the requested
-constrained NVT observation. The default keeps graphite frozen during the bridge
-and uses balanced GPU offload. For bonded graphite slabs that should move
-naturally, set `SandwichRelaxationSpec(stack_freeze_group=None)` for stack
-release and call `run_sandwich_nvt_followup(..., freeze_group=None)` so GROMACS
-can keep bonded/update/PME on GPU throughout the dynamic stages.
+Use `ElectrodeChargeSpec` for fixed-charge graphite electrodes.  This is a
+static charge assignment to surface atoms, not a constant-potential model.  In
+two-electrode stacks, use `top_surface_charge_uC_cm2` on the lower electrode and
+`bottom_surface_charge_uC_cm2` on the upper electrode to charge only the interior
+faces.
 
-The builder writes `00_interface_design/interface_design.json` before expensive
-phase rebuilding, then records stack attempts, charge balance, minimum-distance
-checks, phase order, density windows, and acceptance status in
-`06_full_stack_release/interface_manifest.json`. The staged functions
-`prepare_graphite_substrate`, `calibrate_*_bulk_phase`, `build_*_interphase`,
-and `release_graphite_*_electrolyte_stack` remain available when you need to
-inspect or resume a specific step manually.
-The interface profile helper writes `06_analysis/interface_profile/` with
-`z_density_profiles.csv`, region summaries, enrichment, Li coordination states,
-and anisotropic MSD. Treat `Dxy` as the main interface transport metric; `Dz` is
-a confined-direction mobility diagnostic, not a bulk diffusion coefficient.
-Example 08 keeps only one PEO and one CMC-Na public script; developer matrix and
-autofix harnesses live under `tools/example08_autofix/` rather than in the
-public example directory.
+Use `run_layer_stack_nvt(...)` to append a short NVT observation run from the
+exported stack artifact without rebuilding the layers:
+
+```python
+nvt = yp.run_layer_stack_nvt(result, time_ns=2.0, temp=318.15, omp=14, gpu_id=0)
+```
+
+For `pbc_mode="auto"`/`xyz`, the builder also checks the periodic top-bottom
+closing interface and reserves the same `default_gap_nm` spacer unless explicit
+vacuum or padding already supplies it.  The NVT follow-up begins with a
+no-constraints steep minimization, so freshly stacked CMC/electrolyte/graphite
+cells can relax local contacts before GPU MD starts.
+
+The interface profile helper writes `06_analysis/layer_stack_interface/` with
+z density profiles, charge density, adjacent-interface spacing, EDL charge
+diagnostics for graphite/electrolyte contacts, coordination partitioning where
+available, and anisotropic MSD summaries.  Treat `Dxy` as the main interface
+transport metric; `Dz` is confined-direction mobility, not a bulk diffusion
+coefficient.
+
+The older sandwich-specific public API has been removed.  Use layer-stack specs
+for both simple two-layer contacts and multi-layer graphite/polymer/electrolyte
+systems.
 
 ### Example script standard
 
@@ -448,7 +454,7 @@ Prefer local execution for:
 Prefer the remote machine for:
 
 - long GROMACS workflows,
-- larger sandwich systems,
+- larger layer-stack interface systems,
 - repeated bulk equilibrations,
 - heavier Psi4 jobs,
 - anything that needs both sustained CPU and GPU time.

@@ -1,9 +1,9 @@
 """Public interface-building API for graphite/polymer/electrolyte workflows.
 
-The interface package exposes the higher-level route planners, slab builders,
-bulk calibration helpers, and sandwich convenience constructors. Importing from
-this module keeps user scripts short while implementation details remain split
-across focused submodules.
+The recommended high-level route is the generic ``layer_stack`` engine: scripts
+describe ordered layers, and YadonPy plans, packs, stacks, exports, samples, and
+analyzes that system.  Older sandwich-specific public APIs were removed so new
+workflows do not silently use stale geometry assumptions.
 """
 
 from __future__ import annotations
@@ -35,6 +35,19 @@ from .bulk_resize import (
     recommend_electrolyte_alignment,
 )
 from .charge_audit import format_cell_charge_audit, format_charge_meta_audit, summarize_cell_charge, summarize_charge_meta
+from .layer_stack import (
+    ElectrodeChargeSpec,
+    GraphiteLayerSpec,
+    LayerStackNvtResult,
+    LayerStackRelaxationSpec,
+    LayerStackResult,
+    LayerStackSpec,
+    MolecularLayerSpec,
+    VacuumLayerSpec,
+    analyze_layer_stack_interface,
+    build_layer_stack,
+    run_layer_stack_nvt,
+)
 from .postprocess import build_interface_group_catalog, export_interface_group_catalog, read_ndx_groups
 from .prep import (
     BulkEq21Outcome,
@@ -58,57 +71,12 @@ from .prep import (
     recommend_polymer_diffusion_interface_recipe,
 )
 from .protocol import InterfaceDynamics, InterfaceProtocol, InterfaceStageSpec
-from .sandwich import (
-    BulkCalibrationResult,
-    ElectrolyteSlabSpec,
-    GraphitePreparationResult,
-    GraphitePolymerElectrolyteSandwichResult,
-    GraphiteSubstrateSpec,
-    InterfaceBuildPolicy,
-    InterfaceTransportResult,
-    InterphaseBuildResult,
-    MoleculeSpec,
-    PolymerSlabSpec,
-    SandwichNvtFollowupResult,
-    SandwichPhaseReport,
-    SandwichRelaxationSpec,
-    StackReleaseResult,
-    analyze_sandwich_interface,
-    analyze_interface_transport,
-    build_cmc_electrolyte_interphase,
-    build_cmcna_graphite_electrolyte_stack,
-    build_graphite_cmc_interphase,
-    build_graphite_cmcna_glucose6_periodic_case,
-    build_graphite_cmcna_electrolyte_sandwich,
-    build_graphite_polymer_interphase,
-    build_graphite_peo_electrolyte_sandwich,
-    build_polymer_electrolyte_interphase,
-    build_graphite_polymer_electrolyte_sandwich,
-    calibrate_electrolyte_bulk_phase,
-    calibrate_polymer_bulk_phase,
-    default_carbonate_lipf6_electrolyte_spec,
-    default_cmcna_polymer_spec,
-    default_peo_electrolyte_spec,
-    default_peo_polymer_spec,
-    prepare_graphite_substrate,
-    print_interface_result_summary,
-    release_graphite_cmc_electrolyte_stack,
-    release_graphite_polymer_electrolyte_stack,
-    run_sandwich_nvt_followup,
-)
-from .sandwich_examples import (
-    build_graphite_cmcna_example_case,
-    build_graphite_peo_example_case,
-    format_sandwich_result_summary,
-    print_sandwich_result_summary,
-)
 
 __all__ = [
     "AreaMismatchPolicy",
     "BulkEquilibriumProfile",
     "BulkRescalePlan",
     "BulkEq21Outcome",
-    "BulkCalibrationResult",
     "DirectPolymerMatchedInterfacePreparation",
     "DirectElectrolytePlan",
     "ElectrolyteAlignmentPlan",
@@ -120,6 +88,14 @@ __all__ = [
     "ResizedPolymerMatchedInterfacePreparation",
     "ResizedElectrolytePreparation",
     "FixedXYDirectPackPlan",
+    "ElectrodeChargeSpec",
+    "GraphiteLayerSpec",
+    "LayerStackNvtResult",
+    "LayerStackRelaxationSpec",
+    "LayerStackResult",
+    "LayerStackSpec",
+    "MolecularLayerSpec",
+    "VacuumLayerSpec",
     "BulkSource",
     "BuiltInterface",
     "InterfaceBuilder",
@@ -129,6 +105,9 @@ __all__ = [
     "build_bulk_equilibrium_profile",
     "build_interface",
     "build_interface_from_workdirs",
+    "build_layer_stack",
+    "analyze_layer_stack_interface",
+    "run_layer_stack_nvt",
     "build_interface_group_catalog",
     "equilibrate_bulk_with_eq21",
     "plan_direct_polymer_matched_interface_preparation",
@@ -148,44 +127,6 @@ __all__ = [
     "export_interface_group_catalog",
     "InterfaceProtocol",
     "InterfaceStageSpec",
-    "GraphiteSubstrateSpec",
-    "GraphitePreparationResult",
-    "InterfaceBuildPolicy",
-    "PolymerSlabSpec",
-    "ElectrolyteSlabSpec",
-    "InterphaseBuildResult",
-    "StackReleaseResult",
-    "InterfaceTransportResult",
-    "MoleculeSpec",
-    "SandwichNvtFollowupResult",
-    "SandwichPhaseReport",
-    "SandwichRelaxationSpec",
-    "prepare_graphite_substrate",
-    "calibrate_polymer_bulk_phase",
-    "calibrate_electrolyte_bulk_phase",
-    "build_graphite_polymer_interphase",
-    "build_graphite_cmc_interphase",
-    "build_polymer_electrolyte_interphase",
-    "build_cmc_electrolyte_interphase",
-    "build_cmcna_graphite_electrolyte_stack",
-    "release_graphite_polymer_electrolyte_stack",
-    "release_graphite_cmc_electrolyte_stack",
-    "analyze_sandwich_interface",
-    "analyze_interface_transport",
-    "run_sandwich_nvt_followup",
-    "GraphitePolymerElectrolyteSandwichResult",
-    "build_graphite_cmcna_glucose6_periodic_case",
-    "build_graphite_cmcna_example_case",
-    "build_graphite_cmcna_electrolyte_sandwich",
-    "build_graphite_polymer_electrolyte_sandwich",
-    "build_graphite_peo_example_case",
-    "build_graphite_peo_electrolyte_sandwich",
-    "default_carbonate_lipf6_electrolyte_spec",
-    "default_cmcna_polymer_spec",
-    "default_peo_polymer_spec",
-    "default_peo_electrolyte_spec",
-    "print_interface_result_summary",
-    "format_sandwich_result_summary",
     "make_orthorhombic_pack_cell",
     "plan_rescaled_bulk_counts",
     "plan_resized_electrolyte_counts",
@@ -194,5 +135,4 @@ __all__ = [
     "recommend_electrolyte_alignment",
     "summarize_cell_charge",
     "summarize_charge_meta",
-    "print_sandwich_result_summary",
 ]

@@ -271,9 +271,11 @@ def _profile_rows(
     density_arrays: dict[str, dict[str, np.ndarray]] = {}
     for label, payload in accum.items():
         mass_mean = payload["mass_amu"] / float(n_frames)
+        charge_mean = payload["charge_e"] / float(n_frames)
         density_arrays[label] = {
             "z_mid_nm": 0.5 * (bins[:-1] + bins[1:]),
             "mass_density_g_cm3": mass_mean * _AMU_PER_NM3_TO_G_CM3 / volume_mean,
+            "charge_density_e_nm3": charge_mean / volume_mean,
         }
     return rows, density_arrays
 
@@ -382,6 +384,125 @@ def _regions(
             "z_lo_nm": float(min(box_z_nm, mixed_hi)),
             "z_hi_nm": float(box_z_nm),
         },
+    }
+
+
+def _generic_regions(
+    *,
+    phase_stats: dict[str, dict[str, Any]],
+    box_z_nm: float,
+    region_width_nm: float,
+    phase_groups: Sequence[str],
+) -> dict[str, dict[str, float]]:
+    regions: dict[str, dict[str, float]] = {}
+    ordered = [
+        str(name)
+        for name in phase_groups
+        if phase_stats.get(str(name), {}).get("p50_z_nm") is not None
+    ]
+    ordered.sort(key=lambda name: float(phase_stats[name]["p50_z_nm"]))
+    for name in ordered:
+        stats = phase_stats.get(name, {})
+        lo = stats.get("p05_z_nm")
+        hi = stats.get("p95_z_nm")
+        if lo is None or hi is None:
+            continue
+        regions[f"{name.lower()}_core"] = {
+            "z_lo_nm": float(max(0.0, float(lo))),
+            "z_hi_nm": float(min(float(box_z_nm), float(hi))),
+        }
+    half = 0.5 * float(region_width_nm)
+    for left, right in zip(ordered, ordered[1:]):
+        left_hi = phase_stats.get(left, {}).get("p95_z_nm")
+        right_lo = phase_stats.get(right, {}).get("p05_z_nm")
+        if left_hi is None or right_lo is None:
+            continue
+        mid = 0.5 * (float(left_hi) + float(right_lo))
+        regions[f"{left.lower()}__{right.lower()}_interface"] = {
+            "z_lo_nm": float(max(0.0, mid - half)),
+            "z_hi_nm": float(min(float(box_z_nm), mid + half)),
+        }
+    return regions
+
+
+def _adjacent_interface_summary(
+    *,
+    phase_groups: Sequence[str],
+    phase_stats: dict[str, dict[str, Any]],
+    phase_masks: dict[str, np.ndarray],
+    coords: np.ndarray,
+    box_nm: tuple[float, float, float],
+) -> list[dict[str, Any]]:
+    ordered = [
+        str(name)
+        for name in phase_groups
+        if phase_stats.get(str(name), {}).get("p50_z_nm") is not None
+    ]
+    ordered.sort(key=lambda name: float(phase_stats[name]["p50_z_nm"]))
+    out: list[dict[str, Any]] = []
+    for left, right in zip(ordered, ordered[1:]):
+        left_stats = phase_stats.get(left, {})
+        right_stats = phase_stats.get(right, {})
+        left_hi = left_stats.get("p95_z_nm")
+        right_lo = right_stats.get("p05_z_nm")
+        gap = None if left_hi is None or right_lo is None else float(float(right_lo) - float(left_hi))
+        dmin = _min_distance_between(coords, phase_masks[left], phase_masks[right], box_nm)
+        out.append(
+            {
+                "left": left,
+                "right": right,
+                "gap_from_quantiles_nm": gap,
+                "min_distance_nm": dmin,
+                "overlap_from_quantiles": bool(gap is not None and float(gap) < 0.0),
+                "severe_overlap": bool(dmin is not None and float(dmin) < 0.055),
+            }
+        )
+    return out
+
+
+def _edl_diagnostics(
+    *,
+    phase_groups: Sequence[str],
+    density_arrays: dict[str, dict[str, np.ndarray]],
+    phase_stats: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    """Cheap fixed-charge EDL diagnostics for graphite/electrolyte neighbors."""
+
+    ordered = [
+        str(name)
+        for name in phase_groups
+        if phase_stats.get(str(name), {}).get("p50_z_nm") is not None
+    ]
+    ordered.sort(key=lambda name: float(phase_stats[name]["p50_z_nm"]))
+    pairs: list[dict[str, Any]] = []
+    for left, right in zip(ordered, ordered[1:]):
+        left_is_g = "GRAPHITE" in left.upper()
+        right_is_g = "GRAPHITE" in right.upper()
+        left_is_e = "ELECTROLYTE" in left.upper()
+        right_is_e = "ELECTROLYTE" in right.upper()
+        if not ((left_is_g and right_is_e) or (right_is_g and left_is_e)):
+            continue
+        electrolyte = right if right_is_e else left
+        arr = density_arrays.get(f"phase:{electrolyte}", {})
+        z = np.asarray(arr.get("z_mid_nm", []), dtype=float)
+        q = np.asarray(arr.get("charge_density_e_nm3", []), dtype=float)
+        if z.size == 0 or q.size != z.size:
+            cumulative = []
+        else:
+            dz = np.gradient(z) if z.size >= 2 else np.ones_like(z)
+            cumulative = np.cumsum(q * dz).tolist()
+        pairs.append(
+            {
+                "interface": f"{left}-{right}",
+                "electrolyte_phase": electrolyte,
+                "integrated_electrolyte_charge_e_per_nm2": cumulative,
+                "z_mid_nm": z.tolist(),
+            }
+        )
+    return {
+        "available": bool(pairs),
+        "pairs": pairs,
+        "note": "Fixed-charge surface diagnostic; not a constant-potential model.",
     }
 
 
@@ -687,6 +808,7 @@ def compute_interface_profile(
     analysis_profile: str = "interface_fast",
     phase_groups: Sequence[str] = ("GRAPHITE", "POLYMER", "ELECTROLYTE"),
     compute_transport: bool = True,
+    manifest_path: Path | None = None,
 ) -> dict[str, Any]:
     """Compute cheap interface statistics and write JSON/CSV artifacts."""
 
@@ -708,14 +830,32 @@ def compute_interface_profile(
     if bins.size < 2:
         bins = np.asarray([0.0, max(float(final_box[2]), float(bin_nm))], dtype=float)
 
+    phase_groups_norm = [str(x) for x in phase_groups]
+    manifest_order: list[str] | None = None
+    if manifest_path is not None and Path(manifest_path).is_file():
+        try:
+            manifest_payload = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+            intervals = manifest_payload.get("layer_intervals_nm", []) if isinstance(manifest_payload, dict) else []
+            if isinstance(intervals, list):
+                ordered_names = [str(v.get("name")) for v in intervals if isinstance(v, dict) and v.get("name") is not None]
+                manifest_order = [name for name in ordered_names if name in phase_groups_norm]
+        except Exception:
+            manifest_order = None
+
     phase_stats: dict[str, dict[str, Any]] = {}
     for phase, mask in phase_masks.items():
         phase_stats[phase] = _z_quantiles(final_coords[mask, 2])
         phase_stats[phase]["atom_count"] = int(np.sum(mask))
-    phase_order = sorted(
+    trajectory_phase_order = sorted(
         [name for name in phase_groups if phase_stats.get(str(name), {}).get("p50_z_nm") is not None],
         key=lambda name: float(phase_stats[str(name)]["p50_z_nm"]),
     )
+    # Closed xyz stacks can wrap the bottom layer across the periodic z
+    # boundary during whole-molecule post-processing.  In that case raw final
+    # z-quantiles are still useful diagnostics, but the manifest is the more
+    # reliable source of intended layer order.
+    phase_order = list(manifest_order or [str(x) for x in trajectory_phase_order])
+    phase_order_source = "manifest" if manifest_order else "trajectory_quantiles"
 
     profile_rows, density_arrays = _profile_rows(
         frames=frames,
@@ -728,25 +868,67 @@ def compute_interface_profile(
     profile_csv = out_dir / "z_density_profiles.csv"
     _write_profile_csv(profile_csv, profile_rows)
 
-    graphite, polymer, electrolyte = [str(x) for x in phase_groups[:3]]
-    min_gp = _min_distance_between(final_coords, phase_masks[graphite], phase_masks[polymer], final_box)
-    min_pe = _min_distance_between(final_coords, phase_masks[polymer], phase_masks[electrolyte], final_box)
-    min_ge = _min_distance_between(final_coords, phase_masks[graphite], phase_masks[electrolyte], final_box)
-    regions = _regions(
+    adjacent_interfaces = _adjacent_interface_summary(
+        phase_groups=phase_groups_norm,
         phase_stats=phase_stats,
-        density_arrays=density_arrays,
-        box_z_nm=float(final_box[2]),
-        region_width_nm=float(region_width_nm),
-        phase_groups=phase_groups,
+        phase_masks=phase_masks,
+        coords=final_coords,
+        box_nm=final_box,
     )
-    interpenetration = _interpenetration(
-        density_arrays=density_arrays,
-        polymer=polymer,
-        electrolyte=electrolyte,
-        graphite=graphite,
-        phase_stats=phase_stats,
-        min_graphite_electrolyte_nm=min_ge,
+    old_three_phase = (
+        len(phase_groups_norm) >= 3
+        and "GRAPHITE" in phase_groups_norm[0].upper()
+        and (
+            "POLYMER" in phase_groups_norm[1].upper()
+            or "CMC" in phase_groups_norm[1].upper()
+            or "PEO" in phase_groups_norm[1].upper()
+        )
+        and "ELECTROLYTE" in phase_groups_norm[2].upper()
     )
+    min_distances: dict[str, float | None] = {
+        f"{item['left']}-{item['right']}": item.get("min_distance_nm") for item in adjacent_interfaces
+    }
+    direct_graphite_electrolyte_contact = False
+    min_ge = None
+    if old_three_phase:
+        graphite, polymer, electrolyte = phase_groups_norm[:3]
+        min_gp = _min_distance_between(final_coords, phase_masks[graphite], phase_masks[polymer], final_box)
+        min_pe = _min_distance_between(final_coords, phase_masks[polymer], phase_masks[electrolyte], final_box)
+        min_ge = _min_distance_between(final_coords, phase_masks[graphite], phase_masks[electrolyte], final_box)
+        min_distances.update({f"{graphite}-{polymer}": min_gp, f"{polymer}-{electrolyte}": min_pe, f"{graphite}-{electrolyte}": min_ge})
+        regions = _regions(
+            phase_stats=phase_stats,
+            density_arrays=density_arrays,
+            box_z_nm=float(final_box[2]),
+            region_width_nm=float(region_width_nm),
+            phase_groups=phase_groups_norm,
+        )
+        interpenetration = _interpenetration(
+            density_arrays=density_arrays,
+            polymer=polymer,
+            electrolyte=electrolyte,
+            graphite=graphite,
+            phase_stats=phase_stats,
+            min_graphite_electrolyte_nm=min_ge,
+        )
+        direct_graphite_electrolyte_contact = bool(min_ge is not None and float(min_ge) < 0.35)
+    else:
+        regions = _generic_regions(
+            phase_stats=phase_stats,
+            box_z_nm=float(final_box[2]),
+            region_width_nm=float(region_width_nm),
+            phase_groups=phase_groups_norm,
+        )
+        interpenetration = {
+            "available": False,
+            "reason": "generic_layer_stack_without_graphite_polymer_electrolyte_order",
+        }
+        for item in adjacent_interfaces:
+            left = str(item.get("left", "")).upper()
+            right = str(item.get("right", "")).upper()
+            if (("GRAPHITE" in left and "ELECTROLYTE" in right) or ("GRAPHITE" in right and "ELECTROLYTE" in left)) and item.get("min_distance_nm") is not None:
+                direct_graphite_electrolyte_contact = direct_graphite_electrolyte_contact or float(item["min_distance_nm"]) < 0.35
+                min_ge = float(item["min_distance_nm"])
     enrichment = _enrichment(
         frames=frames,
         instances=atom_payload["instances"],
@@ -775,26 +957,27 @@ def compute_interface_profile(
 
     geometry_health = {
         "phase_order": phase_order,
-        "expected_phase_order": [str(x) for x in phase_groups],
-        "phase_order_ok": phase_order == [str(x) for x in phase_groups],
-        "min_interphase_distance_nm": {
-            f"{graphite}-{polymer}": min_gp,
-            f"{polymer}-{electrolyte}": min_pe,
-            f"{graphite}-{electrolyte}": min_ge,
-        },
-        "direct_graphite_electrolyte_contact": bool(min_ge is not None and float(min_ge) < 0.35),
+        "trajectory_phase_order": [str(x) for x in trajectory_phase_order],
+        "phase_order_source": phase_order_source,
+        "expected_phase_order": [str(x) for x in phase_groups_norm],
+        "phase_order_ok": phase_order == [str(x) for x in phase_groups_norm],
+        "adjacent_interfaces": adjacent_interfaces,
+        "min_interphase_distance_nm": min_distances,
+        "direct_graphite_electrolyte_contact": bool(direct_graphite_electrolyte_contact),
         "severe_overlap": bool(
-            min((x for x in (min_gp, min_pe, min_ge) if x is not None), default=1.0) < 0.055
+            min((float(v) for v in min_distances.values() if v is not None), default=1.0) < 0.055
         ),
         "box_nm": [float(x) for x in final_box],
         "frame_count_analyzed": int(len(frames)),
         "last_frame_time_ps": float(final_time),
     }
+    edl = _edl_diagnostics(phase_groups=phase_groups_norm, density_arrays=density_arrays, phase_stats=phase_stats)
     region_summary = {
         "regions": regions,
         "phase_stats": phase_stats,
         "interpenetration": interpenetration,
         "enrichment": enrichment,
+        "edl_diagnostics": edl,
     }
 
     (out_dir / "region_summary.json").write_text(json.dumps(_jsonify(region_summary), indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
@@ -814,6 +997,7 @@ def compute_interface_profile(
             "top_path": str(top_path),
             "ndx_path": str(ndx_path),
             "system_dir": str(system_dir),
+            "manifest_path": None if manifest_path is None else str(manifest_path),
         },
         "geometry_health": geometry_health,
         "region_summary": region_summary,

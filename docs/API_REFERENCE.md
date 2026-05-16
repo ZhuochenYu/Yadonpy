@@ -19,30 +19,26 @@ Package root exports include:
 - `yp.list_charge_methods`
 - `yp.mol_from_smiles`
 - `yp.build_graphite`
+- `yp.build_layer_stack`
+- `yp.run_layer_stack_nvt`
+- `yp.analyze_layer_stack_interface`
 - `yp.conformation_search`
 - `yp.assign_charges`
 - `yp.assign_forcefield`
 - `yp.load_from_moldb`
 - `yp.parameterize_smiles`
-- `yp.prepare_graphite_substrate`
-- `yp.calibrate_polymer_bulk_phase`
-- `yp.calibrate_electrolyte_bulk_phase`
-- `yp.build_graphite_polymer_interphase`
-- `yp.build_polymer_electrolyte_interphase`
-- `yp.release_graphite_polymer_electrolyte_stack`
-- `yp.build_cmcna_graphite_electrolyte_stack`
-- `yp.build_graphite_polymer_electrolyte_sandwich`
-- `yp.build_graphite_peo_electrolyte_sandwich`
-- `yp.build_graphite_cmcna_electrolyte_sandwich`
-- `yp.run_sandwich_nvt_followup`
-- `yp.analyze_sandwich_interface`
 - `yp.resolve_prepared_system`
 - `yp.run_tg_scan_gmx`
 - `yp.run_elongation_gmx`
 - `yp.AnalyzeResult`
 - `yp.IOAnalysisPolicy`
 - `yp.resolve_io_analysis_policy`
-- `yp.InterfaceBuildPolicy`
+- `yp.LayerStackSpec`
+- `yp.GraphiteLayerSpec`
+- `yp.MolecularLayerSpec`
+- `yp.VacuumLayerSpec`
+- `yp.ElectrodeChargeSpec`
+- `yp.LayerStackNvtResult`
 - `yp.print_mechanics_result_summary`
 - `yp.InterfaceBuilder`
 - `yp.InterfaceProtocol`
@@ -62,18 +58,9 @@ yp.list_forcefields() -> tuple[str, ...]
 yp.list_charge_methods() -> tuple[str, ...]
 yp.mol_from_smiles(smiles: str, *, coord: bool = True, name: str | None = None)
 yp.build_graphite(**kwargs)
-yp.prepare_graphite_substrate(**kwargs)
-yp.calibrate_polymer_bulk_phase(**kwargs)
-yp.calibrate_electrolyte_bulk_phase(**kwargs)
-yp.build_graphite_polymer_interphase(**kwargs)
-yp.build_polymer_electrolyte_interphase(**kwargs)
-yp.release_graphite_polymer_electrolyte_stack(**kwargs)
-yp.build_cmcna_graphite_electrolyte_stack(**kwargs)
-yp.build_graphite_polymer_electrolyte_sandwich(**kwargs)
-yp.build_graphite_peo_electrolyte_sandwich(**kwargs)
-yp.build_graphite_cmcna_electrolyte_sandwich(**kwargs)
-yp.run_sandwich_nvt_followup(result, *, work_dir, time_ns=4.0, temp=None, ...)
-yp.analyze_sandwich_interface(*, work_dir, analysis_profile="interface_fast", ...)
+yp.build_layer_stack(stack=LayerStackSpec(...), work_dir="./work_layer_stack", ...)
+yp.run_layer_stack_nvt(result, *, time_ns=2.0, temp=318.15, ...)
+yp.analyze_layer_stack_interface(*, work_dir="./work_layer_stack", analysis_profile="interface_fast", ...)
 yp.resolve_prepared_system(
     *,
     gro: str | Path | None = None,
@@ -272,7 +259,7 @@ Transport semantics:
 - `dielectric()` wraps `gmx dipoles`; set `YADONPY_GMX_CMD` when the default
   `gmx` binary cannot read the production `.tpr`.
 - bulk systems default to drift-corrected `3D` diffusion.
-- slab and sandwich systems default to drift-corrected `xy` diffusion.
+- slab and layer-stack interface systems default to drift-corrected `xy` diffusion.
 - `sigma_ne_upper_bound_S_m` is reported explicitly as an upper bound.
 - `sigma_eh_total_S_m` is the preferred total conductivity when a stable
   Einstein-Helfand fit is available.
@@ -865,156 +852,100 @@ InterfaceProtocol(
 Use `InterfaceProtocol` when the default route builder is not enough and you want direct
 control over staged interface relaxation.
 
-## 9. Graphite-Polymer-Electrolyte Sandwich API
+## 9. Generic Layer-Stack Interface API
 
-This is the highest-level interface workflow exposed by YadonPy.
-
-### Specification records
+The preferred public interface builder is now `build_layer_stack(...)`.  It
+accepts any ordered sequence of graphite, molecular, and vacuum layers and
+writes a GROMACS-ready stacked system plus `layer_stack_manifest.json`.
 
 ```python
-MoleculeSpec(
-    name: str,
-    smiles: str,
-    charge_method: str = "RESP",
-    bonded: str | None = None,
-    prefer_db: bool = False,
-    require_ready: bool = False,
-    use_ion_ff: bool = False,
-    charge_scale: float = 1.0,
+LayerStackSpec(
+    layers: tuple[GraphiteLayerSpec | MolecularLayerSpec | VacuumLayerSpec, ...],
+    order: str = "bottom_to_top",
+    pbc_mode: str = "auto",
+    name: str = "layer_stack",
+    default_gap_nm: float = 0.35,
+    bottom_padding_nm: float = 0.0,
+    top_padding_nm: float = 0.0,
+    auto_expand_graphite: bool = True,
 )
 
-GraphiteSubstrateSpec(
-    nx: int = 4,
-    ny: int = 4,
+GraphiteLayerSpec(
+    name: str = "GRAPHITE",
+    nx: int = 6,
+    ny: int = 5,
     n_layers: int = 3,
-    edge_cap: str = "H",
     orientation: str = "basal",
-    name: str = "GRAPH",
-    top_padding_ang: float = 15.0,
+    edge_cap: str | Sequence[str] = "H",
+    periodic_xy: bool | None = None,
+    electrode_charge: ElectrodeChargeSpec | None = None,
+    ff_name: str = "gaff2_mod",
 )
 
-PolymerSlabSpec(
-    name: str = "PEO",
-    monomer_smiles: str = "*CCO*",
-    monomers: tuple[MoleculeSpec, ...] = (),
-    monomer_ratio: tuple[float, ...] = (1.0,),
-    terminal_smiles: str = "[H][*]",
-    terminal: MoleculeSpec | None = None,
-    chain_target_atoms: int = 280,
-    dp: int | None = None,
-    chain_count: int | None = None,
-    counterion: MoleculeSpec | None = None,
-    target_density_g_cm3: float = 1.1,
-    slab_z_nm: float = 3.6,
-    min_chain_count: int = 2,
-    tacticity: str = "atactic",
-    charge_scale: float = 1.0,
-    initial_pack_z_scale: float = 1.18,
-    pack_retry: int = 30,
-    pack_retry_step: int = 2400,
-    pack_threshold_ang: float = 1.55,
-    pack_dec_rate: float = 0.72,
+MolecularLayerSpec(
+    name: str,
+    species: Sequence[rdkit.Chem.Mol],
+    counts: Sequence[int],
+    thickness_nm: float,
+    density_target_g_cm3: float | None = None,
+    layer_kind: str = "generic",
+    charge_scale: float | Sequence[float] | dict | None = None,
+    polyelectrolyte_mode: bool | None = None,
 )
 
-ElectrolyteSlabSpec(
-    solvents: tuple[MoleculeSpec, ...] = ...,
-    salt_cation: MoleculeSpec = ...,
-    salt_anion: MoleculeSpec = ...,
-    solvent_mass_ratio: tuple[float, ...] = (1.0,),
-    target_density_g_cm3: float = 1.18,
-    slab_z_nm: float = 4.0,
-    salt_molarity_M: float = 1.0,
-    min_salt_pairs: int = 3,
-    initial_pack_density_g_cm3: float | None = None,
-    pack_retry: int = 30,
-    pack_retry_step: int = 2400,
-    pack_threshold_ang: float = 1.55,
-    pack_dec_rate: float = 0.72,
-)
+VacuumLayerSpec(thickness_nm: float, name: str = "VACUUM")
 
-SandwichRelaxationSpec(
-    temperature_k: float = 300.0,
-    pressure_bar: float = 1.0,
-    mpi: int = 1,
-    omp: int = 8,
-    gpu: int = 1,
-    gpu_id: int | None = 0,
-    psi4_omp: int = 8,
-    psi4_memory_mb: int = 16000,
-    bulk_eq21_final_ns: float = 0.1,
-    bulk_additional_loops: int = 1,
-    bulk_eq21_exec_kwargs: dict[str, float] = ...,
-    graphite_to_polymer_gap_ang: float = 3.8,
-    polymer_to_electrolyte_gap_ang: float = 4.2,
-    top_padding_ang: float = 12.0,
-    stacked_pre_nvt_ps: float = 20.0,
-    stacked_z_relax_ps: float = 80.0,
-    stacked_exchange_ps: float = 120.0,
-    stack_freeze_group: str | None = "GRAPHITE",
-    stack_release_graphite_final: bool = True,
-    stack_frozen_gpu_offload_mode: str = "balanced",
-    stack_final_gpu_offload_mode: str = "full",
+ElectrodeChargeSpec(
+    mode: str = "total_charge",
+    top_charge_e: float | None = None,
+    bottom_charge_e: float | None = None,
+    surface_charge_uC_cm2: float | None = None,
+    top_surface_charge_uC_cm2: float | None = None,
+    bottom_surface_charge_uC_cm2: float | None = None,
 )
-
-InterfaceBuildPolicy(
-    phase_preparation: str = "final_xy_walled",
-    stack_relaxation: str = "natural_contact",
-    acceptance_required: bool = True,
-    retry_profile: str = "conservative",
-    max_stack_rescue_rounds: int = 1,
-    min_atom_distance_nm: float = 0.055,
-    charge_tolerance_e: float = 1.0e-3,
-)
-
-SandwichPhaseReport(...)
-GraphitePolymerElectrolyteSandwichResult(...)
-SandwichNvtFollowupResult(...)
 ```
 
-### Factory helpers
+Main calls:
 
 ```python
-default_peo_polymer_spec(**kwargs) -> PolymerSlabSpec
-default_peo_electrolyte_spec(**kwargs) -> ElectrolyteSlabSpec
-default_cmcna_polymer_spec(**kwargs) -> PolymerSlabSpec
-default_carbonate_lipf6_electrolyte_spec(**kwargs) -> ElectrolyteSlabSpec
+build_layer_stack(stack=LayerStackSpec(...), work_dir="./work")
+run_layer_stack_nvt(result, time_ns=2.0, temp=318.15, omp=14, gpu_id=0)
+analyze_layer_stack_interface(work_dir="./work", analysis_profile="interface_fast")
 ```
 
-### Main builders
+Notes:
 
-```python
-prepare_graphite_substrate(**kwargs)
-calibrate_polymer_bulk_phase(**kwargs)
-calibrate_electrolyte_bulk_phase(**kwargs)
-build_graphite_polymer_interphase(**kwargs)
-build_polymer_electrolyte_interphase(**kwargs)
-release_graphite_polymer_electrolyte_stack(**kwargs)
-build_cmcna_graphite_electrolyte_stack(**kwargs)
-build_graphite_polymer_electrolyte_sandwich(**kwargs)
-build_graphite_peo_electrolyte_sandwich(**kwargs)
-build_graphite_cmcna_electrolyte_sandwich(**kwargs)
-run_sandwich_nvt_followup(result, *, work_dir, time_ns=4.0, temp=None, ...)
-analyze_sandwich_interface(*, work_dir, analysis_profile="interface_fast", ...)
-```
+- Basal graphite defaults to `periodic_xy=True` and uses a periodic basal-plane
+  construction. Edge graphite defaults to `periodic_xy=False` and is capped as a
+  finite bonded slab.
+- `edge_cap` supports `H`, `OH`, `O`/carbonyl, `CHO`, `COOH`, and random mixtures.
+- Fixed graphite electrode charge is assigned once to surface atoms.  It is not
+  a constant-potential model.
+- For two-electrode stacks, use `top_surface_charge_uC_cm2` on the lower
+  graphite and `bottom_surface_charge_uC_cm2` on the upper graphite to charge
+  only the interior surfaces.
+- `pbc_mode="auto"` currently resolves to `xyz`; vacuum layers are explicit
+  empty z regions, not implicit GROMACS walls.
+- In `xyz` stacks, the top-bottom periodic boundary is treated as a closing
+  interface.  The builder adds enough closing spacer to reach `default_gap_nm`
+  unless explicit top/bottom padding or vacuum already does so; the value is
+  recorded as `acceptance.pbc_closing_gap_nm`.
+- `run_layer_stack_nvt(...)` starts with a no-constraints steep minimization,
+  then a short bridge NVT, then the requested NVT.  This protects freshly
+  stacked CMC/electrolyte/graphite models from local-contact explosions at
+  step 0.
+- The generated `system.ndx` contains `LAYER_XX_NAME`, semantic phase groups
+  such as `GRAPHITE`, `ELECTROLYTE`, `CMCNA`, and `MOBILE`.
 
-Use `build_cmcna_graphite_electrolyte_stack` for the recommended CMC-Na
-graphite/electrolyte workflow. Use the staged functions when you need explicit
-restart points or to debug one phase at a time.
-Use `run_sandwich_nvt_followup` to start from an accepted stack `relaxed_gro`
-and run a short NVT observation without rebuilding the interface.
-The helper now includes a compact 20 ps + 20 ps 1 fs bridge. By default the
-bridge freezes graphite and uses balanced GPU offload because GROMACS cannot
-use GPU update with frozen atoms; pass `freeze_group=None` for fully mobile
-bonded graphite systems so every dynamic stage can use full GPU offload.
-Likewise, set `SandwichRelaxationSpec(stack_freeze_group=None)` when the stack
-release itself should never freeze graphite.
-Use `analyze_sandwich_interface` on the stack work directory or
-`07_nvt_followup` directory to compute geometry health, z profiles,
-polymer/electrolyte interpenetration, Li coordination-by-region, enrichment, and
-anisotropic interface MSD. `Dxy` is the main transport diagnostic for wall-
-confined systems; `Dz` is reported only as confined-direction mobility.
+## 10. Retired Sandwich API
 
-## 10. Internal Modules
+The old sandwich-specific public API has been removed.  Use the generic
+layer-stack API above for graphite/electrolyte, graphite/CMC-Na/electrolyte,
+graphite/electrolyte/graphite, vacuum stacks, and fixed-charge electrode
+studies.  This hard cut avoids keeping two independent interface builders with
+different geometry assumptions.
+
+## 11. Internal Modules
 
 Modules under `yadonpy.core.*`, lower-level `yadonpy.gmx.*`, and utility-heavy helpers
 inside `yadonpy.interface.builder` are intentionally not the first dependency surface for

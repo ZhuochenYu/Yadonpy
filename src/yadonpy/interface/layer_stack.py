@@ -1,0 +1,1333 @@
+"""Generic layer-stack construction for graphite/polymer/electrolyte interfaces.
+
+This is the public interface-building entry point: callers describe an ordered
+list of layers and YadonPy turns that description into a physically separated,
+GROMACS-ready stacked cell with a manifest and layer-aware index groups.
+
+This first implementation is deliberately conservative.  It focuses on
+deterministic geometry planning, MolDB/force-field provenance propagation,
+explicit graphite surface charge, vacuum layers, and robust artifacts.  Heavy MD
+relaxation still happens through the existing EQ/NVT/NPT helpers so the script
+style remains close to Examples 02/05.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+import json
+import math
+import re
+from pathlib import Path
+from typing import Any, Literal, Mapping, Sequence
+
+import numpy as np
+from rdkit import Chem
+from rdkit.Chem import Descriptors
+
+from ..core import poly, utils
+from ..core.graphite import build_graphite, stack_cell_blocks
+from ..gmx.index import _write_ndx
+from ..io.gromacs_system import SystemExportResult, export_system_from_cell_meta
+from .postprocess import read_ndx_groups
+from .prep import make_orthorhombic_pack_cell
+
+_AVOGADRO = 6.02214076e23
+_UCM2_TO_E_PER_NM2 = 0.06241509074460765
+_LAYER_META_PROP = "_yadonpy_layer_stack_metadata_json"
+
+
+@dataclass(frozen=True)
+class ElectrodeChargeSpec:
+    """Fixed-charge model for graphitic electrodes.
+
+    Parameters
+    ----------
+    mode:
+        ``"total_charge"`` distributes ``top_charge_e`` and/or
+        ``bottom_charge_e`` directly.  ``"surface_charge_density"`` converts
+        ``surface_charge_uC_cm2`` into charge per surface using the final XY
+        area.
+    top_charge_e, bottom_charge_e:
+        Explicit total charge assigned to the top or bottom surface atoms of a
+        graphite layer.
+    surface_charge_uC_cm2:
+        Surface charge density in micro-C/cm^2.  Positive values assign
+        ``+sigma`` to the top surface and ``-sigma`` to the bottom surface when
+        explicit top/bottom charges are not provided.
+    top_surface_charge_uC_cm2, bottom_surface_charge_uC_cm2:
+        Side-specific surface charge densities.  These are preferred for
+        graphite-electrolyte-graphite stacks because only the interior surfaces
+        should be charged; the outer slab faces can remain neutral.
+    """
+
+    mode: Literal["total_charge", "surface_charge_density"] = "total_charge"
+    top_charge_e: float | None = None
+    bottom_charge_e: float | None = None
+    surface_charge_uC_cm2: float | None = None
+    top_surface_charge_uC_cm2: float | None = None
+    bottom_surface_charge_uC_cm2: float | None = None
+
+
+@dataclass(frozen=True)
+class GraphiteLayerSpec:
+    """Graphite layer in a generic stack.
+
+    ``orientation="basal"`` builds a basal plane surface, while ``"edge"``
+    rotates the graphitic slab so exposed edge chemistry can face the adjacent
+    layer.  ``periodic_xy=None`` means basal graphite is periodic in XY and edge
+    graphite is a finite, capped slab.  ``edge_cap`` supports ``H``, ``OH``,
+    ``O``/carbonyl, ``CHO``, ``COOH``, random mixtures, and the legacy
+    ``periodic`` basal-plane mode.
+    """
+
+    name: str = "GRAPHITE"
+    nx: int = 6
+    ny: int = 5
+    n_layers: int = 3
+    orientation: Literal["basal", "edge"] = "basal"
+    edge_cap: str | Sequence[str] = "H"
+    periodic_xy: bool | None = None
+    lateral_padding_nm: float | None = None
+    random_cap_probs: Mapping[str, float] | None = None
+    electrode_charge: ElectrodeChargeSpec | None = None
+    ff_name: str = "gaff2_mod"
+    charge_method: str = "RESP"
+    top_padding_ang: float = 0.5
+
+
+@dataclass(frozen=True)
+class MolecularLayerSpec:
+    """Molecular/polymer layer packed under the stack master XY footprint.
+
+    Parameters
+    ----------
+    species:
+        RDKit molecules or MolDB-ready species objects.  The molecules should
+        already carry force-field and charge information, as in Examples 05/07.
+    counts:
+        Molecule counts aligned to ``species``.
+    density_target_g_cm3:
+        Used only for XY-footprint planning when a target thickness is supplied.
+        Actual packing uses the explicit master XY and ``thickness_nm`` box.
+    charge_scale:
+        Optional global or per-species charge scaling, propagated to the system
+        export metadata.
+    layer_kind:
+        Semantic label used for index groups and analysis routing.
+    """
+
+    name: str
+    species: Sequence[Chem.Mol]
+    counts: Sequence[int]
+    thickness_nm: float
+    density_target_g_cm3: float | None = None
+    layer_kind: Literal["electrolyte", "polymer", "cmcna", "generic"] = "generic"
+    charge_scale: float | Sequence[float] | Mapping[str, float] | None = None
+    polyelectrolyte_mode: bool | None = None
+    retry: int = 20
+    retry_step: int = 1000
+    threshold_ang: float = 2.0
+    large_system_mode: str = "auto"
+
+
+@dataclass(frozen=True)
+class VacuumLayerSpec:
+    """Explicit vacuum spacer layer.
+
+    Vacuum contributes only z-thickness.  By default the generated system still
+    uses ``pbc=xyz`` with an explicit empty region; walls are not inserted unless
+    a later MD preset explicitly requests them.
+    """
+
+    thickness_nm: float
+    name: str = "VACUUM"
+
+
+LayerSpec = GraphiteLayerSpec | MolecularLayerSpec | VacuumLayerSpec
+
+
+@dataclass(frozen=True)
+class LayerStackRelaxationSpec:
+    """Bookkeeping for post-build relaxation defaults.
+
+    The generic builder itself stays build/export focused.  Scripts can pass
+    these values to the existing EQ/NVT/NPT helpers or future layer-stack MD
+    wrappers without changing the stack manifest schema.
+    """
+
+    temperature_K: float = 318.15
+    pressure_bar: float = 1.0
+    early_dt_ps: float = 0.001
+    early_constraints: str = "none"
+    final_dt_ps: float = 0.002
+    final_constraints: str = "h-bonds"
+    freeze_layers: tuple[str, ...] = ()
+    run_relaxation: bool = False
+    sample_ns: float = 0.0
+
+
+@dataclass(frozen=True)
+class LayerStackSpec:
+    """Ordered stack recipe.
+
+    ``order="bottom_to_top"`` is the natural z-order used in the output cell.
+    ``"top_to_bottom"`` lets users write the experimental stack order directly
+    and have the builder reverse it internally.
+    """
+
+    layers: Sequence[LayerSpec]
+    order: Literal["bottom_to_top", "top_to_bottom"] = "bottom_to_top"
+    pbc_mode: Literal["auto", "xyz", "xy"] = "auto"
+    name: str = "layer_stack"
+    default_gap_nm: float = 0.35
+    bottom_padding_nm: float = 0.0
+    top_padding_nm: float = 0.0
+    auto_expand_graphite: bool = True
+
+
+@dataclass(frozen=True)
+class LayerStackResult:
+    """Result returned by :func:`build_layer_stack`."""
+
+    work_dir: Path
+    stack_spec: LayerStackSpec
+    system_export: SystemExportResult
+    system_gro: Path
+    system_top: Path
+    system_ndx: Path
+    manifest_path: Path
+    stacked_cell: Chem.Mol
+    layer_reports: tuple[dict[str, Any], ...]
+    acceptance: dict[str, Any]
+    box_nm: tuple[float, float, float]
+
+    @property
+    def relaxed_gro(self) -> Path:
+        """Compatibility alias used by follow-up MD helpers."""
+
+        return self.system_gro
+
+    @property
+    def stack_export(self) -> SystemExportResult:
+        """Alias for scripts that pass the export object to follow-up helpers."""
+
+        return self.system_export
+
+
+@dataclass(frozen=True)
+class LayerStackNvtResult:
+    """Result from :func:`run_layer_stack_nvt`.
+
+    The helper is intentionally thin: it starts from the exported layer-stack
+    cell, runs one NVT segment with the existing GROMACS preset, records the
+    actual artifact paths, and optionally launches interface analysis.
+    """
+
+    work_dir: Path
+    final_gro: Path | None
+    xtc: Path | None
+    summary_path: Path
+    analysis_summary: Path | None
+
+
+def _safe_name(name: str) -> str:
+    text = re.sub(r"[^A-Za-z0-9_]+", "_", str(name).strip().upper())
+    text = re.sub(r"_+", "_", text).strip("_")
+    return text or "LAYER"
+
+
+def _mol_name(mol: Chem.Mol, fallback: str) -> str:
+    try:
+        return str(utils.get_name(mol, default=fallback) or fallback)
+    except Exception:
+        return str(fallback)
+
+
+def _coords(mol: Chem.Mol) -> np.ndarray:
+    return np.asarray(mol.GetConformer(0).GetPositions(), dtype=float)
+
+
+def _box_lengths_ang(mol: Chem.Mol) -> tuple[float, float, float] | None:
+    cell = getattr(mol, "cell", None)
+    if cell is None:
+        return None
+    try:
+        return (
+            abs(float(cell.xhi) - float(cell.xlo)),
+            abs(float(cell.yhi) - float(cell.ylo)),
+            abs(float(cell.zhi) - float(cell.zlo)),
+        )
+    except Exception:
+        return None
+
+
+def _read_cell_meta(cell: Chem.Mol) -> dict[str, Any]:
+    try:
+        return json.loads(cell.GetProp("_yadonpy_cell_meta"))
+    except Exception:
+        return {"species": []}
+
+
+def _layer_order(layers: Sequence[LayerSpec], order: str) -> list[LayerSpec]:
+    ordered = list(layers)
+    token = str(order).strip().lower()
+    if token == "bottom_to_top":
+        return ordered
+    if token == "top_to_bottom":
+        return list(reversed(ordered))
+    raise ValueError("LayerStackSpec.order must be 'bottom_to_top' or 'top_to_bottom'.")
+
+
+def _molecular_mass_g(spec: MolecularLayerSpec) -> float:
+    mass_da = 0.0
+    for mol, count in zip(spec.species, spec.counts):
+        try:
+            mw = float(Descriptors.MolWt(mol))
+        except Exception:
+            mw = float(sum(atom.GetMass() for atom in mol.GetAtoms()))
+        mass_da += mw * float(count)
+    return mass_da / _AVOGADRO
+
+
+def _required_area_nm2(layer: LayerSpec) -> float:
+    if not isinstance(layer, MolecularLayerSpec):
+        return 0.0
+    density = layer.density_target_g_cm3
+    if density is None or float(density) <= 0.0:
+        return 0.0
+    thickness_nm = max(float(layer.thickness_nm), 1.0e-6)
+    volume_cm3 = _molecular_mass_g(layer) / float(density)
+    area_cm2 = volume_cm3 / (thickness_nm * 1.0e-7)
+    return max(float(area_cm2) * 1.0e14, 0.0)
+
+
+def _graphite_periodic_xy(spec: GraphiteLayerSpec) -> bool:
+    """Resolve the graphite XY periodicity default.
+
+    Basal-plane graphite is normally an infinite electrode model in XY, whereas
+    edge-plane graphite exposes finite edges and therefore needs explicit caps.
+    """
+
+    if spec.periodic_xy is not None:
+        return bool(spec.periodic_xy)
+    return str(spec.orientation).strip().lower() == "basal"
+
+
+def _effective_graphite_edge_cap(spec: GraphiteLayerSpec) -> str | Sequence[str]:
+    periodic_xy = _graphite_periodic_xy(spec)
+    if periodic_xy and str(spec.orientation).strip().lower() != "basal":
+        raise ValueError("periodic_xy=True is only supported for basal graphite layers.")
+    if periodic_xy:
+        return "periodic"
+    if str(spec.edge_cap).strip().lower() == "periodic":
+        raise ValueError("edge_cap='periodic' requires basal graphite with periodic_xy=True.")
+    return spec.edge_cap
+
+
+def _graphite_lateral_margin_ang(spec: GraphiteLayerSpec) -> float:
+    if spec.lateral_padding_nm is not None:
+        return 10.0 * max(float(spec.lateral_padding_nm), 0.0)
+    if not _graphite_periodic_xy(spec):
+        return 10.0
+    return 0.0
+
+
+def _graphite_xy_nm(spec: GraphiteLayerSpec) -> tuple[float, float, Any]:
+    result = build_graphite(
+        nx=int(spec.nx),
+        ny=int(spec.ny),
+        n_layers=int(spec.n_layers),
+        orientation=spec.orientation,
+        edge_cap=_effective_graphite_edge_cap(spec),
+        random_cap_probs=spec.random_cap_probs,
+        ff_name=spec.ff_name,
+        charge=None,
+        name=spec.name,
+        lateral_margin_ang=_graphite_lateral_margin_ang(spec),
+        bottom_margin_ang=0.0,
+        top_padding_ang=float(spec.top_padding_ang),
+    )
+    return (float(result.box_nm[0]), float(result.box_nm[1]), result)
+
+
+def _plan_master_xy(layers: Sequence[LayerSpec], *, auto_expand_graphite: bool) -> tuple[float, float, dict[str, Any]]:
+    graphite_entries: list[tuple[GraphiteLayerSpec, float, float, Any]] = []
+    required_area = 0.0
+    for layer in layers:
+        required_area = max(required_area, _required_area_nm2(layer))
+        if isinstance(layer, GraphiteLayerSpec):
+            gx, gy, graphite_result = _graphite_xy_nm(layer)
+            graphite_entries.append((layer, gx, gy, graphite_result))
+
+    if graphite_entries:
+        planned_dims = {str(v[0].name): {"nx": int(v[0].nx), "ny": int(v[0].ny)} for v in graphite_entries}
+        master_x = max(v[1] for v in graphite_entries)
+        master_y = max(v[2] for v in graphite_entries)
+        reason = "largest_graphite_footprint"
+        area = master_x * master_y
+        if required_area > area + 1.0e-9:
+            if not auto_expand_graphite:
+                raise ValueError(
+                    f"Molecular layers require {required_area:.3f} nm^2 but graphite footprint is {area:.3f} nm^2."
+                )
+            scale = math.sqrt(required_area / max(area, 1.0e-12))
+            rebuilt_xy: list[tuple[float, float]] = []
+            for graphite_spec, gx, gy, _built in graphite_entries:
+                nx = max(int(graphite_spec.nx), int(math.ceil(int(graphite_spec.nx) * scale)))
+                ny = max(int(graphite_spec.ny), int(math.ceil(int(graphite_spec.ny) * scale)))
+                planned_dims[str(graphite_spec.name)] = {"nx": int(nx), "ny": int(ny)}
+                rebuilt = build_graphite(
+                    nx=nx,
+                    ny=ny,
+                    n_layers=int(graphite_spec.n_layers),
+                    orientation=graphite_spec.orientation,
+                    edge_cap=_effective_graphite_edge_cap(graphite_spec),
+                    random_cap_probs=graphite_spec.random_cap_probs,
+                    ff_name=graphite_spec.ff_name,
+                    charge=None,
+                    name=graphite_spec.name,
+                    lateral_margin_ang=_graphite_lateral_margin_ang(graphite_spec),
+                    bottom_margin_ang=0.0,
+                    top_padding_ang=float(graphite_spec.top_padding_ang),
+                )
+                rebuilt_xy.append((float(rebuilt.box_nm[0]), float(rebuilt.box_nm[1])))
+            master_x = max(v[0] for v in rebuilt_xy)
+            master_y = max(v[1] for v in rebuilt_xy)
+            reason = "expanded_from_molecular_density_targets"
+    else:
+        planned_dims = {}
+        side = math.sqrt(max(required_area, 1.0))
+        master_x = side
+        master_y = side
+        reason = "molecular_density_targets"
+
+    return (
+        float(master_x),
+        float(master_y),
+        {
+            "required_area_nm2": float(required_area),
+            "master_xy_nm": [float(master_x), float(master_y)],
+            "reason": reason,
+            "has_graphite": bool(graphite_entries),
+            "graphite_dimensions": planned_dims,
+        },
+    )
+
+
+def _charge_atom(atom: Chem.Atom, delta: float) -> None:
+    current = 0.0
+    for key in ("AtomicCharge", "RESP", "RESP2", "ESP"):
+        try:
+            if atom.HasProp(key):
+                current = float(atom.GetDoubleProp(key))
+                break
+        except Exception:
+            continue
+    new_q = current + float(delta)
+    for key in ("AtomicCharge", "RESP"):
+        try:
+            atom.SetDoubleProp(key, float(new_q))
+        except Exception:
+            pass
+
+
+def _surface_atom_indices_by_z(mol: Chem.Mol, *, side: Literal["bottom", "top"]) -> list[int]:
+    z = _coords(mol)[:, 2]
+    if z.size == 0:
+        return []
+    target = float(np.min(z) if side == "bottom" else np.max(z))
+    tol = max(0.08, 0.02 * max(float(np.ptp(z)), 1.0))
+    if side == "bottom":
+        return [int(i) for i, zi in enumerate(z) if float(zi) <= target + tol]
+    return [int(i) for i, zi in enumerate(z) if float(zi) >= target - tol]
+
+
+def _resolve_electrode_charges(
+    spec: ElectrodeChargeSpec | None,
+    *,
+    area_nm2: float,
+) -> tuple[float, float]:
+    if spec is None:
+        return (0.0, 0.0)
+    mode = str(spec.mode).strip().lower()
+    if mode == "total_charge":
+        return (float(spec.bottom_charge_e or 0.0), float(spec.top_charge_e or 0.0))
+    if mode == "surface_charge_density":
+        area = float(area_nm2)
+        legacy_sigma = None
+        if spec.surface_charge_uC_cm2 is not None:
+            legacy_sigma = float(spec.surface_charge_uC_cm2) * _UCM2_TO_E_PER_NM2
+        if spec.bottom_charge_e is not None:
+            bottom = float(spec.bottom_charge_e)
+        elif spec.bottom_surface_charge_uC_cm2 is not None:
+            bottom = float(spec.bottom_surface_charge_uC_cm2) * _UCM2_TO_E_PER_NM2 * area
+        elif legacy_sigma is not None:
+            bottom = -legacy_sigma * area
+        else:
+            bottom = 0.0
+        if spec.top_charge_e is not None:
+            top = float(spec.top_charge_e)
+        elif spec.top_surface_charge_uC_cm2 is not None:
+            top = float(spec.top_surface_charge_uC_cm2) * _UCM2_TO_E_PER_NM2 * area
+        elif legacy_sigma is not None:
+            top = legacy_sigma * area
+        else:
+            top = 0.0
+        return (bottom, top)
+    raise ValueError("ElectrodeChargeSpec.mode must be 'total_charge' or 'surface_charge_density'.")
+
+
+def _split_graphite_species_entries(cell: Chem.Mol, *, layer_name: str, ff_name: str, charge_method: str) -> list[dict[str, Any]]:
+    entries: list[dict[str, Any]] = []
+    try:
+        frags = list(Chem.GetMolFrags(cell, asMols=True, sanitizeFrags=False))
+    except Exception:
+        frags = []
+    for idx, frag in enumerate(frags):
+        try:
+            smiles = Chem.MolToSmiles(frag, canonical=True)
+        except Exception:
+            smiles = ""
+        entries.append(
+            {
+                "smiles": smiles,
+                "n": 1,
+                "natoms": int(frag.GetNumAtoms()),
+                "name": f"{_safe_name(layer_name)}_{idx:02d}",
+                "ff_name": str(ff_name),
+                "charge_method": str(charge_method),
+                "prefer_db": False,
+                "require_db": False,
+                "require_ready": False,
+                "layer_name": str(layer_name),
+                "layer_kind": "graphite",
+            }
+        )
+    return entries
+
+
+def _apply_graphite_surface_charge(
+    cell: Chem.Mol,
+    *,
+    layer_name: str,
+    charge_spec: ElectrodeChargeSpec | None,
+    area_nm2: float,
+) -> dict[str, Any]:
+    bottom_q, top_q = _resolve_electrode_charges(charge_spec, area_nm2=area_nm2)
+    report = {
+        "mode": (charge_spec.mode if charge_spec is not None else None),
+        "bottom_charge_e": float(bottom_q),
+        "top_charge_e": float(top_q),
+        "surface_atom_counts": {"bottom": 0, "top": 0},
+        "applied": bool(abs(bottom_q) > 1.0e-12 or abs(top_q) > 1.0e-12),
+    }
+    if not report["applied"]:
+        return report
+    bottom_atoms = _surface_atom_indices_by_z(cell, side="bottom")
+    top_atoms = _surface_atom_indices_by_z(cell, side="top")
+    report["surface_atom_counts"] = {"bottom": len(bottom_atoms), "top": len(top_atoms)}
+    if bottom_q and not bottom_atoms:
+        raise RuntimeError(f"Could not identify bottom surface atoms for graphite layer {layer_name!r}.")
+    if top_q and not top_atoms:
+        raise RuntimeError(f"Could not identify top surface atoms for graphite layer {layer_name!r}.")
+    for idx in bottom_atoms:
+        _charge_atom(cell.GetAtomWithIdx(idx), bottom_q / float(len(bottom_atoms)))
+    for idx in top_atoms:
+        _charge_atom(cell.GetAtomWithIdx(idx), top_q / float(len(top_atoms)))
+    return report
+
+
+def _prepare_graphite_layer(
+    layer: GraphiteLayerSpec,
+    *,
+    master_xy_nm: tuple[float, float],
+    planned_dimensions: Mapping[str, Any] | None,
+    work_dir: Path,
+) -> tuple[Chem.Mol, list[dict[str, Any]], dict[str, Any]]:
+    dims = dict((planned_dimensions or {}).get(str(layer.name), {}) or {})
+    nx = int(dims.get("nx", layer.nx))
+    ny = int(dims.get("ny", layer.ny))
+    built = build_graphite(
+        nx=nx,
+        ny=ny,
+        n_layers=int(layer.n_layers),
+        orientation=layer.orientation,
+        edge_cap=_effective_graphite_edge_cap(layer),
+        random_cap_probs=layer.random_cap_probs,
+        ff_name=layer.ff_name,
+        charge=None,
+        name=layer.name,
+        lateral_margin_ang=_graphite_lateral_margin_ang(layer),
+        bottom_margin_ang=0.0,
+        top_padding_ang=float(layer.top_padding_ang),
+    )
+    charge_report = _apply_graphite_surface_charge(
+        built.cell,
+        layer_name=layer.name,
+        charge_spec=layer.electrode_charge,
+        area_nm2=float(master_xy_nm[0] * master_xy_nm[1]),
+    )
+    species_entries = _split_graphite_species_entries(
+        built.cell,
+        layer_name=layer.name,
+        ff_name=layer.ff_name,
+        charge_method=layer.charge_method,
+    )
+    report = {
+        "name": layer.name,
+        "kind": "graphite",
+        "nx": int(nx),
+        "ny": int(ny),
+        "n_layers": int(layer.n_layers),
+        "orientation": layer.orientation,
+        "edge_cap": layer.edge_cap,
+        "periodic_xy": bool(_graphite_periodic_xy(layer)),
+        "lateral_padding_nm": (
+            float(layer.lateral_padding_nm)
+            if layer.lateral_padding_nm is not None
+            else (1.0 if not _graphite_periodic_xy(layer) else 0.0)
+        ),
+        "effective_edge_cap": _effective_graphite_edge_cap(layer),
+        "edge_cap_summary": dict(built.edge_cap_summary),
+        "box_nm": [float(v) for v in built.box_nm],
+        "electrode_charge": charge_report,
+        "work_dir": str(work_dir),
+    }
+    return built.cell, species_entries, report
+
+
+def _prepare_molecular_layer(
+    layer: MolecularLayerSpec,
+    *,
+    master_xy_nm: tuple[float, float],
+    work_dir: Path,
+    restart: bool | None,
+) -> tuple[Chem.Mol, list[dict[str, Any]], dict[str, Any]]:
+    if len(layer.species) != len(layer.counts):
+        raise ValueError(f"MolecularLayerSpec {layer.name!r}: species and counts must have the same length.")
+    if float(layer.thickness_nm) <= 0.0:
+        raise ValueError(f"MolecularLayerSpec {layer.name!r}: thickness_nm must be positive.")
+    layer_work_dir = work_dir / _safe_name(layer.name).lower()
+    layer_work_dir.mkdir(parents=True, exist_ok=True)
+    pack_cell = make_orthorhombic_pack_cell((float(master_xy_nm[0]), float(master_xy_nm[1]), float(layer.thickness_nm)))
+    pe_mode = (
+        bool(layer.polyelectrolyte_mode)
+        if layer.polyelectrolyte_mode is not None
+        else str(layer.layer_kind).lower() in {"cmcna", "polyelectrolyte"}
+    )
+    cell = poly.amorphous_cell(
+        list(layer.species),
+        list(int(v) for v in layer.counts),
+        cell=pack_cell,
+        density=None,
+        retry=int(layer.retry),
+        retry_step=int(layer.retry_step),
+        threshold=float(layer.threshold_ang),
+        charge_scale=layer.charge_scale,
+        polyelectrolyte_mode=pe_mode,
+        large_system_mode=layer.large_system_mode,
+        work_dir=layer_work_dir,
+        restart=restart,
+    )
+    meta = _read_cell_meta(cell)
+    species_entries = []
+    for entry in meta.get("species") or []:
+        copied = dict(entry)
+        copied["layer_name"] = layer.name
+        copied["layer_kind"] = layer.layer_kind
+        copied["polyelectrolyte_mode"] = bool(pe_mode or copied.get("polyelectrolyte_mode", False))
+        species_entries.append(copied)
+    report = {
+        "name": layer.name,
+        "kind": layer.layer_kind,
+        "counts": [int(v) for v in layer.counts],
+        "species_names": [_mol_name(m, f"M{i+1}") for i, m in enumerate(layer.species)],
+        "thickness_nm": float(layer.thickness_nm),
+        "density_target_g_cm3": (float(layer.density_target_g_cm3) if layer.density_target_g_cm3 is not None else None),
+        "charge_scale": layer.charge_scale,
+        "polyelectrolyte_mode": bool(pe_mode),
+        "work_dir": str(layer_work_dir),
+    }
+    return cell, species_entries, report
+
+
+def _z_extent_nm(block: Chem.Mol) -> tuple[float, float]:
+    z = _coords(block)[:, 2] * 0.1
+    return float(np.min(z)), float(np.max(z))
+
+
+def _stack_non_vacuum_layers(
+    prepared: Sequence[tuple[int, LayerSpec, Chem.Mol, list[dict[str, Any]], dict[str, Any]]],
+    layers: Sequence[LayerSpec],
+    *,
+    master_xy_nm: tuple[float, float],
+    default_gap_nm: float,
+    bottom_padding_nm: float,
+    top_padding_nm: float,
+    periodic_closing_gap_nm: float = 0.0,
+) -> tuple[Chem.Mol, tuple[float, float, float], list[dict[str, Any]], list[dict[str, Any]]]:
+    nonvac_by_index = {idx: (layer, block, species, report) for idx, layer, block, species, report in prepared}
+    blocks: list[Chem.Mol] = []
+    block_input_indices: list[int] = []
+    gaps_ang: list[float] = []
+    pending_gap_nm = float(bottom_padding_nm)
+    leading_padding_nm = 0.0
+    trailing_padding_nm = float(top_padding_nm)
+    previous_nonvac_seen = False
+
+    for idx, layer in enumerate(layers):
+        if isinstance(layer, VacuumLayerSpec):
+            if previous_nonvac_seen:
+                pending_gap_nm += float(layer.thickness_nm)
+            else:
+                leading_padding_nm += float(layer.thickness_nm)
+            continue
+        if idx not in nonvac_by_index:
+            continue
+        if blocks:
+            gaps_ang.append(10.0 * max(pending_gap_nm, float(default_gap_nm)))
+            pending_gap_nm = 0.0
+        else:
+            leading_padding_nm += pending_gap_nm
+            pending_gap_nm = 0.0
+        _layer, block, _species, _report = nonvac_by_index[idx]
+        blocks.append(block)
+        block_input_indices.append(idx)
+        previous_nonvac_seen = True
+    trailing_padding_nm += pending_gap_nm
+    closing_gap_target_nm = max(0.0, float(periodic_closing_gap_nm))
+    if closing_gap_target_nm > 0.0:
+        # With pbc=xyz the top of the stack neighbors the bottom image.  Without
+        # an explicit closing spacer, graphite|electrolyte|...|graphite stacks
+        # can start with the two outer surfaces effectively on top of each
+        # other, yielding enormous LJ energy at step 0.  Treat the periodic
+        # boundary like another interface unless the user already supplied
+        # enough top/bottom vacuum or padding.
+        boundary_padding_nm = float(leading_padding_nm) + float(trailing_padding_nm)
+        trailing_padding_nm += max(0.0, closing_gap_target_nm - boundary_padding_nm)
+
+    if not blocks:
+        raise ValueError("Layer stack contains no non-vacuum layers.")
+
+    stacked = stack_cell_blocks(
+        blocks,
+        z_gaps_ang=gaps_ang,
+        lateral_margin_ang=0.0,
+        bottom_margin_ang=10.0 * float(leading_padding_nm),
+        top_padding_ang=10.0 * float(trailing_padding_nm),
+        fixed_xy_ang=(10.0 * float(master_xy_nm[0]), 10.0 * float(master_xy_nm[1])),
+    )
+
+    # Reconstruct z intervals by replaying stack_cell_blocks' z cursor logic.
+    intervals: list[dict[str, Any]] = []
+    z_cursor_ang = 10.0 * float(leading_padding_nm)
+    for out_idx, (input_idx, block) in enumerate(zip(block_input_indices, blocks)):
+        coord = _coords(block)
+        mins = np.min(coord, axis=0)
+        maxs = np.max(coord, axis=0)
+        height_ang = float(maxs[2] - mins[2])
+        lo_nm = 0.1 * z_cursor_ang
+        hi_nm = 0.1 * (z_cursor_ang + height_ang)
+        layer = layers[input_idx]
+        intervals.append(
+            {
+                "layer_index": int(input_idx),
+                "stack_nonvacuum_index": int(out_idx),
+                "name": getattr(layer, "name", f"LAYER_{input_idx:02d}"),
+                "kind": ("vacuum" if isinstance(layer, VacuumLayerSpec) else ("graphite" if isinstance(layer, GraphiteLayerSpec) else layer.layer_kind)),
+                "z_lo_nm": float(lo_nm),
+                "z_hi_nm": float(hi_nm),
+                "z_mid_nm": float(0.5 * (lo_nm + hi_nm)),
+            }
+        )
+        z_cursor_ang += height_ang
+        if out_idx < len(gaps_ang):
+            z_cursor_ang += gaps_ang[out_idx]
+
+    gap_reports = [
+        {"after_nonvacuum_index": i, "gap_nm": float(gaps_ang[i] * 0.1)} for i in range(len(gaps_ang))
+    ]
+    if closing_gap_target_nm > 0.0:
+        gap_reports.append(
+            {
+                "after_nonvacuum_index": len(blocks) - 1,
+                "before_nonvacuum_index": 0,
+                "gap_nm": float(leading_padding_nm + trailing_padding_nm),
+                "pbc_closing": True,
+            }
+        )
+    return stacked.cell, tuple(float(v) for v in stacked.box_nm), intervals, gap_reports
+
+
+def _write_combined_cell_meta(
+    cell: Chem.Mol,
+    *,
+    species_entries: Sequence[dict[str, Any]],
+    stack_name: str,
+    master_xy_nm: tuple[float, float],
+    box_nm: tuple[float, float, float],
+) -> None:
+    q_raw = 0.0
+    q_scaled = 0.0
+    for entry in species_entries:
+        # Keep the summary conservative: exact charge is audited by the exporter
+        # after artifacts are written, while this manifest mainly tracks intent.
+        q_raw += float(entry.get("net_charge_raw", 0.0) or 0.0)
+        q_scaled += float(entry.get("net_charge_scaled", entry.get("net_charge_raw", 0.0)) or 0.0)
+    payload = {
+        "density_g_cm3": None,
+        "species": [dict(v) for v in species_entries],
+        "pack_mode": "layer_stack",
+        "layer_stack_name": str(stack_name),
+        "master_xy_nm": [float(master_xy_nm[0]), float(master_xy_nm[1])],
+        "box_nm": [float(v) for v in box_nm],
+        "target_atoms": int(sum(int(v.get("natoms", 0) or 0) * int(v.get("n", 0) or 0) for v in species_entries)),
+        "net_charge_raw": float(q_raw),
+        "net_charge_scaled": float(q_scaled),
+        "charge_tolerance": 1.0e-2,
+        "net_charge_ok": bool(abs(q_scaled) <= 1.0e-2),
+    }
+    cell.SetProp("_yadonpy_cell_meta", json.dumps(payload, ensure_ascii=False))
+
+
+def _read_gro_atoms(gro_path: Path) -> tuple[np.ndarray, int]:
+    lines = Path(gro_path).read_text(encoding="utf-8", errors="replace").splitlines()
+    if len(lines) < 3:
+        return np.zeros((0, 3), dtype=float), 0
+    try:
+        nat = int(lines[1].strip())
+    except Exception:
+        nat = max(len(lines) - 3, 0)
+    coords = np.zeros((nat, 3), dtype=float)
+    for i in range(nat):
+        line = lines[2 + i]
+        coords[i, 0] = float(line[20:28])
+        coords[i, 1] = float(line[28:36])
+        coords[i, 2] = float(line[36:44])
+    return coords, nat
+
+
+def _layer_group_names(layer: LayerSpec, index: int) -> tuple[str, str]:
+    base = _safe_name(getattr(layer, "name", f"LAYER_{index:02d}"))
+    return (f"LAYER_{index:02d}_{base}", base)
+
+
+def _write_layer_ndx_groups(
+    ndx_path: Path,
+    *,
+    gro_path: Path,
+    layers: Sequence[LayerSpec],
+    intervals: Sequence[dict[str, Any]],
+) -> dict[str, list[int]]:
+    coords, nat = _read_gro_atoms(gro_path)
+    existing = read_ndx_groups(ndx_path) if Path(ndx_path).is_file() else {}
+    groups: dict[str, list[int]] = {str(k): list(v) for k, v in existing.items()}
+    system = list(range(1, nat + 1))
+    groups.setdefault("System", system)
+    groups["SYSTEM"] = system
+    mobile: set[int] = set()
+
+    interval_by_index = {int(v["layer_index"]): v for v in intervals}
+    for idx, layer in enumerate(layers):
+        group_name, alias = _layer_group_names(layer, idx)
+        if isinstance(layer, VacuumLayerSpec) or idx not in interval_by_index:
+            groups[group_name] = []
+            groups[alias] = []
+            continue
+        interval = interval_by_index[idx]
+        zlo = float(interval["z_lo_nm"]) - 1.0e-4
+        zhi = float(interval["z_hi_nm"]) + 1.0e-4
+        atom_ids = [int(i + 1) for i, z in enumerate(coords[:, 2]) if zlo <= float(z) <= zhi]
+        groups[group_name] = atom_ids
+        groups[alias] = sorted(set(groups.get(alias, [])) | set(atom_ids))
+        kind = "GRAPHITE" if isinstance(layer, GraphiteLayerSpec) else str(layer.layer_kind).upper()
+        groups[kind] = sorted(set(groups.get(kind, [])) | set(atom_ids))
+        if kind != "GRAPHITE":
+            mobile.update(atom_ids)
+
+    groups["MOBILE"] = sorted(mobile)
+    ordered = [(name, idxs) for name, idxs in groups.items()]
+    _write_ndx(ndx_path, ordered)
+    return groups
+
+
+def _acceptance_summary(
+    *,
+    intervals: Sequence[dict[str, Any]],
+    layer_groups: Mapping[str, Sequence[int]],
+    layers: Sequence[LayerSpec],
+    box_nm: tuple[float, float, float],
+    pbc_mode: str,
+    min_gap_nm: float,
+) -> dict[str, Any]:
+    nonvac = [v for v in intervals]
+    ordered_ok = all(float(nonvac[i]["z_hi_nm"]) <= float(nonvac[i + 1]["z_lo_nm"]) + 1.0e-6 for i in range(len(nonvac) - 1))
+    gaps = []
+    for left, right in zip(nonvac, nonvac[1:]):
+        gaps.append(
+            {
+                "left": str(left["name"]),
+                "right": str(right["name"]),
+                "gap_nm": float(float(right["z_lo_nm"]) - float(left["z_hi_nm"])),
+            }
+        )
+    resolved_pbc = "xyz" if str(pbc_mode).lower() == "auto" else str(pbc_mode).lower()
+    closing_gap_nm = None
+    closing_ok = True
+    if resolved_pbc == "xyz" and nonvac:
+        closing_gap_nm = float(box_nm[2]) - float(nonvac[-1]["z_hi_nm"]) + float(nonvac[0]["z_lo_nm"])
+        # This is a geometry safety check rather than a thermodynamic criterion.
+        # A small positive periodic closing gap avoids step-0 overlap explosions,
+        # while explicit vacuum stacks can naturally have a much larger value.
+        required_gap_nm = max(0.05, min(0.20, 0.5 * float(min_gap_nm)))
+        closing_ok = closing_gap_nm >= required_gap_nm
+    has_mobile = bool(layer_groups.get("MOBILE"))
+    ok = bool(ordered_ok and has_mobile and closing_ok)
+    return {
+        "ok": ok,
+        "phase_order_ok": bool(ordered_ok),
+        "has_mobile_atoms": bool(has_mobile),
+        "adjacent_gaps_nm": gaps,
+        "pbc_closing_gap_nm": closing_gap_nm,
+        "pbc_closing_gap_ok": bool(closing_ok),
+        "recommended_action": ("ready_for_relaxation" if ok else "inspect_layer_stack_manifest"),
+        "checked_layers": [getattr(layer, "name", f"LAYER_{i:02d}") for i, layer in enumerate(layers)],
+    }
+
+
+def _manifest_payload(
+    *,
+    spec: LayerStackSpec,
+    relaxation: LayerStackRelaxationSpec,
+    planning: Mapping[str, Any],
+    layer_reports: Sequence[dict[str, Any]],
+    intervals: Sequence[dict[str, Any]],
+    gap_reports: Sequence[dict[str, Any]],
+    box_nm: tuple[float, float, float],
+    export: SystemExportResult,
+    acceptance: Mapping[str, Any],
+) -> dict[str, Any]:
+    pbc_mode = spec.pbc_mode
+    if pbc_mode == "auto":
+        pbc_mode = "xyz"
+    return {
+        "schema_version": 1,
+        "builder": "yadonpy.interface.layer_stack",
+        "name": spec.name,
+        "order": spec.order,
+        "pbc_mode": pbc_mode,
+        "master_xy_nm": list(planning.get("master_xy_nm", [])),
+        "box_nm": [float(v) for v in box_nm],
+        "layers": [dict(v) for v in layer_reports],
+        "layer_intervals_nm": [dict(v) for v in intervals],
+        "gaps": [dict(v) for v in gap_reports],
+        "acceptance": dict(acceptance),
+        "relaxation_defaults": {
+            "temperature_K": float(relaxation.temperature_K),
+            "pressure_bar": float(relaxation.pressure_bar),
+            "early_dt_ps": float(relaxation.early_dt_ps),
+            "early_constraints": str(relaxation.early_constraints),
+            "final_dt_ps": float(relaxation.final_dt_ps),
+            "final_constraints": str(relaxation.final_constraints),
+            "freeze_layers": list(relaxation.freeze_layers),
+            "run_relaxation": bool(relaxation.run_relaxation),
+            "sample_ns": float(relaxation.sample_ns),
+        },
+        "planning": dict(planning),
+        "artifacts": {
+            "system_gro": str(export.system_gro),
+            "system_top": str(export.system_top),
+            "system_ndx": str(export.system_ndx),
+            "system_meta": str(export.system_meta),
+            "molecules_dir": str(export.molecules_dir),
+        },
+    }
+
+
+def build_layer_stack(
+    stack: LayerStackSpec | None = None,
+    *,
+    layers: Sequence[LayerSpec] | None = None,
+    order: Literal["bottom_to_top", "top_to_bottom"] = "bottom_to_top",
+    pbc_mode: Literal["auto", "xyz", "xy"] = "auto",
+    name: str = "layer_stack",
+    relaxation: LayerStackRelaxationSpec | None = None,
+    work_dir: str | Path = "layer_stack_work",
+    ff_name: str = "gaff2_mod",
+    charge_method: str = "RESP",
+    restart: bool | None = None,
+    export: bool = True,
+) -> LayerStackResult:
+    """Build and export a generic z-stacked interface system.
+
+    The function accepts either a pre-built :class:`LayerStackSpec` or an inline
+    ``layers=[...]`` sequence.  Molecules are packed/prepared under one master
+    XY footprint, stacked in z, exported to GROMACS, and annotated with layer
+    groups in ``system.ndx``.
+    """
+
+    if stack is None:
+        if layers is None:
+            raise ValueError("build_layer_stack requires either stack=... or layers=...")
+        stack = LayerStackSpec(layers=tuple(layers), order=order, pbc_mode=pbc_mode, name=name)
+    if not stack.layers:
+        raise ValueError("LayerStackSpec.layers must not be empty.")
+
+    relaxation = relaxation or LayerStackRelaxationSpec()
+    resolved_pbc_mode = "xyz" if str(stack.pbc_mode).lower() == "auto" else str(stack.pbc_mode).lower()
+    work_dir = Path(work_dir).expanduser().resolve()
+    work_dir.mkdir(parents=True, exist_ok=True)
+    ordered_layers = _layer_order(stack.layers, stack.order)
+    master_x_nm, master_y_nm, planning = _plan_master_xy(ordered_layers, auto_expand_graphite=stack.auto_expand_graphite)
+    master_xy_nm = (master_x_nm, master_y_nm)
+
+    prepared: list[tuple[int, LayerSpec, Chem.Mol, list[dict[str, Any]], dict[str, Any]]] = []
+    all_species: list[dict[str, Any]] = []
+    layer_reports: list[dict[str, Any]] = []
+    for idx, layer in enumerate(ordered_layers):
+        layer_dir = work_dir / "01_layers" / f"{idx:02d}_{_safe_name(getattr(layer, 'name', 'VACUUM')).lower()}"
+        layer_dir.mkdir(parents=True, exist_ok=True)
+        if isinstance(layer, VacuumLayerSpec):
+            report = {"name": layer.name, "kind": "vacuum", "thickness_nm": float(layer.thickness_nm), "work_dir": str(layer_dir)}
+            layer_reports.append(report)
+            continue
+        if isinstance(layer, GraphiteLayerSpec):
+            block, species_entries, report = _prepare_graphite_layer(
+                layer,
+                master_xy_nm=master_xy_nm,
+                planned_dimensions=planning.get("graphite_dimensions", {}),
+                work_dir=layer_dir,
+            )
+        elif isinstance(layer, MolecularLayerSpec):
+            block, species_entries, report = _prepare_molecular_layer(layer, master_xy_nm=master_xy_nm, work_dir=layer_dir, restart=restart)
+        else:  # pragma: no cover - defensive for future spec classes.
+            raise TypeError(f"Unsupported layer spec type: {type(layer)!r}")
+        for entry in species_entries:
+            copied = dict(entry)
+            copied["layer_index"] = int(idx)
+            copied["layer_group"] = _layer_group_names(layer, idx)[0]
+            all_species.append(copied)
+        prepared.append((idx, layer, block, species_entries, report))
+        layer_reports.append(report)
+
+    stacked_cell, box_nm, intervals, gap_reports = _stack_non_vacuum_layers(
+        prepared,
+        ordered_layers,
+        master_xy_nm=master_xy_nm,
+        default_gap_nm=float(stack.default_gap_nm),
+        bottom_padding_nm=float(stack.bottom_padding_nm),
+        top_padding_nm=float(stack.top_padding_nm),
+        periodic_closing_gap_nm=(float(stack.default_gap_nm) if resolved_pbc_mode == "xyz" else 0.0),
+    )
+    _write_combined_cell_meta(
+        stacked_cell,
+        species_entries=all_species,
+        stack_name=stack.name,
+        master_xy_nm=master_xy_nm,
+        box_nm=box_nm,
+    )
+    stacked_cell.SetProp(
+        _LAYER_META_PROP,
+        json.dumps(
+            {
+                "schema_version": 1,
+                "layers": [dict(v) for v in layer_reports],
+                "layer_intervals_nm": [dict(v) for v in intervals],
+                "master_xy_nm": [float(master_xy_nm[0]), float(master_xy_nm[1])],
+                "box_nm": [float(v) for v in box_nm],
+            },
+            ensure_ascii=False,
+        ),
+    )
+
+    if not export:
+        raise ValueError("build_layer_stack(export=False) is not supported yet because callers need GROMACS artifacts.")
+
+    export_dir = work_dir / "02_system"
+    system_export = export_system_from_cell_meta(
+        cell_mol=stacked_cell,
+        out_dir=export_dir,
+        ff_name=ff_name,
+        charge_method=charge_method,
+        polyelectrolyte_mode=any(
+            isinstance(layer, MolecularLayerSpec) and str(layer.layer_kind).lower() in {"cmcna", "polyelectrolyte"}
+            for layer in ordered_layers
+        ),
+    )
+    layer_groups = _write_layer_ndx_groups(
+        Path(system_export.system_ndx),
+        gro_path=Path(system_export.system_gro),
+        layers=ordered_layers,
+        intervals=intervals,
+    )
+    acceptance = _acceptance_summary(
+        intervals=intervals,
+        layer_groups=layer_groups,
+        layers=ordered_layers,
+        box_nm=box_nm,
+        pbc_mode=resolved_pbc_mode,
+        min_gap_nm=float(stack.default_gap_nm),
+    )
+    manifest = _manifest_payload(
+        spec=LayerStackSpec(
+            layers=tuple(ordered_layers),
+            order="bottom_to_top",
+            pbc_mode=stack.pbc_mode,
+            name=stack.name,
+            default_gap_nm=stack.default_gap_nm,
+            bottom_padding_nm=stack.bottom_padding_nm,
+            top_padding_nm=stack.top_padding_nm,
+            auto_expand_graphite=stack.auto_expand_graphite,
+        ),
+        relaxation=relaxation,
+        planning=planning,
+        layer_reports=layer_reports,
+        intervals=intervals,
+        gap_reports=gap_reports,
+        box_nm=box_nm,
+        export=system_export,
+        acceptance=acceptance,
+    )
+    manifest_path = work_dir / "layer_stack_manifest.json"
+    manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+    return LayerStackResult(
+        work_dir=work_dir,
+        stack_spec=stack,
+        system_export=system_export,
+        system_gro=Path(system_export.system_gro),
+        system_top=Path(system_export.system_top),
+        system_ndx=Path(system_export.system_ndx),
+        manifest_path=manifest_path,
+        stacked_cell=stacked_cell,
+        layer_reports=tuple(layer_reports),
+        acceptance=acceptance,
+        box_nm=box_nm,
+    )
+
+
+def _latest_existing_file(paths: Sequence[Path]) -> Path | None:
+    found = [Path(p) for p in paths if Path(p).is_file()]
+    if not found:
+        return None
+    found.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    return found[0]
+
+
+def _copy_text_file(src: Path, dst: Path) -> None:
+    if Path(src).is_file():
+        Path(dst).parent.mkdir(parents=True, exist_ok=True)
+        Path(dst).write_text(Path(src).read_text(encoding="utf-8", errors="replace"), encoding="utf-8")
+
+
+def run_layer_stack_nvt(
+    result: LayerStackResult,
+    *,
+    work_dir: str | Path | None = None,
+    time_ns: float = 2.0,
+    temp: float = 318.15,
+    mpi: int = 1,
+    omp: int = 14,
+    gpu: int = 1,
+    gpu_id: int | None = 0,
+    restart: bool | None = None,
+    dt_ps: float = 0.002,
+    constraints: str = "h-bonds",
+    traj_ps: float | str | None = "auto",
+    energy_ps: float | str | None = "auto",
+    log_ps: float | str | None = "auto",
+    trr_ps: float | str | None = None,
+    velocity_ps: float | str | None = None,
+    gpu_offload_mode: str = "full",
+    performance_profile: str = "auto",
+    analysis_profile: str = "interface_fast",
+    run_analysis: bool = True,
+) -> LayerStackNvtResult:
+    """Run a short NVT sampling segment from a built layer-stack artifact.
+
+    Parameters mirror the normal NVT preset so Example 08 can keep the same
+    script-first style as Example 02.  The function copies the layer manifest
+    and layer-aware NDX groups into the follow-up directory, which lets the
+    interface analyzer keep using layer names after MD.
+    """
+
+    from ..sim.preset import eq
+
+    run_dir = Path(work_dir).expanduser().resolve() if work_dir is not None else Path(result.work_dir) / "03_nvt_sampling"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    nvt = eq.NVT(result.stacked_cell, work_dir=run_dir)
+
+    # Prime the export and replace the generic index with layer-aware groups.
+    try:
+        exp = nvt._ensure_system_exported()  # type: ignore[attr-defined]
+        _copy_text_file(Path(result.system_ndx), Path(exp.system_ndx))
+    except Exception:
+        exp = None
+
+    nvt.exec(
+        temp=float(temp),
+        mpi=int(mpi),
+        omp=int(omp),
+        gpu=int(gpu),
+        gpu_id=gpu_id,
+        time=float(time_ns),
+        traj_ps=traj_ps,
+        energy_ps=energy_ps,
+        log_ps=log_ps,
+        trr_ps=trr_ps,
+        velocity_ps=velocity_ps,
+        dt_ps=float(dt_ps),
+        constraints=str(constraints),
+        gpu_offload_mode=str(gpu_offload_mode),
+        performance_profile=str(performance_profile),
+        analysis_profile="auto",
+        pre_minimize=True,
+        restart=restart,
+    )
+
+    system_dir = run_dir / "02_system"
+    _copy_text_file(Path(result.system_ndx), system_dir / "system.ndx")
+    _copy_text_file(Path(result.manifest_path), run_dir / "layer_stack_manifest.json")
+
+    production_dir = run_dir / "05_nvt_production"
+    final_gro = _latest_existing_file(list(production_dir.rglob("md.gro")))
+    xtc = _latest_existing_file(list(production_dir.rglob("md.xtc")))
+    summary_path = run_dir / "nvt_followup_summary.json"
+    analysis_summary: Path | None = None
+    analysis_payload: dict[str, Any] | None = None
+    if run_analysis and final_gro is not None:
+        try:
+            analysis_payload = analyze_layer_stack_interface(
+                work_dir=run_dir,
+                system_gro=final_gro,
+                system_ndx=system_dir / "system.ndx",
+                trajectory=xtc,
+                analysis_profile=analysis_profile,
+            )
+            out_path = analysis_payload.get("summary_path") if isinstance(analysis_payload, dict) else None
+            if out_path:
+                analysis_summary = Path(out_path)
+        except Exception as exc:
+            analysis_payload = {"error": str(exc)}
+    payload = {
+        "schema_version": 1,
+        "work_dir": str(run_dir),
+        "source_layer_stack": str(result.work_dir),
+        "time_ns": float(time_ns),
+        "temperature_K": float(temp),
+        "dt_ps": float(dt_ps),
+        "constraints": str(constraints),
+        "gpu_offload_mode": str(gpu_offload_mode),
+        "resources": {"mpi": int(mpi), "omp": int(omp), "gpu": int(gpu), "gpu_id": gpu_id},
+        "artifacts": {
+            "system_gro": str(system_dir / "system.gro"),
+            "system_top": str(system_dir / "system.top"),
+            "system_ndx": str(system_dir / "system.ndx"),
+            "final_gro": str(final_gro) if final_gro is not None else None,
+            "xtc": str(xtc) if xtc is not None else None,
+            "manifest": str(run_dir / "layer_stack_manifest.json"),
+        },
+        "analysis": analysis_payload,
+    }
+    summary_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    return LayerStackNvtResult(
+        work_dir=run_dir,
+        final_gro=final_gro,
+        xtc=xtc,
+        summary_path=summary_path,
+        analysis_summary=analysis_summary,
+    )
+
+
+def _resolve_stack_artifacts(
+    *,
+    result: LayerStackResult | None = None,
+    work_dir: str | Path | None = None,
+    system_gro: str | Path | None = None,
+    system_ndx: str | Path | None = None,
+    trajectory: str | Path | None = None,
+) -> tuple[Path, Path, Path | None, Path | None]:
+    if result is not None:
+        base = Path(result.work_dir)
+        gro = Path(system_gro or result.system_gro)
+        ndx = Path(system_ndx or result.system_ndx)
+        manifest = Path(result.manifest_path)
+    elif work_dir is not None:
+        base = Path(work_dir).expanduser().resolve()
+        gro = Path(system_gro or base / "02_system" / "system.gro")
+        ndx = Path(system_ndx or base / "02_system" / "system.ndx")
+        manifest = base / "layer_stack_manifest.json"
+    else:
+        raise ValueError("Provide result=... or work_dir=... for layer-stack analysis.")
+    traj = Path(trajectory) if trajectory is not None else None
+    return gro, ndx, traj, manifest
+
+
+def analyze_layer_stack_interface(
+    *,
+    result: LayerStackResult | None = None,
+    work_dir: str | Path | None = None,
+    system_gro: str | Path | None = None,
+    system_ndx: str | Path | None = None,
+    trajectory: str | Path | None = None,
+    out_dir: str | Path | None = None,
+    bin_nm: float = 0.05,
+    frame_stride: int | str = "auto",
+    region_width_nm: float = 0.75,
+    analysis_profile: str = "interface_fast",
+    phase_groups: Sequence[str] | None = None,
+    compute_transport: bool = True,
+) -> dict[str, Any]:
+    """Analyze z profiles and adjacent-interface diagnostics for a layer stack."""
+
+    gro, ndx, traj, manifest_path = _resolve_stack_artifacts(
+        result=result,
+        work_dir=work_dir,
+        system_gro=system_gro,
+        system_ndx=system_ndx,
+        trajectory=trajectory,
+    )
+    manifest = {}
+    if manifest_path is not None and manifest_path.is_file():
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if phase_groups is None:
+        phase_groups = [
+            str(v.get("name"))
+            for v in manifest.get("layers", [])
+            if str(v.get("kind", "")).lower() != "vacuum" and v.get("name")
+        ]
+    if out_dir is None:
+        root = Path(work_dir).expanduser().resolve() if work_dir is not None else Path(gro).parent.parent
+        out_dir = root / "06_analysis" / "layer_stack_interface"
+    from ..gmx.analysis.interface_profile import compute_interface_profile
+
+    return compute_interface_profile(
+        gro_path=gro,
+        top_path=(Path(work_dir).expanduser().resolve() / "02_system" / "system.top") if work_dir is not None else (Path(gro).parent / "system.top"),
+        ndx_path=ndx,
+        system_dir=(Path(work_dir).expanduser().resolve() / "02_system") if work_dir is not None else Path(gro).parent,
+        xtc_path=traj,
+        out_dir=Path(out_dir),
+        bin_nm=float(bin_nm),
+        frame_stride=frame_stride,
+        region_width_nm=float(region_width_nm),
+        analysis_profile=str(analysis_profile),
+        phase_groups=tuple(phase_groups),
+        manifest_path=manifest_path if manifest_path and manifest_path.is_file() else None,
+        compute_transport=bool(compute_transport),
+    )
+
+
+__all__ = [
+    "ElectrodeChargeSpec",
+    "GraphiteLayerSpec",
+    "LayerStackNvtResult",
+    "LayerStackRelaxationSpec",
+    "LayerStackResult",
+    "LayerStackSpec",
+    "MolecularLayerSpec",
+    "VacuumLayerSpec",
+    "analyze_layer_stack_interface",
+    "build_layer_stack",
+    "run_layer_stack_nvt",
+]

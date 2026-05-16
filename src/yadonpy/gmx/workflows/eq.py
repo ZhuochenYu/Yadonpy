@@ -676,9 +676,14 @@ class EquilibrationJob:
                 args += ["-ntmpi", "1"]
             if self.runner._tool_has_option("mdrun", "-ntomp", cwd=cwd):
                 args += ["-ntomp", str(int(ntomp))]
-            # Nonbonded on GPU (if available in this GROMACS build).
+            # Minimization is a tiny fraction of the workflow and has been
+            # observed to be less robust with GROMACS auto GPU selection on
+            # highly heterogeneous interface stacks.  Force CPU nonbonded for
+            # EM unless the caller explicitly asks for GPU.
             if use_gpu and self.runner._tool_has_option("mdrun", "-nb", cwd=cwd):
                 args += ["-nb", "gpu"]
+            elif (not use_gpu) and self.runner._tool_has_option("mdrun", "-nb", cwd=cwd):
+                args += ["-nb", "cpu"]
             if use_gpu and gpu_id is not None and str(gpu_id).strip() != "" and self.runner._tool_has_option("mdrun", "-gpu_id", cwd=cwd):
                 args += ["-gpu_id", str(gpu_id).strip()]
             rc, tail = self.runner._run_capture_tee(args, cwd=cwd)
@@ -1042,7 +1047,7 @@ class EquilibrationJob:
                     ntomp_sel, ntmpi_sel = _choose_threads(stage_use_gpu)
                     stage_mdrun_kwargs = dict(stage_offload_kwargs)
                     if st.kind in ("minim", "em") and "nb" not in stage_mdrun_kwargs:
-                        stage_mdrun_kwargs["nb"] = "gpu"
+                        stage_mdrun_kwargs["nb"] = "cpu"
                     try:
                         self.runner.mdrun(
                             tpr=tpr,

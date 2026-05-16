@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 from yadonpy.gmx.analysis.interface_profile import compute_interface_profile
-from yadonpy.interface import analyze_sandwich_interface
+from yadonpy.interface import analyze_layer_stack_interface
 
 
 def _write_itp(system_dir: Path, moltype: str, atoms: list[tuple[str, str, float, float]]) -> None:
@@ -139,15 +139,19 @@ def test_interface_profile_detects_graphite_electrolyte_direct_contact(tmp_path:
     assert out["geometry_health"]["direct_graphite_electrolyte_contact"] is True
 
 
-def test_analyze_sandwich_interface_wrapper_accepts_static_stack(tmp_path: Path):
-    system_dir = tmp_path / "case" / "00_stack"
+def test_analyze_layer_stack_interface_wrapper_accepts_static_stack(tmp_path: Path):
+    system_dir = tmp_path / "case" / "02_system"
     _write_synthetic_stack(system_dir)
 
-    out = analyze_sandwich_interface(
+    out = analyze_layer_stack_interface(
         work_dir=tmp_path / "case",
+        system_gro=system_dir / "system.gro",
+        system_ndx=system_dir / "system.ndx",
+        phase_groups=("GRAPHITE", "POLYMER", "ELECTROLYTE"),
+        out_dir=tmp_path / "case" / "06_analysis" / "layer_stack_interface",
         compute_transport=False,
         bin_nm=0.10,
     )
 
     assert out["geometry_health"]["phase_order_ok"] is True
-    assert (tmp_path / "case" / "06_analysis" / "interface_profile" / "interface_profile_summary.json").exists()
+    assert (tmp_path / "case" / "06_analysis" / "layer_stack_interface" / "interface_profile_summary.json").exists()

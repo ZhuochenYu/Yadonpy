@@ -28,7 +28,7 @@ from . import poly, utils
 from .naming import ensure_name, get_name
 from .topology import Cell
 
-_ALLOWED_CAPS = ("H", "OH", "CHO", "COOH")
+_ALLOWED_CAPS = ("H", "OH", "O", "CHO", "COOH")
 _GRAPHITE_PERIODIC_TOKEN = "PERIODIC"
 _GRAPHITE_CIF = "graphite_cod_9000046.cif"
 _GRAPHITE_BOND_MIN = 1.10
@@ -326,6 +326,13 @@ def _cap_edges(mol: Chem.Mol, edge_cap: str | Sequence[str], *, random_cap_probs
             h = _add_atom(rw, coord, symbol="H", pos=np.asarray(coord[o]) + 0.96 * _unit(out + 0.25 * tangent, fallback=out))
             rw.AddBond(int(atom_idx), o, rdchem.BondType.SINGLE)
             rw.AddBond(o, h, rdchem.BondType.SINGLE)
+            continue
+
+        if cap == "O":
+            # Carbonyl-like edge oxygen: useful for oxidized edge-plane graphite
+            # without introducing an additional carbonyl carbon as in CHO/COOH.
+            o = _add_atom(rw, coord, symbol="O", pos=c + 1.23 * out)
+            rw.AddBond(int(atom_idx), o, rdchem.BondType.DOUBLE)
             continue
 
         if cap == "CHO":

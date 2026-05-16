@@ -3,7 +3,7 @@
 The functions in this module turn user-facing specifications into equilibrated,
 validated GROMACS-ready phases. They bridge molecule preparation, system export,
 bulk equilibration, and restart-friendly artifact discovery for later slab or
-sandwich assembly.
+layer-stack assembly.
 """
 
 from __future__ import annotations

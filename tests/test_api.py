@@ -128,27 +128,27 @@ def test_top_level_api_exports_mechanics_helpers():
     assert 'audit_oplsaa_assignment' in api.__all__
     assert 'audit_bundled_oplsaa_parameter_sanity' in api.__all__
     assert 'oplsaa_stability_preflight' in api.__all__
-    assert 'run_sandwich_nvt_followup' in api.__all__
     assert hasattr(yadonpy, 'resolve_prepared_system')
     assert hasattr(yadonpy, 'run_tg_scan_gmx')
     assert hasattr(yadonpy, 'run_elongation_gmx')
     assert 'AnalyzeResult' in yadonpy.__all__
     assert 'doctor' in yadonpy.__all__
-    assert hasattr(api, 'prepare_graphite_substrate')
-    assert hasattr(api, 'calibrate_polymer_bulk_phase')
-    assert hasattr(api, 'calibrate_electrolyte_bulk_phase')
-    assert hasattr(api, 'build_graphite_polymer_interphase')
-    assert hasattr(api, 'build_polymer_electrolyte_interphase')
-    assert hasattr(api, 'release_graphite_polymer_electrolyte_stack')
-    assert hasattr(api, 'build_cmcna_graphite_electrolyte_stack')
-    assert hasattr(api, 'run_sandwich_nvt_followup')
-    assert hasattr(api, 'print_interface_result_summary')
-    assert hasattr(yadonpy, 'GraphiteSubstrateSpec')
-    assert hasattr(yadonpy, 'PolymerSlabSpec')
-    assert hasattr(yadonpy, 'ElectrolyteSlabSpec')
-    assert hasattr(yadonpy, 'SandwichRelaxationSpec')
-    assert hasattr(yadonpy, 'SandwichNvtFollowupResult')
-    assert hasattr(yadonpy, 'InterfaceBuildPolicy')
+    assert hasattr(api, 'build_layer_stack')
+    assert hasattr(api, 'analyze_layer_stack_interface')
+    assert hasattr(api, 'run_layer_stack_nvt')
+    assert not hasattr(api, 'run_sandwich_nvt_followup')
+    assert not hasattr(api, 'build_cmcna_graphite_electrolyte_stack')
+    assert not hasattr(yadonpy, 'GraphiteSubstrateSpec')
+    assert not hasattr(yadonpy, 'SandwichRelaxationSpec')
+    assert not hasattr(yadonpy, 'SandwichNvtFollowupResult')
+    assert not hasattr(yadonpy, 'InterfaceBuildPolicy')
+    assert hasattr(yadonpy, 'LayerStackSpec')
+    assert hasattr(yadonpy, 'GraphiteLayerSpec')
+    assert hasattr(yadonpy, 'MolecularLayerSpec')
+    assert hasattr(yadonpy, 'VacuumLayerSpec')
+    assert hasattr(yadonpy, 'ElectrodeChargeSpec')
+    assert hasattr(yadonpy, 'LayerStackNvtResult')
+    assert 'run_layer_stack_nvt' in api.__all__
 
 
 def test_analyzer_does_not_expose_transport_bundle_api():

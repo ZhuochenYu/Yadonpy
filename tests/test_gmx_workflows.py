@@ -600,7 +600,10 @@ def test_equilibration_job_minim_bridge_lincs_failure_falls_back_cleanly(tmp_pat
     assert any('steep_hbonds bridge failed' in msg for msg in runner.logs)
     assert any('Replacing the final CG minimization with an unconstrained steep minimization' in msg for msg in runner.logs)
     assert runner.em_commands
-    assert all('-nb' not in cmd for cmd in runner.em_commands)
+    # Minimization is intentionally kept on CPU nonbonded by default.  Several
+    # GROMACS 2026 GPU minimization paths can segfault on tight heterogeneous
+    # interface handoffs, while subsequent MD stages still use GPU offload.
+    assert all('-nb' in cmd and 'cpu' in cmd for cmd in runner.em_commands)
     assert job.final_gro().exists()
 
     summary = json.loads(summary_path.read_text(encoding='utf-8'))

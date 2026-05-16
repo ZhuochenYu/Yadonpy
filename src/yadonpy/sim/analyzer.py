@@ -2358,7 +2358,7 @@ class AnalyzeResult:
         compute_transport: bool = True,
         resume: bool = False,
     ) -> Dict[str, Any]:
-        """Analyze graphite/polymer/electrolyte sandwich structure and transport.
+        """Analyze graphite/polymer/electrolyte layer-stack structure and transport.
 
         The method is intentionally analysis-only: it reads an existing stack or
         NVT follow-up trajectory, writes interface diagnostics under

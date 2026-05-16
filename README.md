@@ -13,7 +13,7 @@ bulk packing, interface assembly, equilibration, and analysis.
 - Supports QM-derived charges with Psi4 plus `psiresp-base`, including RESP and ESP.
 - Stores expensive prepared molecular assets in MolDB for later reuse.
 - Exports GROMACS-ready systems and runs staged MD workflows.
-- Builds bulk polymer-electrolyte systems and graphite-polymer-electrolyte sandwich structures.
+- Builds bulk polymer-electrolyte systems and generic graphite/polymer/electrolyte layer-stack interfaces.
 - Preserves restart-aware work directories and auditable metadata such as charge-group manifests,
   export manifests, and interface build records.
 
@@ -78,43 +78,53 @@ pf6 = yp.load_from_moldb(
 )
 ```
 
-### Build a graphite-polymer-electrolyte sandwich
+### Build a generic layer-stack interface
 
 ```python
 import yadonpy as yp
 
-graphite = yp.GraphiteSubstrateSpec(nx=4, ny=4, n_layers=2)
-polymer = yp.default_cmcna_polymer_spec(dp=20)
-electrolyte = yp.default_carbonate_lipf6_electrolyte_spec()
-relax = yp.SandwichRelaxationSpec(omp=8, gpu=1, psi4_omp=8)
-policy = yp.InterfaceBuildPolicy(stack_relaxation="natural_contact")
+ff = yp.get_ff("gaff2_mod")
+ion_ff = yp.get_ff("merz")
+EC = ff.mol("O=C1OCCO1", charge="RESP", prefer_db=True, require_ready=True)
+ff.ff_assign(EC)
+Li = ion_ff.mol("[Li+]")
+ion_ff.ff_assign(Li)
 
-result = yp.build_cmcna_graphite_electrolyte_stack(
-    work_dir="./work_sandwich",
-    ff=yp.get_ff("gaff2_mod"),
-    ion_ff=yp.get_ff("merz"),
-    graphite=graphite,
-    polymer=polymer,
-    electrolyte=electrolyte,
-    relax=relax,
-    policy=policy,
+stack = yp.LayerStackSpec(
+    layers=(
+        yp.GraphiteLayerSpec(nx=6, ny=5, n_layers=3, name="GRAPHITE"),
+        yp.MolecularLayerSpec(
+            name="ELECTROLYTE",
+            species=(EC, Li),
+            counts=(100, 10),
+            thickness_nm=4.0,
+            density_target_g_cm3=1.2,
+            layer_kind="electrolyte",
+        ),
+        yp.VacuumLayerSpec(thickness_nm=2.0),
+    ),
+    order="bottom_to_top",
 )
-yp.print_interface_result_summary(result)
-
-followup = yp.run_sandwich_nvt_followup(
-    result,
-    work_dir="./work_sandwich/07_nvt_followup",
-    time_ns=4.0,
-    temp=318.15,
+result = yp.build_layer_stack(
+    stack=stack,
+    work_dir="./work_layer_stack",
+    ff_name="gaff2_mod",
 )
-print(followup.summary_path)
+print(result.manifest_path)
 
-profile = yp.analyze_sandwich_interface(
-    work_dir="./work_sandwich",
+profile = yp.analyze_layer_stack_interface(
+    work_dir="./work_layer_stack",
     analysis_profile="interface_fast",
 )
 print(profile["outputs"]["interface_profile_summary_json"])
 ```
+
+For `pbc_mode="auto"`/`xyz`, the stack builder treats the top-bottom periodic
+boundary as another interface and reserves a closing gap unless explicit vacuum
+or padding already provides one.  `run_layer_stack_nvt(...)` also performs a
+short no-constraints minimization before the observation NVT, which removes
+local contacts from freshly stacked CMC/electrolyte/graphite systems without
+changing the force field or production settings.
 
 ## Workflow Areas
 
@@ -202,7 +212,7 @@ multiple GROMACS installations.
 This keeps the defaults physically aligned:
 
 - bulk systems use drift-corrected `3D` diffusion by default;
-- sandwich and slab systems use drift-corrected `xy` diffusion by default;
+- layer-stack and slab systems use drift-corrected `xy` diffusion by default;
 - MSD uses a topology-molecule strategy by default: ions are tracked by atom
   position, small molecules by molecule COM, and polymers by each independent
   chain COM;
@@ -251,16 +261,17 @@ automatically rerun QM/RESP.
 
 ### Interface systems
 
-For interface work, the recommended pattern is:
+For interface work, use the generic `build_layer_stack(...)` engine. Each layer
+is an explicit spec, so the same builder covers `electrolyte | graphite`,
+`electrolyte | CMC-Na | graphite`, `graphite | electrolyte | graphite`, charged
+electrode sweeps, and `vacuum | layer | layer | vacuum` setups.
 
-1. equilibrate each phase independently;
-2. use those bulk runs only as calibration for density, composition, and packing difficulty;
-3. negotiate one graphite master footprint in `XY`;
-4. rebuild each soft phase directly on that final `XY` footprint with repulsive-only Z walls and explicit vacuum;
-5. assemble the final interface or sandwich structure by Z translation;
-6. run staged relaxation with restrained early dynamics and a later release stage.
-
-This is the model used by the high-level graphite-polymer-electrolyte sandwich builder.
+Basal graphite defaults to XY-periodic construction. Edge graphite defaults to a
+finite capped slab and supports `H`, `OH`, `O`/carbonyl, `CHO`, `COOH`, or random
+mixtures. Fixed-charge graphite is a static atom-charge model, not constant
+potential; use side-specific `top_surface_charge_uC_cm2` or
+`bottom_surface_charge_uC_cm2` when only interior electrode faces should be
+charged.
 
 ### Restart and metadata
 
@@ -277,7 +288,7 @@ resumed or audited without guessing which intermediate files are authoritative.
 - `examples/05_cmcna_electrolyte`: CMC-Na polymer-electrolyte construction.
 - `examples/06_polymer_electrolyte_nvt`: polymer-electrolyte workflow with NVT-focused staging.
 - `examples/07_moldb_precompute_and_reuse`: one-shot MolDB catalog build and MolDB-backed reuse scripts.
-- `examples/08_graphite_polymer_electrolyte_sandwich`: two script-first graphite-polymer-electrolyte interface workflows: PEO and CMC-Na.
+- `examples/08_graphite_polymer_electrolyte_sandwich`: five script-first layer-stack interface workflows covering basal/edge graphite, CMC-Na, two-electrode stacks, and fixed-charge sweeps.
 - `examples/09_oplsaa_assignment`: compact OPLS-AA assignment workflows written in the same script-first style as the main examples.
 - `examples/11_segment_branch_polymer`: segment-first long-block and branched-polymer construction.
 
@@ -291,7 +302,7 @@ resumed or audited without guessing which intermediate files are authoritative.
 ## Practical Notes
 
 - Use local runs for fast API checks, packaging work, and short unit tests.
-- Use the remote GPU node for long GROMACS jobs, larger sandwich systems, and heavy QM workflows.
+- Use the remote GPU node for long GROMACS jobs, larger layer-stack interface systems, and heavy QM workflows.
 - For charged polymers, prefer `polyelectrolyte_mode=True` so RESP constraints and later charge scaling remain auditable.
 - MolDB is intended for reusable molecular assets such as geometry and charge variants, not as a topology cache.
 
@@ -317,7 +328,7 @@ independent analyses rather than a loose collection of plots.
   center species.
 - `MSD` defaults are geometry-aware:
   - bulk: drift-corrected `3D`
-  - sandwich/slab: drift-corrected `xy`
+  - layer-stack/slab: drift-corrected `xy`
 - Polymer `MSD` uses independent chain center-of-mass trajectories for the
   self-diffusion coefficient. Atom, residue, and charged-group MSDs are useful
   local mobility diagnostics, but they are not whole-chain diffusion.

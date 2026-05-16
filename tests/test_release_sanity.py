@@ -195,22 +195,21 @@ def test_interface_examples_keep_linear_script_style():
     eg08_dir = root / 'examples' / '08_graphite_polymer_electrolyte_sandwich'
     public_scripts = sorted(path.name for path in eg08_dir.glob('*.py'))
     assert public_scripts == [
-        '01_peo_graphite_electrolyte.py',
-        '02_cmcna_graphite_electrolyte.py',
+        '01_electrolyte_graphite_basal.py',
+        '02_electrolyte_graphite_edge.py',
+        '03_electrolyte_cmcna_graphite_basal.py',
+        '04_graphite_basal_electrolyte_cmcna_graphite_basal.py',
+        '05_charged_graphite_basal_electrolyte_cmcna_graphite_basal.py',
     ]
     helper_patterns = (
-        'def _named(',
-        'def _resolved(',
-        'def assign_template_species(',
-        'def prepare_template_species(',
-        'def build_cmc(',
+        'import yadonpy as yp',
+        'os.environ',
+        'YADONPY_',
     )
     offenders: list[str] = []
-    for rel in (
-        'examples/08_graphite_polymer_electrolyte_sandwich/01_peo_graphite_electrolyte.py',
-        'examples/08_graphite_polymer_electrolyte_sandwich/02_cmcna_graphite_electrolyte.py',
-    ):
-        text = (root / rel).read_text(encoding='utf-8')
+    for path in sorted(eg08_dir.glob('*.py')):
+        rel = str(path.relative_to(root))
+        text = path.read_text(encoding='utf-8')
         if any(pattern in text for pattern in helper_patterns):
             offenders.append(rel)
 
@@ -219,48 +218,55 @@ def test_interface_examples_keep_linear_script_style():
 
 def test_example08_public_cases_are_moldb_only_for_core_species():
     root = Path(__file__).resolve().parents[1]
-    peo_text = (
-        root / 'examples' / '08_graphite_polymer_electrolyte_sandwich' / '01_peo_graphite_electrolyte.py'
-    ).read_text(encoding='utf-8')
-    cmc_text = (
-        root / 'examples' / '08_graphite_polymer_electrolyte_sandwich' / '02_cmcna_graphite_electrolyte.py'
-    ).read_text(encoding='utf-8')
-
-    assert '"PEO_monomer"' in peo_text
-    assert '"*CCO*"' in peo_text
-    assert '_ready_moldb_spec("PEO_monomer", "*CCO*")' in peo_text
-    assert '_ready_moldb_spec("EC", "O=C1OCCO1")' in peo_text
-    assert '_ready_moldb_spec("EMC", "CCOC(=O)OC")' in peo_text
-    assert '_ready_moldb_spec("DEC", "CCOC(=O)OCC")' in peo_text
-    assert '_ready_moldb_spec("PF6", "F[P-](F)(F)(F)(F)F", bonded="DRIH", charge_scale=0.8)' in peo_text
-    assert 'prefer_db=True' in peo_text
-    assert 'require_ready=True' in peo_text
-    assert 'build_graphite_peo_electrolyte_sandwich(' in peo_text
-    assert 'run_sandwich_nvt_followup(' in peo_text
-
-    assert '"glucose_6"' in cmc_text
-    assert '"EC"' in cmc_text
-    assert '"EMC"' in cmc_text
-    assert '"DEC"' in cmc_text
-    assert '"PF6"' in cmc_text
-    assert '_ready_moldb_spec(' in cmc_text
-    assert 'prefer_db=True' in cmc_text
-    assert 'require_ready=True' in cmc_text
-    assert 'build_cmcna_graphite_electrolyte_stack(' in cmc_text
-    assert 'InterfaceBuildPolicy(' in cmc_text
+    for path in sorted((root / 'examples' / '08_graphite_polymer_electrolyte_sandwich').glob('*.py')):
+        text = path.read_text(encoding='utf-8')
+        assert 'ff.mol(' in text
+        assert 'prefer_db=True' in text
+        assert 'require_ready=True' in text
+        assert 'bonded="DRIH"' in text
+        assert 'qm.' not in text
+        assert 'assign_charges(' not in text
+        assert 'build_layer_stack(' in text
+        assert 'run_layer_stack_nvt(' in text
 
 
 def test_example08_scripts_use_one_shot_builder_and_interface_summary_printer():
     root = Path(__file__).resolve().parents[1]
     expected = {
-        'examples/08_graphite_polymer_electrolyte_sandwich/01_peo_graphite_electrolyte.py': (
-            'build_graphite_peo_electrolyte_sandwich(',
-            'InterfaceBuildPolicy(',
-            'run_sandwich_nvt_followup(',
+        'examples/08_graphite_polymer_electrolyte_sandwich/01_electrolyte_graphite_basal.py': (
+            'LayerStackSpec(',
+            'GraphiteLayerSpec(',
+            'periodic_xy=True',
+            'MolecularLayerSpec(',
+            'build_layer_stack(',
         ),
-        'examples/08_graphite_polymer_electrolyte_sandwich/02_cmcna_graphite_electrolyte.py': (
-            'build_cmcna_graphite_electrolyte_stack(',
-            'InterfaceBuildPolicy(',
+        'examples/08_graphite_polymer_electrolyte_sandwich/02_electrolyte_graphite_edge.py': (
+            'LayerStackSpec(',
+            'GraphiteLayerSpec(',
+            'periodic_xy=False',
+            'edge_cap=edge_cap',
+            'MolecularLayerSpec(',
+            'build_layer_stack(',
+        ),
+        'examples/08_graphite_polymer_electrolyte_sandwich/03_electrolyte_cmcna_graphite_basal.py': (
+            'LayerStackSpec(',
+            'GraphiteLayerSpec(',
+            'MolecularLayerSpec(',
+            'polyelectrolyte_mode=True',
+            'build_layer_stack(',
+        ),
+        'examples/08_graphite_polymer_electrolyte_sandwich/04_graphite_basal_electrolyte_cmcna_graphite_basal.py': (
+            'LayerStackSpec(',
+            'GraphiteLayerSpec(',
+            'MolecularLayerSpec(',
+            'build_layer_stack(',
+        ),
+        'examples/08_graphite_polymer_electrolyte_sandwich/05_charged_graphite_basal_electrolyte_cmcna_graphite_basal.py': (
+            'ElectrodeChargeSpec(',
+            'top_surface_charge_uC_cm2=surface_charge',
+            'bottom_surface_charge_uC_cm2=-surface_charge',
+            'surface_charge_sweep_uC_cm2 = (0.0, 2.0, -2.0, 5.0, -5.0)',
+            'build_layer_stack(',
         ),
     }
 
@@ -271,9 +277,6 @@ def test_example08_scripts_use_one_shot_builder_and_interface_summary_printer():
         assert 'from yadonpy.diagnostics import doctor' in text
         assert 'from yadonpy.ff.gaff2_mod import GAFF2_mod' in text
         assert 'from yadonpy.ff.merz import MERZ' in text
-        assert 'print_interface_result_summary(' in text
-        assert 'os.environ' not in text
-        assert 'YADONPY_' not in text
         for call in required_calls:
             assert call in text
         assert 'from yadonpy.interface import ' in text
@@ -283,8 +286,10 @@ def test_example08_scripts_use_one_shot_builder_and_interface_summary_printer():
         assert 'prepare_graphite_substrate(' not in text
         assert 'calibrate_polymer_bulk_phase(' not in text
         assert 'calibrate_electrolyte_bulk_phase(' not in text
-        assert 'GraphiteSubstrateSpec(' in text
-        assert 'SandwichRelaxationSpec(' in text
+        assert 'build_graphite_polymer_electrolyte_sandwich' not in text
+        assert 'build_cmcna_graphite_electrolyte_stack' not in text
+        assert 'GraphiteLayerSpec(' in text
+        assert 'LayerStackRelaxationSpec(' in text
 
 
 def test_example07_includes_bundled_moldb_audit_script():
