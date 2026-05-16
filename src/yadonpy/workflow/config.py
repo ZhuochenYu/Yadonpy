@@ -67,11 +67,16 @@ class ResourceConfig:
         default_gpu: int = 0,
     ) -> "ResourceConfig":
         reader = env or EnvReader()
+        gpu = reader.int("GPU", int(default_gpu))
+        gpu_enabled = bool(gpu)
         return cls(
             mpi=reader.int("MPI", 1),
             omp=reader.int("OMP", int(default_omp)),
-            gpu=reader.int("GPU", int(default_gpu)),
-            gpu_id=reader.int("GPU_ID", 0),
+            gpu=int(gpu_enabled),
+            # GPU_ID is intentionally ignored when GPU is disabled.  This lets
+            # scripts keep a stable `gpu_id = ...` line while switching to CPU
+            # mode with `gpu = 0`, and avoids parsing stale/invalid GPU_ID envs.
+            gpu_id=reader.int("GPU_ID", 0) if gpu_enabled else None,
         )
 
 

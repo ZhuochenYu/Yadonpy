@@ -384,6 +384,12 @@ recommend_local_resources(
 Use this layer when you want consistent restart defaults or a conservative
 resource layout for local scripts.
 
+Resource selection treats `gpu=0` as an explicit CPU-mode request.  If a script
+or environment still provides `gpu_id`/`GPU_ID` at the same time, YadonPy ignores
+that GPU id instead of failing or passing `-gpu_id` to GROMACS.  This keeps
+example scripts easy to toggle between GPU and CPU runs by changing only
+`gpu = 0`.
+
 ## 4. MolDB API
 
 Module: `yadonpy.moldb`

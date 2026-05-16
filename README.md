@@ -303,6 +303,7 @@ resumed or audited without guessing which intermediate files are authoritative.
 
 - Use local runs for fast API checks, packaging work, and short unit tests.
 - Use the remote GPU node for long GROMACS jobs, larger layer-stack interface systems, and heavy QM workflows.
+- Set `gpu=0` to force CPU MD; any simultaneous `gpu_id` value is ignored rather than treated as an error.
 - For charged polymers, prefer `polyelectrolyte_mode=True` so RESP constraints and later charge scaling remain auditable.
 - MolDB is intended for reusable molecular assets such as geometry and charge variants, not as a topology cache.
 

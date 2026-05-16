@@ -367,6 +367,10 @@ exported stack artifact without rebuilding the layers:
 nvt = yp.run_layer_stack_nvt(result, time_ns=2.0, temp=318.15, omp=14, gpu_id=0)
 ```
 
+For all MD helpers, `gpu=0` is an explicit CPU-mode switch.  If `gpu_id` is
+also present, it is ignored and no GROMACS `-gpu_id` flag is emitted, so you can
+leave `gpu_id = ...` in scripts while toggling CPU/GPU behavior with `gpu`.
+
 For `pbc_mode="auto"`/`xyz`, the builder also checks the periodic top-bottom
 closing interface and reserves the same `default_gap_nm` spacer unless explicit
 vacuum or padding already supplies it.  The NVT follow-up begins with a

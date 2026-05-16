@@ -372,6 +372,7 @@ def _parse_gpu_args(gpu: int, gpu_id: Optional[int]) -> tuple[bool, Optional[str
       - gpu: 1 (default) -> enable GPU
       - gpu: 0 -> disable GPU
       - gpu_id: int -> select GPU device id used by GROMACS (-gpu_id)
+      - gpu: 0 always wins over gpu_id; gpu_id is ignored and the run is CPU-only
 
     Backward compatibility:
       - if gpu not in {0, 1} and gpu_id is None -> treat gpu as gpu_id and enable GPU.
