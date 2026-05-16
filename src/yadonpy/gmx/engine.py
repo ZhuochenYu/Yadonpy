@@ -117,6 +117,7 @@ class GromacsRunner:
         # Cache expensive `gmx energy` term probes to avoid repeated calls.
         # Key: (edr_path, cwd_path_or_empty)
         self._energy_term_cache: dict[tuple[str, str], dict[str, int]] = {}
+        self._version_cache: str | None = None
 
     def _log(self, msg: str) -> None:
         if self.verbose:
@@ -157,6 +158,43 @@ class GromacsRunner:
         if not help_txt:
             return True
         return opt in help_txt
+
+    def _gmx_version_text(self, *, cwd: Optional[Path] = None) -> str:
+        """Return cached `gmx --version` text when available."""
+
+        if self._version_cache is not None:
+            return self._version_cache
+        try:
+            proc = subprocess.run(
+                [self.exec.gmx_cmd, "--version"],
+                cwd=str(cwd) if cwd else None,
+                env={**os.environ, **(self.env or {})},
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=8,
+            )
+            out = (proc.stdout or b"") + (proc.stderr or b"")
+            text = out.decode("utf-8", errors="replace")
+        except Exception:
+            text = ""
+        self._version_cache = text
+        return text
+
+    def _supports_thread_mpi_ranks(self, *, cwd: Optional[Path] = None) -> bool:
+        """Return whether `mdrun -ntmpi` is meaningful for this executable."""
+
+        version_txt = self._gmx_version_text(cwd=cwd)
+        match = re.search(r"^\s*MPI library:\s*(.+?)\s*$", version_txt, flags=re.IGNORECASE | re.MULTILINE)
+        if not match:
+            return True
+        mpi_library = match.group(1).strip().lower()
+        if mpi_library in {"none", "no", "disabled"}:
+            return False
+        if "thread" in mpi_library:
+            return True
+        # External-MPI `gmx_mpi` builds also do not accept thread-MPI rank
+        # control; ranks must be set by mpirun/srun.
+        return False
 
     def run(
         self,
@@ -369,8 +407,14 @@ class GromacsRunner:
         # Threads / ranks (thread-MPI)
         if ntomp is not None and self._tool_has_option("mdrun", "-ntomp", cwd=cwd):
             args += ["-ntomp", str(int(ntomp))]
-        if ntmpi is not None and self._tool_has_option("mdrun", "-ntmpi", cwd=cwd):
+        if (
+            ntmpi is not None
+            and self._tool_has_option("mdrun", "-ntmpi", cwd=cwd)
+            and self._supports_thread_mpi_ranks(cwd=cwd)
+        ):
             args += ["-ntmpi", str(int(ntmpi))]
+        elif ntmpi is not None and self._tool_has_option("mdrun", "-ntmpi", cwd=cwd):
+            self._log("[INFO] Skipping -ntmpi because this GROMACS executable is not a thread-MPI build.")
 
         # Determine restart checkpoint.
         # If caller didn't pass cpi explicitly, auto-resume when append=True and
@@ -596,6 +640,20 @@ class GromacsRunner:
                 else:
                     del cmd[j : j + 1]
 
+        def _cleanup_deffnm_outputs() -> None:
+            try:
+                deffnm_idx = args.index("-deffnm")
+                deffnm_prefix = str(args[deffnm_idx + 1]) if deffnm_idx + 1 < len(args) else "md"
+            except Exception:
+                deffnm_prefix = "md"
+            for suffix in (".log", ".xtc", ".trr", ".edr", ".cpt", "_prev.cpt", ".gro"):
+                try:
+                    stale = Path(cwd) / f"{deffnm_prefix}{suffix}"
+                    if stale.exists():
+                        stale.unlink()
+                except Exception:
+                    pass
+
         def _raise_cpu_fallback_blocked(reason: str, tail: str, rc: int) -> None:
             desc = f"exit code {rc}"
             if rc < 0:
@@ -631,19 +689,16 @@ class GromacsRunner:
             _drop_opt(args, "-cpi")
             _drop_opt(args, "-append")
             env_run["GMX_DISABLE_GPU_DETECTION"] = "1"
-            try:
-                deffnm_idx = args.index("-deffnm")
-                deffnm_prefix = str(args[deffnm_idx + 1]) if deffnm_idx + 1 < len(args) else "md"
-            except Exception:
-                deffnm_prefix = "md"
-            for suffix in (".log", ".xtc", ".trr", ".edr", ".cpt", "_prev.cpt"):
-                try:
-                    stale = Path(cwd) / f"{deffnm_prefix}{suffix}"
-                    if stale.exists():
-                        stale.unlink()
-                except Exception:
-                    pass
+            _cleanup_deffnm_outputs()
             uses_gpu = False
+
+        def _is_pbc_bonded_dd_failure(out: str) -> bool:
+            s = (out or "").lower()
+            return (
+                "inconsistent shifts" in s
+                and "no domain decomposition" in s
+                and "minimum cell size" in s
+            )
 
         # Run with streaming output and limited captured tail.
         max_attempts = 3
@@ -715,6 +770,22 @@ class GromacsRunner:
                     "Falling back to CPU kernels for this stage.",
                     tail=tail,
                     rc=rc,
+                )
+                continue
+
+            # Periodic covalent networks (notably basal graphite sheets closed
+            # through XY PBC) can make GROMACS infer a huge DD bonded span from
+            # raw wrapped coordinates and abort with repeated "inconsistent
+            # shifts" plus a minimum-cell-size error.  The actual bonded
+            # distances are short under the minimum image; cap DD's bonded
+            # communication radius and retry once.
+            if _is_pbc_bonded_dd_failure(tail) and "-rdd" not in args and self._tool_has_option("mdrun", "-rdd", cwd=cwd):
+                rdd_nm = (os.environ.get("YADONPY_MDRUN_RDD_NM") or "0.6").strip() or "0.6"
+                args += ["-rdd", str(rdd_nm)]
+                _cleanup_deffnm_outputs()
+                self._log(
+                    "[WARN] Detected periodic bonded-network DD failure. "
+                    f"Retrying mdrun with -rdd {rdd_nm}."
                 )
                 continue
 

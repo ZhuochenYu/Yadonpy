@@ -267,6 +267,71 @@ def test_mdrun_honors_explicit_offload_overrides(monkeypatch, tmp_path: Path):
     assert cmd[cmd.index('-update') + 1] == 'cpu'
 
 
+def test_mdrun_skips_ntmpi_for_non_thread_mpi_build(monkeypatch, tmp_path: Path):
+    runner = GromacsRunner(exec_=GromacsExec('gmx'), verbose=False)
+    calls: list[list[str]] = []
+
+    monkeypatch.setattr(runner, '_tool_has_option', lambda command, option=None, cwd=None: True)
+    monkeypatch.setattr(runner, '_gmx_version_text', lambda cwd=None: 'GROMACS version: 2026.1\nMPI library: none\n')
+
+    def _fake_run_capture_tee(args, *, cwd=None, env=None, tail_chars=8000):
+        calls.append(list(args))
+        return 0, ""
+
+    monkeypatch.setattr(runner, '_run_capture_tee', _fake_run_capture_tee)
+
+    runner.mdrun(
+        tpr=tmp_path / 'md.tpr',
+        deffnm='md',
+        cwd=tmp_path,
+        ntomp=14,
+        ntmpi=1,
+        use_gpu=False,
+    )
+
+    assert len(calls) == 1
+    cmd = calls[0]
+    assert '-ntomp' in cmd
+    assert '-ntmpi' not in cmd
+
+
+def test_mdrun_retries_periodic_bonded_dd_failure_with_rdd(monkeypatch, tmp_path: Path):
+    runner = GromacsRunner(exec_=GromacsExec('gmx'), verbose=False)
+    calls: list[list[str]] = []
+
+    monkeypatch.setattr(runner, '_tool_has_option', lambda command, option=None, cwd=None: True)
+    monkeypatch.setattr(runner, '_gmx_version_text', lambda cwd=None: 'GROMACS version: 2025.3\nMPI library: thread_mpi\n')
+    monkeypatch.setenv('YADONPY_MDRUN_RDD_NM', '0.6')
+
+    def _fake_run_capture_tee(args, *, cwd=None, env=None, tail_chars=8000):
+        calls.append(list(args))
+        if len(calls) == 1:
+            return (
+                1,
+                "There were 32 inconsistent shifts. Check your topology\n"
+                "Fatal error:\n"
+                "There is no domain decomposition for 1 ranks that is compatible with the given\n"
+                "box and a minimum cell size of 2.5768 nm\n"
+                "Change the number of ranks or mdrun option -rdd or -dds\n",
+            )
+        return 0, ""
+
+    monkeypatch.setattr(runner, '_run_capture_tee', _fake_run_capture_tee)
+
+    runner.mdrun(
+        tpr=tmp_path / 'md.tpr',
+        deffnm='md',
+        cwd=tmp_path,
+        ntomp=14,
+        ntmpi=1,
+        use_gpu=False,
+    )
+
+    assert len(calls) == 2
+    assert '-rdd' not in calls[0]
+    assert calls[1][calls[1].index('-rdd') + 1] == '0.6'
+
+
 def test_current_reuses_cached_nojump_trajectory(monkeypatch, tmp_path: Path):
     runner = GromacsRunner(exec_=GromacsExec('gmx'), verbose=False)
     tpr = tmp_path / 'md.tpr'
