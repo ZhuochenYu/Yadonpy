@@ -120,7 +120,106 @@ workflow in Example 08 is a fixed-charge surface model; the post-processing
 potential is a one-dimensional diagnostic from sampled charge density, not a
 constant-potential solution.
 
-## Installation
+## 0. Installation of GROMACS
+
+YadonPy writes GROMACS inputs and calls an external `gmx` executable.  For
+workflows that use PLUMED, modern GROMACS releases do not require a separate
+`plumed patch` step: the GROMACS source distribution includes the PLUMED
+interface, CMake enables it with `-DGMX_USE_PLUMED=ON`, and the actual PLUMED
+kernel is loaded at runtime through `PLUMED_KERNEL`.
+
+The dependency stack below is conda-managed: compilers, CUDA 12.5 build/runtime
+libraries including `nvcc`, FFTW, hwloc, OpenBLAS/LAPACK, CMake/Ninja, and the
+PLUMED runtime kernel all come from conda-forge.  A GROMACS source tree is still
+required when building GROMACS yourself; conda can manage the build environment,
+but it does not replace the exact upstream source tree for a custom source
+build.  On the GPU node used for the YadonPy examples this source tree is
+`~/gromacs-2026.1`.
+
+```bash
+source ~/anaconda3/etc/profile.d/conda.sh
+
+conda create -y --solver=libmamba -n gmx-2026-plumed-conda -c conda-forge \
+  python=3.11 cmake ninja make pkg-config git \
+  gcc_linux-64=12 gxx_linux-64=12 \
+  cuda-version=12.5 cuda-compiler=12.5 cuda-libraries-dev=12.5 \
+  fftw libhwloc openblas "libblas=*=*openblas" "liblapack=*=*openblas" \
+  zlib libxml2 "plumed=2.9.2=*nompi*"
+
+conda activate gmx-2026-plumed-conda
+export PATH="$CONDA_PREFIX/bin:$PATH"
+
+export GMX_SRC="$HOME/gromacs-2026.1"
+export GMX_BUILD="$HOME/build-gromacs-2026.1-plumed-conda"
+export GMX_PREFIX="$HOME/GROMACS-2026.1-PLUMED-CONDA"
+export GMX_BUILD_JOBS="${GMX_BUILD_JOBS:-16}"
+
+export CC="$CONDA_PREFIX/bin/x86_64-conda-linux-gnu-gcc"
+export CXX="$CONDA_PREFIX/bin/x86_64-conda-linux-gnu-g++"
+export CUDAHOSTCXX="$CXX"
+export PLUMED_KERNEL="$CONDA_PREFIX/lib/libplumedKernel.so"
+
+cmake -S "$GMX_SRC" -B "$GMX_BUILD" -G Ninja \
+  -DCMAKE_INSTALL_PREFIX="$GMX_PREFIX" \
+  -DCMAKE_C_COMPILER="$CC" \
+  -DCMAKE_CXX_COMPILER="$CXX" \
+  -DCMAKE_CUDA_HOST_COMPILER="$CUDAHOSTCXX" \
+  -DCMAKE_CUDA_COMPILER="$CONDA_PREFIX/bin/nvcc" \
+  -DCMAKE_CUDA_ARCHITECTURES=89 \
+  -DCMAKE_PREFIX_PATH="$CONDA_PREFIX" \
+  -DCUDAToolkit_ROOT="$CONDA_PREFIX" \
+  -DGMX_GPU=CUDA \
+  -DGMX_USE_PLUMED=ON \
+  -DGMX_MPI=OFF \
+  -DGMX_THREAD_MPI=OFF \
+  -DGMX_OPENMP=ON \
+  -DGMX_HWLOC=ON \
+  -DGMX_BUILD_OWN_FFTW=OFF \
+  -DGMX_FFT_LIBRARY=fftw3 \
+  -DGMX_BUILD_UNITTESTS=OFF \
+  -DBUILD_TESTING=OFF \
+  -DGMXAPI=OFF \
+  -DGMX_INSTALL_NBLIB_API=OFF
+
+cmake --build "$GMX_BUILD" -j "$GMX_BUILD_JOBS"
+cmake --install "$GMX_BUILD"
+```
+
+The `CMAKE_CUDA_ARCHITECTURES=89` value targets the RTX 4080 SUPER GPUs on the
+current GPU node.  Use the architecture code for the target GPU when compiling
+on different hardware.
+
+Activate the compiled binary together with the same conda environment:
+
+```bash
+conda activate gmx-2026-plumed-conda
+export PATH="$CONDA_PREFIX/bin:$PATH"
+source "$HOME/GROMACS-2026.1-PLUMED-CONDA/bin/GMXRC"
+export PLUMED_KERNEL="$CONDA_PREFIX/lib/libplumedKernel.so"
+export YADONPY_GMX_CMD="$HOME/GROMACS-2026.1-PLUMED-CONDA/bin/gmx"
+
+"$CONDA_PREFIX/bin/nvcc" --version
+gmx --version
+gmx mdrun -h | grep -i plumed
+test -f "$PLUMED_KERNEL"
+```
+
+For a PLUMED-driven simulation, pass the input file explicitly to `mdrun`, for
+example `gmx mdrun -deffnm md -plumed plumed.dat`.  The non-MPI build above is
+chosen deliberately because the current GROMACS PLUMED interface does not support
+multi-rank thread-MPI use.  If you use a prebuilt conda-forge `gromacs` package
+instead of compiling, first verify both CUDA driver compatibility and
+`gmx mdrun -h | grep -i plumed`.
+
+References: the
+[GROMACS installation guide](https://manual.gromacs.org/documentation/current/install-guide/index.html)
+documents `GMX_USE_PLUMED` and CUDA build options, the
+[GROMACS PLUMED page](https://manual.gromacs.org/documentation/current/reference-manual/special/plumed.html)
+documents `-plumed` and `PLUMED_KERNEL`, and the
+[PLUMED installation guide](https://www.plumed.org/doc-v2.10/user-doc/html/_installation.html)
+documents the conda-forge PLUMED kernel.
+
+## 1. Installation of YadonPy
 
 The recommended development environment uses Python 3.11.
 
