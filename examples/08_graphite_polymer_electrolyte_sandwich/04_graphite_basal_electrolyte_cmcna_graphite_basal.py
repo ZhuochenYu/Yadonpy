@@ -156,6 +156,7 @@ if __name__ == "__main__":
             dt_ps=0.001,
             constraints="none",
             run_analysis=True,
+            relax_z=True,
             restart=restart_status,
         )
         print(f"relaxation_summary = {relax.summary_path}")

@@ -327,6 +327,7 @@ relax = run_layer_stack_relaxation(
     time_ns=2.0,
     pre_nvt_ns=0.05,
     z_npt_ns=0.50,
+    relax_z=True,
     dt_ps=0.001,
     constraints="none",
 )
@@ -377,7 +378,10 @@ summary = interface.summary(time_series_analysis=True)
 - Example 08 layer density settings are initial packing targets, not a claim
   that the immediate NVT local density is already physical.  The default sampled
   workflow uses fixed-XY, semi-isotropic z-NPT to remove vacuum-like gaps or
-  over-compressed regions before the final NVT trajectory is analyzed.
+  over-compressed regions before the final NVT trajectory is analyzed.  Pass
+  `relax_z=False`, or leave `relax_z="auto"` on stacks with explicit
+  `VacuumLayerSpec` or `pbc_mode="xy"`, when the constructed vacuum spacing is
+  part of the physical model and should not be barostat-compressed.
 - Example 08 interface time-series animations are disabled unless an applicable
   post-processing call explicitly receives `time_series_analysis=True`.  When
   enabled, they sample up to ten equal trajectory windows by default and write

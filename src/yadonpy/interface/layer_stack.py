@@ -1345,6 +1345,26 @@ def _relaxation_diagnostics(
     return diagnostics
 
 
+def _resolve_relax_z(result: LayerStackResult, relax_z: bool | Literal["auto"]) -> tuple[bool, str]:
+    """Resolve whether the layer-stack workflow should include z-NPT."""
+
+    if isinstance(relax_z, bool):
+        return bool(relax_z), "explicit_true" if relax_z else "explicit_false"
+    token = str(relax_z).strip().lower()
+    if token not in {"auto", ""}:
+        if token in {"1", "true", "yes", "on"}:
+            return True, "explicit_true"
+        if token in {"0", "false", "no", "off"}:
+            return False, "explicit_false"
+        raise ValueError("relax_z must be True, False, or 'auto'.")
+    if any(isinstance(layer, VacuumLayerSpec) for layer in result.stack_spec.layers):
+        return False, "auto_explicit_vacuum_layer"
+    pbc_mode = str(result.stack_spec.pbc_mode or "auto").strip().lower()
+    if pbc_mode == "xy":
+        return False, "auto_xy_pbc_open_z"
+    return True, "auto_closed_nonvacuum_stack"
+
+
 def run_layer_stack_relaxation(
     result: LayerStackResult,
     *,
@@ -1372,12 +1392,14 @@ def run_layer_stack_relaxation(
     gpu_offload_mode: str = "full",
     analysis_profile: str = "interface_fast",
     run_analysis: bool = True,
+    relax_z: bool | Literal["auto"] = "auto",
 ) -> LayerStackRelaxationResult:
-    """Relax an exported layer stack with pre-NVT, fixed-XY z-NPT, and final NVT.
+    """Relax an exported layer stack, optionally including fixed-XY z-NPT.
 
-    The initial layer densities are treated as geometry targets.  The z-NPT
-    stage keeps the graphite-defined XY footprint fixed while the box length in
-    z responds to pressure; analysis is then based on the final NVT trajectory.
+    The initial layer densities are geometry targets.  When ``relax_z`` resolves
+    true, a z-NPT stage keeps the graphite-defined XY footprint fixed while the
+    box length in z responds to pressure; when false, explicit-vacuum or open-z
+    systems keep their constructed z spacing and go straight to final NVT.
     """
 
     from ..gmx.mdp_templates import (
@@ -1406,6 +1428,7 @@ def run_layer_stack_relaxation(
     pbc_mode = str(result.stack_spec.pbc_mode or "xyz")
     if pbc_mode == "auto":
         pbc_mode = "xyz"
+    relax_z_enabled, relax_z_reason = _resolve_relax_z(result, relax_z)
     constraints_mode = str(constraints)
     dynamic_template_nvt = NVT_NO_CONSTRAINTS_MDP if constraints_mode.strip().lower() == "none" else NVT_MDP
     dynamic_template_npt = NPT_NO_CONSTRAINTS_MDP if constraints_mode.strip().lower() == "none" else NPT_MDP
@@ -1436,29 +1459,31 @@ def run_layer_stack_relaxation(
         trr_ps=trr_ps,
         velocity_ps=velocity_ps,
     )
-    z_npt = _layer_stack_md_params(
-        time_ns=float(z_npt_ns),
-        dt_ps=float(dt_ps),
-        temp=float(temp),
-        constraints=constraints_mode,
-        pbc_mode=pbc_mode,
-        gen_vel="no",
-        continuation="yes",
-        traj_ps=traj_ps,
-        energy_ps=energy_ps,
-        log_ps=log_ps,
-        trr_ps=trr_ps,
-        velocity_ps=velocity_ps,
-    )
-    z_npt["pcoupl"] = "C-rescale"
-    z_npt["ref_p"] = f"{float(pressure_bar):.6g} {float(pressure_bar):.6g}"
-    z_npt.update(
-        fixed_xy_semiisotropic_npt_overrides(
-            pressure_bar=float(pressure_bar),
-            z_compressibility_bar_inv=float(z_compressibility_bar_inv),
+    z_npt: dict[str, object] | None = None
+    if relax_z_enabled:
+        z_npt = _layer_stack_md_params(
+            time_ns=float(z_npt_ns),
+            dt_ps=float(dt_ps),
+            temp=float(temp),
+            constraints=constraints_mode,
+            pbc_mode=pbc_mode,
+            gen_vel="no",
+            continuation="yes",
+            traj_ps=traj_ps,
+            energy_ps=energy_ps,
+            log_ps=log_ps,
+            trr_ps=trr_ps,
+            velocity_ps=velocity_ps,
         )
-    )
-    z_npt["compressibility"] = f"{float(xy_compressibility):.6g} {float(z_compressibility_bar_inv):.6g}"
+        z_npt["pcoupl"] = "C-rescale"
+        z_npt["ref_p"] = f"{float(pressure_bar):.6g} {float(pressure_bar):.6g}"
+        z_npt.update(
+            fixed_xy_semiisotropic_npt_overrides(
+                pressure_bar=float(pressure_bar),
+                z_compressibility_bar_inv=float(z_compressibility_bar_inv),
+            )
+        )
+        z_npt["compressibility"] = f"{float(xy_compressibility):.6g} {float(z_compressibility_bar_inv):.6g}"
 
     final_nvt = _layer_stack_md_params(
         time_ns=float(time_ns if final_nvt_ns is None else final_nvt_ns),
@@ -1478,9 +1503,12 @@ def run_layer_stack_relaxation(
     stages = [
         EqStage(name="01_pre_minimize", kind="minim", mdp=MdpSpec(MINIM_STEEP_MDP, minim)),
         EqStage(name="02_pre_nvt", kind="nvt", mdp=MdpSpec(dynamic_template_nvt, pre_nvt)),
-        EqStage(name="03_z_npt", kind="npt", mdp=MdpSpec(dynamic_template_npt, z_npt)),
-        EqStage(name="04_final_nvt", kind="nvt", mdp=MdpSpec(dynamic_template_nvt, final_nvt)),
     ]
+    final_stage_name = "03_final_nvt"
+    if relax_z_enabled and z_npt is not None:
+        stages.append(EqStage(name="03_z_npt", kind="npt", mdp=MdpSpec(dynamic_template_npt, z_npt)))
+        final_stage_name = "04_final_nvt"
+    stages.append(EqStage(name=final_stage_name, kind="nvt", mdp=MdpSpec(dynamic_template_nvt, final_nvt)))
     use_gpu = bool(int(gpu))
     resources = RunResources(
         ntmpi=int(mpi),
@@ -1501,7 +1529,7 @@ def run_layer_stack_relaxation(
     )
     job.run(restart=rst_flag)
 
-    final_stage_dir = workflow_dir / "04_final_nvt"
+    final_stage_dir = workflow_dir / final_stage_name
     final_gro = (
         final_stage_dir / "md.gro"
         if (final_stage_dir / "md.gro").is_file()
@@ -1552,19 +1580,28 @@ def run_layer_stack_relaxation(
         "stage_order": [stage.name for stage in stages],
         "time_ns": {
             "pre_nvt": float(pre_nvt_ns),
-            "z_npt": float(z_npt_ns),
+            "z_npt": float(z_npt_ns) if relax_z_enabled else 0.0,
             "final_nvt": float(time_ns if final_nvt_ns is None else final_nvt_ns),
+        },
+        "relax_z": {
+            "requested": relax_z,
+            "resolved": bool(relax_z_enabled),
+            "reason": relax_z_reason,
         },
         "temperature_K": float(temp),
         "pressure_bar": float(pressure_bar),
         "dt_ps": float(dt_ps),
         "constraints": constraints_mode,
-        "z_npt_mdp_overrides": {
-            "pcoupl": "C-rescale",
-            "pcoupltype": "semiisotropic",
-            "ref_p": z_npt["ref_p"],
-            "compressibility": z_npt["compressibility"],
-        },
+        "z_npt_mdp_overrides": (
+            {
+                "pcoupl": "C-rescale",
+                "pcoupltype": "semiisotropic",
+                "ref_p": z_npt["ref_p"],
+                "compressibility": z_npt["compressibility"],
+            }
+            if relax_z_enabled and z_npt is not None
+            else None
+        ),
         "gpu_offload_mode": str(gpu_offload_mode),
         "resources": {"mpi": int(mpi), "omp": int(omp), "gpu": int(gpu), "gpu_id": gpu_id},
         "artifacts": {

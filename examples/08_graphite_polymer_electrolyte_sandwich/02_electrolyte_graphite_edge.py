@@ -146,6 +146,7 @@ if __name__ == "__main__":
             gpu=gpu,
             gpu_id=gpu_id,
             run_analysis=True,
+            relax_z=True,
             restart=restart_status,
         )
         print(f"relaxation_summary = {relax.summary_path}")

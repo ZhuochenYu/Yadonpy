@@ -345,7 +345,7 @@ def test_run_layer_stack_relaxation_builds_fixed_xy_z_npt_workflow(monkeypatch, 
 
         def run(self, *, restart=False):
             out_dir = Path(captured["out_dir"])
-            final = out_dir / "04_final_nvt"
+            final = out_dir / captured["stages"][-1].name
             final.mkdir(parents=True, exist_ok=True)
             (final / "md.gro").write_text("dummy\n0\n   1.0   1.0   1.5\n", encoding="utf-8")
             (final / "md.xtc").write_bytes(b"")
@@ -386,3 +386,71 @@ def test_run_layer_stack_relaxation_builds_fixed_xy_z_npt_workflow(monkeypatch, 
     assert (tmp_path / "relax" / "layer_stack_manifest.json").is_file()
     copied_ndx = (tmp_path / "relax" / "02_system" / "system.ndx").read_text(encoding="utf-8")
     assert "LAYER_00_GRAPHITE" in copied_ndx
+
+
+def test_run_layer_stack_relaxation_auto_skips_z_npt_for_vacuum_stack(monkeypatch, tmp_path: Path):
+    _patch_fake_export(monkeypatch)
+    water = utils.mol_from_smiles("O", name="WAT")
+    result = build_layer_stack(
+        stack=LayerStackSpec(
+            layers=(
+                VacuumLayerSpec(thickness_nm=1.0, name="VACUUM_BOTTOM"),
+                MolecularLayerSpec(
+                    name="ELECTROLYTE",
+                    species=(water,),
+                    counts=(2,),
+                    thickness_nm=1.0,
+                    density_target_g_cm3=0.4,
+                    layer_kind="electrolyte",
+                ),
+                VacuumLayerSpec(thickness_nm=1.0, name="VACUUM_TOP"),
+            ),
+            pbc_mode="xy",
+            name="vacuum_electrolyte_vacuum",
+        ),
+        work_dir=tmp_path / "vacuum_stack",
+        restart=False,
+    )
+
+    captured: dict[str, object] = {}
+
+    class DummyJob:
+        def __init__(self, *, gro, top, ndx=None, provenance_ndx=None, out_dir, stages, resources):
+            captured["out_dir"] = Path(out_dir)
+            captured["stages"] = list(stages)
+
+        def run(self, *, restart=False):
+            out_dir = Path(captured["out_dir"])
+            final = out_dir / captured["stages"][-1].name
+            final.mkdir(parents=True, exist_ok=True)
+            (final / "md.gro").write_text("dummy\n0\n   1.0   1.0   3.0\n", encoding="utf-8")
+            (final / "md.xtc").write_bytes(b"")
+            (out_dir / "summary.json").write_text("{}", encoding="utf-8")
+            return out_dir / "summary.json"
+
+    from yadonpy.gmx.workflows import eq as eqmod
+
+    monkeypatch.setattr(eqmod, "EquilibrationJob", DummyJob)
+    monkeypatch.setattr("yadonpy.interface.layer_stack.analyze_layer_stack_interface", lambda **kwargs: {"summary_path": str(tmp_path / "analysis.json"), "geometry_health": {"phase_order_ok": True}, "outputs": {}})
+
+    out = run_layer_stack_relaxation(
+        result,
+        work_dir=tmp_path / "vacuum_relax",
+        time_ns=0.01,
+        z_npt_ns=0.5,
+        relax_z="auto",
+        gpu=0,
+    )
+
+    stages = captured["stages"]
+    assert [stage.name for stage in stages] == ["01_pre_minimize", "02_pre_nvt", "03_final_nvt"]
+    assert all(stage.kind != "npt" for stage in stages)
+    assert out.final_gro == tmp_path / "vacuum_relax" / "05_relaxation_workflow" / "03_final_nvt" / "md.gro"
+    summary = json.loads(out.summary_path.read_text(encoding="utf-8"))
+    assert summary["relax_z"] == {
+        "requested": "auto",
+        "resolved": False,
+        "reason": "auto_explicit_vacuum_layer",
+    }
+    assert summary["time_ns"]["z_npt"] == 0.0
+    assert summary["z_npt_mdp_overrides"] is None

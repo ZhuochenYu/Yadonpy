@@ -64,6 +64,11 @@ semantic aliases such as `GRAPHITE`, `ELECTROLYTE`, `CMCNA`, and `MOBILE`.
   removes fresh contacts, `02_pre_nvt` releases local overlaps at fixed volume,
   `03_z_npt` keeps XY fixed while the z length responds to 1 bar pressure, and
   `04_final_nvt` produces the trajectory used for interface analysis.
+- The z-NPT stage is controlled by `relax_z`. Use `relax_z=True` for confined
+  graphite/polymer/electrolyte stacks such as graphite | electrolyte | CMC-Na |
+  graphite. Use `relax_z=False` for explicit vacuum | electrolyte | vacuum
+  controls where the vacuum spacing is part of the model. With `relax_z="auto"`,
+  explicit `VacuumLayerSpec` layers and `pbc_mode="xy"` skip z-NPT.
 - The compact four-layer validation scripts use `constraints="none"` and `1 fs`
   throughout the relaxation workflow, which avoids an early constrained-settle
   minimization on a deliberately tight fresh interface. Larger production runs

@@ -273,6 +273,7 @@ if __name__ == "__main__":
                 dt_ps=0.001,
                 constraints="none",
                 run_analysis=True,
+                relax_z=True,
                 restart=restart_status,
             )
             print(f"[{surface_charge:+.1f} uC/cm2] relaxation_summary = {relax.summary_path}")
