@@ -227,7 +227,7 @@ The recommended development environment uses Python 3.11.
 conda create -n yadonpy python=3.11
 conda activate yadonpy
 
-conda install -c conda-forge rdkit openbabel parmed mdtraj matplotlib pandas scipy packaging psi4=1.10 dftd3-python psiresp-base
+conda install -c conda-forge rdkit openbabel parmed mdtraj matplotlib ffmpeg pandas scipy packaging psi4=1.10 dftd3-python psiresp-base
 python -m pip install "pydantic==1.10.26"
 python -m pip install -e .
 ```
@@ -325,11 +325,19 @@ interface = analy.interface(
     bin_nm=0.05,
     region_width_nm=0.75,
     surface_distance_nm=0.50,
+    time_series_sample_count=10,
+    time_series_fps=1.0,
 )
 health = interface.geometry_health()
-edl = interface.edl_profiles()
-adsorption = interface.graphite_adsorption(species=("EC", "EMC", "DEC"))
-summary = interface.summary()
+z_profiles = interface.z_profiles(time_series_analysis=True)
+edl = interface.edl_profiles(time_series_analysis=True)
+adsorption = interface.graphite_adsorption(
+    species=("EC", "EMC", "DEC"),
+    time_series_analysis=True,
+)
+coordination = interface.coordination_by_region(time_series_analysis=True)
+time_series = interface.time_series(time_series_analysis=True)
+summary = interface.summary(time_series_analysis=True)
 ```
 
 ## Simulation And Analysis Notes
@@ -354,6 +362,14 @@ summary = interface.summary()
 - For Example 08, `Dxy` is the interface mobility metric.  `Dz` is confined
   z-direction mobility and should not be interpreted as a bulk diffusion
   coefficient.
+- Example 08 interface time-series animations are disabled unless an applicable
+  post-processing call explicitly receives `time_series_analysis=True`.  When
+  enabled, they sample up to ten equal trajectory windows by default and write
+  slow MP4 overlays for molecule-COM z concentration, cation-centered RDF/CN,
+  and adsorbed orientation-angle distributions when the required trajectory and
+  species are available.  MP4 writing requires the conda-forge `ffmpeg`
+  package; CSV time-series artifacts are still written if the movie writer is
+  unavailable.
 
 After all required analyses have completed, large trajectory streams can be
 removed while keeping auditable outputs:

@@ -46,6 +46,9 @@ analysis_profile = "interface_fast"
 interface_bin_nm = 0.05
 interface_region_width_nm = 0.75
 graphite_adsorption_cutoff_nm = 0.50
+time_series_analysis = True
+interface_time_series_sample_count = 10
+interface_time_series_fps = 1.0
 penetration_species = ("EC", "EMC", "DEC", "PF6")
 adsorption_species = ("EC", "EMC", "DEC")
 clean_trajectories_after_analysis = False
@@ -131,6 +134,7 @@ if __name__ == "__main__":
         penetration_species=penetration_species,
         adsorption_species=adsorption_species,
         compute_transport=False,
+        time_series_analysis=False,
     )
     if run_sampling:
         nvt = run_layer_stack_nvt(
@@ -154,15 +158,23 @@ if __name__ == "__main__":
             surface_distance_nm=graphite_adsorption_cutoff_nm,
             penetration_species=penetration_species,
             adsorption_species=adsorption_species,
+            time_series_sample_count=interface_time_series_sample_count,
+            time_series_fps=interface_time_series_fps,
         )
-        health = interface.geometry_health()
-        z_profile = interface.z_profiles()
-        edl = interface.edl_profiles()
-        penetration = interface.penetration(species=penetration_species)
-        adsorption = interface.graphite_adsorption(species=adsorption_species)
-        transport = interface.region_transport()
-        summary = interface.summary()
+        health = interface.geometry_health(time_series_analysis=time_series_analysis)
+        z_profile = interface.z_profiles(time_series_analysis=time_series_analysis)
+        edl = interface.edl_profiles(time_series_analysis=time_series_analysis)
+        penetration = interface.penetration(species=penetration_species, time_series_analysis=time_series_analysis)
+        adsorption = interface.graphite_adsorption(
+            species=adsorption_species,
+            time_series_analysis=time_series_analysis,
+        )
+        coordination = interface.coordination_by_region(time_series_analysis=time_series_analysis)
+        transport = interface.region_transport(time_series_analysis=time_series_analysis)
+        time_series = interface.time_series(time_series_analysis=time_series_analysis)
+        summary = interface.summary(time_series_analysis=time_series_analysis)
         print(f"interface_phase_order_ok = {health.get('phase_order_ok')}")
         print(f"interface_outputs = {summary.get('outputs', {}).get('interface_profile_summary_json')}")
+        print(f"interface_time_series = {time_series.get('outputs', {})}")
 
     clean_md_trajectory_files(work_dir, enabled=clean_trajectories_after_analysis)

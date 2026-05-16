@@ -89,6 +89,19 @@ report_potential_drop = True
 # in-plane interface mobility metric; Dz is confined-direction mobility.
 compute_interface_transport = True
 
+# Generate slow MP4 animations for interface time evolution. This is off by
+# default in the API and must be passed explicitly to each post-processing call.
+# The trajectory is split into ten equal time windows by default, so RDF/CN,
+# molecule-COM z concentration, and adsorbed-angle distributions are sampled at
+# roughly every one-tenth of the total NVT duration instead of producing a dense
+# movie.
+time_series_analysis = True
+interface_time_series_sample_count = 10
+interface_time_series_fps = 1.0
+interface_time_series_rdf = True
+interface_time_series_concentration = True
+interface_time_series_angles = True
+
 penetration_species = ("EC", "EMC", "DEC", "PF6", "Li", "Na")
 adsorption_species = ("EC", "EMC", "DEC")
 clean_trajectories_after_analysis = False
@@ -226,6 +239,10 @@ if __name__ == "__main__":
         #     `report_potential_drop` annotate the fixed-charge EDL diagnostic.
         #     The potential is a 1D integral of sampled charge density, not a
         #     constant-potential or Poisson-Boltzmann electrode solution.
+        #   - `time_series_analysis=False` is used here because the static stack
+        #     has only one coordinate frame; time-series MP4s are generated from
+        #     the sampled NVT trajectory below by explicitly passing
+        #     `time_series_analysis=True` to the facade methods.
         analyze_layer_stack_interface(
             work_dir=case_dir,
             manifest_path=result.manifest_path,
@@ -242,6 +259,7 @@ if __name__ == "__main__":
             penetration_species=penetration_species,
             adsorption_species=adsorption_species,
             compute_transport=False,
+            time_series_analysis=False,
         )
         if run_sampling:
             nvt = run_layer_stack_nvt(
@@ -281,6 +299,11 @@ if __name__ == "__main__":
             #     region using fallback Li/Na-O/F cutoffs.
             #   region_transport(): anisotropic MSD summaries; use Dxy for
             #     in-plane interface mobility and Dz only as confined mobility.
+            #   time_series(): slow MP4 animations and CSV data sampled by
+            #     trajectory deciles. The RDF movie uses cation-centered
+            #     cation-polymer O, cation-solvent O, and cation-anion F pairs
+            #     when those sites exist, and always writes the paired CN(r)
+            #     curves plus first-shell CN versus time.
             analy = nvt.analyze()
             interface = analy.interface(
                 manifest_path=result.manifest_path,
@@ -297,20 +320,34 @@ if __name__ == "__main__":
                 split_electrodes=split_electrodes_for_edl,
                 report_potential_drop=report_potential_drop,
                 compute_transport=compute_interface_transport,
+                time_series_sample_count=interface_time_series_sample_count,
+                time_series_fps=interface_time_series_fps,
+                time_series_rdf=interface_time_series_rdf,
+                time_series_concentration=interface_time_series_concentration,
+                time_series_angles=interface_time_series_angles,
             )
-            health = interface.geometry_health()
-            z_profile = interface.z_profiles()
+            health = interface.geometry_health(time_series_analysis=time_series_analysis)
+            z_profile = interface.z_profiles(time_series_analysis=time_series_analysis)
             edl = interface.edl_profiles(
                 split_electrodes=split_electrodes_for_edl,
                 potential_reference=potential_reference,
                 report_potential_drop=report_potential_drop,
+                time_series_analysis=time_series_analysis,
             )
-            penetration = interface.penetration(species=penetration_species)
-            adsorption = interface.graphite_adsorption(species=adsorption_species)
-            coordination = interface.coordination_by_region()
-            transport = interface.region_transport()
-            summary = interface.summary()
+            penetration = interface.penetration(species=penetration_species, time_series_analysis=time_series_analysis)
+            adsorption = interface.graphite_adsorption(
+                species=adsorption_species,
+                time_series_analysis=time_series_analysis,
+            )
+            coordination = interface.coordination_by_region(time_series_analysis=time_series_analysis)
+            transport = interface.region_transport(time_series_analysis=time_series_analysis)
+            time_series = interface.time_series(time_series_analysis=time_series_analysis)
+            summary = interface.summary(time_series_analysis=time_series_analysis)
             print(f"[{surface_charge:+.1f} uC/cm2] interface_phase_order_ok = {health.get('phase_order_ok')}")
-            print(f"[{surface_charge:+.1f} uC/cm2] interface_outputs = {summary.get('outputs', {}).get('interface_profile_summary_json')}")
+            print(
+                f"[{surface_charge:+.1f} uC/cm2] interface_outputs = "
+                f"{summary.get('outputs', {}).get('interface_profile_summary_json')}"
+            )
+            print(f"[{surface_charge:+.1f} uC/cm2] interface_time_series = {time_series.get('outputs', {})}")
 
         clean_md_trajectory_files(case_dir, enabled=clean_trajectories_after_analysis)

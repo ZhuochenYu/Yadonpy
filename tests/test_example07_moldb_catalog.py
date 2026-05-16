@@ -89,6 +89,22 @@ def test_example07_catalog_includes_new_polymer_and_salt_entries():
     assert "Na" not in names
 
 
+def test_bundled_moldb_contains_ready_tetraglyme_catalog_record():
+    root = Path(__file__).resolve().parents[1]
+    rec_dir = root / "moldb" / "objects" / "f34ee84c0d6e044f"
+    manifest = json.loads((rec_dir / "manifest.json").read_text(encoding="utf-8"))
+    charges = json.loads((rec_dir / "charges.json").read_text(encoding="utf-8"))
+
+    assert manifest["name"] == "Tetraglyme"
+    assert manifest["canonical"] == "COCCOCCOCCOCCOC"
+    assert manifest["ready"] is True
+    assert manifest["variants"]["a724666ff0b3"]["ready"] is True
+    assert charges["variant_id"] == "a724666ff0b3"
+    assert len(charges["charges"]) == 37
+    assert abs(sum(float(q) for q in charges["charges"])) < 1.0e-9
+    assert (rec_dir / "best.mol2").is_file()
+
+
 def test_example07_catalog_exposes_charge_and_bonded_columns_without_forcefield_column():
     mod = _load_example07_module()
     items = {item.name: item for item in mod._read_species_csv(mod.CATALOG_CSV)}

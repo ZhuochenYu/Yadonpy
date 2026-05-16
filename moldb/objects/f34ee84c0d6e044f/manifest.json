@@ -1,0 +1,19 @@
+{
+  "key": "f34ee84c0d6e044f",
+  "kind": "smiles",
+  "canonical": "COCCOCCOCCOCCOC",
+  "name": "Tetraglyme",
+  "charge_method": "RESP",
+  "charge_unit": "e",
+  "ready": true,
+  "connectors": null,
+  "variants": {
+    "a724666ff0b3": {
+      "variant_id": "a724666ff0b3",
+      "charge": "RESP",
+      "basis_set": "Default",
+      "method": "Default",
+      "ready": true
+    }
+  }
+}

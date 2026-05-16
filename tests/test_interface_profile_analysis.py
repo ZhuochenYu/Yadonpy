@@ -3,6 +3,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import numpy as np
+
+import yadonpy.gmx.analysis.interface_profile as interface_profile
 from yadonpy.gmx.analysis.interface_profile import compute_interface_profile
 from yadonpy.interface import analyze_layer_stack_interface
 from yadonpy.sim.analyzer import AnalyzeResult
@@ -117,6 +120,9 @@ def test_interface_profile_extracts_phase_order_density_overlap_and_coordination
     assert out["geometry_health"]["direct_graphite_electrolyte_contact"] is False
     assert out["region_summary"]["interpenetration"]["overlap_width_nm"] > 0.0
     assert out["coordination_by_region"]["available"] is True
+    assert out["parameters"]["time_series_analysis"] is False
+    assert out["time_series"]["available"] is False
+    assert out["time_series"]["reason"] == "disabled"
     assert (tmp_path / "analysis" / "z_density_profiles.csv").exists()
     assert (tmp_path / "analysis" / "region_summary.json").exists()
     assert (tmp_path / "analysis" / "coordination_by_region.json").exists()
@@ -185,7 +191,10 @@ def test_interface_facade_exposes_stepwise_outputs(tmp_path: Path):
     adsorption = interface.graphite_adsorption(species=("SOLV",))
     coordination = interface.coordination_by_region()
     transport = interface.region_transport()
+    time_series_default = interface.time_series()
     summary = interface.summary()
+    time_series_enabled = interface.time_series(time_series_analysis=True)
+    enabled_summary = interface.summary(time_series_analysis=True)
 
     assert health["phase_order_ok"] is True
     assert "z_density_profiles_csv" in z_profiles["outputs"]
@@ -196,6 +205,12 @@ def test_interface_facade_exposes_stepwise_outputs(tmp_path: Path):
     assert adsorption["available"] is True
     assert coordination["available"] is True
     assert transport["available"] is False
+    assert time_series_default["available"] is False
+    assert time_series_default["reason"] == "disabled"
+    assert summary["parameters"]["time_series_analysis"] is False
+    assert time_series_enabled["available"] is False
+    assert time_series_enabled["reason"] == "too_few_time_windows"
+    assert enabled_summary["parameters"]["time_series_analysis"] is True
     outputs = summary["outputs"]
     for key in (
         "geometry_health_json",
@@ -208,3 +223,65 @@ def test_interface_facade_exposes_stepwise_outputs(tmp_path: Path):
         "coordination_z_profile_csv",
     ):
         assert Path(outputs[key]).exists()
+
+
+def test_interface_time_series_writes_decile_csv_artifacts(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(interface_profile, "_mp4_writer", lambda fps: None)
+    coords = np.asarray(
+        [
+            [1.00, 1.00, 1.00],  # cation center
+            [1.18, 1.00, 1.00],  # polymer O
+            [1.42, 1.00, 1.00],  # solvent O
+            [1.78, 1.00, 1.00],  # anion F
+        ],
+        dtype=float,
+    )
+    frames = [
+        (float(t), coords + np.asarray([0.0, 0.0, 0.02 * i]), (3.0, 3.0, 5.0))
+        for i, t in enumerate((0.0, 10.0, 20.0, 30.0))
+    ]
+    instances = [
+        {"moltype": "Li", "kind": "ion", "atom_indices_0": np.asarray([0]), "masses": np.asarray([6.94])},
+        {
+            "moltype": "SOLV",
+            "kind": "solvent",
+            "atom_indices_0": np.asarray([1, 2]),
+            "masses": np.asarray([15.999, 15.999]),
+        },
+    ]
+    categories = {
+        "cation": np.asarray([0], dtype=int),
+        "polymer_o": np.asarray([1], dtype=int),
+        "solvent_o": np.asarray([2], dtype=int),
+        "anion_f": np.asarray([3], dtype=int),
+    }
+    adsorption_rows = [
+        {
+            "time_ps": float(t),
+            "adsorbed": True,
+            "orientation_available": True,
+            "carbonyl_angle_deg": 30.0 + i,
+            "dipole_proxy_angle_deg": 75.0 + i,
+        }
+        for i, t in enumerate((0.0, 10.0, 20.0, 30.0))
+    ]
+
+    out = interface_profile._time_series_animations(
+        out_dir=tmp_path,
+        frames=frames,
+        bins=np.arange(0.0, 5.5, 0.5),
+        instances=instances,
+        categories=categories,
+        adsorption_rows=adsorption_rows,
+        sample_count=2,
+        fps=1.0,
+        rdf_rmax_nm=1.0,
+        rdf_bin_nm=0.1,
+    )
+
+    assert out["sample_windows"] == 2
+    assert (tmp_path / "time_series" / "z_concentration_timeseries.csv").exists()
+    assert (tmp_path / "time_series" / "rdf_cn_curves_timeseries.csv").exists()
+    assert (tmp_path / "time_series" / "rdf_cn_shell_timeseries.csv").exists()
+    assert (tmp_path / "time_series" / "adsorbed_orientation_angle_timeseries.csv").exists()
+    assert out["outputs"]["rdf_cn"]["shell_csv"].endswith("rdf_cn_shell_timeseries.csv")

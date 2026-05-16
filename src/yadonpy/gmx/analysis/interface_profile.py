@@ -5,19 +5,58 @@ from __future__ import annotations
 import csv
 import json
 import math
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Sequence
 
 import numpy as np
 
 from ..topology import SystemTopology, parse_system_top
-from .structured import build_msd_metric_catalog, build_species_catalog, compute_msd_series
+from .structured import build_msd_metric_catalog, build_species_catalog, compute_msd_series, detect_first_shell
 
 
 _AVOGADRO = 6.02214076e23
 _AMU_PER_NM3_TO_G_CM3 = 1.66053906660e-3
 _ELEMENTARY_CHARGE_C = 1.602176634e-19
 _EPS0_F_M = 8.8541878128e-12
+
+
+@dataclass(frozen=True)
+class InterfaceTimeSeriesOptions:
+    """Controls optional decile-sampled interface animation outputs."""
+
+    enabled: bool = False
+    sample_count: int = 10
+    fps: float = 1.0
+    rdf: bool = True
+    concentration: bool = True
+    angles: bool = True
+    rdf_rmax_nm: float = 1.2
+    rdf_bin_nm: float = 0.02
+
+    @classmethod
+    def from_parameters(
+        cls,
+        *,
+        time_series_analysis: bool = False,
+        time_series_sample_count: int = 10,
+        time_series_fps: float = 1.0,
+        time_series_rdf: bool = True,
+        time_series_concentration: bool = True,
+        time_series_angles: bool = True,
+        time_series_rdf_rmax_nm: float = 1.2,
+        time_series_rdf_bin_nm: float = 0.02,
+    ) -> "InterfaceTimeSeriesOptions":
+        return cls(
+            enabled=bool(time_series_analysis),
+            sample_count=int(max(1, time_series_sample_count)),
+            fps=float(time_series_fps),
+            rdf=bool(time_series_rdf),
+            concentration=bool(time_series_concentration),
+            angles=bool(time_series_angles),
+            rdf_rmax_nm=float(time_series_rdf_rmax_nm),
+            rdf_bin_nm=float(time_series_rdf_bin_nm),
+        )
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -394,6 +433,554 @@ def _write_fraction_bar_svg(path: Path, summary_by_species: dict[str, Any], key:
     fig.savefig(path)
     plt.close(fig)
     return path
+
+
+def _mp4_writer(fps: float):
+    try:
+        from matplotlib import animation
+    except Exception:
+        return None
+    try:
+        if not animation.writers.is_available("ffmpeg"):
+            return None
+        return animation.FFMpegWriter(fps=max(1, int(round(float(fps)))), bitrate=1800)
+    except Exception:
+        return None
+
+
+def _animation_result(*, path: Path | None, reason: str | None = None, extra: dict[str, Any] | None = None) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "mp4": None if path is None else str(path),
+        "available": bool(path is not None and Path(path).exists()),
+    }
+    if reason:
+        payload["reason"] = str(reason)
+    if extra:
+        payload.update(extra)
+    return payload
+
+
+def _time_windows(
+    frames: Sequence[tuple[float, np.ndarray, tuple[float, float, float]]],
+    *,
+    sample_count: int = 10,
+) -> list[dict[str, Any]]:
+    if len(frames) < 2:
+        return []
+    target = min(max(1, int(sample_count or 10)), len(frames))
+    times = np.asarray([float(item[0]) for item in frames], dtype=float)
+    if not np.all(np.isfinite(times)) or float(np.max(times) - np.min(times)) <= 0.0:
+        edges_idx = np.linspace(0, len(frames), min(target, len(frames)) + 1, dtype=int)
+        windows = []
+        for i in range(len(edges_idx) - 1):
+            lo = int(edges_idx[i])
+            hi = int(max(edges_idx[i + 1], lo + 1))
+            subset = list(frames[lo:hi])
+            if subset:
+                windows.append(
+                    {
+                        "window_index": len(windows),
+                        "time_start_ps": float(subset[0][0]),
+                        "time_end_ps": float(subset[-1][0]),
+                        "frames": subset,
+                    }
+                )
+        return windows
+
+    t0 = float(times[0])
+    t1 = float(times[-1])
+    edges = np.linspace(t0, t1, target + 1)
+    windows: list[dict[str, Any]] = []
+    used_nearest: set[int] = set()
+    for i in range(target):
+        lo = float(edges[i])
+        hi = float(edges[i + 1])
+        if i == target - 1:
+            idx = np.where((times >= lo) & (times <= hi))[0]
+        else:
+            idx = np.where((times >= lo) & (times < hi))[0]
+        if idx.size == 0:
+            mid = 0.5 * (lo + hi)
+            nearest = int(np.argmin(np.abs(times - mid)))
+            if nearest in used_nearest:
+                continue
+            idx = np.asarray([nearest], dtype=int)
+            used_nearest.add(nearest)
+        subset = [frames[int(j)] for j in idx.tolist()]
+        windows.append(
+            {
+                "window_index": len(windows),
+                "time_start_ps": float(lo),
+                "time_end_ps": float(hi),
+                "frames": subset,
+            }
+        )
+    return windows
+
+
+def _mobile_instance(inst: dict[str, Any]) -> bool:
+    moltype = str(inst.get("moltype") or "")
+    kind = str(inst.get("kind") or "").lower()
+    label = f"{moltype} {kind}".lower()
+    return bool(moltype) and not any(tok in label for tok in ("graph", "graphite", "substrate", "wall"))
+
+
+def _selected_mobile_moltypes(instances: Sequence[dict[str, Any]], *, max_moltypes: int = 6) -> list[str]:
+    counts: dict[str, int] = {}
+    order: list[str] = []
+    for inst in instances:
+        if not _mobile_instance(dict(inst)):
+            continue
+        moltype = str(inst.get("moltype") or "")
+        if moltype not in counts:
+            order.append(moltype)
+            counts[moltype] = 0
+        counts[moltype] += 1
+    order.sort(key=lambda name: (-int(counts.get(name, 0)), name))
+    return order[: max(1, int(max_moltypes))]
+
+
+def _instance_com(coords: np.ndarray, inst: dict[str, Any]) -> np.ndarray:
+    idx = np.asarray(inst["atom_indices_0"], dtype=int)
+    masses = np.asarray(inst.get("masses"), dtype=float)
+    if masses.size != idx.size or float(np.sum(masses)) <= 0.0:
+        masses = np.ones(idx.size, dtype=float)
+    return np.asarray(np.average(coords[idx], axis=0, weights=masses), dtype=float)
+
+
+def _write_concentration_timeseries(
+    *,
+    out_dir: Path,
+    windows: Sequence[dict[str, Any]],
+    bins: np.ndarray,
+    instances: Sequence[dict[str, Any]],
+    fps: float,
+    max_moltypes: int = 6,
+) -> dict[str, Any]:
+    labels = _selected_mobile_moltypes(instances, max_moltypes=max_moltypes)
+    if not windows or not labels:
+        return _animation_result(path=None, reason="no_time_windows_or_mobile_species")
+    z_mid = 0.5 * (bins[:-1] + bins[1:])
+    widths = np.diff(bins)
+    profiles: list[dict[str, Any]] = []
+    rows: list[dict[str, Any]] = []
+    by_label = {label: [inst for inst in instances if str(inst.get("moltype") or "") == label] for label in labels}
+    for win in windows:
+        density: dict[str, np.ndarray] = {label: np.zeros(len(widths), dtype=float) for label in labels}
+        volume = np.zeros(len(widths), dtype=float)
+        win_frames = list(win.get("frames") or [])
+        for _time_ps, coords, box in win_frames:
+            volume += float(box[0]) * float(box[1]) * widths
+            for label, label_instances in by_label.items():
+                z_vals = [_instance_com(coords, inst)[2] for inst in label_instances]
+                if z_vals:
+                    density[label] += np.histogram(np.asarray(z_vals, dtype=float), bins=bins)[0]
+        volume = np.maximum(volume, 1.0e-12)
+        for label in labels:
+            density[label] = density[label] / volume
+            for i, value in enumerate(density[label].tolist()):
+                rows.append(
+                    {
+                        "window_index": int(win["window_index"]),
+                        "time_start_ps": float(win["time_start_ps"]),
+                        "time_end_ps": float(win["time_end_ps"]),
+                        "moltype": label,
+                        "z_mid_nm": float(z_mid[i]),
+                        "concentration_nm3": float(value),
+                    }
+                )
+        profiles.append({"window": dict(win), "density": density})
+
+    csv_path = out_dir / "time_series" / "z_concentration_timeseries.csv"
+    _write_rows_csv(csv_path, rows)
+    writer = _mp4_writer(fps)
+    if writer is None:
+        return _animation_result(
+            path=None,
+            reason="ffmpeg_writer_unavailable",
+            extra={"csv": str(csv_path), "sample_windows": len(profiles), "moltypes": labels},
+        )
+    try:
+        import matplotlib.pyplot as plt
+        from matplotlib.animation import FuncAnimation
+    except Exception:
+        return _animation_result(path=None, reason="matplotlib_unavailable", extra={"csv": str(csv_path)})
+    mp4_path = out_dir / "time_series" / "z_concentration_timeseries.mp4"
+    mp4_path.parent.mkdir(parents=True, exist_ok=True)
+    ymax = max([float(np.max(p["density"][label])) for p in profiles for label in labels] or [1.0])
+    ymax = max(1.0e-12, ymax) * 1.15
+    fig, ax = plt.subplots(figsize=(6.2, 3.6))
+
+    def _update(frame_idx: int):
+        ax.clear()
+        payload = profiles[int(frame_idx)]
+        win = payload["window"]
+        for label in labels:
+            ax.plot(z_mid, payload["density"][label], label=label, lw=1.8)
+        ax.set_xlim(float(z_mid[0]), float(z_mid[-1]))
+        ax.set_ylim(0.0, ymax)
+        ax.set_xlabel("z / nm")
+        ax.set_ylabel("molecule COM concentration / nm$^{-3}$")
+        ax.set_title(f"z concentration, {float(win['time_start_ps']):.1f}-{float(win['time_end_ps']):.1f} ps")
+        ax.legend(loc="best", fontsize="small", ncols=2)
+        fig.tight_layout()
+
+    ani = FuncAnimation(fig, _update, frames=len(profiles), interval=1000)
+    try:
+        ani.save(mp4_path, writer=writer)
+    except Exception as exc:
+        plt.close(fig)
+        return _animation_result(
+            path=None,
+            reason=f"mp4_write_failed:{exc.__class__.__name__}",
+            extra={"csv": str(csv_path), "sample_windows": len(profiles), "moltypes": labels},
+        )
+    plt.close(fig)
+    return _animation_result(path=mp4_path, extra={"csv": str(csv_path), "sample_windows": len(profiles), "moltypes": labels})
+
+
+def _rdf_curve_from_frames(
+    *,
+    frames: Sequence[tuple[float, np.ndarray, tuple[float, float, float]]],
+    center_indices: np.ndarray,
+    target_indices: np.ndarray,
+    r_max_nm: float,
+    bin_nm: float,
+) -> dict[str, Any]:
+    center = np.asarray(sorted(set(int(i) for i in center_indices)), dtype=int)
+    target = np.asarray(sorted(set(int(i) for i in target_indices)), dtype=int)
+    nbins = max(8, int(np.ceil(float(r_max_nm) / float(bin_nm))))
+    edges = np.linspace(0.0, float(r_max_nm), nbins + 1)
+    r_mid = 0.5 * (edges[:-1] + edges[1:])
+    hist = np.zeros(nbins, dtype=float)
+    volume_samples: list[float] = []
+    effective_ref = 0.0
+    if center.size == 0 or target.size == 0 or not frames:
+        cn = np.zeros_like(r_mid)
+        return {"r_nm": r_mid, "g_r": cn.copy(), "cn_curve": cn, "shell": detect_first_shell(r_mid, cn, cn)}
+    pair_mask = center[:, None] != target[None, :]
+    for _time_ps, coords, box in frames:
+        volume_samples.append(float(box[0]) * float(box[1]) * float(box[2]))
+        c = np.asarray(coords[center], dtype=float)
+        t = np.asarray(coords[target], dtype=float)
+        delta = c[:, None, :] - t[None, :, :]
+        box_arr = np.asarray(box, dtype=float)
+        delta -= box_arr[None, None, :] * np.round(delta / np.maximum(box_arr[None, None, :], 1.0e-12))
+        if not np.any(pair_mask):
+            continue
+        dist = np.linalg.norm(delta[pair_mask], axis=1)
+        hist += np.histogram(dist, bins=edges)[0]
+        effective_ref += float(center.size)
+    rho_target = float(target.size) / max(float(np.mean(volume_samples)) if volume_samples else 0.0, 1.0e-12)
+    shell_vol = (4.0 / 3.0) * np.pi * (edges[1:] ** 3 - edges[:-1] ** 3)
+    denom = max(float(effective_ref) * max(rho_target, 1.0e-12), 1.0e-12)
+    g_r = hist / (denom * shell_vol)
+    dr = np.gradient(r_mid) if r_mid.size else np.zeros_like(r_mid)
+    cn_curve = 4.0 * np.pi * rho_target * np.cumsum(g_r * r_mid * r_mid * dr)
+    shell = detect_first_shell(r_mid, g_r, cn_curve)
+    return {
+        "r_nm": r_mid,
+        "g_r": g_r,
+        "cn_curve": cn_curve,
+        "rho_target_nm3": float(rho_target),
+        "shell": shell,
+    }
+
+
+def _write_rdf_cn_timeseries(
+    *,
+    out_dir: Path,
+    windows: Sequence[dict[str, Any]],
+    categories: dict[str, np.ndarray],
+    fps: float,
+    r_max_nm: float = 1.2,
+    bin_nm: float = 0.02,
+) -> dict[str, Any]:
+    centers = np.asarray(categories.get("cation", categories.get("li", [])), dtype=int)
+    pair_specs = [
+        ("cation-polymer_o", "cation", "polymer O", np.asarray(categories.get("polymer_o", []), dtype=int)),
+        ("cation-solvent_o", "cation", "solvent O", np.asarray(categories.get("solvent_o", []), dtype=int)),
+        ("cation-anion_f", "cation", "anion F", np.asarray(categories.get("anion_f", []), dtype=int)),
+    ]
+    pair_specs = [spec for spec in pair_specs if centers.size and spec[3].size]
+    if not windows or not pair_specs:
+        return _animation_result(path=None, reason="no_time_windows_or_rdf_pairs")
+    curves: list[dict[str, Any]] = []
+    curve_rows: list[dict[str, Any]] = []
+    shell_rows: list[dict[str, Any]] = []
+    for win in windows:
+        win_curves: dict[str, dict[str, Any]] = {}
+        for pair_id, center_label, target_label, target_idx in pair_specs:
+            data = _rdf_curve_from_frames(
+                frames=list(win.get("frames") or []),
+                center_indices=centers,
+                target_indices=target_idx,
+                r_max_nm=float(r_max_nm),
+                bin_nm=float(bin_nm),
+            )
+            win_curves[pair_id] = data
+            r = np.asarray(data.get("r_nm"), dtype=float)
+            g = np.asarray(data.get("g_r"), dtype=float)
+            cn = np.asarray(data.get("cn_curve"), dtype=float)
+            for i in range(int(r.size)):
+                curve_rows.append(
+                    {
+                        "window_index": int(win["window_index"]),
+                        "time_start_ps": float(win["time_start_ps"]),
+                        "time_end_ps": float(win["time_end_ps"]),
+                        "pair": pair_id,
+                        "r_nm": float(r[i]),
+                        "g_r": float(g[i]),
+                        "coordination_number": float(cn[i]),
+                    }
+                )
+            shell = dict(data.get("shell") or {})
+            shell_rows.append(
+                {
+                    "window_index": int(win["window_index"]),
+                    "time_start_ps": float(win["time_start_ps"]),
+                    "time_end_ps": float(win["time_end_ps"]),
+                    "pair": pair_id,
+                    "center": center_label,
+                    "target": target_label,
+                    "r_peak_nm": shell.get("r_peak_nm"),
+                    "r_shell_nm": shell.get("r_shell_nm"),
+                    "cn_shell": shell.get("cn_shell"),
+                    "confidence": shell.get("confidence"),
+                    "status": shell.get("status"),
+                }
+            )
+        curves.append({"window": dict(win), "curves": win_curves})
+    curve_csv = out_dir / "time_series" / "rdf_cn_curves_timeseries.csv"
+    shell_csv = out_dir / "time_series" / "rdf_cn_shell_timeseries.csv"
+    _write_rows_csv(curve_csv, curve_rows)
+    _write_rows_csv(shell_csv, shell_rows)
+    writer = _mp4_writer(fps)
+    if writer is None:
+        return _animation_result(
+            path=None,
+            reason="ffmpeg_writer_unavailable",
+            extra={"curves_csv": str(curve_csv), "shell_csv": str(shell_csv), "sample_windows": len(curves)},
+        )
+    try:
+        import matplotlib.pyplot as plt
+        from matplotlib.animation import FuncAnimation
+    except Exception:
+        return _animation_result(
+            path=None,
+            reason="matplotlib_unavailable",
+            extra={"curves_csv": str(curve_csv), "shell_csv": str(shell_csv)},
+        )
+    mp4_path = out_dir / "time_series" / "rdf_cn_timeseries.mp4"
+    mp4_path.parent.mkdir(parents=True, exist_ok=True)
+    ymax_g = max([float(np.max(payload["curves"][pid]["g_r"])) for payload in curves for pid, *_rest in pair_specs] or [1.0])
+    ymax_cn = max(
+        [float(np.max(payload["curves"][pid]["cn_curve"])) for payload in curves for pid, *_rest in pair_specs]
+        or [1.0]
+    )
+    fig, (ax_g, ax_cn) = plt.subplots(2, 1, figsize=(6.2, 5.6), sharex=True)
+
+    def _update(frame_idx: int):
+        ax_g.clear()
+        ax_cn.clear()
+        payload = curves[int(frame_idx)]
+        win = payload["window"]
+        for pair_id, _center_label, target_label, _target_idx in pair_specs:
+            data = payload["curves"][pair_id]
+            r = np.asarray(data["r_nm"], dtype=float)
+            ax_g.plot(r, np.asarray(data["g_r"], dtype=float), lw=1.8, label=target_label)
+            ax_cn.plot(r, np.asarray(data["cn_curve"], dtype=float), lw=1.8, label=target_label)
+        ax_g.set_ylim(0.0, max(1.0, ymax_g * 1.15))
+        ax_cn.set_ylim(0.0, max(1.0, ymax_cn * 1.15))
+        ax_cn.set_xlim(0.0, float(r_max_nm))
+        ax_g.set_ylabel("g(r)")
+        ax_cn.set_ylabel("CN(r)")
+        ax_cn.set_xlabel("r / nm")
+        ax_g.set_title(f"RDF/CN, {float(win['time_start_ps']):.1f}-{float(win['time_end_ps']):.1f} ps")
+        ax_g.legend(loc="best", fontsize="small", ncols=3)
+        fig.tight_layout()
+
+    ani = FuncAnimation(fig, _update, frames=len(curves), interval=1000)
+    try:
+        ani.save(mp4_path, writer=writer)
+    except Exception as exc:
+        plt.close(fig)
+        return _animation_result(
+            path=None,
+            reason=f"mp4_write_failed:{exc.__class__.__name__}",
+            extra={"curves_csv": str(curve_csv), "shell_csv": str(shell_csv), "sample_windows": len(curves)},
+        )
+    plt.close(fig)
+    return _animation_result(
+        path=mp4_path,
+        extra={
+            "curves_csv": str(curve_csv),
+            "shell_csv": str(shell_csv),
+            "sample_windows": len(curves),
+            "pairs": [p[0] for p in pair_specs],
+        },
+    )
+
+
+def _write_angle_timeseries(
+    *,
+    out_dir: Path,
+    windows: Sequence[dict[str, Any]],
+    adsorption_rows: Sequence[dict[str, Any]],
+    fps: float,
+    bin_deg: float = 10.0,
+) -> dict[str, Any]:
+    rows = [dict(row) for row in adsorption_rows if bool(row.get("orientation_available")) and bool(row.get("adsorbed"))]
+    if not windows or not rows:
+        return _animation_result(path=None, reason="no_adsorbed_orientation_samples")
+    edges = np.arange(0.0, 180.0 + float(bin_deg), float(bin_deg))
+    mids = 0.5 * (edges[:-1] + edges[1:])
+    profiles: list[dict[str, Any]] = []
+    out_rows: list[dict[str, Any]] = []
+    for win in windows:
+        lo = float(win["time_start_ps"])
+        hi = float(win["time_end_ps"])
+        subset = [row for row in rows if lo <= float(row.get("time_ps") or 0.0) <= hi]
+        carbonyl = [float(row["carbonyl_angle_deg"]) for row in subset if row.get("carbonyl_angle_deg") is not None]
+        dipole = [float(row["dipole_proxy_angle_deg"]) for row in subset if row.get("dipole_proxy_angle_deg") is not None]
+        c_hist = np.histogram(np.asarray(carbonyl, dtype=float), bins=edges)[0].astype(float)
+        d_hist = np.histogram(np.asarray(dipole, dtype=float), bins=edges)[0].astype(float)
+        c_prob = c_hist / max(float(np.sum(c_hist)), 1.0)
+        d_prob = d_hist / max(float(np.sum(d_hist)), 1.0)
+        profiles.append(
+            {
+                "window": dict(win),
+                "carbonyl": c_prob,
+                "dipole": d_prob,
+                "n_carbonyl": len(carbonyl),
+                "n_dipole": len(dipole),
+            }
+        )
+        for i in range(int(mids.size)):
+            out_rows.append(
+                {
+                    "window_index": int(win["window_index"]),
+                    "time_start_ps": lo,
+                    "time_end_ps": hi,
+                    "angle_mid_deg": float(mids[i]),
+                    "carbonyl_probability": float(c_prob[i]),
+                    "dipole_proxy_probability": float(d_prob[i]),
+                    "carbonyl_samples": int(len(carbonyl)),
+                    "dipole_proxy_samples": int(len(dipole)),
+                }
+            )
+    csv_path = out_dir / "time_series" / "adsorbed_orientation_angle_timeseries.csv"
+    _write_rows_csv(csv_path, out_rows)
+    writer = _mp4_writer(fps)
+    if writer is None:
+        return _animation_result(
+            path=None,
+            reason="ffmpeg_writer_unavailable",
+            extra={"csv": str(csv_path), "sample_windows": len(profiles)},
+        )
+    try:
+        import matplotlib.pyplot as plt
+        from matplotlib.animation import FuncAnimation
+    except Exception:
+        return _animation_result(path=None, reason="matplotlib_unavailable", extra={"csv": str(csv_path)})
+    mp4_path = out_dir / "time_series" / "adsorbed_orientation_angle_timeseries.mp4"
+    mp4_path.parent.mkdir(parents=True, exist_ok=True)
+    ymax = max(
+        [float(np.max(p["carbonyl"])) for p in profiles]
+        + [float(np.max(p["dipole"])) for p in profiles]
+        + [1.0e-12]
+    ) * 1.15
+    fig, ax = plt.subplots(figsize=(6.2, 3.6))
+
+    def _update(frame_idx: int):
+        ax.clear()
+        payload = profiles[int(frame_idx)]
+        win = payload["window"]
+        ax.plot(mids, payload["carbonyl"], lw=1.8, label=f"carbonyl ({payload['n_carbonyl']})")
+        ax.plot(mids, payload["dipole"], lw=1.8, label=f"dipole proxy ({payload['n_dipole']})")
+        ax.set_xlim(0.0, 180.0)
+        ax.set_ylim(0.0, max(0.2, ymax))
+        ax.set_xlabel("angle to nearest graphite surface normal / deg")
+        ax.set_ylabel("probability")
+        ax.set_title(f"Adsorbed orientation, {float(win['time_start_ps']):.1f}-{float(win['time_end_ps']):.1f} ps")
+        ax.legend(loc="best", fontsize="small")
+        fig.tight_layout()
+
+    ani = FuncAnimation(fig, _update, frames=len(profiles), interval=1000)
+    try:
+        ani.save(mp4_path, writer=writer)
+    except Exception as exc:
+        plt.close(fig)
+        return _animation_result(
+            path=None,
+            reason=f"mp4_write_failed:{exc.__class__.__name__}",
+            extra={"csv": str(csv_path), "sample_windows": len(profiles)},
+        )
+    plt.close(fig)
+    return _animation_result(path=mp4_path, extra={"csv": str(csv_path), "sample_windows": len(profiles)})
+
+
+def _time_series_animations(
+    *,
+    out_dir: Path,
+    frames: Sequence[tuple[float, np.ndarray, tuple[float, float, float]]],
+    bins: np.ndarray,
+    instances: Sequence[dict[str, Any]],
+    categories: dict[str, np.ndarray],
+    adsorption_rows: Sequence[dict[str, Any]],
+    sample_count: int,
+    fps: float,
+    rdf_rmax_nm: float,
+    rdf_bin_nm: float,
+    enable_rdf: bool = True,
+    enable_concentration: bool = True,
+    enable_angles: bool = True,
+) -> dict[str, Any]:
+    windows = _time_windows(frames, sample_count=sample_count)
+    ts_dir = Path(out_dir) / "time_series"
+    ts_dir.mkdir(parents=True, exist_ok=True)
+    meta = {
+        "available": bool(windows),
+        "sample_count_requested": int(max(1, sample_count)),
+        "sample_windows": int(len(windows)),
+        "sampling_note": (
+            "The analyzed trajectory is divided into up to ten equal time windows by default; "
+            "each animation frame is one window-average."
+        ),
+        "fps": float(fps),
+    }
+    if not windows:
+        meta["reason"] = "too_few_time_windows"
+        _write_json(ts_dir / "time_series_summary.json", meta)
+        return meta
+    outputs: dict[str, Any] = {}
+    if enable_concentration:
+        outputs["z_concentration"] = _write_concentration_timeseries(
+            out_dir=out_dir,
+            windows=windows,
+            bins=bins,
+            instances=instances,
+            fps=float(fps),
+        )
+    if enable_rdf:
+        outputs["rdf_cn"] = _write_rdf_cn_timeseries(
+            out_dir=out_dir,
+            windows=windows,
+            categories=categories,
+            fps=float(fps),
+            r_max_nm=float(rdf_rmax_nm),
+            bin_nm=float(rdf_bin_nm),
+        )
+    if enable_angles:
+        outputs["adsorbed_orientation_angles"] = _write_angle_timeseries(
+            out_dir=out_dir,
+            windows=windows,
+            adsorption_rows=adsorption_rows,
+            fps=float(fps),
+        )
+    meta["outputs"] = outputs
+    _write_json(ts_dir / "time_series_summary.json", meta)
+    return meta
 
 
 def _find_crossing(z: np.ndarray, a: np.ndarray, b: np.ndarray) -> float | None:
@@ -1089,7 +1676,7 @@ def _adsorption_analysis(
 
 
 def _atom_indices_by_category(top: SystemTopology, instances: Sequence[dict[str, Any]]) -> dict[str, np.ndarray]:
-    li: list[int] = []
+    cation: list[int] = []
     polymer_o: list[int] = []
     solvent_o: list[int] = []
     anion_f: list[int] = []
@@ -1101,8 +1688,8 @@ def _atom_indices_by_category(top: SystemTopology, instances: Sequence[dict[str,
         atomnames = [str(x) for x in inst.get("atomnames") or []]
         atomtypes = [str(x) for x in inst.get("atomtypes") or []]
         label = " ".join([moltype, kind]).lower()
-        if idx.size == 1 and (formal > 0.0 or "li" in label):
-            li.extend(idx.tolist())
+        if idx.size == 1 and (formal > 0.0 or "li" in label or "na" in label):
+            cation.extend(idx.tolist())
             continue
         for local, atom_idx in enumerate(idx.tolist()):
             name = atomnames[local].lower() if local < len(atomnames) else ""
@@ -1116,7 +1703,8 @@ def _atom_indices_by_category(top: SystemTopology, instances: Sequence[dict[str,
             if element_hint == "f" and (formal < 0.0 or "pf6" in label or "tfsi" in label):
                 anion_f.append(atom_idx)
     return {
-        "li": np.asarray(sorted(set(li)), dtype=int),
+        "li": np.asarray(sorted(set(cation)), dtype=int),
+        "cation": np.asarray(sorted(set(cation)), dtype=int),
         "polymer_o": np.asarray(sorted(set(polymer_o)), dtype=int),
         "solvent_o": np.asarray(sorted(set(solvent_o)), dtype=int),
         "anion_f": np.asarray(sorted(set(anion_f)), dtype=int),
@@ -1302,12 +1890,30 @@ def compute_interface_profile(
     analysis_profile: str = "interface_fast",
     phase_groups: Sequence[str] = ("GRAPHITE", "POLYMER", "ELECTROLYTE"),
     compute_transport: bool = True,
+    time_series_analysis: bool = False,
+    time_series_sample_count: int = 10,
+    time_series_fps: float = 1.0,
+    time_series_rdf: bool = True,
+    time_series_concentration: bool = True,
+    time_series_angles: bool = True,
+    time_series_rdf_rmax_nm: float = 1.2,
+    time_series_rdf_bin_nm: float = 0.02,
     manifest_path: Path | None = None,
 ) -> dict[str, Any]:
     """Compute cheap interface statistics and write JSON/CSV artifacts."""
 
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    time_series_options = InterfaceTimeSeriesOptions.from_parameters(
+        time_series_analysis=bool(time_series_analysis),
+        time_series_sample_count=int(time_series_sample_count),
+        time_series_fps=float(time_series_fps),
+        time_series_rdf=bool(time_series_rdf),
+        time_series_concentration=bool(time_series_concentration),
+        time_series_angles=bool(time_series_angles),
+        time_series_rdf_rmax_nm=float(time_series_rdf_rmax_nm),
+        time_series_rdf_bin_nm=float(time_series_rdf_bin_nm),
+    )
     top = parse_system_top(Path(top_path))
     atom_payload = _atom_payload(top, Path(system_dir))
     coords0, box0 = _read_gro_frame(Path(gro_path))
@@ -1434,6 +2040,7 @@ def compute_interface_profile(
         regions=regions,
         box_xy_nm2=float(final_box[0]) * float(final_box[1]),
     )
+    atom_categories = _atom_indices_by_category(top, atom_payload["instances"])
     coordination = _li_coordination(
         frames=frames,
         top=top,
@@ -1456,6 +2063,27 @@ def compute_interface_profile(
         min_residence_ps=float(adsorption_min_residence_ps),
         surface_grid_nm=float(surface_grid_nm),
     )
+    time_series = (
+        _time_series_animations(
+            out_dir=out_dir,
+            frames=frames,
+            bins=bins,
+            instances=atom_payload["instances"],
+            categories=atom_categories,
+            adsorption_rows=adsorption.get("rows") or [],
+            sample_count=int(time_series_options.sample_count),
+            fps=float(time_series_options.fps),
+            rdf_rmax_nm=float(time_series_options.rdf_rmax_nm),
+            rdf_bin_nm=float(time_series_options.rdf_bin_nm),
+            enable_rdf=bool(time_series_options.rdf),
+            enable_concentration=bool(time_series_options.concentration),
+            enable_angles=bool(time_series_options.angles),
+        )
+        if bool(time_series_options.enabled)
+        else {"available": False, "reason": "disabled"}
+    )
+    if not bool(time_series_options.enabled):
+        _write_json(out_dir / "time_series" / "time_series_summary.json", time_series)
     transport = (
         _anisotropic_msd(
             gro_path=Path(gro_path),
@@ -1591,6 +2219,7 @@ def compute_interface_profile(
         "edl_diagnostics": edl,
         "penetration": {key: value for key, value in penetration.items() if key != "rows"},
         "adsorption": {key: value for key, value in adsorption.items() if key not in {"rows", "surface_map_rows"}},
+        "time_series": time_series,
     }
 
     _write_json(out_dir / "region_summary.json", region_summary)
@@ -1611,6 +2240,14 @@ def compute_interface_profile(
             "penetration_species": None if penetration_species is None else [str(x) for x in penetration_species],
             "adsorption_species": None if adsorption_species is None else [str(x) for x in adsorption_species],
             "phase_groups": [str(x) for x in phase_groups],
+            "time_series_analysis": bool(time_series_options.enabled),
+            "time_series_sample_count": int(time_series_options.sample_count),
+            "time_series_fps": float(time_series_options.fps),
+            "time_series_rdf": bool(time_series_options.rdf),
+            "time_series_concentration": bool(time_series_options.concentration),
+            "time_series_angles": bool(time_series_options.angles),
+            "time_series_rdf_rmax_nm": float(time_series_options.rdf_rmax_nm),
+            "time_series_rdf_bin_nm": float(time_series_options.rdf_bin_nm),
         },
         "inputs": {
             "gro_path": str(gro_path),
@@ -1628,6 +2265,7 @@ def compute_interface_profile(
         "penetration": {key: value for key, value in penetration.items() if key != "rows"},
         "graphite_adsorption": {key: value for key, value in adsorption.items() if key not in {"rows", "surface_map_rows"}},
         "region_transport_summary": transport,
+        "time_series": time_series,
         "outputs": {
             "z_density_profiles_csv": str(profile_csv),
             "z_profiles_svg": None if z_profiles_svg is None else str(z_profiles_svg),
@@ -1650,6 +2288,7 @@ def compute_interface_profile(
             "coordination_by_region_json": str(out_dir / "coordination_by_region.json"),
             "coordination_z_profile_csv": str(out_dir / "coordination_z_profile.csv"),
             "anisotropic_msd_summary_json": str(out_dir / "anisotropic_msd_summary.json"),
+            "time_series_summary_json": str(out_dir / "time_series" / "time_series_summary.json"),
             "interface_profile_summary_json": str(out_dir / "interface_profile_summary.json"),
         },
     }
@@ -1657,4 +2296,4 @@ def compute_interface_profile(
     return _jsonify(summary)
 
 
-__all__ = ["compute_interface_profile"]
+__all__ = ["InterfaceTimeSeriesOptions", "compute_interface_profile"]

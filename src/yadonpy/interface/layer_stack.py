@@ -1302,6 +1302,14 @@ def analyze_layer_stack_interface(
     analysis_profile: str = "interface_fast",
     phase_groups: Sequence[str] | None = None,
     compute_transport: bool = True,
+    time_series_analysis: bool = False,
+    time_series_sample_count: int = 10,
+    time_series_fps: float = 1.0,
+    time_series_rdf: bool = True,
+    time_series_concentration: bool = True,
+    time_series_angles: bool = True,
+    time_series_rdf_rmax_nm: float = 1.2,
+    time_series_rdf_bin_nm: float = 0.02,
 ) -> dict[str, Any]:
     """Analyze z profiles and adjacent-interface diagnostics for a layer stack."""
 
@@ -1350,6 +1358,14 @@ def analyze_layer_stack_interface(
         phase_groups=tuple(phase_groups),
         manifest_path=manifest_path if manifest_path and manifest_path.is_file() else None,
         compute_transport=bool(compute_transport),
+        time_series_analysis=bool(time_series_analysis),
+        time_series_sample_count=int(time_series_sample_count),
+        time_series_fps=float(time_series_fps),
+        time_series_rdf=bool(time_series_rdf),
+        time_series_concentration=bool(time_series_concentration),
+        time_series_angles=bool(time_series_angles),
+        time_series_rdf_rmax_nm=float(time_series_rdf_rmax_nm),
+        time_series_rdf_bin_nm=float(time_series_rdf_bin_nm),
     )
 
 

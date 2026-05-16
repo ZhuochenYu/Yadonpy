@@ -2364,6 +2364,13 @@ class AnalyzeResult:
         phase_groups: Sequence[str] | None = None,
         out_dir: str | Path | None = None,
         compute_transport: bool = True,
+        time_series_sample_count: int = 10,
+        time_series_fps: float = 1.0,
+        time_series_rdf: bool = True,
+        time_series_concentration: bool = True,
+        time_series_angles: bool = True,
+        time_series_rdf_rmax_nm: float = 1.2,
+        time_series_rdf_bin_nm: float = 0.02,
         resume: bool = False,
     ):
         """Return an eg02-style facade for layer-stack interface analysis."""
@@ -2389,6 +2396,13 @@ class AnalyzeResult:
             phase_groups=phase_groups,
             out_dir=out_dir,
             compute_transport=compute_transport,
+            time_series_sample_count=time_series_sample_count,
+            time_series_fps=time_series_fps,
+            time_series_rdf=time_series_rdf,
+            time_series_concentration=time_series_concentration,
+            time_series_angles=time_series_angles,
+            time_series_rdf_rmax_nm=time_series_rdf_rmax_nm,
+            time_series_rdf_bin_nm=time_series_rdf_bin_nm,
             resume=resume,
         )
 
@@ -2417,6 +2431,14 @@ class AnalyzeResult:
         analysis_profile: str = "interface_fast",
         phase_groups: Sequence[str] = ("GRAPHITE", "POLYMER", "ELECTROLYTE"),
         compute_transport: bool = True,
+        time_series_analysis: bool = False,
+        time_series_sample_count: int = 10,
+        time_series_fps: float = 1.0,
+        time_series_rdf: bool = True,
+        time_series_concentration: bool = True,
+        time_series_angles: bool = True,
+        time_series_rdf_rmax_nm: float = 1.2,
+        time_series_rdf_bin_nm: float = 0.02,
         resume: bool = False,
     ) -> Dict[str, Any]:
         """Analyze graphite/polymer/electrolyte layer-stack structure and transport.
@@ -2465,6 +2487,14 @@ class AnalyzeResult:
             "adsorption_species": None if adsorption_species is None else [str(x) for x in adsorption_species],
             "phase_groups": [str(x) for x in phase_groups],
             "compute_transport": bool(compute_transport),
+            "time_series_analysis": bool(time_series_analysis),
+            "time_series_sample_count": int(time_series_sample_count),
+            "time_series_fps": float(time_series_fps),
+            "time_series_rdf": bool(time_series_rdf),
+            "time_series_concentration": bool(time_series_concentration),
+            "time_series_angles": bool(time_series_angles),
+            "time_series_rdf_rmax_nm": float(time_series_rdf_rmax_nm),
+            "time_series_rdf_bin_nm": float(time_series_rdf_bin_nm),
         }
         expected_cache_meta.update(self._analysis_policy_cache_meta())
         summary_path = analysis_dir / "interface_profile_summary.json"
@@ -2488,6 +2518,7 @@ class AnalyzeResult:
             detail=(
                 f"profile={profile} | bin={float(bin_nm):.3f} nm"
                 f" | stride={resolved_stride} | transport={bool(compute_transport)}"
+                f" | time_series={bool(time_series_analysis)}"
             ),
         )
         result = compute_interface_profile(
@@ -2512,6 +2543,14 @@ class AnalyzeResult:
             analysis_profile=profile,
             phase_groups=tuple(str(x) for x in phase_groups),
             compute_transport=bool(compute_transport),
+            time_series_analysis=bool(time_series_analysis),
+            time_series_sample_count=int(time_series_sample_count),
+            time_series_fps=float(time_series_fps),
+            time_series_rdf=bool(time_series_rdf),
+            time_series_concentration=bool(time_series_concentration),
+            time_series_angles=bool(time_series_angles),
+            time_series_rdf_rmax_nm=float(time_series_rdf_rmax_nm),
+            time_series_rdf_bin_nm=float(time_series_rdf_bin_nm),
             manifest_path=Path(manifest_path) if manifest_path is not None else None,
         )
         result["_analysis"] = expected_cache_meta

@@ -295,13 +295,15 @@ def test_example08_scripts_use_one_shot_builder_and_interface_summary_printer():
         assert 'graphite_adsorption_cutoff_nm = 0.50' in text
         assert 'penetration_species = ' in text
         assert 'adsorption_species = ' in text
+        assert 'time_series_analysis = True' in text
         assert 'analy = nvt.analyze()' in text
         assert 'interface = analy.interface(' in text
-        assert 'interface.geometry_health()' in text
-        assert 'interface.z_profiles()' in text
+        assert 'interface.geometry_health(time_series_analysis=time_series_analysis)' in text
+        assert 'interface.z_profiles(time_series_analysis=time_series_analysis)' in text
         assert 'interface.edl_profiles(' in text or 'interface.edl_profiles()' in text
         assert 'interface.penetration(' in text
         assert 'interface.graphite_adsorption(' in text
+        assert 'interface.time_series(time_series_analysis=time_series_analysis)' in text
         assert 'clean_md_trajectory_files(' in text
 
 

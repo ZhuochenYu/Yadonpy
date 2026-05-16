@@ -66,7 +66,7 @@ semantic aliases such as `GRAPHITE`, `ELECTROLYTE`, `CMCNA`, and `MOBILE`.
   use `analy = nvt.analyze()` followed by `analy.interface(...)`, then call
   readable methods such as `geometry_health()`, `z_profiles()`,
   `edl_profiles()`, `penetration(...)`, `graphite_adsorption(...)`,
-  `coordination_by_region()`, and `region_transport()`.
+  `coordination_by_region()`, `region_transport()`, and `time_series()`.
 - Static stack post-processing uses `analyze_layer_stack_interface(...)` on
   `system.gro/top/ndx` and `layer_stack_manifest.json`; it is a geometry and
   charge sanity pass before NVT.
@@ -92,3 +92,16 @@ semantic aliases such as `GRAPHITE`, `ELECTROLYTE`, `CMCNA`, and `MOBILE`.
   coordination partitioning, and anisotropic MSD summaries when trajectories are
   present. Use `Dxy` as the in-plane interface mobility metric; treat `Dz` as
   confined-direction mobility.
+- Time-series analysis is disabled by default.  Pass
+  `time_series_analysis=True` explicitly to applicable facade calls such as
+  `interface.z_profiles(...)`, `interface.graphite_adsorption(...)`,
+  `interface.coordination_by_region(...)`, or `interface.time_series(...)` to
+  write `time_series/` CSVs and slow MP4 overlays.  The default samples ten
+  equal time windows, so RDF/CN, molecule-COM z concentration, and
+  adsorbed-angle distributions can be inspected without creating a dense movie.
+  MP4 output requires `ffmpeg` in the active conda environment; CSV artifacts
+  are written even if the movie writer is unavailable.
+- RDF time-series outputs are cation-centered when Li+/Na+ sites exist.  The
+  same animation and CSV set includes CN(r) curves and first-shell CN values
+  versus time, so RDF changes are interpreted together with coordination-number
+  changes.

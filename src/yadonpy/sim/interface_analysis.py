@@ -37,6 +37,13 @@ class InterfaceAnalysis:
         phase_groups: Sequence[str] | None = None,
         out_dir: str | Path | None = None,
         compute_transport: bool = True,
+        time_series_sample_count: int = 10,
+        time_series_fps: float = 1.0,
+        time_series_rdf: bool = True,
+        time_series_concentration: bool = True,
+        time_series_angles: bool = True,
+        time_series_rdf_rmax_nm: float = 1.2,
+        time_series_rdf_bin_nm: float = 0.02,
         resume: bool = False,
     ) -> None:
         self.analyzer = analyzer
@@ -52,11 +59,26 @@ class InterfaceAnalysis:
         self.potential_reference = str(potential_reference)
         self.split_electrodes = bool(split_electrodes)
         self.report_potential_drop = bool(report_potential_drop)
-        self.penetration_species = tuple(str(x) for x in penetration_species) if penetration_species is not None else None
+        self.penetration_species = (
+            tuple(str(x) for x in penetration_species)
+            if penetration_species is not None
+            else None
+        )
         self.adsorption_species = tuple(str(x) for x in adsorption_species) if adsorption_species is not None else None
-        self.phase_groups = tuple(str(x) for x in phase_groups) if phase_groups is not None else self._phase_groups_from_manifest()
+        self.phase_groups = (
+            tuple(str(x) for x in phase_groups)
+            if phase_groups is not None
+            else self._phase_groups_from_manifest()
+        )
         self.out_dir = Path(out_dir) if out_dir is not None else self._default_out_dir()
         self.compute_transport = bool(compute_transport)
+        self.time_series_sample_count = int(max(1, time_series_sample_count))
+        self.time_series_fps = float(time_series_fps)
+        self.time_series_rdf = bool(time_series_rdf)
+        self.time_series_concentration = bool(time_series_concentration)
+        self.time_series_angles = bool(time_series_angles)
+        self.time_series_rdf_rmax_nm = float(time_series_rdf_rmax_nm)
+        self.time_series_rdf_bin_nm = float(time_series_rdf_bin_nm)
         self.resume = bool(resume)
         self._cache: dict[tuple[tuple[str, str], ...], dict[str, Any]] = {}
 
@@ -101,6 +123,14 @@ class InterfaceAnalysis:
             "phase_groups": self.phase_groups,
             "out_dir": self.out_dir,
             "compute_transport": self.compute_transport,
+            "time_series_analysis": False,
+            "time_series_sample_count": self.time_series_sample_count,
+            "time_series_fps": self.time_series_fps,
+            "time_series_rdf": self.time_series_rdf,
+            "time_series_concentration": self.time_series_concentration,
+            "time_series_angles": self.time_series_angles,
+            "time_series_rdf_rmax_nm": self.time_series_rdf_rmax_nm,
+            "time_series_rdf_bin_nm": self.time_series_rdf_bin_nm,
             "resume": self.resume,
         }
         params.update({key: value for key, value in overrides.items() if value is not None})
@@ -112,16 +142,21 @@ class InterfaceAnalysis:
         self._cache[cache_key] = result
         return result
 
-    def geometry_health(self, **kwargs: Any) -> dict[str, Any]:
-        return dict(self._run(**kwargs).get("geometry_health") or {})
+    def geometry_health(self, *, time_series_analysis: bool = False, **kwargs: Any) -> dict[str, Any]:
+        return dict(self._run(time_series_analysis=bool(time_series_analysis), **kwargs).get("geometry_health") or {})
 
-    def z_profiles(self, **kwargs: Any) -> dict[str, Any]:
-        result = self._run(**kwargs)
+    def z_profiles(self, *, time_series_analysis: bool = False, **kwargs: Any) -> dict[str, Any]:
+        result = self._run(time_series_analysis=bool(time_series_analysis), **kwargs)
         return {
             "outputs": {
                 key: value
                 for key, value in (result.get("outputs") or {}).items()
-                if key in {"z_density_profiles_csv", "charge_density_profiles_csv", "phase_z_quantiles_csv", "z_profiles_svg"}
+                if key in (
+                    "z_density_profiles_csv",
+                    "charge_density_profiles_csv",
+                    "phase_z_quantiles_csv",
+                    "z_profiles_svg",
+                )
             },
             "phase_stats": (result.get("region_summary") or {}).get("phase_stats") or {},
         }
@@ -132,18 +167,26 @@ class InterfaceAnalysis:
         split_electrodes: bool | None = None,
         potential_reference: str | None = None,
         report_potential_drop: bool | None = None,
+        time_series_analysis: bool = False,
         **kwargs: Any,
     ) -> dict[str, Any]:
         result = self._run(
             split_electrodes=split_electrodes,
             potential_reference=potential_reference,
             report_potential_drop=report_potential_drop,
+            time_series_analysis=bool(time_series_analysis),
             **kwargs,
         )
         return dict(result.get("edl_profiles") or {})
 
-    def penetration(self, *, species: Sequence[str] | None = None, **kwargs: Any) -> dict[str, Any]:
-        result = self._run(penetration_species=species, **kwargs)
+    def penetration(
+        self,
+        *,
+        species: Sequence[str] | None = None,
+        time_series_analysis: bool = False,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        result = self._run(penetration_species=species, time_series_analysis=bool(time_series_analysis), **kwargs)
         return dict(result.get("penetration") or {})
 
     def graphite_adsorption(
@@ -152,24 +195,34 @@ class InterfaceAnalysis:
         species: Sequence[str] | None = None,
         surface_distance_nm: float | None = None,
         adsorption_min_residence_ps: float | None = None,
+        time_series_analysis: bool = False,
         **kwargs: Any,
     ) -> dict[str, Any]:
         result = self._run(
             adsorption_species=species,
             surface_distance_nm=surface_distance_nm,
             adsorption_min_residence_ps=adsorption_min_residence_ps,
+            time_series_analysis=bool(time_series_analysis),
             **kwargs,
         )
         return dict(result.get("graphite_adsorption") or {})
 
-    def region_transport(self, **kwargs: Any) -> dict[str, Any]:
-        return dict(self._run(**kwargs).get("region_transport_summary") or {})
+    def region_transport(self, *, time_series_analysis: bool = False, **kwargs: Any) -> dict[str, Any]:
+        return dict(
+            self._run(time_series_analysis=bool(time_series_analysis), **kwargs).get("region_transport_summary") or {}
+        )
 
-    def coordination_by_region(self, **kwargs: Any) -> dict[str, Any]:
-        return dict(self._run(**kwargs).get("coordination_by_region") or {})
+    def coordination_by_region(self, *, time_series_analysis: bool = False, **kwargs: Any) -> dict[str, Any]:
+        return dict(
+            self._run(time_series_analysis=bool(time_series_analysis), **kwargs).get("coordination_by_region")
+            or {}
+        )
 
-    def summary(self, **kwargs: Any) -> dict[str, Any]:
-        return self._run(**kwargs)
+    def time_series(self, *, time_series_analysis: bool = False, **kwargs: Any) -> dict[str, Any]:
+        return dict(self._run(time_series_analysis=bool(time_series_analysis), **kwargs).get("time_series") or {})
+
+    def summary(self, *, time_series_analysis: bool = False, **kwargs: Any) -> dict[str, Any]:
+        return self._run(time_series_analysis=bool(time_series_analysis), **kwargs)
 
 
 __all__ = ["InterfaceAnalysis"]
