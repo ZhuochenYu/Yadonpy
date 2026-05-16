@@ -295,6 +295,39 @@ def test_analyzer_runtime_policy_downsamples_dense_legacy_trajectory(tmp_path: P
     assert runtime_json["sections"]["rdf"]["frame_stride"] == 21
 
 
+def test_analyzer_runtime_policy_can_use_energy_stream_for_thermo(tmp_path: Path):
+    prod_dir = tmp_path / "05_npt_production" / "02_npt"
+    prod_dir.mkdir(parents=True, exist_ok=True)
+    (prod_dir / "md.mdp").write_text(
+        "dt = 0.001\n"
+        "nsteps = 100000000\n"
+        "nstxout-compressed = 20000\n"
+        "nstenergy = 1000\n",
+        encoding="utf-8",
+    )
+    analyzer = AnalyzeResult(
+        work_dir=tmp_path,
+        tpr=prod_dir / "md.tpr",
+        xtc=prod_dir / "md.xtc",
+        edr=prod_dir / "md.edr",
+        top=tmp_path / "system.top",
+        ndx=tmp_path / "system.ndx",
+    )
+
+    trajectory = analyzer._resolve_analysis_runtime_policy("rdf", profile="transport_fast", requested_frame_stride=1)
+    thermo = analyzer._resolve_analysis_runtime_policy(
+        "thermo",
+        profile="transport_fast",
+        requested_frame_stride=1,
+        estimate_kind="energy",
+    )
+
+    assert trajectory["estimated_raw_frames"] == 5001
+    assert thermo["estimated_raw_frames"] == 100001
+    assert thermo["frame_stride"] == 5
+    assert analyzer._runtime_policy_dt_ps(thermo) == pytest.approx(5.0)
+
+
 def test_analyzer_runtime_policy_global_cap_can_tighten_sections(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("MAX_ANALYSIS_FRAMES", "5000")
     prod_dir = tmp_path / "05_npt_production" / "02_npt"

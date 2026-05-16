@@ -243,7 +243,9 @@ protects post-processing time by increasing the read-time frame stride instead
 of rewriting the `.xtc`. The resolved runtime policy is saved as
 `06_analysis/analysis_runtime_policy.json`. The main controls are
 global `MAX_ANALYSIS_FRAMES` plus section-specific `MAX_RDF_FRAMES`,
-`MAX_MSD_FRAMES`, `MAX_CELL_FRAMES`, and `MAX_POLYMER_METRIC_FRAMES`;
+`MAX_MSD_FRAMES`, `MAX_CELL_FRAMES`, `MAX_THERMO_FRAMES`,
+`MAX_DENSITY_DISTRIBUTION_FRAMES`, `MAX_DIELECTRIC_FRAMES`,
+`MAX_MIGRATION_FRAMES`, and `MAX_POLYMER_METRIC_FRAMES`;
 `analysis_profile="full"` disables this automatic runtime thinning.
 
 Dielectric constants are available through `dielectric()`, which calls

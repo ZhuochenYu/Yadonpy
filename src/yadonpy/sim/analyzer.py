@@ -642,8 +642,20 @@ class AnalyzeResult:
         except Exception:
             return int(default)
 
-    def _trajectory_output_estimate(self) -> dict[str, Any]:
-        """Return a cheap frame-count estimate for the current production trajectory."""
+    def _mdp_output_estimate(
+        self,
+        *,
+        nst_keys: Sequence[str],
+        policy_interval_keys: Sequence[str],
+        label: str,
+    ) -> dict[str, Any]:
+        """Return a cheap frame-count estimate for an output stream.
+
+        GROMACS analyses read different streams: trajectory-based tools should
+        follow ``nstxout-compressed``/``nstxout``, while thermo time-series tools
+        follow ``nstenergy``.  Keeping this stream-aware prevents a sparse XTC
+        from hiding an overly dense energy series, and vice versa.
+        """
 
         mdp_path = Path(self.tpr).with_suffix(".mdp")
         out: dict[str, Any] = {
@@ -651,6 +663,7 @@ class AnalyzeResult:
             "frame_interval_ps": None,
             "estimated_frames": None,
             "production_ps": None,
+            "stream": str(label),
             "source": "unavailable",
         }
         if mdp_path.exists():
@@ -659,7 +672,7 @@ class AnalyzeResult:
                 dt_ps = float(kv.get("dt", "0"))
                 nsteps = int(float(kv.get("nsteps", "0")))
                 nst_candidates = []
-                for key in ("nstxout-compressed", "nstxout"):
+                for key in nst_keys:
                     try:
                         nst_candidates.append(int(float(kv.get(key, "0"))))
                     except Exception:
@@ -680,22 +693,42 @@ class AnalyzeResult:
                 return out
         policy = self._read_performance_policy()
         if isinstance(policy, dict):
-            try:
-                interval = float(policy.get("traj_ps"))
-                frames = int(policy.get("estimated_frames"))
-                prod_ns = float(policy.get("production_ns"))
-                if interval > 0.0 and frames > 0:
-                    out.update(
-                        {
-                            "frame_interval_ps": interval,
-                            "estimated_frames": frames,
-                            "production_ps": prod_ns * 1000.0 if prod_ns > 0.0 else None,
-                            "source": "performance_policy",
-                        }
-                    )
-            except Exception:
-                pass
+            for key in policy_interval_keys:
+                try:
+                    interval = float(policy.get(key))
+                    frames = int(policy.get("estimated_frames"))
+                    prod_ns = float(policy.get("production_ns"))
+                    if interval > 0.0 and frames > 0:
+                        out.update(
+                            {
+                                "frame_interval_ps": interval,
+                                "estimated_frames": frames,
+                                "production_ps": prod_ns * 1000.0 if prod_ns > 0.0 else None,
+                                "source": f"performance_policy.{key}",
+                            }
+                        )
+                        break
+                except Exception:
+                    continue
         return out
+
+    def _trajectory_output_estimate(self) -> dict[str, Any]:
+        """Return a cheap frame-count estimate for coordinate trajectories."""
+
+        return self._mdp_output_estimate(
+            nst_keys=("nstxout-compressed", "nstxout"),
+            policy_interval_keys=("traj_ps", "xtc_ps", "trr_ps"),
+            label="trajectory",
+        )
+
+    def _energy_output_estimate(self) -> dict[str, Any]:
+        """Return a cheap frame-count estimate for EDR-derived time series."""
+
+        return self._mdp_output_estimate(
+            nst_keys=("nstenergy",),
+            policy_interval_keys=("energy_ps", "traj_ps"),
+            label="energy",
+        )
 
     def _analysis_frame_cap(self, section: str) -> int:
         """Return the frame budget for an analysis section.
@@ -710,8 +743,13 @@ class AnalyzeResult:
             "RDF": 10_000,
             "MSD": 25_000,
             "CELL": 20_000,
+            "THERMO": 25_000,
             "POLYMER_METRICS": 2_000,
+            "RG": 2_000,
+            "DENSITY_DISTRIBUTION": 10_000,
             "INTERFACE_PROFILE": 10_000,
+            "DIELECTRIC": 25_000,
+            "MIGRATION": 10_000,
         }
         env_name = f"MAX_{section_key}_FRAMES"
         general_cap = self._env_int("MAX_ANALYSIS_FRAMES", 25_000)
@@ -760,12 +798,13 @@ class AnalyzeResult:
         *,
         profile: Optional[str] = None,
         requested_frame_stride: int = 1,
+        estimate_kind: str = "trajectory",
     ) -> dict[str, Any]:
         """Resolve analysis-time frame thinning for dense legacy trajectories."""
 
         resolved_profile = self._resolve_analysis_profile(profile)
         requested = max(1, int(requested_frame_stride or 1))
-        estimate = self._trajectory_output_estimate()
+        estimate = self._energy_output_estimate() if str(estimate_kind).strip().lower() == "energy" else self._trajectory_output_estimate()
         raw_frames = estimate.get("estimated_frames")
         cap = self._analysis_frame_cap(section)
         effective_stride = requested
@@ -803,6 +842,21 @@ class AnalyzeResult:
         }
         self._record_analysis_runtime_policy(str(section), payload)
         return payload
+
+    @staticmethod
+    def _runtime_policy_dt_ps(policy: Mapping[str, Any], *, only_when_stride_gt1: bool = True) -> Optional[float]:
+        """Translate a runtime frame policy into a GROMACS ``-dt`` interval."""
+
+        try:
+            interval = float(policy.get("trajectory_frame_interval_ps"))
+            stride = int(policy.get("frame_stride") or 1)
+        except Exception:
+            return None
+        if interval <= 0.0 or stride <= 0:
+            return None
+        if bool(only_when_stride_gt1) and stride <= 1:
+            return None
+        return float(interval) * float(stride)
 
     @staticmethod
     def _normalize_site_filter(site_filter: object) -> Optional[list[object]]:
@@ -1068,9 +1122,30 @@ class AnalyzeResult:
             "Enthalpy",
         ]
 
-        t0 = self._step_begin("Step 1/5 thermo extraction", detail="gmx energy -> 06_analysis/thermo.xvg")
+        thermo_runtime_policy = self._resolve_analysis_runtime_policy(
+            "thermo",
+            profile=profile,
+            requested_frame_stride=1,
+            estimate_kind="energy",
+        )
+        thermo_dt_ps = self._runtime_policy_dt_ps(thermo_runtime_policy)
+        t0 = self._step_begin(
+            "Step 1/5 thermo extraction",
+            detail=f"gmx energy -> 06_analysis/thermo.xvg | dt={thermo_dt_ps if thermo_dt_ps is not None else 'native'} ps",
+        )
         self._item("requested_terms", ", ".join(terms))
-        res_energy = runner.energy_xvg(edr=self.edr, out_xvg=out, terms=terms, allow_missing=True)
+        if thermo_runtime_policy.get("analysis_cost_warning"):
+            self._item("thermo_analysis_cost_warning", thermo_runtime_policy.get("analysis_cost_warning"))
+        self._item("thermo_frame_stride", thermo_runtime_policy.get("frame_stride"))
+        energy_kwargs = {
+            "edr": self.edr,
+            "out_xvg": out,
+            "terms": terms,
+            "allow_missing": True,
+        }
+        if thermo_dt_ps is not None:
+            energy_kwargs["dt_ps"] = thermo_dt_ps
+        res_energy = runner.energy_xvg(**energy_kwargs)
         self._item("resolved_terms", ", ".join(res_energy.get("resolved_terms") or []) or "(none)")
         missing_terms = list(res_energy.get("missing_terms") or [])
         if missing_terms:
@@ -1109,6 +1184,7 @@ class AnalyzeResult:
                 "pressure": pressure_key,
                 "volume": volume_key,
             },
+            "thermo_runtime_policy": thermo_runtime_policy,
         }
         try:
             t_mean = float(temperature_mean if temperature_mean is not None else temp)
@@ -3070,11 +3146,24 @@ class AnalyzeResult:
         begin_ps: Optional[float] = None,
         end_ps: Optional[float] = None,
         dt_ps: Optional[float] = None,
+        analysis_profile: Optional[str] = None,
+        frame_stride: int | str = "auto",
         epsilon_rf: float = 0.0,
         resume: bool = False,
     ) -> Dict[str, Any]:
         """Compute the static dielectric constant from total dipole fluctuations."""
-        t_all = self._section_begin("Dielectric analysis", detail=f"group={group}")
+        profile = self._resolve_analysis_profile(analysis_profile)
+        requested_stride = 1 if str(frame_stride).strip().lower() == "auto" else max(1, int(frame_stride))
+        runtime_policy = self._resolve_analysis_runtime_policy(
+            "dielectric",
+            profile=profile,
+            requested_frame_stride=int(requested_stride),
+        )
+        resolved_dt_ps = float(dt_ps) if dt_ps is not None else self._runtime_policy_dt_ps(runtime_policy)
+        t_all = self._section_begin(
+            "Dielectric analysis",
+            detail=f"group={group} | profile={profile} | dt={resolved_dt_ps if resolved_dt_ps is not None else 'native'} ps",
+        )
         analysis_dir = self._analysis_dir() / "dielectric"
         analysis_dir.mkdir(parents=True, exist_ok=True)
         mtot_xvg = analysis_dir / "Mtot.xvg"
@@ -3090,13 +3179,18 @@ class AnalyzeResult:
             resolved_temp = 300.0
             temperature_source = "fallback_300K"
 
-        expected_cache_meta = {
+        legacy_cache_meta = {
             "group": str(group),
             "temperature_K": float(resolved_temp),
             "begin_ps": float(begin_ps) if begin_ps is not None else None,
             "end_ps": float(end_ps) if end_ps is not None else None,
-            "dt_ps": float(dt_ps) if dt_ps is not None else None,
+            "dt_ps": float(resolved_dt_ps) if resolved_dt_ps is not None else None,
             "epsilon_rf": float(epsilon_rf),
+        }
+        expected_cache_meta = {
+            **legacy_cache_meta,
+            "analysis_profile": profile,
+            "analysis_runtime_policy": runtime_policy,
         }
         if bool(resume) and self._artifact_is_fresh(
             summary_path,
@@ -3106,13 +3200,19 @@ class AnalyzeResult:
                 cached = json.loads(summary_path.read_text(encoding="utf-8"))
             except Exception:
                 cached = None
-            if isinstance(cached, dict) and self._analysis_cache_metadata_matches(cached, expected_cache_meta):
+            if isinstance(cached, dict) and (
+                self._analysis_cache_metadata_matches(cached, expected_cache_meta)
+                or self._analysis_cache_metadata_matches(cached, legacy_cache_meta)
+            ):
                 self._item("dielectric_cache", f"reuse {self._compact_path(summary_path)}")
                 self._update_summary_sections(dielectric=cached)
                 self._section_done("Dielectric analysis", t_all, detail="cache=reused")
                 return cached
 
-        t0 = self._step_begin("gmx dipoles", detail=f"temp={float(resolved_temp):.3f} K")
+        t0 = self._step_begin(
+            "gmx dipoles",
+            detail=f"temp={float(resolved_temp):.3f} K | dt={resolved_dt_ps if resolved_dt_ps is not None else 'native'} ps",
+        )
         runner = GromacsRunner()
         proc = runner.dipoles(
             tpr=self.tpr,
@@ -3126,7 +3226,7 @@ class AnalyzeResult:
             temp_k=float(resolved_temp),
             begin_ps=begin_ps,
             end_ps=end_ps,
-            dt_ps=dt_ps,
+            dt_ps=resolved_dt_ps,
             epsilon_rf=float(epsilon_rf),
             pairs=False,
             cwd=analysis_dir,
@@ -3152,7 +3252,9 @@ class AnalyzeResult:
             "epsilon_rf": float(epsilon_rf),
             "begin_ps": float(begin_ps) if begin_ps is not None else None,
             "end_ps": float(end_ps) if end_ps is not None else None,
-            "dt_ps": float(dt_ps) if dt_ps is not None else None,
+            "dt_ps": float(resolved_dt_ps) if resolved_dt_ps is not None else None,
+            "analysis_profile": profile,
+            "analysis_runtime_policy": runtime_policy,
             "method": "gmx dipoles total dipole fluctuation",
             "interpretation_note": (
                 "Static dielectric estimates from total dipole fluctuations are slow to converge; "
@@ -3184,6 +3286,7 @@ class AnalyzeResult:
         rdf_stride: int = 10,
         lag_ps: str | float | int = "auto",
         state_basis: str = "dual",
+        analysis_profile: Optional[str] = None,
         residence: bool = True,
         markov: bool = True,
         expert_mode: bool = False,
@@ -3196,15 +3299,27 @@ class AnalyzeResult:
         if len(center_moltypes) != 1:
             raise ValueError(f"migration() center_mol must resolve to exactly one moltype, got {center_moltypes}")
         center_group = str(center_moltypes[0])
+        profile = self._resolve_analysis_profile(analysis_profile)
+        stride_auto = isinstance(stride, str) and str(stride).strip().lower() == "auto"
+        requested_stride = 1 if stride_auto else max(1, int(stride))
+        runtime_policy = self._resolve_analysis_runtime_policy(
+            "migration",
+            profile=profile,
+            requested_frame_stride=int(requested_stride),
+        )
+        resolved_stride = int(runtime_policy.get("frame_stride") or requested_stride)
+        migration_stride: int | str = int(resolved_stride) if (not stride_auto or int(resolved_stride) > 1) else "auto"
         analysis_dir = Path(out_dir) if out_dir is not None else (self._analysis_dir() / "migration")
         t_all = self._section_begin(
             "Migration analysis",
             detail=(
-                f"center={center_group} | stride={stride} | rdf_stride={int(max(1, rdf_stride))}"
+                f"center={center_group} | profile={profile} | stride={migration_stride} | rdf_stride={int(max(1, rdf_stride))}"
                 f" | lag_ps={lag_ps} | state_basis={state_basis}"
                 f" | residence={bool(residence)} | markov={bool(markov)} | expert_mode={bool(expert_mode)}"
             ),
         )
+        if runtime_policy.get("analysis_cost_warning"):
+            self._item("migration_analysis_cost_warning", runtime_policy.get("analysis_cost_warning"))
 
         rdf_summary = self._load_existing_rdf_summary(center_group=center_group)
         if rdf_summary is None:
@@ -3226,7 +3341,7 @@ class AnalyzeResult:
             solvent_mols=solvent_mols,
             anion_mols=anion_mols,
             cation_mols=cation_mols,
-            stride=stride,
+            stride=migration_stride,
             rdf_stride=int(max(1, rdf_stride)),
             lag_ps=lag_ps,
             state_basis=str(state_basis or "dual"),
@@ -3235,6 +3350,8 @@ class AnalyzeResult:
             expert_mode=bool(expert_mode),
             out_dir=analysis_dir,
         )
+        result["analysis_profile"] = profile
+        result["analysis_runtime_policy"] = runtime_policy
         self._update_summary_sections(migration=result.get("migration_summary") or result)
         self._item("migration_outputs", self._compact_path(analysis_dir))
         self._section_done(
@@ -3273,9 +3390,27 @@ class AnalyzeResult:
             "migration_summary": dict(result.get("migration_summary") or {}),
         }
 
-    def rg(self, *, begin_ps: Optional[float] = None, end_ps: Optional[float] = None) -> Dict[str, Any]:
+    def rg(
+        self,
+        *,
+        begin_ps: Optional[float] = None,
+        end_ps: Optional[float] = None,
+        analysis_profile: Optional[str] = None,
+        frame_stride: int | str = "auto",
+    ) -> Dict[str, Any]:
         """Compute and plot radius of gyration time series (best-effort)."""
-        t_all = self._section_begin("Rg analysis", detail="polymer radius of gyration time series")
+        profile = self._resolve_analysis_profile(analysis_profile)
+        requested_stride = 1 if str(frame_stride).strip().lower() == "auto" else max(1, int(frame_stride))
+        runtime_policy = self._resolve_analysis_runtime_policy(
+            "rg",
+            profile=profile,
+            requested_frame_stride=int(requested_stride),
+        )
+        resolved_dt_ps = self._runtime_policy_dt_ps(runtime_policy)
+        t_all = self._section_begin(
+            "Rg analysis",
+            detail=f"polymer radius of gyration time series | profile={profile} | dt={resolved_dt_ps if resolved_dt_ps is not None else 'native'} ps",
+        )
         if not self._has_polymer_group():
             outdir = self._analysis_dir() / 'rg'
             outdir.mkdir(parents=True, exist_ok=True)
@@ -3294,11 +3429,21 @@ class AnalyzeResult:
         outdir = self._analysis_dir() / 'rg'
         outdir.mkdir(parents=True, exist_ok=True)
         out = outdir / 'rg.xvg'
-        rec: Dict[str, Any] = {'xvg': str(out)}
+        rec: Dict[str, Any] = {'xvg': str(out), 'analysis_runtime_policy': runtime_policy}
         try:
             grp = self._pick_rg_group()
             rec['group'] = str(grp)
-            runner.gyrate(tpr=self.tpr, xtc=self.xtc, ndx=self.ndx, group=grp, out_xvg=out, begin_ps=begin_ps, end_ps=end_ps, cwd=outdir)
+            runner.gyrate(
+                tpr=self.tpr,
+                xtc=self._analysis_xtc_path(),
+                ndx=self.ndx,
+                group=grp,
+                out_xvg=out,
+                begin_ps=begin_ps,
+                end_ps=end_ps,
+                dt_ps=resolved_dt_ps,
+                cwd=outdir,
+            )
             df = read_xvg(out).df
             # pick first non-x column
             ycols = [c for c in df.columns if c != 'x']
@@ -3592,9 +3737,25 @@ class AnalyzeResult:
         axes: Sequence[str] = ("X", "Y", "Z"),
         begin_ps: Optional[float] = None,
         end_ps: Optional[float] = None,
+        analysis_profile: Optional[str] = None,
+        frame_stride: int | str = "auto",
     ) -> Dict[str, Any]:
         """Number density profile (gmx density -d number) for moltypes."""
-        t_all = self._section_begin("Number-density distribution analysis", detail=f"axes={','.join(map(str, axes))}")
+        profile = self._resolve_analysis_profile(analysis_profile)
+        requested_stride = 1 if str(frame_stride).strip().lower() == "auto" else max(1, int(frame_stride))
+        runtime_policy = self._resolve_analysis_runtime_policy(
+            "density_distribution",
+            profile=profile,
+            requested_frame_stride=int(requested_stride),
+        )
+        resolved_dt_ps = self._runtime_policy_dt_ps(runtime_policy)
+        t_all = self._section_begin(
+            "Number-density distribution analysis",
+            detail=(
+                f"axes={','.join(map(str, axes))} | profile={profile}"
+                f" | dt={resolved_dt_ps if resolved_dt_ps is not None else 'native'} ps"
+            ),
+        )
         topo = parse_system_top(self.top)
         runner = GromacsRunner()
         outdir = self._analysis_dir() / "number_density_distribution"
@@ -3631,7 +3792,10 @@ class AnalyzeResult:
         total = len(selected) * len(tuple(axes))
         self._item("selected_moltypes", ', '.join(selected) if selected else 'none')
         self._item("density_tasks", total)
-        res: Dict[str, Any] = {}
+        self._item("density_distribution_frame_stride", runtime_policy.get("frame_stride"))
+        if runtime_policy.get("analysis_cost_warning"):
+            self._item("density_distribution_cost_warning", runtime_policy.get("analysis_cost_warning"))
+        res: Dict[str, Any] = {"_analysis_runtime_policy": runtime_policy}
         idx = 0
         for moltype, _count in topo.molecules:
             if want_moltypes is not None and str(moltype) not in want_moltypes:
@@ -3643,13 +3807,14 @@ class AnalyzeResult:
                 xvg = outdir / f"ndens_{moltype}_{ax.upper()}.xvg"
                 runner.density_number_profile(
                     tpr=self.tpr,
-                    xtc=self.xtc,
+                    xtc=self._analysis_xtc_path(),
                     ndx=self.ndx,
                     group=f"REP_{moltype}",
                     out_xvg=xvg,
                     axis=ax.upper(),
                     begin_ps=begin_ps,
                     end_ps=end_ps,
+                    dt_ps=resolved_dt_ps,
                     cwd=outdir,
                 )
                 res.setdefault(str(moltype), {})[ax.upper()] = str(xvg)
@@ -3682,6 +3847,8 @@ class AnalyzeResult:
         axes: Sequence[str] = ("X", "Y", "Z"),
         begin_ps: Optional[float] = None,
         end_ps: Optional[float] = None,
+        analysis_profile: Optional[str] = None,
+        frame_stride: int | str = "auto",
     ) -> Dict[str, Any]:
         """Alias for :meth:`density_distribution` (yzc-gmx-gen style).
 
@@ -3690,7 +3857,14 @@ class AnalyzeResult:
         density_distributionr = analy.den_dis()  # all moltypes
         density_distributionr = analy.den_dis([poly, Li])
         """
-        return self.density_distribution(mols, axes=axes, begin_ps=begin_ps, end_ps=end_ps)
+        return self.density_distribution(
+            mols,
+            axes=axes,
+            begin_ps=begin_ps,
+            end_ps=end_ps,
+            analysis_profile=analysis_profile,
+            frame_stride=frame_stride,
+        )
 
 def _read_box_volume_nm3(gro_path: Path) -> float:
     """Read box volume (nm^3) from the last line of a .gro file.

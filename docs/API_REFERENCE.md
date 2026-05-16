@@ -234,11 +234,15 @@ Transport semantics:
 - `analysis_profile="auto"` reads the production performance policy when present
   and resolves to `transport_fast` or `minimal` for large/long runs.
 - In non-`full` profiles, the analyzer also estimates trajectory frame count and
-  automatically increases the read-time frame stride for dense legacy `.xtc`
-  files. The resolved policy is written to
+  automatically increases the read-time frame stride or GROMACS `-dt` interval
+  for dense legacy `.xtc`/`.trr`/`.edr` streams. This covers RDF, MSD, cell,
+  thermo, number-density profiles, Rg/polymer metrics, dielectric dipoles,
+  interface profiles, and migration analyses. The resolved policy is written to
   `06_analysis/analysis_runtime_policy.json`; caps can be tuned with
   global `MAX_ANALYSIS_FRAMES` or section-specific `MAX_RDF_FRAMES`,
-  `MAX_MSD_FRAMES`, `MAX_CELL_FRAMES`, and `MAX_POLYMER_METRIC_FRAMES`.
+  `MAX_MSD_FRAMES`, `MAX_CELL_FRAMES`, `MAX_THERMO_FRAMES`,
+  `MAX_DENSITY_DISTRIBUTION_FRAMES`, `MAX_DIELECTRIC_FRAMES`,
+  `MAX_MIGRATION_FRAMES`, and `MAX_POLYMER_METRIC_FRAMES`.
 - MSD uses a hybrid backend rather than a plain atom-index average. Metrics
   marked `gmx_msd_mol_equivalent=true` are delegated to
   `gmx msd -n system.ndx -mol` so GROMACS splits the ndx selection into topology

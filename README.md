@@ -184,11 +184,15 @@ dominant storage and analysis cost on 60-500 ns, 40k+ atom jobs.
 Post-processing has a second safety layer for legacy dense trajectories: in
 `auto`, `transport_fast`, and `minimal` modes, YadonPy estimates the trajectory
 frame count from the production `.mdp` and automatically increases the read-time
-stride for cell, RDF, MSD, and polymer metrics when the frame count is too high.
+stride for cell, thermo time series, RDF, MSD, Rg/polymer metrics, number-density
+profiles, dielectric dipoles, interface profiles, and migration state analyses
+when the frame count is too high.
 The decision is written to `06_analysis/analysis_runtime_policy.json`; use
 `MAX_ANALYSIS_FRAMES` as a global tightening cap, or `MAX_RDF_FRAMES`,
-`MAX_MSD_FRAMES`, `MAX_CELL_FRAMES`, and `MAX_POLYMER_METRIC_FRAMES` for
-section-specific caps. Set `ANALYSIS_PROFILE=full` to force dense analysis.
+`MAX_MSD_FRAMES`, `MAX_CELL_FRAMES`, `MAX_THERMO_FRAMES`,
+`MAX_DENSITY_DISTRIBUTION_FRAMES`, `MAX_DIELECTRIC_FRAMES`,
+`MAX_MIGRATION_FRAMES`, and `MAX_POLYMER_METRIC_FRAMES` for section-specific
+caps. Set `ANALYSIS_PROFILE=full` to force dense analysis.
 
 `dielectric()` wraps `gmx dipoles` and estimates the static dielectric constant
 from total dipole fluctuations. Use the same GROMACS major version that produced

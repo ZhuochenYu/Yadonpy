@@ -749,6 +749,9 @@ class GromacsRunner:
         edr: Path,
         out_xvg: Path,
         terms: Sequence[str],
+        begin_ps: Optional[float] = None,
+        end_ps: Optional[float] = None,
+        dt_ps: Optional[float] = None,
         cwd: Optional[Path] = None,
         allow_missing: bool = False,
     ) -> dict:
@@ -767,6 +770,12 @@ class GromacsRunner:
         ids, missing = self._resolve_energy_term_ids(edr=edr, terms=terms, cwd=cwd, allow_missing=allow_missing)
         menu = "\n".join([*map(str, ids), "0", ""])  # trailing newline
         args = ["energy", "-f", str(edr), "-o", str(out_xvg), "-xvg", "xmgrace"]
+        if begin_ps is not None and self._tool_has_option("energy", "-b", cwd=cwd):
+            args += ["-b", str(float(begin_ps))]
+        if end_ps is not None and self._tool_has_option("energy", "-e", cwd=cwd):
+            args += ["-e", str(float(end_ps))]
+        if dt_ps is not None and self._tool_has_option("energy", "-dt", cwd=cwd):
+            args += ["-dt", str(float(dt_ps))]
         self.run(args, cwd=cwd, stdin_text=menu)
         return {"resolved_terms": list(terms) if not missing else [t for t in terms if t not in missing], "missing_terms": missing}
 
@@ -891,6 +900,7 @@ class GromacsRunner:
         axis: str = "Z",
         begin_ps: Optional[float] = None,
         end_ps: Optional[float] = None,
+        dt_ps: Optional[float] = None,
         cwd: Optional[Path] = None,
     ) -> None:
         axis = axis.upper()
@@ -917,6 +927,8 @@ class GromacsRunner:
             args += ["-b", str(begin_ps)]
         if end_ps is not None:
             args += ["-e", str(end_ps)]
+        if dt_ps is not None and self._tool_has_option("density", "-dt", cwd=cwd):
+            args += ["-dt", str(float(dt_ps))]
         self.run(args, cwd=cwd, stdin_text=f"{group}\n")
 
     def dipoles(
@@ -983,6 +995,7 @@ class GromacsRunner:
         group: str | int = 0,
         begin_ps: Optional[float] = None,
         end_ps: Optional[float] = None,
+        dt_ps: Optional[float] = None,
         cwd: Optional[Path] = None,
     ) -> None:
         """Compute radius of gyration time series via `gmx gyrate`.
@@ -999,6 +1012,8 @@ class GromacsRunner:
             args += ["-b", str(begin_ps)]
         if end_ps is not None:
             args += ["-e", str(end_ps)]
+        if dt_ps is not None and self._tool_has_option("gyrate", "-dt", cwd=cwd):
+            args += ["-dt", str(float(dt_ps))]
         self.run(args, cwd=cwd, stdin_text=f"{group}\n")
 
     def list_energy_terms(self, *, edr: Path, cwd: Optional[Path] = None) -> dict[str, int]:

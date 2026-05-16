@@ -129,6 +129,8 @@ Transport notes:
   writes the effective settings to `06_analysis/analysis_runtime_policy.json`.
   Tune this with global `MAX_ANALYSIS_FRAMES` or section-specific
   `MAX_RDF_FRAMES`, `MAX_MSD_FRAMES`, `MAX_CELL_FRAMES`, and
+  `MAX_THERMO_FRAMES`, `MAX_DENSITY_DISTRIBUTION_FRAMES`,
+  `MAX_DIELECTRIC_FRAMES`, `MAX_MIGRATION_FRAMES`, and
   `MAX_POLYMER_METRIC_FRAMES`.
 - Polymer MSD means chain center-of-mass self diffusion by default. The analyzer
   reconstructs whole chains from bonded connectivity before PBC unwrapping, and
