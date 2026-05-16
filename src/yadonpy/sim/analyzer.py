@@ -2340,6 +2340,54 @@ class AnalyzeResult:
             pass
         return ok
 
+    def interface(
+        self,
+        *,
+        manifest_path: str | Path | None = None,
+        analysis_profile: str = "interface_fast",
+        bin_nm: float = 0.05,
+        frame_stride: int | str = "auto",
+        surface_distance_nm: float = 0.50,
+        region_width_nm: float = 0.75,
+        surface_grid_nm: float = 0.5,
+        penetration_threshold_nm: float = 0.20,
+        adsorption_min_residence_ps: float = 10.0,
+        potential_reference: str = "zero_mean",
+        split_electrodes: bool = False,
+        report_potential_drop: bool = False,
+        penetration_species: Sequence[str] | None = None,
+        adsorption_species: Sequence[str] | None = None,
+        phase_groups: Sequence[str] | None = None,
+        out_dir: str | Path | None = None,
+        compute_transport: bool = True,
+        resume: bool = False,
+    ):
+        """Return an eg02-style facade for layer-stack interface analysis."""
+
+        from .interface_analysis import InterfaceAnalysis
+
+        return InterfaceAnalysis(
+            self,
+            manifest_path=manifest_path,
+            analysis_profile=analysis_profile,
+            bin_nm=bin_nm,
+            frame_stride=frame_stride,
+            surface_distance_nm=surface_distance_nm,
+            region_width_nm=region_width_nm,
+            surface_grid_nm=surface_grid_nm,
+            penetration_threshold_nm=penetration_threshold_nm,
+            adsorption_min_residence_ps=adsorption_min_residence_ps,
+            potential_reference=potential_reference,
+            split_electrodes=split_electrodes,
+            report_potential_drop=report_potential_drop,
+            penetration_species=penetration_species,
+            adsorption_species=adsorption_species,
+            phase_groups=phase_groups,
+            out_dir=out_dir,
+            compute_transport=compute_transport,
+            resume=resume,
+        )
+
     def interface_profile(
         self,
         *,
@@ -2348,11 +2396,20 @@ class AnalyzeResult:
         ndx_path: str | Path | None = None,
         system_dir: str | Path | None = None,
         xtc_path: str | Path | None = None,
+        manifest_path: str | Path | None = None,
         out_dir: str | Path | None = None,
         bin_nm: float = 0.05,
         frame_stride: int | str = "auto",
         region_width_nm: float = 0.75,
         surface_grid_nm: float = 0.5,
+        surface_distance_nm: float = 0.50,
+        penetration_threshold_nm: float = 0.20,
+        adsorption_min_residence_ps: float = 10.0,
+        potential_reference: str = "zero_mean",
+        split_electrodes: bool = False,
+        report_potential_drop: bool = False,
+        penetration_species: Sequence[str] | None = None,
+        adsorption_species: Sequence[str] | None = None,
         analysis_profile: str = "interface_fast",
         phase_groups: Sequence[str] = ("GRAPHITE", "POLYMER", "ELECTROLYTE"),
         compute_transport: bool = True,
@@ -2394,12 +2451,22 @@ class AnalyzeResult:
             "frame_stride": int(resolved_stride),
             "region_width_nm": float(region_width_nm),
             "surface_grid_nm": float(surface_grid_nm),
+            "surface_distance_nm": float(surface_distance_nm),
+            "penetration_threshold_nm": float(penetration_threshold_nm),
+            "adsorption_min_residence_ps": float(adsorption_min_residence_ps),
+            "potential_reference": str(potential_reference),
+            "split_electrodes": bool(split_electrodes),
+            "report_potential_drop": bool(report_potential_drop),
+            "penetration_species": None if penetration_species is None else [str(x) for x in penetration_species],
+            "adsorption_species": None if adsorption_species is None else [str(x) for x in adsorption_species],
             "phase_groups": [str(x) for x in phase_groups],
             "compute_transport": bool(compute_transport),
         }
         expected_cache_meta.update(self._analysis_policy_cache_meta())
         summary_path = analysis_dir / "interface_profile_summary.json"
         dependencies = [gro_file, top_file, ndx_file, system_root / "system_meta.json"]
+        if manifest_path is not None:
+            dependencies.append(Path(manifest_path))
         if xtc_for_profile is not None:
             dependencies.append(xtc_for_profile)
         if bool(resume) and self._artifact_is_fresh(summary_path, dependencies):
@@ -2430,9 +2497,18 @@ class AnalyzeResult:
             frame_stride=int(resolved_stride),
             region_width_nm=float(region_width_nm),
             surface_grid_nm=float(surface_grid_nm),
+            surface_distance_nm=float(surface_distance_nm),
+            penetration_threshold_nm=float(penetration_threshold_nm),
+            adsorption_min_residence_ps=float(adsorption_min_residence_ps),
+            potential_reference=str(potential_reference),
+            split_electrodes=bool(split_electrodes),
+            report_potential_drop=bool(report_potential_drop),
+            penetration_species=penetration_species,
+            adsorption_species=adsorption_species,
             analysis_profile=profile,
             phase_groups=tuple(str(x) for x in phase_groups),
             compute_transport=bool(compute_transport),
+            manifest_path=Path(manifest_path) if manifest_path is not None else None,
         )
         result["_analysis"] = expected_cache_meta
         result["analysis_runtime_policy"] = runtime_policy

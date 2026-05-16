@@ -15,10 +15,10 @@ def test_auto_policy_keeps_short_small_runs_lean_but_dense():
     policy = resolve_io_analysis_policy(prod_ns=20.0, atom_count=20_000)
 
     assert policy.policy_level == "small"
-    assert policy.trajectory_format == "xtc"
+    assert policy.trajectory_format == "trr"
     assert policy.traj_ps == pytest.approx(2.0)
-    assert policy.xtc_ps == pytest.approx(2.0)
-    assert policy.trr_ps is None
+    assert policy.xtc_ps is None
+    assert policy.trr_ps == pytest.approx(2.0)
     assert policy.energy_ps == pytest.approx(2.0)
     assert policy.analysis_profile == "transport_fast"
     assert policy.rdf_frame_stride == 5
@@ -62,17 +62,16 @@ def test_policy_explicit_overrides_win():
     assert policy.overrides["traj_ps"] == pytest.approx(2.0)
 
 
-def test_policy_supports_explicit_trr_only_coordinates():
+def test_policy_supports_explicit_xtc_only_coordinates():
     policy = resolve_io_analysis_policy(
         prod_ns=100.0,
         atom_count=40_000,
-        trajectory_format="trr",
+        trajectory_format="xtc",
     )
 
-    assert policy.trajectory_format == "trr"
-    assert policy.xtc_ps is None
-    assert policy.trr_ps == pytest.approx(policy.traj_ps)
-    assert "trr_full_precision_coordinates_enabled" in policy.large_file_warnings
+    assert policy.trajectory_format == "xtc"
+    assert policy.xtc_ps == pytest.approx(policy.traj_ps)
+    assert policy.trr_ps is None
 
 
 def test_policy_keeps_optional_both_format_trr_coarse_by_default():
@@ -121,7 +120,7 @@ def test_npt_auto_policy_writes_coarse_output_cadence(tmp_path: Path, monkeypatc
         def run(self, *, restart=False):
             out_dir = Path(captured["out_dir"]) / "01_npt"
             out_dir.mkdir(parents=True, exist_ok=True)
-            for suffix in ("md.tpr", "md.xtc", "md.edr", "md.gro"):
+            for suffix in ("md.tpr", "md.trr", "md.edr", "md.gro"):
                 (out_dir / suffix).write_text("x\n", encoding="utf-8")
             return out_dir / "md.gro"
 
@@ -136,18 +135,20 @@ def test_npt_auto_policy_writes_coarse_output_cadence(tmp_path: Path, monkeypatc
 
     stage = captured["stages"][0]
     mdp_text = stage.mdp.render()
-    assert "nstxout-compressed       = 10000" in mdp_text
+    assert "nstxout-compressed       = 0" in mdp_text
+    assert "nstxout                  = 10000" in mdp_text
     assert "nstenergy                = 10000" in mdp_text
     assert "nstlog                   = 10000" in mdp_text
     summary = json.loads((tmp_path / "05_npt_production" / "summary.json").read_text(encoding="utf-8"))
     assert summary["performance_policy"]["policy_level"] == "efficient"
-    assert summary["performance_policy"]["trajectory_format"] == "xtc"
-    assert summary["performance_policy"]["xtc_ps"] == pytest.approx(20.0)
+    assert summary["performance_policy"]["trajectory_format"] == "trr"
+    assert summary["performance_policy"]["xtc_ps"] is None
+    assert summary["performance_policy"]["trr_ps"] == pytest.approx(20.0)
     step_summary = json.loads((tmp_path / "05_npt_production" / "01_npt" / "summary.json").read_text(encoding="utf-8"))
     assert step_summary["performance_policy"]["traj_ps"] == pytest.approx(20.0)
 
 
-def test_npt_policy_can_write_trr_only_coordinates(tmp_path: Path, monkeypatch):
+def test_npt_policy_can_write_xtc_only_coordinates(tmp_path: Path, monkeypatch):
     system_dir = tmp_path / "02_system"
     system_dir.mkdir(parents=True, exist_ok=True)
     (system_dir / "system.gro").write_text("test\n60000\n1.0 1.0 1.0\n", encoding="utf-8")
@@ -181,7 +182,7 @@ def test_npt_policy_can_write_trr_only_coordinates(tmp_path: Path, monkeypatch):
         def run(self, *, restart=False):
             out_dir = Path(captured["out_dir"]) / "01_npt"
             out_dir.mkdir(parents=True, exist_ok=True)
-            for suffix in ("md.tpr", "md.trr", "md.edr", "md.gro"):
+            for suffix in ("md.tpr", "md.xtc", "md.edr", "md.gro"):
                 (out_dir / suffix).write_text("x\n", encoding="utf-8")
             return out_dir / "md.gro"
 
@@ -200,17 +201,17 @@ def test_npt_policy_can_write_trr_only_coordinates(tmp_path: Path, monkeypatch):
         gpu=0,
         time=300.0,
         dt_ps=0.002,
-        trajectory_format="trr",
+        trajectory_format="xtc",
     )
 
     stage = captured["stages"][0]
     mdp_text = stage.mdp.render()
-    assert "nstxout-compressed       = 0" in mdp_text
-    assert "nstxout                  = 10000" in mdp_text
+    assert "nstxout-compressed       = 10000" in mdp_text
+    assert "nstxout                  = 0" in mdp_text
     summary = json.loads((tmp_path / "05_npt_production" / "summary.json").read_text(encoding="utf-8"))
-    assert summary["performance_policy"]["trajectory_format"] == "trr"
-    assert summary["performance_policy"]["xtc_ps"] is None
-    assert summary["performance_policy"]["trr_ps"] == pytest.approx(20.0)
+    assert summary["performance_policy"]["trajectory_format"] == "xtc"
+    assert summary["performance_policy"]["xtc_ps"] == pytest.approx(20.0)
+    assert summary["performance_policy"]["trr_ps"] is None
 
 
 def test_analyzer_auto_profile_reads_production_policy(tmp_path: Path):
@@ -262,6 +263,28 @@ def test_analyzer_uses_trr_when_xtc_is_absent(tmp_path: Path):
 
     assert analyzer.xtc == tmp_path / "md.trr"
     assert analyzer.trr == tmp_path / "md.trr"
+
+
+def test_equilibration_job_final_outputs_fall_back_to_trr(tmp_path: Path):
+    from yadonpy.gmx.workflows.eq import EquilibrationJob
+
+    final_dir = tmp_path / "05_npt_production"
+    final_dir.mkdir(parents=True, exist_ok=True)
+    for name in ("md.tpr", "md.trr", "md.edr", "md.gro"):
+        (final_dir / name).write_text("x\n", encoding="utf-8")
+    job = EquilibrationJob(
+        gro=tmp_path / "system.gro",
+        top=tmp_path / "system.top",
+        out_dir=tmp_path / "05_npt_production",
+        stages=[],
+        resources=None,
+    )
+
+    tpr, traj, edr = job.final_outputs()
+
+    assert tpr == final_dir / "md.tpr"
+    assert traj == final_dir / "md.trr"
+    assert edr == final_dir / "md.edr"
 
 
 def test_analyzer_runtime_policy_downsamples_dense_legacy_trajectory(tmp_path: Path):

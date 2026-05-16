@@ -5,6 +5,7 @@ from pathlib import Path
 
 from yadonpy.gmx.analysis.interface_profile import compute_interface_profile
 from yadonpy.interface import analyze_layer_stack_interface
+from yadonpy.sim.analyzer import AnalyzeResult
 
 
 def _write_itp(system_dir: Path, moltype: str, atoms: list[tuple[str, str, float, float]]) -> None:
@@ -155,3 +156,53 @@ def test_analyze_layer_stack_interface_wrapper_accepts_static_stack(tmp_path: Pa
 
     assert out["geometry_health"]["phase_order_ok"] is True
     assert (tmp_path / "case" / "06_analysis" / "layer_stack_interface" / "interface_profile_summary.json").exists()
+
+
+def test_interface_facade_exposes_stepwise_outputs(tmp_path: Path):
+    system_dir = tmp_path / "case" / "02_system"
+    _write_synthetic_stack(system_dir)
+
+    analy = AnalyzeResult(
+        work_dir=tmp_path / "case",
+        tpr=tmp_path / "case" / "missing.tpr",
+        xtc=tmp_path / "case" / "missing.xtc",
+        edr=tmp_path / "case" / "missing.edr",
+        top=system_dir / "system.top",
+        ndx=system_dir / "system.ndx",
+    )
+    interface = analy.interface(
+        analysis_profile="interface_fast",
+        bin_nm=0.10,
+        phase_groups=("GRAPHITE", "POLYMER", "ELECTROLYTE"),
+        compute_transport=False,
+    )
+
+    health = interface.geometry_health()
+    z_profiles = interface.z_profiles()
+    edl = interface.edl_profiles(report_potential_drop=True)
+    penetration = interface.penetration(species=("SOLV", "PF6"))
+    adsorption = interface.graphite_adsorption(species=("SOLV",))
+    coordination = interface.coordination_by_region()
+    transport = interface.region_transport()
+    summary = interface.summary()
+
+    assert health["phase_order_ok"] is True
+    assert "z_density_profiles_csv" in z_profiles["outputs"]
+    assert edl["available"] is True
+    assert "charge_potential" in edl
+    assert penetration["available"] is True
+    assert adsorption["available"] is True
+    assert coordination["available"] is True
+    assert transport["available"] is False
+    outputs = summary["outputs"]
+    for key in (
+        "geometry_health_json",
+        "charge_density_profiles_csv",
+        "edl_summary_json",
+        "integrated_charge_csv",
+        "electrostatic_potential_csv",
+        "penetration_summary_json",
+        "adsorption_summary_json",
+        "coordination_z_profile_csv",
+    ):
+        assert Path(outputs[key]).exists()

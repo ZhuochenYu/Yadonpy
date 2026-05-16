@@ -16,6 +16,8 @@ from .structured import build_msd_metric_catalog, build_species_catalog, compute
 
 _AVOGADRO = 6.02214076e23
 _AMU_PER_NM3_TO_G_CM3 = 1.66053906660e-3
+_ELEMENTARY_CHARGE_C = 1.602176634e-19
+_EPS0_F_M = 8.8541878128e-12
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -314,6 +316,78 @@ def _write_profile_csv(path: Path, rows: Sequence[dict[str, Any]]) -> None:
             writer.writerow({key: row.get(key) for key in fields})
 
 
+def _write_rows_csv(path: Path, rows: Sequence[dict[str, Any]], fields: Sequence[str] | None = None) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if fields is None:
+        keys: list[str] = []
+        for row in rows:
+            for key in row:
+                if key not in keys:
+                    keys.append(str(key))
+        fields = keys
+    with path.open("w", newline="", encoding="utf-8") as fh:
+        writer = csv.DictWriter(fh, fieldnames=[str(x) for x in fields])
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({str(key): row.get(str(key)) for key in fields})
+
+
+def _write_json(path: Path, payload: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(_jsonify(payload), indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+
+def _write_z_profile_svg(path: Path, rows: Sequence[dict[str, Any]]) -> Path | None:
+    try:
+        import matplotlib.pyplot as plt
+    except Exception:
+        return None
+    phase_rows: dict[str, list[tuple[float, float]]] = {}
+    for row in rows:
+        if str(row.get("entity_kind") or "") != "phase":
+            continue
+        phase_rows.setdefault(str(row.get("entity") or ""), []).append(
+            (float(row.get("z_mid_nm") or 0.0), float(row.get("mass_density_g_cm3") or 0.0))
+        )
+    if not phase_rows:
+        return None
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fig, ax = plt.subplots(figsize=(6.0, 3.4))
+    for label, series in phase_rows.items():
+        series = sorted(series)
+        ax.plot([x for x, _y in series], [y for _x, y in series], label=label)
+    ax.set_xlabel("z / nm")
+    ax.set_ylabel("mass density / g cm$^{-3}$")
+    ax.set_title("Layer-stack z density profiles")
+    ax.legend(loc="best", fontsize="small")
+    fig.tight_layout()
+    fig.savefig(path)
+    plt.close(fig)
+    return path
+
+
+def _write_fraction_bar_svg(path: Path, summary_by_species: dict[str, Any], key: str, ylabel: str, title: str) -> Path | None:
+    try:
+        import matplotlib.pyplot as plt
+    except Exception:
+        return None
+    labels = [str(k) for k in summary_by_species.keys()]
+    values = [float((summary_by_species.get(k) or {}).get(key) or 0.0) for k in labels]
+    if not labels:
+        return None
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fig, ax = plt.subplots(figsize=(max(4.0, 0.6 * len(labels)), 3.2))
+    ax.bar(labels, values)
+    ax.set_ylabel(ylabel)
+    ax.set_title(title)
+    ax.set_ylim(0.0, max(1.0, max(values) * 1.1 if values else 1.0))
+    ax.tick_params(axis="x", rotation=30)
+    fig.tight_layout()
+    fig.savefig(path)
+    plt.close(fig)
+    return path
+
+
 def _find_crossing(z: np.ndarray, a: np.ndarray, b: np.ndarray) -> float | None:
     if z.size == 0 or a.size != z.size or b.size != z.size:
         return None
@@ -506,6 +580,120 @@ def _edl_diagnostics(
     }
 
 
+def _total_charge_density_from_phases(
+    *,
+    phase_groups: Sequence[str],
+    density_arrays: dict[str, dict[str, np.ndarray]],
+) -> tuple[np.ndarray, np.ndarray]:
+    z_ref: np.ndarray | None = None
+    q_total: np.ndarray | None = None
+    for phase in phase_groups:
+        arr = density_arrays.get(f"phase:{phase}", {})
+        z = np.asarray(arr.get("z_mid_nm", []), dtype=float)
+        q = np.asarray(arr.get("charge_density_e_nm3", []), dtype=float)
+        if z.size == 0 or q.size != z.size:
+            continue
+        if z_ref is None:
+            z_ref = z
+            q_total = np.zeros_like(q, dtype=float)
+        if q_total is not None and q_total.size == q.size:
+            q_total += q
+    if z_ref is None or q_total is None:
+        return np.asarray([], dtype=float), np.asarray([], dtype=float)
+    return z_ref, q_total
+
+
+def _charge_potential_profiles(
+    *,
+    phase_groups: Sequence[str],
+    density_arrays: dict[str, dict[str, np.ndarray]],
+    potential_reference: str = "zero_mean",
+) -> dict[str, Any]:
+    """Integrate z charge density into cumulative charge, field, and potential.
+
+    This is a fixed-charge slab diagnostic, not a constant-potential electrode
+    solver.  The potential is a one-dimensional vacuum-permittivity reference
+    potential derived from the sampled charge distribution.
+    """
+
+    z, q_e_nm3 = _total_charge_density_from_phases(phase_groups=phase_groups, density_arrays=density_arrays)
+    if z.size == 0 or q_e_nm3.size != z.size:
+        return {"available": False, "reason": "missing_charge_density"}
+    dz_nm = np.gradient(z) if z.size >= 2 else np.ones_like(z)
+    integrated_e_nm2 = np.cumsum(q_e_nm3 * dz_nm)
+    rho_c_m3 = q_e_nm3 * _ELEMENTARY_CHARGE_C / 1.0e-27
+    dz_m = dz_nm * 1.0e-9
+    electric_field_v_m = np.cumsum(rho_c_m3 * dz_m / _EPS0_F_M)
+    potential_v = -np.cumsum(electric_field_v_m * dz_m)
+    ref = str(potential_reference or "zero_mean").strip().lower()
+    if ref == "zero_start" and potential_v.size:
+        potential_v = potential_v - potential_v[0]
+    else:
+        potential_v = potential_v - float(np.mean(potential_v))
+    potential_drop_v = None
+    if potential_v.size >= 2:
+        potential_drop_v = float(potential_v[-1] - potential_v[0])
+    rows = [
+        {
+            "z_nm": float(z[i]),
+            "charge_density_e_nm3": float(q_e_nm3[i]),
+            "integrated_charge_e_nm2": float(integrated_e_nm2[i]),
+            "electric_field_V_m": float(electric_field_v_m[i]),
+            "electrostatic_potential_V": float(potential_v[i]),
+        }
+        for i in range(int(z.size))
+    ]
+    return {
+        "available": True,
+        "potential_reference": ref,
+        "potential_drop_V": potential_drop_v,
+        "rows": rows,
+        "note": "One-dimensional fixed-charge diagnostic using vacuum permittivity; not a constant-potential model.",
+    }
+
+
+def _phase_quantile_rows(phase_stats: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for phase, stats in phase_stats.items():
+        row = {"phase": phase}
+        for key, value in stats.items():
+            if key.endswith("_z_nm") or key == "atom_count":
+                row[key] = value
+        rows.append(row)
+    return rows
+
+
+def _charge_profile_rows(profile_rows: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {
+            "entity_kind": row.get("entity_kind"),
+            "entity": row.get("entity"),
+            "z_lo_nm": row.get("z_lo_nm"),
+            "z_hi_nm": row.get("z_hi_nm"),
+            "z_mid_nm": row.get("z_mid_nm"),
+            "charge_density_e_nm3": row.get("charge_density_e_nm3"),
+        }
+        for row in profile_rows
+    ]
+
+
+def _edl_species_rows(profile_rows: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for row in profile_rows:
+        if str(row.get("entity_kind") or "") != "moltype":
+            continue
+        out.append(
+            {
+                "species": row.get("entity"),
+                "z_mid_nm": row.get("z_mid_nm"),
+                "number_density_nm3": row.get("atom_number_density_nm3"),
+                "charge_density_e_nm3": row.get("charge_density_e_nm3"),
+                "mass_density_g_cm3": row.get("mass_density_g_cm3"),
+            }
+        )
+    return out
+
+
 def _interpenetration(
     *,
     density_arrays: dict[str, dict[str, np.ndarray]],
@@ -600,6 +788,276 @@ def _enrichment(
             },
         }
     return out
+
+
+def _species_matches(moltype: str, species: Sequence[str] | None) -> bool:
+    if species is None:
+        return True
+    label = str(moltype).lower()
+    return any(str(item).lower() == label or str(item).lower() in label for item in species)
+
+
+def _frame_interval_ps(frames: Sequence[tuple[float, np.ndarray, tuple[float, float, float]]]) -> float | None:
+    times = [float(item[0]) for item in frames]
+    if len(times) < 2:
+        return None
+    deltas = [b - a for a, b in zip(times, times[1:]) if b > a]
+    if not deltas:
+        return None
+    return float(np.median(deltas))
+
+
+def _penetration_analysis(
+    *,
+    frames: Sequence[tuple[float, np.ndarray, tuple[float, float, float]]],
+    instances: Sequence[dict[str, Any]],
+    regions: dict[str, dict[str, float]],
+    species: Sequence[str] | None = None,
+) -> dict[str, Any]:
+    polymer_regions = [name for name in regions if ("polymer" in name.lower() or "cmc" in name.lower() or "mixed" in name.lower())]
+    electrolyte_regions = [name for name in regions if "electrolyte" in name.lower()]
+    rows: list[dict[str, Any]] = []
+    summary: dict[str, dict[str, Any]] = {}
+    dt_ps = _frame_interval_ps(frames)
+    for inst_id, inst in enumerate(instances):
+        moltype = str(inst.get("moltype") or "")
+        kind = str(inst.get("kind") or "").lower()
+        if not moltype or "graph" in moltype.lower() or "substrate" in kind:
+            continue
+        if not _species_matches(moltype, species):
+            continue
+        in_polymer_series: list[bool] = []
+        in_electrolyte_series: list[bool] = []
+        min_polymer_distance = float("inf")
+        for time_ps, coords, _box in frames:
+            z = _instance_com_z(coords, inst)
+            region = _region_for_z(z, regions) or "outside_regions"
+            in_polymer = region in polymer_regions
+            in_electrolyte = region in electrolyte_regions
+            in_polymer_series.append(bool(in_polymer))
+            in_electrolyte_series.append(bool(in_electrolyte))
+            if polymer_regions:
+                distances = []
+                for reg in polymer_regions:
+                    bounds = regions[reg]
+                    if bounds["z_lo_nm"] <= z <= bounds["z_hi_nm"]:
+                        distances.append(0.0)
+                    else:
+                        distances.append(min(abs(z - bounds["z_lo_nm"]), abs(z - bounds["z_hi_nm"])))
+                min_polymer_distance = min(min_polymer_distance, min(distances))
+            rows.append(
+                {
+                    "time_ps": float(time_ps),
+                    "moltype": moltype,
+                    "instance_index": int(inst_id),
+                    "com_z_nm": float(z),
+                    "region": region,
+                    "in_polymer_region": bool(in_polymer),
+                    "in_electrolyte_region": bool(in_electrolyte),
+                }
+            )
+        rec = summary.setdefault(
+            moltype,
+            {
+                "molecule_count": 0,
+                "polymer_frame_count": 0,
+                "electrolyte_frame_count": 0,
+                "sample_frame_count": 0,
+                "entry_event_count": 0,
+                "min_distance_to_polymer_region_nm": None,
+            },
+        )
+        rec["molecule_count"] += 1
+        rec["polymer_frame_count"] += int(sum(in_polymer_series))
+        rec["electrolyte_frame_count"] += int(sum(in_electrolyte_series))
+        rec["sample_frame_count"] += int(len(in_polymer_series))
+        rec["entry_event_count"] += int(sum((not prev) and cur for prev, cur in zip([False] + in_polymer_series[:-1], in_polymer_series)))
+        if np.isfinite(min_polymer_distance):
+            old = rec.get("min_distance_to_polymer_region_nm")
+            rec["min_distance_to_polymer_region_nm"] = float(min_polymer_distance) if old is None else min(float(old), float(min_polymer_distance))
+    for moltype, rec in summary.items():
+        denom = max(1, int(rec.get("sample_frame_count") or 0))
+        rec["polymer_frame_fraction"] = float(rec.get("polymer_frame_count") or 0) / float(denom)
+        rec["electrolyte_frame_fraction"] = float(rec.get("electrolyte_frame_count") or 0) / float(denom)
+        rec["estimated_polymer_residence_ps"] = (
+            None if dt_ps is None else float(rec.get("polymer_frame_count") or 0) * float(dt_ps)
+        )
+    return {
+        "available": bool(rows),
+        "species": None if species is None else [str(x) for x in species],
+        "polymer_regions": polymer_regions,
+        "electrolyte_regions": electrolyte_regions,
+        "rows": rows,
+        "summary_by_species": summary,
+        "note": "Penetration uses molecule COM assignment to polymer/mixed regions; it is a region-residence diagnostic.",
+    }
+
+
+def _graphite_surface_positions(phase_stats: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    surfaces: list[dict[str, Any]] = []
+    for phase, stats in phase_stats.items():
+        if "GRAPHITE" not in str(phase).upper():
+            continue
+        lo = stats.get("p05_z_nm")
+        hi = stats.get("p95_z_nm")
+        if lo is not None:
+            surfaces.append({"phase": phase, "side": "bottom", "z_nm": float(lo)})
+        if hi is not None:
+            surfaces.append({"phase": phase, "side": "top", "z_nm": float(hi)})
+    return surfaces
+
+
+def _nearest_graphite_surface(z_nm: float, surfaces: Sequence[dict[str, Any]]) -> tuple[dict[str, Any] | None, float | None]:
+    if not surfaces:
+        return None, None
+    best = min(surfaces, key=lambda item: abs(float(z_nm) - float(item["z_nm"])))
+    return best, float(abs(float(z_nm) - float(best["z_nm"])))
+
+
+def _angle_to_surface_normal(vector: np.ndarray, surface: dict[str, Any] | None) -> float | None:
+    if surface is None:
+        return None
+    vec = np.asarray(vector, dtype=float)
+    norm = float(np.linalg.norm(vec))
+    if not np.isfinite(norm) or norm <= 1.0e-12:
+        return None
+    normal = np.asarray([0.0, 0.0, 1.0 if str(surface.get("side") or "top") == "top" else -1.0], dtype=float)
+    cosang = float(np.dot(vec, normal) / norm)
+    cosang = max(-1.0, min(1.0, cosang))
+    return float(math.degrees(math.acos(cosang)))
+
+
+def _molecule_orientation_angles(
+    *,
+    coords: np.ndarray,
+    inst: dict[str, Any],
+    com: np.ndarray,
+    surface: dict[str, Any] | None,
+) -> tuple[float | None, float | None]:
+    idx = np.asarray(inst["atom_indices_0"], dtype=int)
+    local = np.asarray(coords[idx], dtype=float)
+    charges = np.asarray(inst.get("charges"), dtype=float)
+    if charges.size != idx.size:
+        charges = np.zeros(idx.size, dtype=float)
+    rel = local - np.asarray(com, dtype=float)
+    dipole = np.sum(charges[:, None] * rel, axis=0)
+    dipole_angle = _angle_to_surface_normal(dipole, surface)
+
+    atomnames = [str(x).lower() for x in inst.get("atomnames") or []]
+    oxygen_candidates = [i for i, name in enumerate(atomnames) if name.startswith("o")]
+    if not oxygen_candidates:
+        oxygen_candidates = [i for i, q in enumerate(charges.tolist()) if float(q) < -0.05]
+    carbonyl_angle = None
+    if oxygen_candidates and charges.size == idx.size and idx.size >= 2:
+        o_local = min(oxygen_candidates, key=lambda i: float(charges[i]))
+        c_local = int(np.argmax(charges))
+        if c_local != o_local:
+            carbonyl_angle = _angle_to_surface_normal(local[o_local] - local[c_local], surface)
+    return carbonyl_angle, dipole_angle
+
+
+def _adsorption_analysis(
+    *,
+    frames: Sequence[tuple[float, np.ndarray, tuple[float, float, float]]],
+    instances: Sequence[dict[str, Any]],
+    phase_stats: dict[str, dict[str, Any]],
+    species: Sequence[str] | None = None,
+    surface_distance_nm: float = 0.50,
+    min_residence_ps: float = 10.0,
+    surface_grid_nm: float = 0.5,
+) -> dict[str, Any]:
+    surfaces = _graphite_surface_positions(phase_stats)
+    rows: list[dict[str, Any]] = []
+    summary: dict[str, dict[str, Any]] = {}
+    map_counts: dict[tuple[str, str, int, int], int] = {}
+    dt_ps = _frame_interval_ps(frames)
+    grid_nm = max(float(surface_grid_nm), 1.0e-6)
+    for inst_id, inst in enumerate(instances):
+        moltype = str(inst.get("moltype") or "")
+        kind = str(inst.get("kind") or "").lower()
+        if not moltype or "graph" in moltype.lower() or "substrate" in kind:
+            continue
+        if not _species_matches(moltype, species):
+            continue
+        adsorbed_series: list[bool] = []
+        for time_ps, coords, box in frames:
+            idx = np.asarray(inst["atom_indices_0"], dtype=int)
+            masses = np.asarray(inst.get("masses"), dtype=float)
+            if masses.size != idx.size or float(np.sum(masses)) <= 0.0:
+                masses = np.ones(idx.size, dtype=float)
+            com = np.average(coords[idx], axis=0, weights=masses)
+            surface, dist = _nearest_graphite_surface(float(com[2]), surfaces)
+            adsorbed = bool(dist is not None and float(dist) <= float(surface_distance_nm))
+            adsorbed_series.append(adsorbed)
+            if surface is not None and adsorbed:
+                ix = int(math.floor((float(com[0]) % max(float(box[0]), 1.0e-12)) / grid_nm))
+                iy = int(math.floor((float(com[1]) % max(float(box[1]), 1.0e-12)) / grid_nm))
+                map_counts[(str(surface["phase"]), str(surface["side"]), ix, iy)] = map_counts.get((str(surface["phase"]), str(surface["side"]), ix, iy), 0) + 1
+            carbonyl_angle, dipole_angle = _molecule_orientation_angles(coords=coords, inst=inst, com=com, surface=surface)
+            rows.append(
+                {
+                    "time_ps": float(time_ps),
+                    "moltype": moltype,
+                    "instance_index": int(inst_id),
+                    "com_x_nm": float(com[0]),
+                    "com_y_nm": float(com[1]),
+                    "com_z_nm": float(com[2]),
+                    "nearest_graphite_phase": None if surface is None else surface.get("phase"),
+                    "nearest_graphite_side": None if surface is None else surface.get("side"),
+                    "surface_distance_nm": dist,
+                    "adsorbed": adsorbed,
+                    "orientation_available": bool(carbonyl_angle is not None or dipole_angle is not None),
+                    "carbonyl_angle_deg": carbonyl_angle,
+                    "dipole_proxy_angle_deg": dipole_angle,
+                }
+            )
+        rec = summary.setdefault(moltype, {"molecule_count": 0, "sample_frame_count": 0, "adsorbed_frame_count": 0, "event_count": 0})
+        rec["molecule_count"] += 1
+        rec["sample_frame_count"] += int(len(adsorbed_series))
+        rec["adsorbed_frame_count"] += int(sum(adsorbed_series))
+        rec["event_count"] += int(sum((not prev) and cur for prev, cur in zip([False] + adsorbed_series[:-1], adsorbed_series)))
+    for rec in summary.values():
+        denom = max(1, int(rec.get("sample_frame_count") or 0))
+        rec["adsorbed_frame_fraction"] = float(rec.get("adsorbed_frame_count") or 0) / float(denom)
+        rec["estimated_adsorbed_residence_ps"] = None if dt_ps is None else float(rec.get("adsorbed_frame_count") or 0) * float(dt_ps)
+        rec["passes_min_residence"] = bool(
+            rec.get("estimated_adsorbed_residence_ps") is not None
+            and float(rec["estimated_adsorbed_residence_ps"]) >= float(min_residence_ps)
+        )
+    for moltype, rec in summary.items():
+        carbonyl = [
+            float(row["carbonyl_angle_deg"])
+            for row in rows
+            if row.get("moltype") == moltype and row.get("adsorbed") and row.get("carbonyl_angle_deg") is not None
+        ]
+        dipole = [
+            float(row["dipole_proxy_angle_deg"])
+            for row in rows
+            if row.get("moltype") == moltype and row.get("adsorbed") and row.get("dipole_proxy_angle_deg") is not None
+        ]
+        rec["mean_adsorbed_carbonyl_angle_deg"] = None if not carbonyl else float(np.mean(carbonyl))
+        rec["mean_adsorbed_dipole_proxy_angle_deg"] = None if not dipole else float(np.mean(dipole))
+    surface_map_rows = [
+        {
+            "graphite_phase": phase,
+            "surface_side": side,
+            "grid_x": ix,
+            "grid_y": iy,
+            "count": count,
+        }
+        for (phase, side, ix, iy), count in sorted(map_counts.items())
+    ]
+    return {
+        "available": bool(surfaces),
+        "species": None if species is None else [str(x) for x in species],
+        "surface_distance_nm": float(surface_distance_nm),
+        "min_residence_ps": float(min_residence_ps),
+        "surfaces": surfaces,
+        "rows": rows,
+        "surface_map_rows": surface_map_rows,
+        "summary_by_species": summary,
+        "orientation_note": "Angles are measured relative to the nearest graphite surface normal. Carbonyl uses a charge-guided C-to-O proxy; dipole uses the molecular charge-dipole proxy.",
+    }
 
 
 def _atom_indices_by_category(top: SystemTopology, instances: Sequence[dict[str, Any]]) -> dict[str, np.ndarray]:
@@ -805,6 +1263,14 @@ def compute_interface_profile(
     frame_stride: int | str = "auto",
     region_width_nm: float = 0.75,
     surface_grid_nm: float = 0.5,
+    surface_distance_nm: float = 0.50,
+    penetration_threshold_nm: float = 0.20,
+    adsorption_min_residence_ps: float = 10.0,
+    potential_reference: str = "zero_mean",
+    split_electrodes: bool = False,
+    report_potential_drop: bool = False,
+    penetration_species: Sequence[str] | None = None,
+    adsorption_species: Sequence[str] | None = None,
     analysis_profile: str = "interface_fast",
     phase_groups: Sequence[str] = ("GRAPHITE", "POLYMER", "ELECTROLYTE"),
     compute_transport: bool = True,
@@ -846,6 +1312,8 @@ def compute_interface_profile(
     for phase, mask in phase_masks.items():
         phase_stats[phase] = _z_quantiles(final_coords[mask, 2])
         phase_stats[phase]["atom_count"] = int(np.sum(mask))
+    phase_quantiles_csv = out_dir / "phase_z_quantiles.csv"
+    _write_rows_csv(phase_quantiles_csv, _phase_quantile_rows(phase_stats))
     trajectory_phase_order = sorted(
         [name for name in phase_groups if phase_stats.get(str(name), {}).get("p50_z_nm") is not None],
         key=lambda name: float(phase_stats[str(name)]["p50_z_nm"]),
@@ -867,6 +1335,9 @@ def compute_interface_profile(
     )
     profile_csv = out_dir / "z_density_profiles.csv"
     _write_profile_csv(profile_csv, profile_rows)
+    charge_profile_csv = out_dir / "charge_density_profiles.csv"
+    _write_rows_csv(charge_profile_csv, _charge_profile_rows(profile_rows))
+    z_profiles_svg = _write_z_profile_svg(out_dir / "z_profiles.svg", profile_rows)
 
     adjacent_interfaces = _adjacent_interface_summary(
         phase_groups=phase_groups_norm,
@@ -941,6 +1412,21 @@ def compute_interface_profile(
         instances=atom_payload["instances"],
         regions=regions,
     )
+    penetration = _penetration_analysis(
+        frames=frames,
+        instances=atom_payload["instances"],
+        regions=regions,
+        species=penetration_species,
+    )
+    adsorption = _adsorption_analysis(
+        frames=frames,
+        instances=atom_payload["instances"],
+        phase_stats=phase_stats,
+        species=adsorption_species,
+        surface_distance_nm=float(surface_distance_nm),
+        min_residence_ps=float(adsorption_min_residence_ps),
+        surface_grid_nm=float(surface_grid_nm),
+    )
     transport = (
         _anisotropic_msd(
             gro_path=Path(gro_path),
@@ -971,17 +1457,115 @@ def compute_interface_profile(
         "frame_count_analyzed": int(len(frames)),
         "last_frame_time_ps": float(final_time),
     }
+    _write_json(out_dir / "geometry_health.json", geometry_health)
     edl = _edl_diagnostics(phase_groups=phase_groups_norm, density_arrays=density_arrays, phase_stats=phase_stats)
+    potential = _charge_potential_profiles(
+        phase_groups=phase_groups_norm,
+        density_arrays=density_arrays,
+        potential_reference=str(potential_reference),
+    )
+    edl["charge_potential"] = {key: value for key, value in potential.items() if key != "rows"}
+    edl["available"] = bool(edl.get("available") or potential.get("available"))
+    edl["split_electrodes"] = bool(split_electrodes)
+    edl["report_potential_drop"] = bool(report_potential_drop)
+    edl_species_csv = out_dir / "edl_species_profiles.csv"
+    integrated_charge_csv = out_dir / "integrated_charge.csv"
+    potential_csv = out_dir / "electrostatic_potential.csv"
+    _write_rows_csv(edl_species_csv, _edl_species_rows(profile_rows))
+    potential_rows = list(potential.get("rows") or []) if isinstance(potential, dict) else []
+    _write_rows_csv(
+        integrated_charge_csv,
+        [
+            {
+                "z_nm": row.get("z_nm"),
+                "charge_density_e_nm3": row.get("charge_density_e_nm3"),
+                "integrated_charge_e_nm2": row.get("integrated_charge_e_nm2"),
+            }
+            for row in potential_rows
+        ],
+        fields=("z_nm", "charge_density_e_nm3", "integrated_charge_e_nm2"),
+    )
+    _write_rows_csv(
+        potential_csv,
+        potential_rows,
+        fields=("z_nm", "charge_density_e_nm3", "integrated_charge_e_nm2", "electric_field_V_m", "electrostatic_potential_V"),
+    )
+    _write_json(out_dir / "edl_summary.json", edl)
+    _write_rows_csv(out_dir / "penetration_events.csv", penetration.get("rows") or [])
+    _write_json(out_dir / "penetration_summary.json", {key: value for key, value in penetration.items() if key != "rows"})
+    penetration_depth_svg = _write_fraction_bar_svg(
+        out_dir / "penetration_depth.svg",
+        penetration.get("summary_by_species") or {},
+        "polymer_frame_fraction",
+        "polymer-region frame fraction",
+        "Molecular penetration into polymer-rich regions",
+    )
+    _write_rows_csv(out_dir / "adsorption_events.csv", adsorption.get("rows") or [])
+    _write_rows_csv(out_dir / "adsorption_surface_map.csv", adsorption.get("surface_map_rows") or [])
+    _write_rows_csv(
+        out_dir / "adsorbed_orientation.csv",
+        [
+            {
+                key: row.get(key)
+                for key in (
+                    "time_ps",
+                    "moltype",
+                    "instance_index",
+                    "nearest_graphite_phase",
+                    "nearest_graphite_side",
+                    "surface_distance_nm",
+                    "adsorbed",
+                    "orientation_available",
+                    "carbonyl_angle_deg",
+                    "dipole_proxy_angle_deg",
+                )
+            }
+            for row in adsorption.get("rows", [])
+        ],
+    )
+    _write_json(
+        out_dir / "adsorption_summary.json",
+        {key: value for key, value in adsorption.items() if key not in {"rows", "surface_map_rows"}},
+    )
+    adsorbed_orientation_svg = _write_fraction_bar_svg(
+        out_dir / "adsorbed_orientation.svg",
+        adsorption.get("summary_by_species") or {},
+        "adsorbed_frame_fraction",
+        "adsorbed frame fraction",
+        "Graphite-near adsorption occupancy",
+    )
+    _write_json(out_dir / "region_transport_summary.json", transport)
+    coord_rows: list[dict[str, Any]] = []
+    if isinstance(coordination, dict):
+        for region, payload in (coordination.get("by_region") or {}).items():
+            frac = payload.get("state_fraction") or {}
+            contacts = payload.get("mean_contacts") or {}
+            coord_rows.append(
+                {
+                    "region": region,
+                    "polymer_bound_fraction": frac.get("polymer_bound", 0.0),
+                    "solvent_bound_fraction": frac.get("solvent_bound", 0.0),
+                    "anion_paired_fraction": frac.get("anion_paired", 0.0),
+                    "mixed_fraction": frac.get("mixed", 0.0),
+                    "free_like_fraction": frac.get("free_like", 0.0),
+                    "mean_polymer_o_contacts": contacts.get("polymer_o", 0.0),
+                    "mean_solvent_o_contacts": contacts.get("solvent_o", 0.0),
+                    "mean_anion_f_contacts": contacts.get("anion_f", 0.0),
+                }
+            )
+    _write_rows_csv(out_dir / "coordination_z_profile.csv", coord_rows)
     region_summary = {
         "regions": regions,
         "phase_stats": phase_stats,
         "interpenetration": interpenetration,
         "enrichment": enrichment,
         "edl_diagnostics": edl,
+        "penetration": {key: value for key, value in penetration.items() if key != "rows"},
+        "adsorption": {key: value for key, value in adsorption.items() if key not in {"rows", "surface_map_rows"}},
     }
 
-    (out_dir / "region_summary.json").write_text(json.dumps(_jsonify(region_summary), indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-    (out_dir / "coordination_by_region.json").write_text(json.dumps(_jsonify(coordination), indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    _write_json(out_dir / "region_summary.json", region_summary)
+    _write_json(out_dir / "coordination_by_region.json", coordination)
     summary = {
         "analysis_profile": str(analysis_profile),
         "parameters": {
@@ -989,6 +1573,14 @@ def compute_interface_profile(
             "frame_stride": int(stride),
             "region_width_nm": float(region_width_nm),
             "surface_grid_nm": float(surface_grid_nm),
+            "surface_distance_nm": float(surface_distance_nm),
+            "penetration_threshold_nm": float(penetration_threshold_nm),
+            "adsorption_min_residence_ps": float(adsorption_min_residence_ps),
+            "potential_reference": str(potential_reference),
+            "split_electrodes": bool(split_electrodes),
+            "report_potential_drop": bool(report_potential_drop),
+            "penetration_species": None if penetration_species is None else [str(x) for x in penetration_species],
+            "adsorption_species": None if adsorption_species is None else [str(x) for x in adsorption_species],
             "phase_groups": [str(x) for x in phase_groups],
         },
         "inputs": {
@@ -1003,18 +1595,36 @@ def compute_interface_profile(
         "region_summary": region_summary,
         "coordination_by_region": coordination,
         "anisotropic_msd_summary": transport,
+        "edl_profiles": edl,
+        "penetration": {key: value for key, value in penetration.items() if key != "rows"},
+        "graphite_adsorption": {key: value for key, value in adsorption.items() if key not in {"rows", "surface_map_rows"}},
+        "region_transport_summary": transport,
         "outputs": {
             "z_density_profiles_csv": str(profile_csv),
+            "z_profiles_svg": None if z_profiles_svg is None else str(z_profiles_svg),
+            "charge_density_profiles_csv": str(charge_profile_csv),
+            "phase_z_quantiles_csv": str(phase_quantiles_csv),
+            "geometry_health_json": str(out_dir / "geometry_health.json"),
+            "edl_species_profiles_csv": str(edl_species_csv),
+            "integrated_charge_csv": str(integrated_charge_csv),
+            "electrostatic_potential_csv": str(potential_csv),
+            "edl_summary_json": str(out_dir / "edl_summary.json"),
+            "penetration_events_csv": str(out_dir / "penetration_events.csv"),
+            "penetration_summary_json": str(out_dir / "penetration_summary.json"),
+            "penetration_depth_svg": None if penetration_depth_svg is None else str(penetration_depth_svg),
+            "adsorption_summary_json": str(out_dir / "adsorption_summary.json"),
+            "adsorption_events_csv": str(out_dir / "adsorption_events.csv"),
+            "adsorbed_orientation_csv": str(out_dir / "adsorbed_orientation.csv"),
+            "adsorbed_orientation_svg": None if adsorbed_orientation_svg is None else str(adsorbed_orientation_svg),
+            "region_transport_summary_json": str(out_dir / "region_transport_summary.json"),
             "region_summary_json": str(out_dir / "region_summary.json"),
             "coordination_by_region_json": str(out_dir / "coordination_by_region.json"),
+            "coordination_z_profile_csv": str(out_dir / "coordination_z_profile.csv"),
             "anisotropic_msd_summary_json": str(out_dir / "anisotropic_msd_summary.json"),
             "interface_profile_summary_json": str(out_dir / "interface_profile_summary.json"),
         },
     }
-    (out_dir / "interface_profile_summary.json").write_text(
-        json.dumps(_jsonify(summary), indent=2, ensure_ascii=False) + "\n",
-        encoding="utf-8",
-    )
+    _write_json(out_dir / "interface_profile_summary.json", summary)
     return _jsonify(summary)
 
 

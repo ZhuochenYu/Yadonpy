@@ -68,6 +68,13 @@ def run_layer_stack_nvt(*args, **kwargs):
     return _run_layer_stack_nvt(*args, **kwargs)
 
 
+def clean_md_trajectory_files(*args, **kwargs):
+    """Remove large trajectory streams after analysis has finished."""
+    from .sim.cleanup import clean_md_trajectory_files as _clean_md_trajectory_files
+
+    return _clean_md_trajectory_files(*args, **kwargs)
+
+
 def audit_default_moldb_sync(**kwargs):
     """Audit the active user MolDB against the bundled default catalog."""
     from .core.data_dir import audit_active_bundle_sync as _audit_bundle
@@ -274,6 +281,7 @@ __all__ = [
     'assign_forcefield',
     'build_graphite',
     'build_layer_stack',
+    'clean_md_trajectory_files',
     'conformation_search',
     'format_mechanics_result_summary',
     'get_ff',

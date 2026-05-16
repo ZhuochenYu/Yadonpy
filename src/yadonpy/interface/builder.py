@@ -849,6 +849,8 @@ def _extract_snapshot(*, name: str, bulk_root: Path, out_dir: Path, restart: Opt
     latest_dir = latest_gro.parent
     tpr = latest_dir / "md.tpr"
     xtc = latest_dir / "md.xtc"
+    trr = latest_dir / "md.trr"
+    traj = xtc if xtc.exists() else trr
     rep_raw = out_dir / "representative_raw.gro"
     rep_whole = out_dir / "representative_whole.gro"
     manifest = out_dir / "snapshot_manifest.json"
@@ -866,8 +868,8 @@ def _extract_snapshot(*, name: str, bulk_root: Path, out_dir: Path, restart: Opt
             "latest_gro_sig": file_signature(latest_gro),
             "tpr": str(tpr),
             "tpr_sig": (file_signature(tpr) if tpr.exists() else None),
-            "xtc": str(xtc),
-            "xtc_sig": (file_signature(xtc) if xtc.exists() else None),
+            "trajectory": str(traj),
+            "trajectory_sig": (file_signature(traj) if traj.exists() else None),
             "window": window,
             "selection_group": selection_group,
         },
@@ -876,12 +878,12 @@ def _extract_snapshot(*, name: str, bulk_root: Path, out_dir: Path, restart: Opt
 
     def _run() -> None:
         nonlocal representative_time_ps, used_equilibrium, notes
-        if window is not None and tpr.exists() and xtc.exists():
+        if window is not None and tpr.exists() and traj.exists():
             representative_time_ps = float(window[0] + (window[1] - window[0]) / 2.0)
             used_equilibrium = True
             runner = GromacsRunner(verbose=False)
             try:
-                runner.run(["trjconv", "-s", str(tpr), "-f", str(xtc), "-o", str(rep_raw), "-dump", f"{representative_time_ps:.3f}"], cwd=out_dir, stdin_text=f"{selection_group}\n", check=True, capture=True)
+                runner.run(["trjconv", "-s", str(tpr), "-f", str(traj), "-o", str(rep_raw), "-dump", f"{representative_time_ps:.3f}"], cwd=out_dir, stdin_text=f"{selection_group}\n", check=True, capture=True)
                 runner.run(["trjconv", "-s", str(tpr), "-f", str(rep_raw), "-o", str(rep_whole), "-pbc", "mol"], cwd=out_dir, stdin_text=f"{selection_group}\n", check=True, capture=True)
             except Exception as exc:
                 notes.append(f"equilibrium-window snapshot extraction failed: {exc}")
@@ -916,7 +918,7 @@ def _extract_snapshot(*, name: str, bulk_root: Path, out_dir: Path, restart: Opt
         snapshot_manifest=manifest,
         representative_gro=rep_whole,
         representative_tpr=tpr if tpr.exists() else None,
-        representative_xtc=xtc if xtc.exists() else None,
+        representative_xtc=traj if traj.exists() else None,
         representative_time_ps=float(representative_time_ps) if representative_time_ps is not None else None,
         used_equilibrium_window=bool(used_equilibrium),
         notes=tuple(notes),

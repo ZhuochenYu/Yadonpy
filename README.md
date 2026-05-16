@@ -1,25 +1,34 @@
 # YadonPy
 
-YadonPy is a script-first molecular modeling and simulation toolkit for polymers,
-electrolytes, graphite-supported interfaces, and GROMACS-first workflows.
-It keeps the scientific procedure visible in ordinary Python scripts while still
-providing reusable building blocks for charge assignment, force-field preparation,
-bulk packing, interface assembly, equilibration, and analysis.
+YadonPy is a script-first molecular modeling workflow toolkit for polymers,
+electrolytes, graphite interfaces, and GROMACS-based molecular dynamics.  It is
+designed for research workflows where the scientific procedure should remain
+visible in ordinary Python scripts while molecular assets, force-field choices,
+simulation settings, and analysis outputs stay reproducible.
 
-## What YadonPy Does
+## Scope
 
-- Builds molecules directly from SMILES and polymers from PSMILES.
-- Assigns force fields with GAFF, GAFF2, GAFF2_mod, OPLS-AA, DREIDING, and MERZ.
-- Supports QM-derived charges with Psi4 plus `psiresp-base`, including RESP and ESP.
-- Stores expensive prepared molecular assets in MolDB for later reuse.
-- Exports GROMACS-ready systems and runs staged MD workflows.
-- Builds bulk polymer-electrolyte systems and generic graphite/polymer/electrolyte layer-stack interfaces.
-- Preserves restart-aware work directories and auditable metadata such as charge-group manifests,
-  export manifests, and interface build records.
+YadonPy provides:
+
+- SMILES/PSMILES-based molecule, polymer, and segment construction.
+- Force-field assignment with GAFF, GAFF2, GAFF2_mod, OPLS-AA, DREIDING, MERZ,
+  and TIP-style ion/water helpers.
+- Psi4/PsiRESP charge workflows, including adaptive RESP equivalence and
+  localized resonance constraints.
+- MolDB reuse for precomputed molecular geometries, charges, bonded patches, and
+  metadata.
+- GROMACS export, equilibration, production, restart, and resume workflows.
+- Bulk polymer-electrolyte, liquid electrolyte, and generic layer-stack
+  graphite/polymer/electrolyte interface builders.
+- Analysis workflows for density, RDF, MSD, conductivity, dielectric response,
+  ion coordination, migration states, thermomechanics, and interface profiles.
+
+The project intentionally favors transparent, auditable scripts over opaque
+configuration-only pipelines.
 
 ## Installation
 
-The recommended environment uses Python 3.11.
+The recommended development environment uses Python 3.11.
 
 ```bash
 conda create -n yadonpy python=3.11
@@ -30,32 +39,27 @@ python -m pip install "pydantic==1.10.26"
 python -m pip install -e .
 ```
 
-This exact sequence was re-tested on the remote Linux compute node and is the
-current minimal working setup for Example 01 and RESP fitting. `openbabel`
-already provides the Open Babel Python bindings used by YadonPy, so no separate
-`pybel` package is required.
-
-The source tree now ships a default `moldb/` folder beside `examples/`. On the
-first YadonPy import or `ensure_initialized()` call, that catalog is seeded into
-`~/.yadonpy/moldb` so a fresh editable install starts with the reference MolDB.
-
-Check the environment after installation:
+Initialize the bundled MolDB catalog and check the environment:
 
 ```bash
-python -c "from yadonpy.diagnostics import doctor; doctor(print_report=True)"
+python - <<'PY'
+from yadonpy.core.data_dir import ensure_initialized
+from yadonpy.diagnostics import doctor
+
+ensure_initialized()
+doctor(print_report=True)
+PY
 ```
 
-For RESP and ESP workflows, `doctor()` should report both `psi4` and `psiresp` as available.
-If `doctor()` reports `psiresp: BROKEN` with a `PydanticUserError`, pin the
-verified working Pydantic version:
+The bundled catalog is seeded into `~/.yadonpy/moldb`, which is the default
+location for reusable molecular assets.
 
-```bash
-python -m pip install "pydantic==1.10.26"
-```
+For RESP/ESP workflows, `doctor()` should report both `psi4` and `psiresp` as
+available.
 
-## Quick Start
+## Minimal Usage
 
-### Prepare a small molecule
+Prepare a molecule:
 
 ```python
 import yadonpy as yp
@@ -63,10 +67,10 @@ import yadonpy as yp
 ff = yp.get_ff("gaff2_mod")
 ec = ff.mol("O=C1OCCO1")
 yp.assign_charges(ec, charge="RESP", work_dir="./work_ec")
-ok = ff.ff_assign(ec)
+ff.ff_assign(ec)
 ```
 
-### Reuse a prepared species from MolDB
+Reuse a MolDB species:
 
 ```python
 import yadonpy as yp
@@ -78,269 +82,94 @@ pf6 = yp.load_from_moldb(
 )
 ```
 
-### Build a generic layer-stack interface
+Build a graphite/electrolyte layer stack:
 
 ```python
 import yadonpy as yp
 
 ff = yp.get_ff("gaff2_mod")
 ion_ff = yp.get_ff("merz")
-EC = ff.mol("O=C1OCCO1", charge="RESP", prefer_db=True, require_ready=True)
-ff.ff_assign(EC)
-Li = ion_ff.mol("[Li+]")
-ion_ff.ff_assign(Li)
+
+ec = ff.mol("O=C1OCCO1", charge="RESP", prefer_db=True, require_ready=True)
+ff.ff_assign(ec)
+li = ion_ff.mol("[Li+]")
+ion_ff.ff_assign(li)
 
 stack = yp.LayerStackSpec(
     layers=(
-        yp.GraphiteLayerSpec(nx=6, ny=5, n_layers=3, name="GRAPHITE"),
+        yp.GraphiteLayerSpec(name="GRAPHITE", nx=6, ny=5, n_layers=3),
         yp.MolecularLayerSpec(
             name="ELECTROLYTE",
-            species=(EC, Li),
+            species=(ec, li),
             counts=(100, 10),
             thickness_nm=4.0,
             density_target_g_cm3=1.2,
             layer_kind="electrolyte",
         ),
-        yp.VacuumLayerSpec(thickness_nm=2.0),
     ),
-    order="bottom_to_top",
 )
-result = yp.build_layer_stack(
-    stack=stack,
-    work_dir="./work_layer_stack",
-    ff_name="gaff2_mod",
-)
-print(result.manifest_path)
 
-profile = yp.analyze_layer_stack_interface(
-    work_dir="./work_layer_stack",
-    analysis_profile="interface_fast",
-)
-print(profile["outputs"]["interface_profile_summary_json"])
+result = yp.build_layer_stack(stack=stack, work_dir="./work_layer_stack")
+profile = yp.analyze_layer_stack_interface(work_dir="./work_layer_stack")
 ```
 
-For `pbc_mode="auto"`/`xyz`, the stack builder treats the top-bottom periodic
-boundary as another interface and reserves a closing gap unless explicit vacuum
-or padding already provides one.  `run_layer_stack_nvt(...)` also performs a
-short no-constraints minimization before the observation NVT, which removes
-local contacts from freshly stacked CMC/electrolyte/graphite systems without
-changing the force field or production settings.
-
-## Workflow Areas
-
-### Molecular preparation
-
-Use the top-level API when you want a short script:
-
-- `mol_from_smiles(...)`
-- `assign_charges(...)`
-- `assign_forcefield(...)`
-- `parameterize_smiles(...)`
-- `load_from_moldb(...)`
-
-Use `yadonpy.sim.qm` directly when you need explicit control of conformer search,
-QM levels, basis selection, or bonded-parameter derivation.
-
-### Bulk systems
-
-YadonPy can build and equilibrate polymer-electrolyte systems starting from monomers,
-solvents, ions, and salts. A typical workflow is:
-
-1. prepare species and assign charges;
-2. assign force fields;
-3. pack an amorphous cell;
-4. export the GROMACS system;
-5. run staged equilibration;
-6. analyze density, transport, and coordination behavior.
-
-For post-processing, the recommended pattern is now:
+For sampled interfaces, use the analysis facade rather than bulk-only 3D
+transport assumptions:
 
 ```python
-analy = production.analyze()
-rdf = analy.rdf(center_mol=li_mol)
-msd = analy.msd()
-sigma = analy.sigma(msd=msd, temp_k=300.0)
-dielectric = analy.dielectric(temp_k=300.0)
-migration = analy.migration(center_mol=li_mol)
+analy = nvt.analyze()
+interface = analy.interface(manifest_path=result.manifest_path, bin_nm=0.05)
+edl = interface.edl_profiles()
+adsorption = interface.graphite_adsorption(species=("EC", "EMC", "DEC"))
 ```
 
-For high-throughput electrolyte screening, use the lighter transport profile:
+## Simulation And Analysis Notes
+
+Production presets use adaptive output cadence.  By default, production writes
+TRR coordinate frames so `gmx current` can be used for collective conductivity
+analysis.  For storage-first screening, request XTC explicitly with
+`trajectory_format="xtc"` or `TRAJECTORY_FORMAT=xtc`.
+
+After analysis, large trajectory streams can be removed while keeping scientific
+artifacts:
 
 ```python
-prop = analy.get_all_prop(temp=300.0, press=1.0, include_polymer_metrics=False, analysis_profile="transport_fast")
-rdf = analy.rdf(center_mol=li_mol, analysis_profile="transport_fast", resume=True)
-msd = analy.msd(analysis_profile="transport_fast", resume=True)
+yp.clean_md_trajectory_files(work_dir, enabled=True)
 ```
 
-`transport_fast` keeps Li coordination and diffusion diagnostics, but skips full
-site RDF and expensive polymer conformation metrics. Use `analysis_profile="full"`
-when you want the complete report.
+This removes `.xtc`, `.trr`, `.trj`, and `.tng` files recursively, while keeping
+final structures, topology, energy files, JSON summaries, CSV tables, and plots.
 
-Production output cadence is adaptive by default in the production presets and
-benchmark scripts. `PERFORMANCE_PROFILE=auto` keeps short/small runs near 2 ps
-trajectory output, but switches long or large systems to coarser 10-50 ps output
-and matching fast-analysis defaults. Set `PERFORMANCE_PROFILE=full` or explicit
-`TRAJ_PS` / `ENERGY_PS` / `LOG_PS` values when you need dense trajectories for
-short-time dynamics.
+For long or large simulations, the analyzer also applies runtime frame thinning
+in non-`full` profiles.  The effective policy is written to
+`06_analysis/analysis_runtime_policy.json`.
 
-Coordinate output is XTC-only by default because compressed coordinates are much
-smaller and faster to post-process than full-precision TRR. If a study really
-needs TRR coordinates, set `TRAJECTORY_FORMAT=trr`; this disables XTC and writes
-coordinate frames to `md.trr` using the same adaptive cadence. Use
-`TRAJECTORY_FORMAT=xtc_trr` only for targeted diagnostics, and keep
-`TRR_PS` / `VELOCITY_PS` coarse, because TRR and velocity output can become the
-dominant storage and analysis cost on 60-500 ns, 40k+ atom jobs.
+## Examples
 
-Post-processing has a second safety layer for legacy dense trajectories: in
-`auto`, `transport_fast`, and `minimal` modes, YadonPy estimates the trajectory
-frame count from the production `.mdp` and automatically increases the read-time
-stride for cell, thermo time series, RDF, MSD, Rg/polymer metrics, number-density
-profiles, dielectric dipoles, interface profiles, and migration state analyses
-when the frame count is too high.
-The decision is written to `06_analysis/analysis_runtime_policy.json`; use
-`MAX_ANALYSIS_FRAMES` as a global tightening cap, or `MAX_RDF_FRAMES`,
-`MAX_MSD_FRAMES`, `MAX_CELL_FRAMES`, `MAX_THERMO_FRAMES`,
-`MAX_DENSITY_DISTRIBUTION_FRAMES`, `MAX_DIELECTRIC_FRAMES`,
-`MAX_MIGRATION_FRAMES`, and `MAX_POLYMER_METRIC_FRAMES` for section-specific
-caps. Set `ANALYSIS_PROFILE=full` to force dense analysis.
-
-`dielectric()` wraps `gmx dipoles` and estimates the static dielectric constant
-from total dipole fluctuations. Use the same GROMACS major version that produced
-the `.tpr` file, e.g. set `YADONPY_GMX_CMD=/path/to/gmx` on clusters with
-multiple GROMACS installations.
-
-This keeps the defaults physically aligned:
-
-- bulk systems use drift-corrected `3D` diffusion by default;
-- layer-stack and slab systems use drift-corrected `xy` diffusion by default;
-- MSD uses a topology-molecule strategy by default: ions are tracked by atom
-  position, small molecules by molecule COM, and polymers by each independent
-  chain COM;
-- `gmx msd -n system.ndx -mol` is used automatically for molecule/chain COM
-  metrics that are exactly equivalent to GROMACS topology molecules; YadonPy
-  still handles species selection, caching, local charged-group diagnostics,
-  and adaptive long-time fitting;
-- polymer self-diffusion is reported from each independent chain COM, while
-  residue and charged-group MSDs remain local mobility diagnostics;
-- adaptive diffusion fitting requires both a near-one log-log MSD slope and a
-  sufficiently long fit window, so short accidental linear patches are not
-  promoted to formal diffusion coefficients;
-- `sigma_ne_upper_bound_S_m` is reported explicitly as an upper bound;
-- `sigma_eh_total_S_m` is the preferred total conductivity when a stable EH fit exists;
-- `haven_ratio` is written whenever both values are available.
-- `migration()` now defaults to a dual Markov model:
-  - role states: `polymer / solvent / anion / none`
-  - site states: specific donor anchors with sparse states lumped into `OTHER`
-
-### Segment-first branched polymers
-
-For large repeat units, long block architectures, or branchable polymers, build reusable
-segments first and then polymerize those segments:
-
-```python
-from yadonpy.core import poly
-
-segment1 = poly.seg_gen([monomer_A, monomer_A, monomer_B])
-segment2 = poly.seg_gen([branchable_unit, branchable_unit, monomer_A])
-side = poly.seg_gen([side_unit], cap_tail="[H][*]")
-
-prebranched = poly.branch_segment_rw(
-    segment2,
-    [side],
-    mode="pre",
-    position=2,
-    exact_map={"position": 2, "site_index": 0, "branch": 0},
-)
-block = poly.block_segment_rw([segment1, prebranched], [3, 2])
-branched = poly.branch_segment_rw(block, [side], mode="post", position=2, ds=[1.0])
-```
-
-Use `*` or `[1*]` for the main-chain head/tail and `[2*]`, `[3*]`, ... for branch
-attachment sites. Segment generation preserves existing atom charges; it does not
-automatically rerun QM/RESP.
-
-### Interface systems
-
-For interface work, use the generic `build_layer_stack(...)` engine. Each layer
-is an explicit spec, so the same builder covers `electrolyte | graphite`,
-`electrolyte | CMC-Na | graphite`, `graphite | electrolyte | graphite`, charged
-electrode sweeps, and `vacuum | layer | layer | vacuum` setups.
-
-Basal graphite defaults to XY-periodic construction. Edge graphite defaults to a
-finite capped slab and supports `H`, `OH`, `O`/carbonyl, `CHO`, `COOH`, or random
-mixtures. Fixed-charge graphite is a static atom-charge model, not constant
-potential; use side-specific `top_surface_charge_uC_cm2` or
-`bottom_surface_charge_uC_cm2` when only interior electrode faces should be
-charged.
-
-### Restart and metadata
-
-Work directories are part of the product behavior. YadonPy writes explicit manifests,
-export metadata, charge-group records, and restart markers so interrupted studies can be
-resumed or audited without guessing which intermediate files are authoritative.
-
-## Included Examples
-
-- `examples/01_Li_salt`: prepare and store a reference salt species in MolDB.
-- `examples/02_polymer_electrolyte`: end-to-end polymer-electrolyte workflow from PSMILES, including PEO-LiTFSI charge-scaling benchmarks.
-- `examples/03_tg_gmx`: high-level `Tg` scan workflow for an equilibrated system.
-- `examples/04_elongation_gmx`: high-level elongation and stress-strain workflow for an equilibrated system.
-- `examples/05_cmcna_electrolyte`: CMC-Na polymer-electrolyte construction.
-- `examples/06_polymer_electrolyte_nvt`: polymer-electrolyte workflow with NVT-focused staging.
-- `examples/07_moldb_precompute_and_reuse`: one-shot MolDB catalog build and MolDB-backed reuse scripts.
-- `examples/08_graphite_polymer_electrolyte_sandwich`: five script-first layer-stack interface workflows covering basal/edge graphite, CMC-Na, two-electrode stacks, and fixed-charge sweeps.
-- `examples/09_oplsaa_assignment`: compact OPLS-AA assignment workflows written in the same script-first style as the main examples.
-- `examples/11_segment_branch_polymer`: segment-first long-block and branched-polymer construction.
+- `examples/01_Li_salt`: salt species preparation and MolDB storage.
+- `examples/02_polymer_electrolyte`: polymer-electrolyte workflow and benchmark scripts.
+- `examples/03_tg_gmx`: glass-transition workflow.
+- `examples/04_elongation_gmx`: uniaxial elongation workflow.
+- `examples/05_cmcna_electrolyte`: CMC-Na electrolyte workflows.
+- `examples/06_polymer_electrolyte_nvt`: NVT-focused polymer electrolyte workflow.
+- `examples/07_moldb_precompute_and_reuse`: MolDB precomputation and reuse.
+- `examples/08_graphite_polymer_electrolyte_sandwich`: layer-stack interface workflows.
+- `examples/09_oplsaa_assignment`: OPLS-AA assignment validation.
+- `examples/11_segment_branch_polymer`: segment-first branched polymer construction.
 
 ## Documentation
 
-- [User Guide](docs/USER_GUIDE.md)
-- [API Reference](docs/API_REFERENCE.md)
-- [Architecture](docs/ARCHITECTURE.md)
-- [Technical Notes](docs/TECHNICAL_NOTES.md)
+- [User Guide](docs/USER_GUIDE.md): workflow-level usage and recommended practice.
+- [API Reference](docs/API_REFERENCE.md): public functions, classes, and analysis semantics.
+- [Architecture](docs/ARCHITECTURE.md): package structure and design boundaries.
+- [Technical Notes](docs/TECHNICAL_NOTES.md): force-field and implementation details.
 
-## Practical Notes
+## Practical Guidance
 
-- Use local runs for fast API checks, packaging work, and short unit tests.
-- Use the remote GPU node for long GROMACS jobs, larger layer-stack interface systems, and heavy QM workflows.
-- Set `gpu=0` to force CPU MD; any simultaneous `gpu_id` value is ignored rather than treated as an error.
-- For charged polymers, prefer `polyelectrolyte_mode=True` so RESP constraints and later charge scaling remain auditable.
-- MolDB is intended for reusable molecular assets such as geometry and charge variants, not as a topology cache.
-
-## Thermomechanical Studies
-
-For `Tg` and uniaxial elongation, YadonPy now provides high-level study wrappers
-that work on an already prepared `gro/top` pair or on a standard equilibration
-`work_dir`.
-
-- `run_tg_scan_gmx(...)`: staged temperature scan plus `Tg` fit summary.
-- `run_elongation_gmx(...)`: `deform`-based stress-strain workflow plus material summary.
-- `print_mechanics_result_summary(...)`: compact terminal summary for either study.
-
-The shipped examples for these studies now resolve the prepared system
-automatically instead of manually wiring `workflow.steps` calls.
-
-## Transport Analysis Notes
-
-YadonPy now treats transport analysis as a physically opinionated set of
-independent analyses rather than a loose collection of plots.
-
-- `RDF` remains an independent analysis because it is the only one that needs a
-  center species.
-- `MSD` defaults are geometry-aware:
-  - bulk: drift-corrected `3D`
-  - layer-stack/slab: drift-corrected `xy`
-- Polymer `MSD` uses independent chain center-of-mass trajectories for the
-  self-diffusion coefficient. Atom, residue, and charged-group MSDs are useful
-  local mobility diagnostics, but they are not whole-chain diffusion.
-- Diffusion fits are chosen from the long-time MSD region with a log-log slope
-  near one and a minimum duration/point count. If the run never reaches that
-  regime, YadonPy reports apparent mobility diagnostics and leaves formal
-  `D_m2_s` unset.
-- `Nernst-Einstein` conductivity is reported as
-  `sigma_ne_upper_bound_S_m`, not as the default true conductivity.
-- `Einstein-Helfand` conductivity is reported as `sigma_eh_total_S_m` when a
-  stable positive-slope regime is found.
-- Charged-polymer self terms are retained only as
-  `polymer_charged_group_self_ne_contribution_S_m` and component diagnostics;
-  they are not labeled as total polymer ionic conductivity.
+- Use MolDB for reusable molecular assets, not as a topology cache.
+- Prefer `polyelectrolyte_mode=True` for charged polymer RESP workflows.
+- Set `gpu=0` to force CPU MD; any simultaneous `gpu_id` value is ignored.
+- Use `analysis_profile="transport_fast"` for screening and
+  `analysis_profile="full"` for final detailed analysis.
+- Use `run_tg_scan_gmx`, `run_elongation_gmx`, and
+  `print_mechanics_result_summary` for high-level thermomechanical studies.

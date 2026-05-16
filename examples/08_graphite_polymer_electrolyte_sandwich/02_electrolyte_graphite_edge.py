@@ -9,6 +9,7 @@ rest of the workflow.
 
 from pathlib import Path
 
+from yadonpy import clean_md_trajectory_files
 from yadonpy.core import workdir
 from yadonpy.core.data_dir import ensure_initialized
 from yadonpy.diagnostics import doctor
@@ -41,6 +42,13 @@ gpu_id = 0
 run_sampling = True
 sample_ns = 2.0
 edge_cap = "OH"
+analysis_profile = "interface_fast"
+interface_bin_nm = 0.05
+interface_region_width_nm = 0.75
+graphite_adsorption_cutoff_nm = 0.50
+penetration_species = ("EC", "EMC", "DEC", "PF6")
+adsorption_species = ("EC", "EMC", "DEC")
+clean_trajectories_after_analysis = False
 
 EC_smiles = "O=C1OCCO1"
 EMC_smiles = "CCOC(=O)OC"
@@ -113,7 +121,17 @@ if __name__ == "__main__":
     print(f"stack_gmx_dir = {result.system_gro.parent}")
     print(f"acceptance = {result.acceptance}")
 
-    analyze_layer_stack_interface(work_dir=work_dir, analysis_profile="interface_fast")
+    analyze_layer_stack_interface(
+        work_dir=work_dir,
+        manifest_path=result.manifest_path,
+        analysis_profile=analysis_profile,
+        bin_nm=interface_bin_nm,
+        region_width_nm=interface_region_width_nm,
+        surface_distance_nm=graphite_adsorption_cutoff_nm,
+        penetration_species=penetration_species,
+        adsorption_species=adsorption_species,
+        compute_transport=False,
+    )
     if run_sampling:
         nvt = run_layer_stack_nvt(
             result,
@@ -123,6 +141,28 @@ if __name__ == "__main__":
             omp=omp,
             gpu=gpu,
             gpu_id=gpu_id,
+            run_analysis=False,
             restart=restart_status,
         )
         print(f"nvt_summary = {nvt.summary_path}")
+        analy = nvt.analyze()
+        interface = analy.interface(
+            manifest_path=result.manifest_path,
+            analysis_profile=analysis_profile,
+            bin_nm=interface_bin_nm,
+            region_width_nm=interface_region_width_nm,
+            surface_distance_nm=graphite_adsorption_cutoff_nm,
+            penetration_species=penetration_species,
+            adsorption_species=adsorption_species,
+        )
+        health = interface.geometry_health()
+        z_profile = interface.z_profiles()
+        edl = interface.edl_profiles()
+        penetration = interface.penetration(species=penetration_species)
+        adsorption = interface.graphite_adsorption(species=adsorption_species)
+        transport = interface.region_transport()
+        summary = interface.summary()
+        print(f"interface_phase_order_ok = {health.get('phase_order_ok')}")
+        print(f"interface_outputs = {summary.get('outputs', {}).get('interface_profile_summary_json')}")
+
+    clean_md_trajectory_files(work_dir, enabled=clean_trajectories_after_analysis)

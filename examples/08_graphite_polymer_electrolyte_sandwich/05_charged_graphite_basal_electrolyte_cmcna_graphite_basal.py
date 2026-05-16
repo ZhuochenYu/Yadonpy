@@ -10,6 +10,7 @@ checks before committing to larger production cells.
 
 from pathlib import Path
 
+from yadonpy import clean_md_trajectory_files
 from yadonpy.core import poly, utils, workdir
 from yadonpy.core.data_dir import ensure_initialized
 from yadonpy.diagnostics import doctor
@@ -43,6 +44,13 @@ gpu_id = 0
 run_sampling = True
 sample_ns = 2.0
 surface_charge_sweep_uC_cm2 = (0.0, 2.0, -2.0, 5.0, -5.0)
+analysis_profile = "interface_fast"
+interface_bin_nm = 0.05
+interface_region_width_nm = 0.75
+graphite_adsorption_cutoff_nm = 0.50
+penetration_species = ("EC", "EMC", "DEC", "PF6", "Li", "Na")
+adsorption_species = ("EC", "EMC", "DEC")
+clean_trajectories_after_analysis = False
 
 glucose6_smiles = "*OC1OC(COCC(=O)[O-])C(*)C(O)C1O"
 ter_smiles = "[H][*]"
@@ -155,7 +163,17 @@ if __name__ == "__main__":
         print(f"[{surface_charge:+.1f} uC/cm2] stack_gmx_dir = {result.system_gro.parent}")
         print(f"[{surface_charge:+.1f} uC/cm2] acceptance = {result.acceptance}")
 
-        analyze_layer_stack_interface(work_dir=case_dir, analysis_profile="interface_fast")
+        analyze_layer_stack_interface(
+            work_dir=case_dir,
+            manifest_path=result.manifest_path,
+            analysis_profile=analysis_profile,
+            bin_nm=interface_bin_nm,
+            region_width_nm=interface_region_width_nm,
+            surface_distance_nm=graphite_adsorption_cutoff_nm,
+            penetration_species=penetration_species,
+            adsorption_species=adsorption_species,
+            compute_transport=False,
+        )
         if run_sampling:
             nvt = run_layer_stack_nvt(
                 result,
@@ -167,6 +185,35 @@ if __name__ == "__main__":
                 gpu_id=gpu_id,
                 dt_ps=0.001,
                 constraints="none",
+                run_analysis=False,
                 restart=restart_status,
             )
             print(f"[{surface_charge:+.1f} uC/cm2] nvt_summary = {nvt.summary_path}")
+            analy = nvt.analyze()
+            interface = analy.interface(
+                manifest_path=result.manifest_path,
+                analysis_profile=analysis_profile,
+                bin_nm=interface_bin_nm,
+                region_width_nm=interface_region_width_nm,
+                surface_distance_nm=graphite_adsorption_cutoff_nm,
+                penetration_species=penetration_species,
+                adsorption_species=adsorption_species,
+                split_electrodes=True,
+                report_potential_drop=True,
+            )
+            health = interface.geometry_health()
+            z_profile = interface.z_profiles()
+            edl = interface.edl_profiles(
+                split_electrodes=True,
+                potential_reference="zero_mean",
+                report_potential_drop=True,
+            )
+            penetration = interface.penetration(species=penetration_species)
+            adsorption = interface.graphite_adsorption(species=adsorption_species)
+            coordination = interface.coordination_by_region()
+            transport = interface.region_transport()
+            summary = interface.summary()
+            print(f"[{surface_charge:+.1f} uC/cm2] interface_phase_order_ok = {health.get('phase_order_ok')}")
+            print(f"[{surface_charge:+.1f} uC/cm2] interface_outputs = {summary.get('outputs', {}).get('interface_profile_summary_json')}")
+
+        clean_md_trajectory_files(case_dir, enabled=clean_trajectories_after_analysis)

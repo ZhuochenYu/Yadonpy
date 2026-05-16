@@ -1458,15 +1458,25 @@ class EquilibrationJob:
         return p
 
     def final_outputs(self) -> tuple[Path, Path, Path]:
-        """Return (tpr, xtc, edr) for the final stage."""
+        """Return (tpr, trajectory, edr) for the final stage.
+
+        The second path is the coordinate trajectory used by analysis.  It is
+        ``md.xtc`` when compressed output exists, otherwise ``md.trr`` for the
+        production default that keeps conductivity analysis compatible with
+        ``gmx current``.
+        """
         d = self.final_stage_dir()
         tpr = d / "md.tpr"
         xtc = d / "md.xtc"
+        trr = d / "md.trr"
         edr = d / "md.edr"
         if not tpr.exists():
             raise FileNotFoundError(f"Missing {tpr}")
         if not xtc.exists():
-            raise FileNotFoundError(f"Missing {xtc}")
+            if trr.exists():
+                xtc = trr
+            else:
+                raise FileNotFoundError(f"Missing {xtc} or {trr}")
         if not edr.exists():
             raise FileNotFoundError(f"Missing {edr}")
         return tpr, xtc, edr

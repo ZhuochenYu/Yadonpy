@@ -290,6 +290,19 @@ def test_example08_scripts_use_one_shot_builder_and_interface_summary_printer():
         assert 'build_cmcna_graphite_electrolyte_stack' not in text
         assert 'GraphiteLayerSpec(' in text
         assert 'LayerStackRelaxationSpec(' in text
+        assert 'analysis_profile = "interface_fast"' in text
+        assert 'interface_bin_nm = 0.05' in text
+        assert 'graphite_adsorption_cutoff_nm = 0.50' in text
+        assert 'penetration_species = ' in text
+        assert 'adsorption_species = ' in text
+        assert 'analy = nvt.analyze()' in text
+        assert 'interface = analy.interface(' in text
+        assert 'interface.geometry_health()' in text
+        assert 'interface.z_profiles()' in text
+        assert 'interface.edl_profiles(' in text or 'interface.edl_profiles()' in text
+        assert 'interface.penetration(' in text
+        assert 'interface.graphite_adsorption(' in text
+        assert 'clean_md_trajectory_files(' in text
 
 
 def test_example07_includes_bundled_moldb_audit_script():

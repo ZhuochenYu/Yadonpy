@@ -1492,7 +1492,7 @@ def test_npt_exec_applies_mdp_overrides(tmp_path: Path, monkeypatch):
         def run(self, *, restart=False):
             out_dir = Path(captured["out_dir"]) / "01_npt"
             out_dir.mkdir(parents=True, exist_ok=True)
-            for suffix in ("md.tpr", "md.xtc", "md.edr", "md.gro"):
+            for suffix in ("md.tpr", "md.trr", "md.edr", "md.gro"):
                 (out_dir / suffix).write_text("x\n", encoding="utf-8")
             return out_dir / "md.gro"
 
@@ -1968,10 +1968,10 @@ def test_npt_exec_sets_lean_production_output_cadence_and_checkpoints(tmp_path: 
     mdp_text = stage.mdp.render()
     assert "dt                       = 0.001" in mdp_text
     assert "constraints              = none" in mdp_text
-    assert "nstxout-compressed       = 2000" in mdp_text
+    assert "nstxout-compressed       = 0" in mdp_text
     assert "nstenergy                = 4000" in mdp_text
     assert "nstlog                   = 6000" in mdp_text
-    assert "nstxout                  = 0" in mdp_text
+    assert "nstxout                  = 2000" in mdp_text
     assert "nstvout                  = 0" in mdp_text
     assert stage.lincs_retry is None
     assert stage.checkpoint_minutes == pytest.approx(3.0)
@@ -2003,7 +2003,7 @@ def test_nvt_exec_sets_lean_production_output_cadence_and_checkpoints(tmp_path: 
         def run(self, *, restart=False):
             out_dir = Path(captured["out_dir"]) / "01_nvt"
             out_dir.mkdir(parents=True, exist_ok=True)
-            for suffix in ("md.tpr", "md.xtc", "md.edr", "md.gro"):
+            for suffix in ("md.tpr", "md.trr", "md.edr", "md.gro"):
                 (out_dir / suffix).write_text("x\n", encoding="utf-8")
             return out_dir / "md.gro"
 
@@ -2032,7 +2032,7 @@ def test_nvt_exec_sets_lean_production_output_cadence_and_checkpoints(tmp_path: 
     mdp_text = stage.mdp.render()
     assert "dt                       = 0.001" in mdp_text
     assert "constraints              = none" in mdp_text
-    assert "nstxout-compressed       = 1000" in mdp_text
+    assert "nstxout-compressed       = 0" in mdp_text
     assert "nstenergy                = 2000" in mdp_text
     assert "nstlog                   = 2000" in mdp_text
     assert "nstxout                  = 5000" in mdp_text

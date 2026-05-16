@@ -98,7 +98,8 @@ Terminal groups are part of the workflow, not an afterthought. This matters for:
 
 If the terminal group is chemically meaningful, keep it explicit.
 If it is the internal hydrogen placeholder used by YadonPy polymer builders,
-the code will now avoid sending that placeholder through fragile QM paths.
+YadonPy treats it as a builder marker instead of sending it through fragile QM
+paths.
 
 ## 4. Reuse Prepared Assets with MolDB
 
@@ -230,15 +231,26 @@ large or long jobs to coarser 10-50 ps output and matching RDF/MSD settings. Use
 when you need dense trajectories for short-time dynamics or final publication
 audits.
 
-YadonPy writes compressed XTC coordinates by default and leaves TRR off. That is
-intentional: TRR is full precision, can be much larger than XTC, and usually
-slows down both storage and post-processing for transport screening. If a
-workflow needs TRR-only coordinates, set `TRAJECTORY_FORMAT=trr`; the same auto
-cadence controls `md.trr`, XTC is disabled, and the analyzer will read TRR when
-no XTC exists. Use `TRAJECTORY_FORMAT=xtc_trr` only for short diagnostics or
-explicitly coarse `TRR_PS` output.
+Production presets write adaptive TRR-only coordinates by default.  This keeps
+the trajectory directly usable by `gmx current` for Einstein-Helfand
+conductivity while still avoiding dense output on long or large runs.  If you
+prefer smaller screening trajectories, set `TRAJECTORY_FORMAT=xtc`; the analyzer
+will read either `md.trr` or `md.xtc`. Use `TRAJECTORY_FORMAT=xtc_trr` only for
+short diagnostics or explicitly coarse `TRR_PS` output.
 
-When an older run already contains an overly dense trajectory, the analyzer also
+For disk cleanup after analysis, place the trajectory cleanup helper near the
+end of the workflow:
+
+```python
+from yadonpy import clean_md_trajectory_files
+
+clean_md_trajectory_files(work_dir, enabled=True)
+```
+
+It removes trajectory streams (`.xtc`, `.trr`, `.trj`, `.tng`) but keeps final
+coordinates, topology, energy files, summary JSON, CSV tables, and plots.
+
+When an existing run already contains an overly dense trajectory, the analyzer
 protects post-processing time by increasing the read-time frame stride instead
 of rewriting the `.xtc`. The resolved runtime policy is saved as
 `06_analysis/analysis_runtime_policy.json`. The main controls are
@@ -295,7 +307,7 @@ Practical interpretation:
 - Charged-polymer results are kept as
   `polymer_charged_group_self_ne_contribution_S_m`; they are not equivalent to
   a rigorously separated polymer ionic conductivity.
-- Migration analysis is now a first-class `AnalyzeResult` method instead of a
+- Migration analysis is available through `AnalyzeResult` methods rather than a
   standalone monolithic script. The default path reports:
   - coordination roles,
   - residence times for polymer / solvent / anion donors,
@@ -305,10 +317,11 @@ Practical interpretation:
 
 ## 6. Build Generic Layer-Stack Interface Systems
 
-YadonPy now exposes a generic `build_layer_stack(...)` engine.  Instead of
-hard-coding `graphite | polymer | electrolyte`, you provide any ordered list of
-layers: `electrolyte | graphite`, `graphite | electrolyte | graphite`,
-`graphite | CMC-Na | electrolyte`, or `vacuum | layer | layer | vacuum`.
+Use `build_layer_stack(...)` for graphite, polymer, electrolyte, and vacuum
+stacks.  Instead of hard-coding `graphite | polymer | electrolyte`, provide any
+ordered list of layers: `electrolyte | graphite`,
+`graphite | electrolyte | graphite`, `graphite | CMC-Na | electrolyte`, or
+`vacuum | layer | layer | vacuum`.
 
 The builder:
 
@@ -377,16 +390,38 @@ vacuum or padding already supplies it.  The NVT follow-up begins with a
 no-constraints steep minimization, so freshly stacked CMC/electrolyte/graphite
 cells can relax local contacts before GPU MD starts.
 
-The interface profile helper writes `06_analysis/layer_stack_interface/` with
-z density profiles, charge density, adjacent-interface spacing, EDL charge
-diagnostics for graphite/electrolyte contacts, coordination partitioning where
-available, and anisotropic MSD summaries.  Treat `Dxy` as the main interface
-transport metric; `Dz` is confined-direction mobility, not a bulk diffusion
-coefficient.
+Interface analysis is not bulk analysis.  For a sampled layer stack, prefer the
+eg02-style facade:
 
-The older sandwich-specific public API has been removed.  Use layer-stack specs
-for both simple two-layer contacts and multi-layer graphite/polymer/electrolyte
-systems.
+```python
+analy = nvt.analyze()
+interface = analy.interface(
+    manifest_path=result.manifest_path,
+    analysis_profile="interface_fast",
+    bin_nm=0.05,
+    region_width_nm=0.75,
+    surface_distance_nm=0.50,
+)
+health = interface.geometry_health()
+z_profile = interface.z_profiles()
+edl = interface.edl_profiles()
+penetration = interface.penetration(species=("EC", "EMC", "DEC", "PF6"))
+adsorption = interface.graphite_adsorption(species=("EC", "EMC", "DEC"))
+transport = interface.region_transport()
+summary = interface.summary()
+```
+
+The helper writes `06_analysis/layer_stack_interface/` with z density and charge
+profiles, electrostatic potential diagnostics for fixed-charge stacks, EDL
+species layering, penetration/residence diagnostics, graphite-near adsorption
+statistics, Li/Na coordination partitioning, and anisotropic MSD summaries.
+Treat `Dxy` as the main interface transport metric; `Dz` is confined-direction
+mobility, not a bulk diffusion coefficient. Bulk-style 3D diffusion,
+conductivity, and dielectric analysis should be used only as explicit controls.
+
+Sandwich-specific interface builders are not part of the public workflow
+surface.  Use layer-stack specs for both simple two-layer contacts and
+multi-layer graphite/polymer/electrolyte systems.
 
 ### Example script standard
 
@@ -465,7 +500,7 @@ Prefer the remote machine for:
 
 ## 10. Thermomechanical Studies
 
-For `Tg` and elongation, the recommended pattern is now:
+For `Tg` and elongation, the recommended pattern is:
 
 1. equilibrate the system first,
 2. resolve the prepared `gro/top`,
@@ -515,7 +550,8 @@ conda install -c conda-forge rdkit openbabel parmed mdtraj matplotlib pandas sci
 
 If the import error mentions `PydanticUserError`, `jobname = 'optimization'`,
 or missing type annotations, your environment likely has `pydantic>=2`, which
-breaks current `psiresp-base`. The verified working fix is:
+is incompatible with the supported `psiresp-base` package set. The verified
+working fix is:
 
 ```bash
 python -m pip install "pydantic==1.10.26"
@@ -535,7 +571,7 @@ This usually means one of three things:
 - the chain flexibility assumptions are too optimistic;
 - the retry budget is too small for the requested degree of polymerization.
 
-YadonPy now scales retry budgets more sensibly for longer chains, but density and chain
+YadonPy scales retry budgets for longer chains, but density and chain
 specification still matter.
 
 ### A phase density looks unreasonable in an interface workflow

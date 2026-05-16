@@ -33,6 +33,7 @@ Package root exports include:
 - `yp.AnalyzeResult`
 - `yp.IOAnalysisPolicy`
 - `yp.resolve_io_analysis_policy`
+- `yp.clean_md_trajectory_files`
 - `yp.LayerStackSpec`
 - `yp.GraphiteLayerSpec`
 - `yp.MolecularLayerSpec`
@@ -200,6 +201,15 @@ AnalyzeResult.migration(
 
 AnalyzeResult.migration_markov(center_mol, **kwargs)
 AnalyzeResult.migration_residence(center_mol, **kwargs)
+AnalyzeResult.interface(
+    *,
+    manifest_path: str | Path | None = None,
+    analysis_profile: str = "interface_fast",
+    bin_nm: float = 0.05,
+    frame_stride: int | str = "auto",
+    surface_distance_nm: float = 0.50,
+    region_width_nm: float = 0.75,
+)
 AnalyzeResult.interface_profile(
     *,
     bin_nm: float = 0.05,
@@ -222,7 +232,7 @@ Transport semantics:
   and resolves to `transport_fast` or `minimal` for large/long runs.
 - In non-`full` profiles, the analyzer also estimates trajectory frame count and
   automatically increases the read-time frame stride or GROMACS `-dt` interval
-  for dense legacy `.xtc`/`.trr`/`.edr` streams. This covers RDF, MSD, cell,
+  for dense existing `.xtc`/`.trr`/`.edr` streams. This covers RDF, MSD, cell,
   thermo, number-density profiles, Rg/polymer metrics, dielectric dipoles,
   interface profiles, and migration analyses. The resolved policy is written to
   `06_analysis/analysis_runtime_policy.json`; caps can be tuned with
@@ -249,9 +259,10 @@ Transport semantics:
 - `analysis_profile="minimal"` is the most aggressive screening mode: necessary
   transport species only, coarser RDF, and default MSD metrics only.
 - `analysis_profile="interface_fast"` is for graphite/polymer/electrolyte stacks.
-  It writes `06_analysis/interface_profile/` with z density profiles, region
-  summaries, Li coordination partitioning, enrichment, and anisotropic `Dxy/Dz`
-  MSD diagnostics.
+  It writes layer-stack interface diagnostics with z density/charge profiles,
+  EDL species profiles, fixed-charge electrostatic potential, penetration,
+  graphite-near adsorption, Li/Na coordination partitioning, enrichment, and
+  anisotropic `Dxy/Dz` MSD diagnostics.
 - `analysis_profile="full"` keeps the historical all-site RDF/MSD behavior.
 - `get_all_prop(..., include_polymer_metrics=False)` skips expensive Rg,
   end-to-end, and persistence-length post-processing while preserving thermo and
@@ -271,6 +282,25 @@ Transport semantics:
   `polymer_charged_group_self_ne_contribution_S_m` and component diagnostics;
   they are not labeled as total polymer ionic conductivity.
 
+For layer-stack systems, the eg02-style facade is:
+
+```python
+interface = analy.interface(
+    manifest_path=result.manifest_path,
+    analysis_profile="interface_fast",
+    bin_nm=0.05,
+    region_width_nm=0.75,
+    surface_distance_nm=0.50,
+)
+health = interface.geometry_health()
+z_profile = interface.z_profiles()
+edl = interface.edl_profiles()
+penetration = interface.penetration(species=("EC", "EMC", "DEC", "PF6"))
+adsorption = interface.graphite_adsorption(species=("EC", "EMC", "DEC"))
+transport = interface.region_transport()
+summary = interface.summary()
+```
+
 Production presets accept adaptive output cadence:
 
 ```python
@@ -289,12 +319,23 @@ production length and system size, then records the resolved cadence and analysi
 policy in `05_*_production/summary.json`. Explicit numeric `traj_ps`,
 `energy_ps`, `log_ps`, `trr_ps`, or `velocity_ps` always override the policy.
 
-The default coordinate stream is compressed XTC only. This keeps large screening
-runs manageable because full-precision TRR is much larger and slower to analyze.
-Set `trajectory_format="trr"` or `TRAJECTORY_FORMAT=trr` when you deliberately
-want TRR-only coordinates; `AnalyzeResult` will use `md.trr` if `md.xtc` is
-absent. Set `trajectory_format="xtc_trr"` only for short diagnostics or
-explicitly coarse `trr_ps` values.
+The default production coordinate stream is adaptive TRR-only so collective
+conductivity analysis can call `gmx current` directly. Set
+`trajectory_format="xtc"` or `TRAJECTORY_FORMAT=xtc` for storage-first screening;
+`AnalyzeResult` will use `md.trr` when no `md.xtc` exists. Set
+`trajectory_format="xtc_trr"` only for short diagnostics or explicitly coarse
+`trr_ps` values.
+
+After all analyses are complete, remove heavy trajectory streams while keeping
+auditable outputs:
+
+```python
+yp.clean_md_trajectory_files(work_dir, enabled=True)
+```
+
+The helper removes `.xtc`, `.trr`, `.trj`, and `.tng` recursively and writes
+`trajectory_cleanup_summary.json`; it does not delete `.gro`, `.top`, `.edr`,
+summary JSON, CSV, or SVG plots.
 
 - `migration()` is the preferred high-level migration workflow for:
   - pure electrolytes,
@@ -860,9 +901,9 @@ control over staged interface relaxation.
 
 ## 9. Generic Layer-Stack Interface API
 
-The preferred public interface builder is now `build_layer_stack(...)`.  It
-accepts any ordered sequence of graphite, molecular, and vacuum layers and
-writes a GROMACS-ready stacked system plus `layer_stack_manifest.json`.
+Use `build_layer_stack(...)` as the public interface builder.  It accepts any
+ordered sequence of graphite, molecular, and vacuum layers and writes a
+GROMACS-ready stacked system plus `layer_stack_manifest.json`.
 
 ```python
 LayerStackSpec(
@@ -930,7 +971,7 @@ Notes:
 - For two-electrode stacks, use `top_surface_charge_uC_cm2` on the lower
   graphite and `bottom_surface_charge_uC_cm2` on the upper graphite to charge
   only the interior surfaces.
-- `pbc_mode="auto"` currently resolves to `xyz`; vacuum layers are explicit
+- `pbc_mode="auto"` resolves to `xyz`; vacuum layers are explicit
   empty z regions, not implicit GROMACS walls.
 - In `xyz` stacks, the top-bottom periodic boundary is treated as a closing
   interface.  The builder adds enough closing spacer to reach `default_gap_nm`
@@ -943,13 +984,13 @@ Notes:
 - The generated `system.ndx` contains `LAYER_XX_NAME`, semantic phase groups
   such as `GRAPHITE`, `ELECTROLYTE`, `CMCNA`, and `MOBILE`.
 
-## 10. Retired Sandwich API
+## 10. Layer-Stack Interface Scope
 
-The old sandwich-specific public API has been removed.  Use the generic
-layer-stack API above for graphite/electrolyte, graphite/CMC-Na/electrolyte,
-graphite/electrolyte/graphite, vacuum stacks, and fixed-charge electrode
-studies.  This hard cut avoids keeping two independent interface builders with
-different geometry assumptions.
+The generic layer-stack API is the public route for graphite/electrolyte,
+graphite/CMC-Na/electrolyte, graphite/electrolyte/graphite, vacuum stacks, and
+fixed-charge electrode studies.  A single interface builder keeps geometry
+planning, layer manifests, and analysis semantics consistent across these
+systems.
 
 ## 11. Internal Modules
 

@@ -50,7 +50,7 @@ python run_cmcna_random_copolymer_dtd_from_moldb.py
 ```
 
 - Always use a unique `YADONPY_WORK_DIR` for each debug run.
-- `run_cmcna_random_copolymer_dtd_from_moldb.py` now supports additive selection with `YADONPY_ADDITIVE=DTD` or `YADONPY_ADDITIVE=VC`.
+- `run_cmcna_random_copolymer_dtd_from_moldb.py` selects the additive with `YADONPY_ADDITIVE=DTD` or `YADONPY_ADDITIVE=VC`.
 - For a fair `DTD` vs `VC` comparison, point both runs at the same `YADONPY_SHARED_POLYMER_ROOT` so they reuse the exact same cached CMC random-walk polymer instead of rebuilding different chains.
 - If a production stage fails, the script writes `failure_diagnostics.json` into the selected work directory.
 
@@ -64,12 +64,13 @@ python benchmark_cmcna_carbonate_lipf6_bulk.py
 ```
 
 - The resolved output cadence is written to production `summary.json`.
-- Dense old trajectories are downsampled at read time for RDF/MSD/cell metrics;
+- Pre-existing dense trajectories are downsampled at read time for RDF/MSD/cell metrics;
   the effective stride is written to `06_analysis/analysis_runtime_policy.json`.
 - Explicit `TRAJ_PS`, `ENERGY_PS`, `LOG_PS`, or `ANALYSIS_PROFILE=full` still
   override auto when dense final-analysis output is needed.
-- Default coordinate output is XTC-only. Set `TRAJECTORY_FORMAT=trr` for
-  deliberate TRR-only runs; avoid `TRAJECTORY_FORMAT=xtc_trr` on 100 ns CMC
+- Production coordinate output is adaptive TRR-only by default so `gmx current`
+  conductivity can run directly. Set `TRAJECTORY_FORMAT=xtc` for smaller
+  screening trajectories; avoid `TRAJECTORY_FORMAT=xtc_trr` on 100 ns CMC
   systems unless `TRR_PS` is very coarse.
 - `YADONPY_PROD_CPT_MIN` forces earlier production checkpoints so LINCS fallback can resume from `md.cpt` instead of dying on missing checkpoint files.
 
@@ -97,11 +98,11 @@ The transport table reports `Li`, `Na`, `PF6`, EC/EMC/DEC, and CMC rows. For
 CMC, use `chain_com_msd` for whole-chain self diffusion. `residue_com_msd` and
 `charged_group_com_msd` are local mobility diagnostics.
 
-OPLS-AA for this mixed polyelectrolyte/electrolyte benchmark is still stricter
-than the GAFF2 path: the default OPLS production timestep is currently `1 fs`
-with stronger LINCS settings and `conservative` GPU offload (`nb/pme` on GPU,
-`bonded/update` on CPU). Remote CMC diagnostics showed that `balanced` and
-`full` GPU offload can trigger CUDA illegal-address failures for current
-refine-profile CMC assignments. Keep this default until each parameter set has
-passed a short preflight. Override `YADONPY_PROD_DT_PS=0.002` or
+OPLS-AA for this mixed polyelectrolyte/electrolyte benchmark uses a stricter
+stability policy than the GAFF2 path: the default OPLS production timestep is
+`1 fs` with stronger LINCS settings and `conservative` GPU offload (`nb/pme` on
+GPU, `bonded/update` on CPU). CMC diagnostics indicate that `balanced` and
+`full` GPU offload can trigger CUDA illegal-address failures for refine-profile
+CMC assignments. Keep this default unless a parameter set has passed a short
+preflight. Override `YADONPY_PROD_DT_PS=0.002` or
 `YADONPY_GPU_OFFLOAD_MODE=balanced/full` only for explicit stability tests.

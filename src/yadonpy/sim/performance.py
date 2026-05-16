@@ -37,14 +37,14 @@ def _normalize_profile(value: object, *, default: str = AUTO) -> str:
 def _normalize_trajectory_format(value: object, *, default: str = AUTO) -> str:
     """Normalize the coordinate-trajectory stream selection.
 
-    The default is intentionally compressed XTC only.  Full-precision TRR is
-    useful for selected diagnostics, but it is often an order of magnitude
-    larger than XTC and can dominate both storage and post-processing time.
+    Production defaults to TRR-only coordinates.  The full-precision stream is
+    larger than XTC, so the policy still controls it with the same adaptive
+    cadence, but it is directly usable by tools such as ``gmx current``.
     """
 
     token = str(default if value is None else value).strip().lower().replace("-", "_")
     if token in {"", "default", "auto"}:
-        token = "xtc"
+        token = "trr"
     aliases = {
         "xtc": "xtc",
         "compressed": "xtc",
@@ -124,9 +124,9 @@ class IOAnalysisPolicy:
         Effective analyzer profile to pass to ``AnalyzeResult``. ``minimal`` is
         intentionally more aggressive than ``transport_fast``.
     trajectory_format:
-        Coordinate trajectory stream selection.  ``"xtc"`` writes compressed
-        coordinates only, ``"trr"`` writes full-precision TRR coordinates only,
-        and ``"xtc_trr"`` writes both with TRR kept conservative by default.
+        Coordinate trajectory stream selection.  ``"trr"`` writes full-precision
+        TRR coordinates only, ``"xtc"`` writes compressed coordinates only, and
+        ``"xtc_trr"`` writes both with TRR kept conservative by default.
     traj_ps:
         Primary coordinate output interval in picoseconds.  This remains the
         backwards-compatible name used by summaries; see ``xtc_ps`` and
@@ -334,9 +334,10 @@ def resolve_io_analysis_policy(
         ``"transport_fast"``/``"fast"``, or ``"minimal"`` override analyzer
         behavior without changing MD physics.
     trajectory_format:
-        Coordinate stream selection: ``"auto"``/``"xtc"`` writes compressed
-        XTC only, ``"trr"`` writes full-precision TRR only, and ``"xtc_trr"``
-        writes both.  TRR is never enabled by default because it is large.
+        Coordinate stream selection: ``"auto"``/``"trr"`` writes adaptive
+        full-precision TRR only, ``"xtc"`` writes compressed XTC only, and
+        ``"xtc_trr"`` writes both.  TRR is the production default so conductivity
+        workflows can use ``gmx current`` without rerunning MD.
     traj_ps, energy_ps, log_ps:
         Output intervals in ps. Numeric values override the policy; ``"auto"``
         keeps the tier default. ``traj_ps`` is the primary coordinate cadence,

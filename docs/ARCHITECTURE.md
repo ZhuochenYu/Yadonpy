@@ -73,7 +73,7 @@ not hand-roll `HasProp/GetProp/json.loads` or schema stamping. Use the central h
 - benchmark/species-forcefield summaries;
 - stable JSON writing with schema versions.
 
-This keeps old MolDB records loadable while making new artifacts auditable and harder to
+This keeps historical MolDB records loadable while making new artifacts auditable and harder to
 silently mix across charge recipes, RESP profiles, and benchmark variants.
 
 Example scripts should keep their script-first shape, but shared parsing and runtime
@@ -106,11 +106,11 @@ Important implications:
 - retry budgets and rollback behavior directly affect whether a polymerization attempt is robust;
 - long or rigid chains should not be forced through the same packing assumptions as short flexible chains.
 
-The current builder logic prefers minimum-correct robustness over brittle short-budget defaults.
+The builder logic prefers minimum-correct robustness over brittle short-budget defaults.
 
 ## 7. Bulk-First Interface Logic
 
-YadonPy’s current interface philosophy is layer-stack first, with bulk data used
+YadonPy’s interface philosophy is layer-stack first, with bulk data used
 as calibration rather than as a brittle cut-and-paste source:
 
 1. equilibrate each phase independently;

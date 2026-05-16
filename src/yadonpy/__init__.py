@@ -24,6 +24,8 @@ _auto_initialize_user_data()
 
 from .sim import qm  # noqa: F401
 from .sim.analyzer import AnalyzeResult  # noqa: F401
+from .sim.cleanup import CleanupResult, clean_md_trajectory_files  # noqa: F401
+from .sim.interface_analysis import InterfaceAnalysis  # noqa: F401
 from .sim.performance import IOAnalysisPolicy, resolve_io_analysis_policy  # noqa: F401
 from .diagnostics import doctor  # noqa: F401
 from .interface import InterfaceBuilder, InterfaceDynamics, InterfaceProtocol, InterfaceRouteSpec, build_interface, build_interface_from_workdirs  # noqa: F401
@@ -39,6 +41,7 @@ from .api import (  # noqa: F401
     assign_forcefield,
     build_graphite,
     build_layer_stack,
+    clean_md_trajectory_files,
     conformation_search,
     format_mechanics_result_summary,
     get_ff,
@@ -60,6 +63,7 @@ __all__ = [
     'assign_charges',
     'assign_forcefield',
     'AnalyzeResult',
+    'CleanupResult',
     'IOAnalysisPolicy',
     'audit_default_moldb_sync',
     'audit_bundled_oplsaa_parameter_sanity',
@@ -68,11 +72,13 @@ __all__ = [
     'analyze_layer_stack_interface',
     'build_graphite',
     'build_layer_stack',
+    'clean_md_trajectory_files',
     'conformation_search',
     'doctor',
     'ElectrodeChargeSpec',
     'GraphiteLayerSpec',
     'InterfaceBuilder',
+    'InterfaceAnalysis',
     'InterfaceDynamics',
     'InterfaceProtocol',
     'InterfaceRouteSpec',

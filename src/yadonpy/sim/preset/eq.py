@@ -682,9 +682,9 @@ def _format_ps_interval(value: Optional[float]) -> str:
 def _production_required_outputs(final_dir: Path, policy: IOAnalysisPolicy) -> list[Path]:
     """Return restart markers that match the active coordinate stream.
 
-    Production normally writes compressed ``md.xtc``.  When a caller explicitly
-    asks for TRR-only coordinates, requiring ``md.xtc`` would make an otherwise
-    successful run look incomplete to the restart layer.
+    Production now writes adaptive TRR by default so conductivity workflows can
+    use ``gmx current`` directly.  Requiring ``md.xtc`` for TRR-only runs would
+    make a successful production stage look incomplete to the restart layer.
     """
 
     outputs = [final_dir / "md.tpr", final_dir / "md.edr", final_dir / "md.gro"]

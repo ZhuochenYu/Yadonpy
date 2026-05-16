@@ -15,6 +15,7 @@ from yadonpy.diagnostics import doctor
 from yadonpy.ff.gaff2_mod import GAFF2_mod
 from yadonpy.ff.merz import MERZ
 from yadonpy.sim import qm
+from yadonpy.sim.cleanup import clean_md_trajectory_files
 from yadonpy.sim.preset import eq
 from yadonpy.moldb import MolDB
 
@@ -62,6 +63,7 @@ gpu = 1
 gpu_id = 3
 
 sim_time_ns = 5.0
+clean_trajectories_after_analysis = False
 
 # Packing
 density_g_cm3 = 0.05
@@ -248,3 +250,7 @@ if __name__ == '__main__':
     sigma = analy.sigma(msd=msd, temp_k=temp)
     # Number density distribution (all moltypes by default)
     density_distributionr = analy.den_dis()
+
+    if clean_trajectories_after_analysis:
+        cleanup = clean_md_trajectory_files(work_dir, enabled=True)
+        print(f"[CLEAN] Removed {len(cleanup.removed_files)} trajectory files ({cleanup.removed_bytes} bytes).")

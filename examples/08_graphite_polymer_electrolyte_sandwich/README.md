@@ -62,7 +62,13 @@ semantic aliases such as `GRAPHITE`, `ELECTROLYTE`, `CMCNA`, and `MOBILE`.
 - Constant-charge graphite is a fixed-charge model: surface charge is
   distributed over selected top/bottom surface atoms once at build time.  It is
   not a constant-potential electrode model.
-- Interface analysis reports z density, charge density, adjacent-interface
-  spacing, graphite/electrolyte EDL charge diagnostics, Li/Na coordination
-  partition where available, and anisotropic MSD summaries when trajectories are
-  present.
+- Interface analysis is intentionally different from bulk analysis. The scripts
+  use `analy = nvt.analyze()` followed by `analy.interface(...)`, then call
+  readable methods such as `geometry_health()`, `z_profiles()`,
+  `edl_profiles()`, `penetration(...)`, `graphite_adsorption(...)`,
+  `coordination_by_region()`, and `region_transport()`.
+- The interface report includes z density, charge density, electrostatic
+  potential diagnostics for fixed-charge graphite, double-layer species
+  profiles, small-molecule penetration into CMC/polymer-rich regions,
+  graphite-near adsorption/residence statistics, Li/Na coordination partition,
+  and anisotropic MSD summaries when trajectories are present.

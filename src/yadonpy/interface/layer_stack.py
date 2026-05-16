@@ -225,9 +225,18 @@ class LayerStackNvtResult:
 
     work_dir: Path
     final_gro: Path | None
+    trajectory: Path | None
     xtc: Path | None
+    trr: Path | None
     summary_path: Path
     analysis_summary: Path | None
+
+    def analyze(self):
+        """Return an :class:`AnalyzeResult` rooted at this NVT follow-up run."""
+
+        from ..sim.analyzer import AnalyzeResult
+
+        return AnalyzeResult.from_work_dir(self.work_dir)
 
 
 def _safe_name(name: str) -> str:
@@ -1192,6 +1201,8 @@ def run_layer_stack_nvt(
     production_dir = run_dir / "05_nvt_production"
     final_gro = _latest_existing_file(list(production_dir.rglob("md.gro")))
     xtc = _latest_existing_file(list(production_dir.rglob("md.xtc")))
+    trr = _latest_existing_file(list(production_dir.rglob("md.trr")))
+    trajectory = xtc if xtc is not None else trr
     summary_path = run_dir / "nvt_followup_summary.json"
     analysis_summary: Path | None = None
     analysis_payload: dict[str, Any] | None = None
@@ -1201,7 +1212,7 @@ def run_layer_stack_nvt(
                 work_dir=run_dir,
                 system_gro=final_gro,
                 system_ndx=system_dir / "system.ndx",
-                trajectory=xtc,
+                trajectory=trajectory,
                 analysis_profile=analysis_profile,
             )
             out_path = analysis_payload.get("summary_path") if isinstance(analysis_payload, dict) else None
@@ -1224,7 +1235,9 @@ def run_layer_stack_nvt(
             "system_top": str(system_dir / "system.top"),
             "system_ndx": str(system_dir / "system.ndx"),
             "final_gro": str(final_gro) if final_gro is not None else None,
+            "trajectory": str(trajectory) if trajectory is not None else None,
             "xtc": str(xtc) if xtc is not None else None,
+            "trr": str(trr) if trr is not None else None,
             "manifest": str(run_dir / "layer_stack_manifest.json"),
         },
         "analysis": analysis_payload,
@@ -1233,7 +1246,9 @@ def run_layer_stack_nvt(
     return LayerStackNvtResult(
         work_dir=run_dir,
         final_gro=final_gro,
+        trajectory=trajectory,
         xtc=xtc,
+        trr=trr,
         summary_path=summary_path,
         analysis_summary=analysis_summary,
     )
@@ -1270,23 +1285,34 @@ def analyze_layer_stack_interface(
     system_gro: str | Path | None = None,
     system_ndx: str | Path | None = None,
     trajectory: str | Path | None = None,
+    manifest_path: str | Path | None = None,
     out_dir: str | Path | None = None,
     bin_nm: float = 0.05,
     frame_stride: int | str = "auto",
     region_width_nm: float = 0.75,
+    surface_distance_nm: float = 0.50,
+    surface_grid_nm: float = 0.5,
+    penetration_threshold_nm: float = 0.20,
+    adsorption_min_residence_ps: float = 10.0,
+    potential_reference: str = "zero_mean",
+    split_electrodes: bool = False,
+    report_potential_drop: bool = False,
+    penetration_species: Sequence[str] | None = None,
+    adsorption_species: Sequence[str] | None = None,
     analysis_profile: str = "interface_fast",
     phase_groups: Sequence[str] | None = None,
     compute_transport: bool = True,
 ) -> dict[str, Any]:
     """Analyze z profiles and adjacent-interface diagnostics for a layer stack."""
 
-    gro, ndx, traj, manifest_path = _resolve_stack_artifacts(
+    gro, ndx, traj, resolved_manifest_path = _resolve_stack_artifacts(
         result=result,
         work_dir=work_dir,
         system_gro=system_gro,
         system_ndx=system_ndx,
         trajectory=trajectory,
     )
+    manifest_path = Path(manifest_path) if manifest_path is not None else resolved_manifest_path
     manifest = {}
     if manifest_path is not None and manifest_path.is_file():
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -1311,6 +1337,15 @@ def analyze_layer_stack_interface(
         bin_nm=float(bin_nm),
         frame_stride=frame_stride,
         region_width_nm=float(region_width_nm),
+        surface_distance_nm=float(surface_distance_nm),
+        surface_grid_nm=float(surface_grid_nm),
+        penetration_threshold_nm=float(penetration_threshold_nm),
+        adsorption_min_residence_ps=float(adsorption_min_residence_ps),
+        potential_reference=str(potential_reference),
+        split_electrodes=bool(split_electrodes),
+        report_potential_drop=bool(report_potential_drop),
+        penetration_species=penetration_species,
+        adsorption_species=adsorption_species,
         analysis_profile=str(analysis_profile),
         phase_groups=tuple(phase_groups),
         manifest_path=manifest_path if manifest_path and manifest_path.is_file() else None,

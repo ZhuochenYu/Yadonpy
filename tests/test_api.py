@@ -136,6 +136,7 @@ def test_top_level_api_exports_mechanics_helpers():
     assert hasattr(api, 'build_layer_stack')
     assert hasattr(api, 'analyze_layer_stack_interface')
     assert hasattr(api, 'run_layer_stack_nvt')
+    assert hasattr(api, 'clean_md_trajectory_files')
     assert not hasattr(api, 'run_sandwich_nvt_followup')
     assert not hasattr(api, 'build_cmcna_graphite_electrolyte_stack')
     assert not hasattr(yadonpy, 'GraphiteSubstrateSpec')
@@ -148,7 +149,10 @@ def test_top_level_api_exports_mechanics_helpers():
     assert hasattr(yadonpy, 'VacuumLayerSpec')
     assert hasattr(yadonpy, 'ElectrodeChargeSpec')
     assert hasattr(yadonpy, 'LayerStackNvtResult')
+    assert hasattr(yadonpy, 'clean_md_trajectory_files')
+    assert hasattr(yadonpy, 'InterfaceAnalysis')
     assert 'run_layer_stack_nvt' in api.__all__
+    assert 'clean_md_trajectory_files' in api.__all__
 
 
 def test_analyzer_does_not_expose_transport_bundle_api():

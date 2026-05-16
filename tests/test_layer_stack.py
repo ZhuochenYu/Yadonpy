@@ -289,7 +289,7 @@ def test_run_layer_stack_nvt_uses_exported_stack_artifact(monkeypatch, tmp_path:
             prod = self.work_dir / "05_nvt_production" / "01_nvt"
             prod.mkdir(parents=True, exist_ok=True)
             (prod / "md.gro").write_text("dummy\n0\n   1.0   1.0   1.0\n", encoding="utf-8")
-            (prod / "md.xtc").write_bytes(b"")
+            (prod / "md.trr").write_bytes(b"")
             return self.ac
 
     from yadonpy.sim.preset import eq
@@ -300,6 +300,9 @@ def test_run_layer_stack_nvt_uses_exported_stack_artifact(monkeypatch, tmp_path:
     out = run_layer_stack_nvt(result, work_dir=tmp_path / "nvt", time_ns=0.01, run_analysis=True)
     assert isinstance(out, LayerStackNvtResult)
     assert out.final_gro is not None
+    assert out.trajectory is not None and out.trajectory.suffix == ".trr"
+    assert out.trr is not None
+    assert out.xtc is None
     assert out.summary_path.exists()
     copied_ndx = (tmp_path / "nvt" / "02_system" / "system.ndx").read_text(encoding="utf-8")
     assert "LAYER_00_GRAPHITE" in copied_ndx

@@ -160,19 +160,21 @@ def _analyze_restart_stage(work_root: Path, gro_path: Path) -> AnalyzeResult | N
     stage_dir = Path(gro_path).parent
     tpr = stage_dir / "md.tpr"
     xtc = stage_dir / "md.xtc"
+    trr = stage_dir / "md.trr"
+    traj = xtc if xtc.exists() else trr
     edr = stage_dir / "md.edr"
     top = Path(work_root) / "02_system" / "system.top"
     ndx = Path(work_root) / "02_system" / "system.ndx"
-    if not (tpr.exists() and xtc.exists() and edr.exists() and top.exists() and ndx.exists()):
+    if not (tpr.exists() and traj.exists() and edr.exists() and top.exists() and ndx.exists()):
         return None
     return AnalyzeResult(
         work_dir=Path(work_root),
         tpr=tpr,
-        xtc=xtc,
+        xtc=traj,
         edr=edr,
         top=top,
         ndx=ndx,
-        trr=(stage_dir / "md.trr") if (stage_dir / "md.trr").exists() else None,
+        trr=trr if trr.exists() else None,
         omp=omp,
     )
 
