@@ -108,12 +108,56 @@ def test_build_graphite_periodic_exports_without_hydrogen_caps(tmp_path: Path):
 
     symbols = [atom.GetSymbol() for atom in graphite.layer_mol.GetAtoms()]
     top_text = out.system_top.read_text(encoding="utf-8")
+    carbon_degrees = [atom.GetDegree() for atom in graphite.layer_mol.GetAtoms()]
+    itp_text = "\n".join(path.read_text(encoding="utf-8") for path in out.system_top.parent.rglob("*.itp"))
+    in_bonds = False
+    topology_bonds = 0
+    for line in itp_text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("["):
+            in_bonds = stripped.lower().startswith("[ bonds")
+            continue
+        if in_bonds and stripped and not stripped.startswith(";"):
+            topology_bonds += 1
 
     assert graphite.edge_cap_summary["PERIODIC"] > 0
     assert set(symbols) == {"C"}
+    assert set(carbon_degrees) == {3}
+    assert graphite.layer_mol.GetNumBonds() == graphite.layer_mol.GetNumAtoms() * 3 // 2
+    assert topology_bonds == graphite.layer_mol.GetNumBonds()
+    assert graphite.box_nm[0] == pytest.approx(0.9824)
+    assert graphite.box_nm[1] == pytest.approx(1.7016)
     assert all(atom.HasProp("ff_type") for atom in graphite.layer_mol.GetAtoms())
     assert out.system_top.exists()
     assert "graphite_periodic" in top_text or "M1" in top_text
+
+
+def test_periodic_graphite_basal_has_cross_boundary_bonds():
+    ff = GAFF2_mod()
+
+    graphite = yp.build_graphite(
+        nx=4,
+        ny=4,
+        n_layers=1,
+        orientation="basal",
+        edge_cap="periodic",
+        ff=ff,
+        name="graphite_periodic",
+    )
+    conf = graphite.layer_mol.GetConformer()
+    box_x_ang = 10.0 * graphite.box_nm[0]
+    box_y_ang = 10.0 * graphite.box_nm[1]
+    cross_boundary_bonds = 0
+    for bond in graphite.layer_mol.GetBonds():
+        pi = conf.GetAtomPosition(bond.GetBeginAtomIdx())
+        pj = conf.GetAtomPosition(bond.GetEndAtomIdx())
+        dx = abs(float(pi.x - pj.x))
+        dy = abs(float(pi.y - pj.y))
+        if dx > 0.5 * box_x_ang or dy > 0.5 * box_y_ang:
+            cross_boundary_bonds += 1
+
+    assert cross_boundary_bonds > 0
+    assert all(atom.GetDegree() == 3 for atom in graphite.layer_mol.GetAtoms())
 
 
 def test_stack_cell_blocks_and_export_graphite_plus_solvent(tmp_path: Path):

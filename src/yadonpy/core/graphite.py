@@ -83,6 +83,32 @@ def _set_coords(mol: Chem.Mol, coord: np.ndarray, conf_id: int = 0) -> None:
         conf.SetAtomPosition(i, Geom.Point3D(float(xyz[0]), float(xyz[1]), float(xyz[2])))
 
 
+def _add_graphite_cc_bonds(
+    rw: Chem.RWMol,
+    coord: np.ndarray,
+    *,
+    periodic_xy_box_ang: tuple[float, float] | None = None,
+) -> None:
+    coord = np.asarray(coord, dtype=float)
+    nat = int(len(coord))
+    box_xy = None
+    if periodic_xy_box_ang is not None:
+        box_xy = np.asarray(periodic_xy_box_ang, dtype=float)
+        if box_xy.shape != (2,) or np.any(box_xy <= 0.0):
+            raise ValueError("periodic_xy_box_ang must contain positive x/y box lengths")
+
+    for i in range(nat):
+        for j in range(i + 1, nat):
+            if rw.GetBondBetweenAtoms(int(i), int(j)) is not None:
+                continue
+            delta = coord[int(i)] - coord[int(j)]
+            if box_xy is not None:
+                delta[:2] -= box_xy * np.round(delta[:2] / box_xy)
+            dist = float(np.linalg.norm(delta))
+            if _GRAPHITE_BOND_MIN < dist < _GRAPHITE_BOND_MAX:
+                rw.AddBond(int(i), int(j), rdchem.BondType.SINGLE)
+
+
 def _translate(mol: Chem.Mol, shift: Sequence[float], conf_id: int = 0) -> Chem.Mol:
     dup = utils.deepcopy_mol(mol)
     coord = _coords(dup, conf_id=conf_id) + np.asarray(shift, dtype=float)
@@ -205,7 +231,7 @@ def _load_graphite_template() -> _GraphiteTemplate:
     )
 
 
-def _graphene_layer(nx: int, ny: int) -> tuple[Chem.Mol, list[int], _GraphiteTemplate]:
+def _graphene_layer(nx: int, ny: int, *, periodic_xy: bool = False) -> tuple[Chem.Mol, list[int], _GraphiteTemplate]:
     if int(nx) <= 0 or int(ny) <= 0:
         raise ValueError("nx and ny must be positive")
 
@@ -222,12 +248,18 @@ def _graphene_layer(nx: int, ny: int) -> tuple[Chem.Mol, list[int], _GraphiteTem
                 coords.append(np.asarray(xyz, dtype=float) + shift)
 
     coord = np.asarray(coords, dtype=float)
-    nat = len(coords)
-    for i in range(nat):
-        for j in range(i + 1, nat):
-            dist = float(np.linalg.norm(coord[i] - coord[j]))
-            if _GRAPHITE_BOND_MIN < dist < _GRAPHITE_BOND_MAX:
-                rw.AddBond(int(i), int(j), rdchem.BondType.SINGLE)
+    _add_graphite_cc_bonds(rw, coord)
+    finite_dangling = [
+        atom.GetIdx()
+        for atom in rw.GetAtoms()
+        if atom.GetSymbol() == "C" and atom.GetDegree() < 3
+    ]
+    if periodic_xy:
+        _add_graphite_cc_bonds(
+            rw,
+            coord,
+            periodic_xy_box_ang=(float(nx) * template.a_ang, float(ny) * template.b_ang),
+        )
 
     mol = rw.GetMol()
     conf = Chem.Conformer(mol.GetNumAtoms())
@@ -235,7 +267,21 @@ def _graphene_layer(nx: int, ny: int) -> tuple[Chem.Mol, list[int], _GraphiteTem
     for idx, xyz in enumerate(coords):
         conf.SetAtomPosition(idx, Geom.Point3D(float(xyz[0]), float(xyz[1]), float(xyz[2])))
     mol.AddConformer(conf, assignId=True)
-    dangling = [atom.GetIdx() for atom in mol.GetAtoms() if atom.GetSymbol() == "C" and atom.GetDegree() < 3]
+    if periodic_xy:
+        bad_degrees = [
+            (atom.GetIdx(), atom.GetDegree())
+            for atom in mol.GetAtoms()
+            if atom.GetSymbol() == "C" and atom.GetDegree() != 3
+        ]
+        if bad_degrees:
+            preview = ", ".join(f"{idx}:{deg}" for idx, deg in bad_degrees[:8])
+            raise RuntimeError(
+                "Periodic graphite basal layer failed to close every carbon to degree 3 "
+                f"({preview}). Increase nx/ny or check the bundled graphite lattice."
+            )
+    dangling = finite_dangling if periodic_xy else [
+        atom.GetIdx() for atom in mol.GetAtoms() if atom.GetSymbol() == "C" and atom.GetDegree() < 3
+    ]
     return mol, dangling, template
 
 
@@ -380,6 +426,7 @@ def _cap_edges(mol: Chem.Mol, edge_cap: str | Sequence[str], *, random_cap_probs
 def _prepare_periodic_graphite_layer(
     layer_base: Chem.Mol,
     *,
+    reference_base: Chem.Mol | None = None,
     ff_obj,
     charge: str | None,
     name: str | None,
@@ -394,7 +441,7 @@ def _prepare_periodic_graphite_layer(
     """
 
     reference_capped, _ = _cap_edges(
-        layer_base,
+        reference_base if reference_base is not None else layer_base,
         edge_cap="H",
         random_cap_probs=None,
         random_seed=None,
@@ -466,6 +513,27 @@ def _box_from_coords(coord: np.ndarray, *, lateral_margin_ang: float, bottom_mar
     yhi = float(maxs[1] + float(lateral_margin_ang))
     zhi = float(maxs[2] + float(top_padding_ang))
     return moved, (xhi, xlo, yhi, ylo, zhi, zlo)
+
+
+def _box_periodic_xy_coords(
+    coord: np.ndarray,
+    *,
+    xy_box_ang: tuple[float, float],
+    bottom_margin_ang: float,
+    top_padding_ang: float,
+) -> tuple[np.ndarray, tuple[float, float, float, float, float, float]]:
+    coord = np.asarray(coord, dtype=float)
+    box_x = float(xy_box_ang[0])
+    box_y = float(xy_box_ang[1])
+    if box_x <= 0.0 or box_y <= 0.0:
+        raise ValueError("xy_box_ang must contain positive x/y box lengths")
+
+    moved = coord.copy()
+    moved[:, 0] = np.mod(moved[:, 0], box_x)
+    moved[:, 1] = np.mod(moved[:, 1], box_y)
+    moved[:, 2] += float(bottom_margin_ang) - float(np.min(moved[:, 2]))
+    zhi = float(np.max(moved[:, 2]) + float(top_padding_ang))
+    return moved, (box_x, 0.0, box_y, 0.0, zhi, 0.0)
 
 
 def stack_cell_blocks(
@@ -692,13 +760,19 @@ def build_graphite(
     bottom_margin_ang: float = 2.0,
     top_padding_ang: float = 8.0,
 ) -> GraphiteBuildResult:
-    layer_base, dangling, template = _graphene_layer(nx=int(nx), ny=int(ny))
-    if not dangling:
-        raise RuntimeError("Graphite builder failed to identify edge sites in the graphene layer")
-
+    orient = str(orientation).strip().lower()
+    if orient not in {"basal", "edge"}:
+        raise ValueError("orientation must be 'basal' or 'edge'")
     edge_cap_token = None
     if isinstance(edge_cap, str):
         edge_cap_token = str(edge_cap).strip().upper()
+    periodic_xy = bool(edge_cap_token == _GRAPHITE_PERIODIC_TOKEN)
+    if periodic_xy and orient != "basal":
+        raise ValueError("edge_cap='periodic' is only supported for basal graphite substrates.")
+
+    layer_base, dangling, template = _graphene_layer(nx=int(nx), ny=int(ny), periodic_xy=periodic_xy)
+    if not dangling:
+        raise RuntimeError("Graphite builder failed to identify edge sites in the graphene layer")
 
     ff_obj = ff
     if ff_obj is None:
@@ -706,17 +780,17 @@ def build_graphite(
 
         ff_obj = get_ff(ff_name)
 
-    if edge_cap_token == _GRAPHITE_PERIODIC_TOKEN:
-        if str(orientation).strip().lower() != "basal":
-            raise ValueError("edge_cap='periodic' is only supported for basal graphite substrates.")
+    if periodic_xy:
+        reference_base, _, _ = _graphene_layer(nx=int(nx), ny=int(ny), periodic_xy=False)
         layer_mol = _prepare_periodic_graphite_layer(
             layer_base,
+            reference_base=reference_base,
             ff_obj=ff_obj,
             charge=charge,
             name=name,
         )
         cap_summary = {_GRAPHITE_PERIODIC_TOKEN: int(len(dangling))}
-        effective_lateral_margin_ang = 0.0 if abs(float(lateral_margin_ang) - 4.0) < 1.0e-9 else float(lateral_margin_ang)
+        effective_lateral_margin_ang = 0.0
         effective_bottom_margin_ang = 0.0 if abs(float(bottom_margin_ang) - 2.0) < 1.0e-9 else float(bottom_margin_ang)
     else:
         capped_layer, cap_summary = _cap_edges(
@@ -742,18 +816,23 @@ def build_graphite(
         cell = shifted_layer if cell is None else poly.combine_mols(cell, shifted_layer, res_name_1="GRA", res_name_2="GRA")
 
     coord = _coords(cell)
-    orient = str(orientation).strip().lower()
-    if orient not in {"basal", "edge"}:
-        raise ValueError("orientation must be 'basal' or 'edge'")
     if orient == "edge":
         coord = _rotate_x(coord, 90.0)
 
-    coord, bounds = _box_from_coords(
-        coord,
-        lateral_margin_ang=effective_lateral_margin_ang,
-        bottom_margin_ang=effective_bottom_margin_ang,
-        top_padding_ang=float(top_padding_ang),
-    )
+    if periodic_xy:
+        coord, bounds = _box_periodic_xy_coords(
+            coord,
+            xy_box_ang=(float(nx) * template.a_ang, float(ny) * template.b_ang),
+            bottom_margin_ang=effective_bottom_margin_ang,
+            top_padding_ang=float(top_padding_ang),
+        )
+    else:
+        coord, bounds = _box_from_coords(
+            coord,
+            lateral_margin_ang=effective_lateral_margin_ang,
+            bottom_margin_ang=effective_bottom_margin_ang,
+            top_padding_ang=float(top_padding_ang),
+        )
     _set_coords(cell, coord)
     xhi, xlo, yhi, ylo, zhi, zlo = bounds
     setattr(cell, "cell", Cell(xhi, xlo, yhi, ylo, zhi, zlo))

@@ -334,11 +334,11 @@ def _effective_graphite_edge_cap(spec: GraphiteLayerSpec) -> str | Sequence[str]
 
 
 def _graphite_lateral_margin_ang(spec: GraphiteLayerSpec) -> float:
+    if _graphite_periodic_xy(spec):
+        return 0.0
     if spec.lateral_padding_nm is not None:
         return 10.0 * max(float(spec.lateral_padding_nm), 0.0)
-    if not _graphite_periodic_xy(spec):
-        return 10.0
-    return 0.0
+    return 10.0
 
 
 def _graphite_xy_nm(spec: GraphiteLayerSpec) -> tuple[float, float, Any]:
@@ -592,9 +592,9 @@ def _prepare_graphite_layer(
         "edge_cap": layer.edge_cap,
         "periodic_xy": bool(_graphite_periodic_xy(layer)),
         "lateral_padding_nm": (
-            float(layer.lateral_padding_nm)
-            if layer.lateral_padding_nm is not None
-            else (1.0 if not _graphite_periodic_xy(layer) else 0.0)
+            0.0
+            if _graphite_periodic_xy(layer)
+            else (float(layer.lateral_padding_nm) if layer.lateral_padding_nm is not None else 1.0)
         ),
         "effective_edge_cap": _effective_graphite_edge_cap(layer),
         "edge_cap_summary": dict(built.edge_cap_summary),
