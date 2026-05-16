@@ -173,6 +173,7 @@ def test_interface_facade_exposes_stepwise_outputs(tmp_path: Path):
     interface = analy.interface(
         analysis_profile="interface_fast",
         bin_nm=0.10,
+        penetration_threshold_nm=0.33,
         phase_groups=("GRAPHITE", "POLYMER", "ELECTROLYTE"),
         compute_transport=False,
     )
@@ -191,6 +192,7 @@ def test_interface_facade_exposes_stepwise_outputs(tmp_path: Path):
     assert edl["available"] is True
     assert "charge_potential" in edl
     assert penetration["available"] is True
+    assert penetration["penetration_threshold_nm"] == 0.33
     assert adsorption["available"] is True
     assert coordination["available"] is True
     assert transport["available"] is False

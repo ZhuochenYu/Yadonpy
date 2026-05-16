@@ -67,8 +67,28 @@ semantic aliases such as `GRAPHITE`, `ELECTROLYTE`, `CMCNA`, and `MOBILE`.
   readable methods such as `geometry_health()`, `z_profiles()`,
   `edl_profiles()`, `penetration(...)`, `graphite_adsorption(...)`,
   `coordination_by_region()`, and `region_transport()`.
-- The interface report includes z density, charge density, electrostatic
-  potential diagnostics for fixed-charge graphite, double-layer species
-  profiles, small-molecule penetration into CMC/polymer-rich regions,
-  graphite-near adsorption/residence statistics, Li/Na coordination partition,
-  and anisotropic MSD summaries when trajectories are present.
+- Static stack post-processing uses `analyze_layer_stack_interface(...)` on
+  `system.gro/top/ndx` and `layer_stack_manifest.json`; it is a geometry and
+  charge sanity pass before NVT.
+- Sampled post-processing uses `nvt.analyze().interface(...)`, which reads the
+  NVT coordinate stream (`md.trr` by default, or `md.xtc` when requested) and
+  writes `06_analysis/interface_profile/`.
+- `manifest_path` supplies intended layer order, `bin_nm` controls z-profile
+  resolution, `region_width_nm` controls near-interface/core regions,
+  `surface_distance_nm` controls graphite-near COM adsorption, and
+  `surface_grid_nm` controls xy adsorption maps.
+- `penetration_threshold_nm` requires molecule COMs to sit inside a
+  CMC/polymer-rich or mixed region by that depth before counting penetration.
+  `adsorption_min_residence_ps` controls only the residence-pass flag.
+- `potential_reference`, `split_electrodes`, and `report_potential_drop`
+  describe the one-dimensional fixed-charge EDL potential diagnostic. This is
+  not a constant-potential electrode model and does not change MD charges.
+- `penetration_species` and `adsorption_species` filter moltype names; leaving
+  them unset analyzes all non-graphite molecules.
+- The interface report includes z density, charge density, integrated charge,
+  electrostatic potential diagnostics for fixed-charge graphite, double-layer
+  species profiles, small-molecule penetration into CMC/polymer-rich regions,
+  graphite-near adsorption/residence and orientation proxies, cation
+  coordination partitioning, and anisotropic MSD summaries when trajectories are
+  present. Use `Dxy` as the in-plane interface mobility metric; treat `Dz` as
+  confined-direction mobility.

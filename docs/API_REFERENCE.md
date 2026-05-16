@@ -209,12 +209,32 @@ AnalyzeResult.interface(
     frame_stride: int | str = "auto",
     surface_distance_nm: float = 0.50,
     region_width_nm: float = 0.75,
+    surface_grid_nm: float = 0.5,
+    penetration_threshold_nm: float = 0.20,
+    adsorption_min_residence_ps: float = 10.0,
+    potential_reference: str = "zero_mean",
+    split_electrodes: bool = False,
+    report_potential_drop: bool = False,
+    penetration_species: Sequence[str] | None = None,
+    adsorption_species: Sequence[str] | None = None,
+    phase_groups: Sequence[str] | None = None,
+    compute_transport: bool = True,
+    resume: bool = False,
 )
 AnalyzeResult.interface_profile(
     *,
     bin_nm: float = 0.05,
     frame_stride: int | str = "auto",
     region_width_nm: float = 0.75,
+    surface_grid_nm: float = 0.5,
+    surface_distance_nm: float = 0.50,
+    penetration_threshold_nm: float = 0.20,
+    adsorption_min_residence_ps: float = 10.0,
+    potential_reference: str = "zero_mean",
+    split_electrodes: bool = False,
+    report_potential_drop: bool = False,
+    penetration_species: Sequence[str] | None = None,
+    adsorption_species: Sequence[str] | None = None,
     analysis_profile: str = "interface_fast",
     compute_transport: bool = True,
     resume: bool = False,
@@ -291,15 +311,70 @@ interface = analy.interface(
     bin_nm=0.05,
     region_width_nm=0.75,
     surface_distance_nm=0.50,
+    surface_grid_nm=0.50,
+    penetration_threshold_nm=0.20,
+    adsorption_min_residence_ps=10.0,
+    potential_reference="zero_mean",
+    split_electrodes=True,
+    report_potential_drop=True,
 )
 health = interface.geometry_health()
 z_profile = interface.z_profiles()
-edl = interface.edl_profiles()
+edl = interface.edl_profiles(potential_reference="zero_mean", report_potential_drop=True)
 penetration = interface.penetration(species=("EC", "EMC", "DEC", "PF6"))
 adsorption = interface.graphite_adsorption(species=("EC", "EMC", "DEC"))
+coordination = interface.coordination_by_region()
 transport = interface.region_transport()
 summary = interface.summary()
 ```
+
+Interface parameter semantics:
+
+- `manifest_path` supplies the intended layer names and bottom-to-top order.
+  This is preferred over raw z-quantile ordering for closed `xyz` stacks that
+  may wrap across the periodic z boundary.
+- `bin_nm` is the z histogram width for mass density, charge density, EDL
+  species profiles, integrated charge, electric field, and electrostatic
+  potential CSV files.
+- `region_width_nm` sets the width of graphite-near, mixed, and core-like
+  z regions used by enrichment, penetration, coordination, and region transport.
+- `surface_distance_nm` is the molecule-COM cutoff for graphite-near adsorption;
+  `surface_grid_nm` is the xy bin size for the graphite adsorption occupancy map.
+- `penetration_threshold_nm` is the minimum molecule-COM depth inside a
+  CMC/polymer-rich or mixed region before a frame is counted as penetration.
+- `adsorption_min_residence_ps` only controls the boolean
+  `passes_min_residence` flag; raw adsorbed frame counts and fractions are
+  always reported.
+- `potential_reference="zero_mean"` subtracts the mean potential, while
+  `"zero_start"` pins the first z bin. The potential is a one-dimensional
+  fixed-charge slab diagnostic using vacuum permittivity, not a constant-
+  potential electrode model.
+- `split_electrodes` and `report_potential_drop` record two-electrode reporting
+  intent and include potential-drop diagnostics in the EDL summary. They do not
+  change the MD charges.
+- `penetration_species` and `adsorption_species` filter molecule types by exact
+  or substring match. Leave them as `None` to analyze all non-graphite molecules.
+- `compute_transport=True` adds anisotropic MSD summaries when a trajectory is
+  available. Treat `Dxy` as the in-plane interface mobility metric and `Dz` as
+  confined-direction mobility, not a bulk diffusion coefficient.
+
+Facade method semantics:
+
+- `geometry_health()` reports manifest/trajectory layer order, phase quantiles,
+  interphase distances, severe-overlap flags, and direct graphite-electrolyte
+  contact checks.
+- `z_profiles()` returns paths for z density/charge CSV outputs and phase
+  quantiles.
+- `edl_profiles()` returns fixed-charge EDL species profiles, integrated charge,
+  electric field, and reference-shifted electrostatic potential diagnostics.
+- `penetration(...)` reports molecule COM residence in CMC/polymer-rich or mixed
+  regions.
+- `graphite_adsorption(...)` reports graphite-near residence, surface occupancy,
+  and simple carbonyl/dipole orientation proxies.
+- `coordination_by_region()` partitions cation donor states by z region using
+  fallback O/F contact cutoffs.
+- `region_transport()` returns anisotropic MSD summaries when transport is
+  enabled and a trajectory is present.
 
 Production presets accept adaptive output cadence:
 

@@ -44,10 +44,51 @@ gpu_id = 0
 run_sampling = True
 sample_ns = 2.0
 surface_charge_sweep_uC_cm2 = (0.0, 2.0, -2.0, 5.0, -5.0)
+
+# ---------------- post-processing controls ----------------
+# `analysis_profile="interface_fast"` keeps the interface-specific analyses
+# focused on robust slab observables instead of bulk 3D transport defaults.
 analysis_profile = "interface_fast"
+
+# z-bin width for density, charge, EDL species, integrated charge, and
+# electrostatic-potential profiles. Smaller bins give sharper interfaces but
+# need more trajectory frames to reduce noise.
 interface_bin_nm = 0.05
+
+# Width of automatically named near-interface regions. For this four-layer
+# stack, the manifest defines layer order, then z-quantiles and density overlap
+# define graphite-near, CMC/electrolyte mixed, and core-like regions.
 interface_region_width_nm = 0.75
+
+# xy grid used for graphite adsorption occupancy maps on the basal planes.
+interface_surface_grid_nm = 0.50
+
+# A molecule is counted as graphite-near adsorbed when its mass-weighted COM is
+# within this distance of the nearest graphite quantile surface. This is a
+# residence/geometric diagnostic, not a binding free energy.
 graphite_adsorption_cutoff_nm = 0.50
+
+# Minimum COM depth inside a CMC/polymer-rich or mixed region before a frame is
+# counted as penetration. This avoids counting molecules that merely touch the
+# region boundary due to z-bin noise.
+penetration_threshold_nm = 0.20
+
+# Minimum cumulative adsorbed residence used for the `passes_min_residence`
+# flag in `adsorption_summary.json`; the raw frame fractions are always written.
+adsorption_min_residence_ps = 10.0
+
+# Potential is obtained by one-dimensional integration of sampled fixed-charge
+# density using vacuum permittivity. `zero_mean` removes the mean potential;
+# `zero_start` pins the first z bin. This is not a constant-potential electrode
+# solver and should be interpreted as a slab diagnostic.
+potential_reference = "zero_mean"
+split_electrodes_for_edl = True
+report_potential_drop = True
+
+# Compute anisotropic MSD summaries from the NVT trajectory. Dxy is the main
+# in-plane interface mobility metric; Dz is confined-direction mobility.
+compute_interface_transport = True
+
 penetration_species = ("EC", "EMC", "DEC", "PF6", "Li", "Na")
 adsorption_species = ("EC", "EMC", "DEC")
 clean_trajectories_after_analysis = False
@@ -163,13 +204,41 @@ if __name__ == "__main__":
         print(f"[{surface_charge:+.1f} uC/cm2] stack_gmx_dir = {result.system_gro.parent}")
         print(f"[{surface_charge:+.1f} uC/cm2] acceptance = {result.acceptance}")
 
+        # Static-stack post-processing: this reads the freshly built `system.gro`
+        # plus `system.top`, `system.ndx`, and `layer_stack_manifest.json`. It is
+        # a geometry/charge sanity pass before NVT sampling:
+        #   - `manifest_path` preserves the intended bottom-to-top layer order,
+        #     which is more reliable than raw z-quantiles when an xyz-periodic
+        #     stack wraps around the z boundary.
+        #   - `bin_nm` controls the z histogram resolution for mass density,
+        #     charge density, EDL species layering, integrated charge, and the
+        #     fixed-charge electrostatic-potential diagnostic.
+        #   - `region_width_nm` controls the width of graphite-near, mixed, and
+        #     core-like z regions used by enrichment, penetration, coordination,
+        #     and region transport summaries.
+        #   - `surface_distance_nm` and `surface_grid_nm` define graphite
+        #     adsorption occupancy: molecule COM within the cutoff of a graphite
+        #     surface is counted, and x/y locations are binned on this grid.
+        #   - `penetration_threshold_nm` requires a molecule COM to sit at least
+        #     this far inside a CMC/polymer-rich or mixed region before counting
+        #     it as penetrated.
+        #   - `potential_reference`, `split_electrodes`, and
+        #     `report_potential_drop` annotate the fixed-charge EDL diagnostic.
+        #     The potential is a 1D integral of sampled charge density, not a
+        #     constant-potential or Poisson-Boltzmann electrode solution.
         analyze_layer_stack_interface(
             work_dir=case_dir,
             manifest_path=result.manifest_path,
             analysis_profile=analysis_profile,
             bin_nm=interface_bin_nm,
             region_width_nm=interface_region_width_nm,
+            surface_grid_nm=interface_surface_grid_nm,
             surface_distance_nm=graphite_adsorption_cutoff_nm,
+            penetration_threshold_nm=penetration_threshold_nm,
+            adsorption_min_residence_ps=adsorption_min_residence_ps,
+            potential_reference=potential_reference,
+            split_electrodes=split_electrodes_for_edl,
+            report_potential_drop=report_potential_drop,
             penetration_species=penetration_species,
             adsorption_species=adsorption_species,
             compute_transport=False,
@@ -189,24 +258,52 @@ if __name__ == "__main__":
                 restart=restart_status,
             )
             print(f"[{surface_charge:+.1f} uC/cm2] nvt_summary = {nvt.summary_path}")
+
+            # Sampled-trajectory post-processing facade. `nvt.analyze()` resolves
+            # the final NVT `md.gro`, `md.tpr`, `md.edr`, topology, index file,
+            # and coordinate stream (`md.trr` by default, or `md.xtc` if the
+            # trajectory policy requested compressed coordinates).
+            #
+            # The facade keeps expensive work cached per parameter set and lets
+            # the script ask physical questions explicitly:
+            #   geometry_health(): intended vs sampled layer order, interphase
+            #     distances, severe-overlap flags, and direct graphite/electrolyte
+            #     contact checks.
+            #   z_profiles(): phase/moltype mass density, charge density, number
+            #     density, and phase z-quantiles.
+            #   edl_profiles(): fixed-charge EDL species profiles, integrated
+            #     charge, electric field, and reference-shifted potential.
+            #   penetration(...): molecule COM residence in CMC/polymer-rich or
+            #     mixed regions, filtered by `penetration_threshold_nm`.
+            #   graphite_adsorption(...): graphite-near residence, surface
+            #     occupancy map, and simple carbonyl/dipole orientation proxies.
+            #   coordination_by_region(): cation donor-state partitioning by z
+            #     region using fallback Li/Na-O/F cutoffs.
+            #   region_transport(): anisotropic MSD summaries; use Dxy for
+            #     in-plane interface mobility and Dz only as confined mobility.
             analy = nvt.analyze()
             interface = analy.interface(
                 manifest_path=result.manifest_path,
                 analysis_profile=analysis_profile,
                 bin_nm=interface_bin_nm,
                 region_width_nm=interface_region_width_nm,
+                surface_grid_nm=interface_surface_grid_nm,
                 surface_distance_nm=graphite_adsorption_cutoff_nm,
+                penetration_threshold_nm=penetration_threshold_nm,
+                adsorption_min_residence_ps=adsorption_min_residence_ps,
+                potential_reference=potential_reference,
                 penetration_species=penetration_species,
                 adsorption_species=adsorption_species,
-                split_electrodes=True,
-                report_potential_drop=True,
+                split_electrodes=split_electrodes_for_edl,
+                report_potential_drop=report_potential_drop,
+                compute_transport=compute_interface_transport,
             )
             health = interface.geometry_health()
             z_profile = interface.z_profiles()
             edl = interface.edl_profiles(
-                split_electrodes=True,
-                potential_reference="zero_mean",
-                report_potential_drop=True,
+                split_electrodes=split_electrodes_for_edl,
+                potential_reference=potential_reference,
+                report_potential_drop=report_potential_drop,
             )
             penetration = interface.penetration(species=penetration_species)
             adsorption = interface.graphite_adsorption(species=adsorption_species)

@@ -265,6 +265,28 @@ def test_analyzer_uses_trr_when_xtc_is_absent(tmp_path: Path):
     assert analyzer.trr == tmp_path / "md.trr"
 
 
+def test_analyzer_frame_interval_uses_trr_nst_when_xtc_disabled(tmp_path: Path):
+    (tmp_path / "md.mdp").write_text(
+        "dt = 0.002\n"
+        "nstxout-compressed = 0\n"
+        "nstxout = 5000\n",
+        encoding="utf-8",
+    )
+    for name in ("md.tpr", "md.trr", "md.edr", "system.top", "system.ndx"):
+        (tmp_path / name).write_text("x\n", encoding="utf-8")
+
+    analyzer = AnalyzeResult(
+        work_dir=tmp_path,
+        tpr=tmp_path / "md.tpr",
+        xtc=tmp_path / "md.trr",
+        edr=tmp_path / "md.edr",
+        top=tmp_path / "system.top",
+        ndx=tmp_path / "system.ndx",
+    )
+
+    assert analyzer._trajectory_frame_interval_ps() == pytest.approx(10.0)
+
+
 def test_equilibration_job_final_outputs_fall_back_to_trr(tmp_path: Path):
     from yadonpy.gmx.workflows.eq import EquilibrationJob
 

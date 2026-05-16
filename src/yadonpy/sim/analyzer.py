@@ -1602,11 +1602,15 @@ class AnalyzeResult:
             dt_ps = float(kv.get("dt", "0"))
         except Exception:
             dt_ps = 0.0
-        nst_raw = kv.get("nstxout-compressed") or kv.get("nstxout") or "0"
-        try:
-            nst = int(float(nst_raw))
-        except Exception:
-            nst = 0
+        nst = 0
+        for key in ("nstxout-compressed", "nstxout"):
+            try:
+                maybe = int(float(kv.get(key, "0")))
+            except Exception:
+                maybe = 0
+            if maybe > 0:
+                nst = maybe
+                break
         if dt_ps <= 0.0 or nst <= 0:
             return None
         return float(dt_ps) * float(nst)

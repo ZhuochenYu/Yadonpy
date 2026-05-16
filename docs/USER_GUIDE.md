@@ -401,12 +401,19 @@ interface = analy.interface(
     bin_nm=0.05,
     region_width_nm=0.75,
     surface_distance_nm=0.50,
+    surface_grid_nm=0.50,
+    penetration_threshold_nm=0.20,
+    adsorption_min_residence_ps=10.0,
+    potential_reference="zero_mean",
+    split_electrodes=True,
+    report_potential_drop=True,
 )
 health = interface.geometry_health()
 z_profile = interface.z_profiles()
-edl = interface.edl_profiles()
+edl = interface.edl_profiles(potential_reference="zero_mean", report_potential_drop=True)
 penetration = interface.penetration(species=("EC", "EMC", "DEC", "PF6"))
 adsorption = interface.graphite_adsorption(species=("EC", "EMC", "DEC"))
+coordination = interface.coordination_by_region()
 transport = interface.region_transport()
 summary = interface.summary()
 ```
@@ -418,6 +425,46 @@ statistics, Li/Na coordination partitioning, and anisotropic MSD summaries.
 Treat `Dxy` as the main interface transport metric; `Dz` is confined-direction
 mobility, not a bulk diffusion coefficient. Bulk-style 3D diffusion,
 conductivity, and dielectric analysis should be used only as explicit controls.
+
+Parameter meanings:
+
+- `manifest_path` keeps the intended layer names and bottom-to-top order. Use it
+  for closed `xyz` stacks because raw z coordinates can wrap across the periodic
+  boundary.
+- `bin_nm` is the z-bin width for density, charge, integrated-charge, EDL
+  species, and electrostatic-potential profiles.
+- `region_width_nm` controls the graphite-near, mixed, and core-like z regions
+  used for enrichment, penetration, coordination, and region transport.
+- `surface_distance_nm` is the molecule-COM cutoff for graphite-near adsorption;
+  `surface_grid_nm` is the xy grid used for graphite surface occupancy maps.
+- `penetration_threshold_nm` is the minimum COM depth inside a CMC/polymer-rich
+  or mixed region before a frame is counted as penetration.
+- `adsorption_min_residence_ps` controls the `passes_min_residence` flag only;
+  raw residence counts and fractions are still written.
+- `potential_reference` chooses the reference shift for the 1D fixed-charge
+  potential diagnostic: `zero_mean` subtracts the mean, and `zero_start` pins the
+  first z bin. This is not a constant-potential electrode calculation.
+- `split_electrodes` and `report_potential_drop` request two-electrode EDL
+  reporting metadata and potential-drop diagnostics; they do not change the MD
+  charge model.
+- `penetration_species` and `adsorption_species` filter moltype names by exact
+  or substring match.
+- `compute_transport=True` adds anisotropic MSD summaries when a trajectory is
+  available. Use `compute_transport=False` for static build-only sanity checks.
+
+Method meanings:
+
+- `geometry_health()` checks layer order, phase z-quantiles, interphase
+  distances, severe overlaps, and direct graphite-electrolyte contact.
+- `z_profiles()` returns density/charge profile outputs.
+- `edl_profiles()` returns fixed-charge EDL species, integrated charge, electric
+  field, and potential diagnostics.
+- `penetration(...)` reports molecule COM residence in CMC/polymer-rich or mixed
+  regions.
+- `graphite_adsorption(...)` reports graphite-near residence, surface occupancy,
+  and simple orientation proxies.
+- `coordination_by_region()` reports cation donor-state partitioning by z region.
+- `region_transport()` reports `Dxy`/`Dz` anisotropic MSD diagnostics.
 
 Sandwich-specific interface builders are not part of the public workflow
 surface.  Use layer-stack specs for both simple two-layer contacts and

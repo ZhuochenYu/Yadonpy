@@ -96,25 +96,33 @@ def _iter_frames(
 
     frame_offset = 0
     yielded = False
-    for trj_raw in md.iterload(str(xtc_path), top=str(gro_path), chunk=int(max(1, chunk))):
-        raw_n = int(getattr(trj_raw, "n_frames", np.asarray(getattr(trj_raw, "xyz", [])).shape[0]))
-        if raw_n <= 0:
-            continue
-        keep = [i for i in range(raw_n) if ((frame_offset + i) % stride) == 0]
-        frame_offset += raw_n
-        if not keep:
-            continue
-        trj = trj_raw[keep]
-        xyz = np.asarray(trj.xyz, dtype=float)
-        boxes = np.asarray(getattr(trj, "unitcell_lengths", None), dtype=float)
-        times = np.asarray(getattr(trj, "time", np.arange(xyz.shape[0], dtype=float)), dtype=float)
-        for i in range(xyz.shape[0]):
-            if boxes.ndim == 2 and boxes.shape[0] > i and boxes.shape[1] >= 3:
-                box = (float(boxes[i, 0]), float(boxes[i, 1]), float(boxes[i, 2]))
-            else:
-                _coords0, box = _read_gro_frame(gro_path)
-            yielded = True
-            yield float(times[i]), np.asarray(xyz[i], dtype=float), box
+    try:
+        iterator = md.iterload(str(xtc_path), top=str(gro_path), chunk=int(max(1, chunk)))
+        for trj_raw in iterator:
+            raw_n = int(getattr(trj_raw, "n_frames", np.asarray(getattr(trj_raw, "xyz", [])).shape[0]))
+            if raw_n <= 0:
+                continue
+            keep = [i for i in range(raw_n) if ((frame_offset + i) % stride) == 0]
+            frame_offset += raw_n
+            if not keep:
+                continue
+            trj = trj_raw[keep]
+            xyz = np.asarray(trj.xyz, dtype=float)
+            boxes = np.asarray(getattr(trj, "unitcell_lengths", None), dtype=float)
+            times = np.asarray(getattr(trj, "time", np.arange(xyz.shape[0], dtype=float)), dtype=float)
+            for i in range(xyz.shape[0]):
+                if boxes.ndim == 2 and boxes.shape[0] > i and boxes.shape[1] >= 3:
+                    box = (float(boxes[i, 0]), float(boxes[i, 1]), float(boxes[i, 2]))
+                else:
+                    _coords0, box = _read_gro_frame(gro_path)
+                yielded = True
+                yield float(times[i]), np.asarray(xyz[i], dtype=float), box
+    except Exception:
+        if not yielded:
+            coords, box = _read_gro_frame(gro_path)
+            yield 0.0, coords, box
+            return
+        raise
     if not yielded:
         coords, box = _read_gro_frame(gro_path)
         yield 0.0, coords, box
@@ -751,6 +759,15 @@ def _region_for_z(z: float, regions: dict[str, dict[str, float]]) -> str | None:
     return None
 
 
+def _depth_inside_region(z: float, bounds: dict[str, float]) -> float | None:
+    lo = float(bounds["z_lo_nm"])
+    hi = float(bounds["z_hi_nm"])
+    zz = float(z)
+    if zz < lo or zz > hi:
+        return None
+    return float(max(0.0, min(zz - lo, hi - zz)))
+
+
 def _enrichment(
     *,
     frames: list[tuple[float, np.ndarray, tuple[float, float, float]]],
@@ -813,12 +830,14 @@ def _penetration_analysis(
     instances: Sequence[dict[str, Any]],
     regions: dict[str, dict[str, float]],
     species: Sequence[str] | None = None,
+    penetration_threshold_nm: float = 0.20,
 ) -> dict[str, Any]:
     polymer_regions = [name for name in regions if ("polymer" in name.lower() or "cmc" in name.lower() or "mixed" in name.lower())]
     electrolyte_regions = [name for name in regions if "electrolyte" in name.lower()]
     rows: list[dict[str, Any]] = []
     summary: dict[str, dict[str, Any]] = {}
     dt_ps = _frame_interval_ps(frames)
+    threshold = max(0.0, float(penetration_threshold_nm))
     for inst_id, inst in enumerate(instances):
         moltype = str(inst.get("moltype") or "")
         kind = str(inst.get("kind") or "").lower()
@@ -832,7 +851,14 @@ def _penetration_analysis(
         for time_ps, coords, _box in frames:
             z = _instance_com_z(coords, inst)
             region = _region_for_z(z, regions) or "outside_regions"
-            in_polymer = region in polymer_regions
+            polymer_depths = [
+                depth
+                for reg in polymer_regions
+                for depth in [_depth_inside_region(z, regions[reg])]
+                if depth is not None
+            ]
+            polymer_region_depth = max(polymer_depths) if polymer_depths else None
+            in_polymer = bool(polymer_region_depth is not None and float(polymer_region_depth) >= threshold)
             in_electrolyte = region in electrolyte_regions
             in_polymer_series.append(bool(in_polymer))
             in_electrolyte_series.append(bool(in_electrolyte))
@@ -854,6 +880,7 @@ def _penetration_analysis(
                     "region": region,
                     "in_polymer_region": bool(in_polymer),
                     "in_electrolyte_region": bool(in_electrolyte),
+                    "polymer_region_depth_nm": polymer_region_depth,
                 }
             )
         rec = summary.setdefault(
@@ -885,6 +912,7 @@ def _penetration_analysis(
     return {
         "available": bool(rows),
         "species": None if species is None else [str(x) for x in species],
+        "penetration_threshold_nm": float(threshold),
         "polymer_regions": polymer_regions,
         "electrolyte_regions": electrolyte_regions,
         "rows": rows,
@@ -1417,6 +1445,7 @@ def compute_interface_profile(
         instances=atom_payload["instances"],
         regions=regions,
         species=penetration_species,
+        penetration_threshold_nm=float(penetration_threshold_nm),
     )
     adsorption = _adsorption_analysis(
         frames=frames,
