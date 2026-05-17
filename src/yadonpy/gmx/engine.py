@@ -301,6 +301,7 @@ class GromacsRunner:
         out_tpr: Path,
         ndx: Optional[Path] = None,
         cpt: Optional[Path] = None,
+        ref_gro: Optional[Path] = None,
         maxwarn: int = 5,
         cwd: Optional[Path] = None,
     ) -> None:
@@ -317,6 +318,11 @@ class GromacsRunner:
             "-maxwarn",
             str(maxwarn),
         ]
+        # GROMACS 2018+ requires an explicit reference coordinate file when a
+        # topology enables position restraints.  Using the input coordinates as
+        # the default reference preserves legacy behavior and is harmless for
+        # stages without active restraints.
+        args += ["-r", str(ref_gro if ref_gro is not None else gro)]
         if ndx:
             args += ["-n", str(ndx)]
         if cpt:
