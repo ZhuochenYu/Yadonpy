@@ -1931,6 +1931,7 @@ def compute_interface_profile(
         bins = np.asarray([0.0, max(float(final_box[2]), float(bin_nm))], dtype=float)
 
     phase_groups_norm = [str(x) for x in phase_groups]
+    manifest_payload: dict[str, Any] = {}
     manifest_order: list[str] | None = None
     if manifest_path is not None and Path(manifest_path).is_file():
         try:
@@ -1940,7 +1941,20 @@ def compute_interface_profile(
                 ordered_names = [str(v.get("name")) for v in intervals if isinstance(v, dict) and v.get("name") is not None]
                 manifest_order = [name for name in ordered_names if name in phase_groups_norm]
         except Exception:
+            manifest_payload = {}
             manifest_order = None
+    manifest_summary = {
+        "available": bool(manifest_payload),
+        "path": None if manifest_path is None else str(manifest_path),
+        "name": manifest_payload.get("name") if manifest_payload else None,
+        "pbc_mode": manifest_payload.get("pbc_mode") if manifest_payload else None,
+        "box_nm": manifest_payload.get("box_nm") if manifest_payload else None,
+        "layers": manifest_payload.get("layers", []) if manifest_payload else [],
+        "layer_intervals_nm": manifest_payload.get("layer_intervals_nm", []) if manifest_payload else [],
+        "fixed_charge_regions": manifest_payload.get("fixed_charge_regions", []) if manifest_payload else [],
+        "acceptance": manifest_payload.get("acceptance", {}) if manifest_payload else {},
+        "z_compaction": manifest_payload.get("z_compaction", {}) if manifest_payload else {},
+    }
 
     phase_stats: dict[str, dict[str, Any]] = {}
     for phase, mask in phase_masks.items():
@@ -2258,6 +2272,7 @@ def compute_interface_profile(
             "manifest_path": None if manifest_path is None else str(manifest_path),
         },
         "geometry_health": geometry_health,
+        "manifest": manifest_summary,
         "region_summary": region_summary,
         "coordination_by_region": coordination,
         "anisotropic_msd_summary": transport,

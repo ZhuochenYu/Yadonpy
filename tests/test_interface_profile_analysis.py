@@ -103,6 +103,37 @@ def _write_synthetic_stack(system_dir: Path, *, direct_contact: bool = False) ->
 def test_interface_profile_extracts_phase_order_density_overlap_and_coordination(tmp_path: Path):
     system_dir = tmp_path / "00_stack"
     _write_synthetic_stack(system_dir)
+    manifest_path = tmp_path / "layer_stack_manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "name": "synthetic_manifest",
+                "pbc_mode": "xyz",
+                "box_nm": [3.0, 3.0, 5.0],
+                "layers": [
+                    {"name": "GRAPHITE", "kind": "graphite"},
+                    {"name": "POLYMER", "kind": "polymer"},
+                    {"name": "ELECTROLYTE", "kind": "electrolyte"},
+                ],
+                "layer_intervals_nm": [
+                    {"name": "GRAPHITE", "z_lo_nm": 0.0, "z_hi_nm": 0.5},
+                    {"name": "POLYMER", "z_lo_nm": 0.8, "z_hi_nm": 2.8},
+                    {"name": "ELECTROLYTE", "z_lo_nm": 2.6, "z_hi_nm": 3.0},
+                ],
+                "fixed_charge_regions": [
+                    {
+                        "label": "graphite_inner_face",
+                        "layer_name": "GRAPHITE",
+                        "region": "top",
+                        "target_charge_e": 0.25,
+                        "selected_atom_count": 2,
+                    }
+                ],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
 
     out = compute_interface_profile(
         gro_path=system_dir / "system.gro",
@@ -113,6 +144,7 @@ def test_interface_profile_extracts_phase_order_density_overlap_and_coordination
         xtc_path=None,
         bin_nm=0.10,
         compute_transport=False,
+        manifest_path=manifest_path,
     )
 
     assert out["geometry_health"]["phase_order"] == ["GRAPHITE", "POLYMER", "ELECTROLYTE"]
@@ -121,6 +153,8 @@ def test_interface_profile_extracts_phase_order_density_overlap_and_coordination
     assert out["region_summary"]["interpenetration"]["overlap_width_nm"] > 0.0
     assert out["coordination_by_region"]["available"] is True
     assert out["parameters"]["time_series_analysis"] is False
+    assert out["manifest"]["available"] is True
+    assert out["manifest"]["fixed_charge_regions"][0]["label"] == "graphite_inner_face"
     assert out["time_series"]["available"] is False
     assert out["time_series"]["reason"] == "disabled"
     assert (tmp_path / "analysis" / "z_density_profiles.csv").exists()
