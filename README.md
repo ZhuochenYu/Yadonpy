@@ -237,10 +237,14 @@ The recommended development environment uses Python 3.11.
 conda create -n yadonpy python=3.11
 conda activate yadonpy
 
-conda install -c conda-forge rdkit openbabel parmed mdtraj matplotlib ffmpeg pandas scipy packaging psi4=1.10 dftd3-python psiresp-base
+conda install -c conda-forge rdkit openbabel parmed mdtraj matplotlib pandas scipy packaging psi4=1.10 dftd3-python psiresp-base
 python -m pip install "pydantic==1.10.26"
 python -m pip install -e .
 ```
+
+`python -m pip install -e .` installs `imageio-ffmpeg`, so YadonPy's MP4
+post-processing can use the bundled ffmpeg executable without requiring a
+separate system `ffmpeg` package.
 
 Initialize the bundled MolDB catalog and check the environment:
 
@@ -501,9 +505,10 @@ umbrella_plan = prepare_solvated_ion_umbrella(
   enabled, they sample up to ten equal trajectory windows by default and write
   slow MP4 overlays for molecule-COM z concentration, cation-centered RDF/CN,
   and adsorbed orientation-angle distributions when the required trajectory and
-  species are available.  MP4 writing requires the conda-forge `ffmpeg`
-  package; CSV time-series artifacts are still written if the movie writer is
-  unavailable.
+  species are available.  The same plotting frames are written as PNG images
+  under `time_series/frames/` before MP4 encoding.  MP4 writing uses the
+  pip-installed `imageio-ffmpeg` executable when available; CSV and PNG
+  artifacts are still written if the movie writer is unavailable.
 
 After all required analyses have completed, large trajectory streams can be
 removed while keeping auditable outputs:

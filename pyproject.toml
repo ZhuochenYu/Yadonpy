@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "yadonpy"
-version = "0.9.17"
+version = "0.9.18"
 description = "SMILES-driven workflow toolkit using GROMACS"
 requires-python = ">=3.11"
 authors = [{name = "YZC"}]
@@ -15,6 +15,7 @@ dependencies = [
   "numpy",
   "pandas",
   "matplotlib",
+  "imageio-ffmpeg>=0.5",
   "scipy",
   "packaging",
   "parmed",

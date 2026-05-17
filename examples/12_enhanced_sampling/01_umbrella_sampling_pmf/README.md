@@ -38,5 +38,6 @@ python run_li_to_cmc_umbrella_pmf.py
 - `06_postprocess/coordination_by_window.csv`
 - `06_postprocess/pmf_coordination_overlay.svg`
 - `06_postprocess/umbrella_pmf_summary.json`
-- `06_postprocess/umbrella_pmf_timeseries.mp4` when `ffmpeg` is available
-
+- `06_postprocess/frames/umbrella_pmf_timeseries/frame_*.png`
+- `06_postprocess/umbrella_pmf_timeseries.mp4` when the pip-installed
+  `imageio-ffmpeg` writer is available

@@ -328,4 +328,8 @@ def test_interface_time_series_writes_decile_csv_artifacts(tmp_path: Path, monke
     assert (tmp_path / "time_series" / "rdf_cn_curves_timeseries.csv").exists()
     assert (tmp_path / "time_series" / "rdf_cn_shell_timeseries.csv").exists()
     assert (tmp_path / "time_series" / "adsorbed_orientation_angle_timeseries.csv").exists()
+    assert (tmp_path / "time_series" / "frames" / "z_concentration" / "frame_000.png").exists()
+    assert (tmp_path / "time_series" / "frames" / "rdf_cn" / "frame_000.png").exists()
+    assert (tmp_path / "time_series" / "frames" / "adsorbed_orientation_angle" / "frame_000.png").exists()
+    assert out["outputs"]["z_concentration"]["frame_png_count"] == 2
     assert out["outputs"]["rdf_cn"]["shell_csv"].endswith("rdf_cn_shell_timeseries.csv")

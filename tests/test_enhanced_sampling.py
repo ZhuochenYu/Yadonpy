@@ -209,6 +209,8 @@ def test_analyze_umbrella_pmf_merges_fake_wham_and_colvar_outputs(tmp_path: Path
     assert (plan.postprocess_dir / "pmf.svg").exists()
     assert (plan.postprocess_dir / "coordination_vs_reaction_coordinate.svg").exists()
     assert "available" in summary["mp4"]
+    assert summary["mp4"]["frame_png_count"] >= 1
+    assert Path(summary["mp4"]["frames_dir"]).joinpath("frame_000.png").exists()
 
 
 def test_run_solvated_ion_umbrella_accepts_fake_runner(tmp_path: Path):

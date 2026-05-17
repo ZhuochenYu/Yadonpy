@@ -505,6 +505,15 @@ def _mp4_writer(fps: float):
     except Exception:
         return None
     try:
+        try:
+            import imageio_ffmpeg
+            import matplotlib as mpl
+
+            ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
+            if ffmpeg_exe:
+                mpl.rcParams["animation.ffmpeg_path"] = str(ffmpeg_exe)
+        except Exception:
+            pass
         if not animation.writers.is_available("ffmpeg"):
             return None
         return animation.FFMpegWriter(fps=max(1, int(round(float(fps)))), bitrate=1800)
@@ -522,6 +531,23 @@ def _animation_result(*, path: Path | None, reason: str | None = None, extra: di
     if extra:
         payload.update(extra)
     return payload
+
+
+def _save_animation_png_frames(
+    *,
+    fig: Any,
+    update,
+    frame_count: int,
+    frame_dir: Path,
+    dpi: int = 160,
+) -> dict[str, Any]:
+    frame_dir.mkdir(parents=True, exist_ok=True)
+    count = 0
+    for frame_idx in range(max(0, int(frame_count))):
+        update(int(frame_idx))
+        fig.savefig(frame_dir / f"frame_{frame_idx:03d}.png", dpi=int(dpi))
+        count += 1
+    return {"frames_dir": str(frame_dir), "frame_png_count": int(count)}
 
 
 def _time_windows(
@@ -657,16 +683,8 @@ def _write_concentration_timeseries(
 
     csv_path = out_dir / "time_series" / "z_concentration_timeseries.csv"
     _write_rows_csv(csv_path, rows)
-    writer = _mp4_writer(fps)
-    if writer is None:
-        return _animation_result(
-            path=None,
-            reason="ffmpeg_writer_unavailable",
-            extra={"csv": str(csv_path), "sample_windows": len(profiles), "moltypes": labels},
-        )
     try:
         import matplotlib.pyplot as plt
-        from matplotlib.animation import FuncAnimation
     except Exception:
         return _animation_result(path=None, reason="matplotlib_unavailable", extra={"csv": str(csv_path)})
     mp4_path = out_dir / "time_series" / "z_concentration_timeseries.mp4"
@@ -689,6 +707,22 @@ def _write_concentration_timeseries(
         ax.legend(loc="best", fontsize="small", ncols=2)
         fig.tight_layout()
 
+    frame_meta = _save_animation_png_frames(
+        fig=fig,
+        update=_update,
+        frame_count=len(profiles),
+        frame_dir=out_dir / "time_series" / "frames" / "z_concentration",
+    )
+    extra = {"csv": str(csv_path), "sample_windows": len(profiles), "moltypes": labels, **frame_meta}
+    writer = _mp4_writer(fps)
+    if writer is None:
+        plt.close(fig)
+        return _animation_result(path=None, reason="ffmpeg_writer_unavailable", extra=extra)
+    try:
+        from matplotlib.animation import FuncAnimation
+    except Exception:
+        plt.close(fig)
+        return _animation_result(path=None, reason="matplotlib_unavailable", extra=extra)
     ani = FuncAnimation(fig, _update, frames=len(profiles), interval=1000)
     try:
         ani.save(mp4_path, writer=writer)
@@ -697,10 +731,10 @@ def _write_concentration_timeseries(
         return _animation_result(
             path=None,
             reason=f"mp4_write_failed:{exc.__class__.__name__}",
-            extra={"csv": str(csv_path), "sample_windows": len(profiles), "moltypes": labels},
+            extra=extra,
         )
     plt.close(fig)
-    return _animation_result(path=mp4_path, extra={"csv": str(csv_path), "sample_windows": len(profiles), "moltypes": labels})
+    return _animation_result(path=mp4_path, extra=extra)
 
 
 def _rdf_curve_from_frames(
@@ -819,16 +853,8 @@ def _write_rdf_cn_timeseries(
     shell_csv = out_dir / "time_series" / "rdf_cn_shell_timeseries.csv"
     _write_rows_csv(curve_csv, curve_rows)
     _write_rows_csv(shell_csv, shell_rows)
-    writer = _mp4_writer(fps)
-    if writer is None:
-        return _animation_result(
-            path=None,
-            reason="ffmpeg_writer_unavailable",
-            extra={"curves_csv": str(curve_csv), "shell_csv": str(shell_csv), "sample_windows": len(curves)},
-        )
     try:
         import matplotlib.pyplot as plt
-        from matplotlib.animation import FuncAnimation
     except Exception:
         return _animation_result(
             path=None,
@@ -864,6 +890,28 @@ def _write_rdf_cn_timeseries(
         ax_g.legend(loc="best", fontsize="small", ncols=3)
         fig.tight_layout()
 
+    frame_meta = _save_animation_png_frames(
+        fig=fig,
+        update=_update,
+        frame_count=len(curves),
+        frame_dir=out_dir / "time_series" / "frames" / "rdf_cn",
+    )
+    extra = {
+        "curves_csv": str(curve_csv),
+        "shell_csv": str(shell_csv),
+        "sample_windows": len(curves),
+        "pairs": [p[0] for p in pair_specs],
+        **frame_meta,
+    }
+    writer = _mp4_writer(fps)
+    if writer is None:
+        plt.close(fig)
+        return _animation_result(path=None, reason="ffmpeg_writer_unavailable", extra=extra)
+    try:
+        from matplotlib.animation import FuncAnimation
+    except Exception:
+        plt.close(fig)
+        return _animation_result(path=None, reason="matplotlib_unavailable", extra=extra)
     ani = FuncAnimation(fig, _update, frames=len(curves), interval=1000)
     try:
         ani.save(mp4_path, writer=writer)
@@ -872,18 +920,10 @@ def _write_rdf_cn_timeseries(
         return _animation_result(
             path=None,
             reason=f"mp4_write_failed:{exc.__class__.__name__}",
-            extra={"curves_csv": str(curve_csv), "shell_csv": str(shell_csv), "sample_windows": len(curves)},
+            extra=extra,
         )
     plt.close(fig)
-    return _animation_result(
-        path=mp4_path,
-        extra={
-            "curves_csv": str(curve_csv),
-            "shell_csv": str(shell_csv),
-            "sample_windows": len(curves),
-            "pairs": [p[0] for p in pair_specs],
-        },
-    )
+    return _animation_result(path=mp4_path, extra=extra)
 
 
 def _write_angle_timeseries(
@@ -935,16 +975,8 @@ def _write_angle_timeseries(
             )
     csv_path = out_dir / "time_series" / "adsorbed_orientation_angle_timeseries.csv"
     _write_rows_csv(csv_path, out_rows)
-    writer = _mp4_writer(fps)
-    if writer is None:
-        return _animation_result(
-            path=None,
-            reason="ffmpeg_writer_unavailable",
-            extra={"csv": str(csv_path), "sample_windows": len(profiles)},
-        )
     try:
         import matplotlib.pyplot as plt
-        from matplotlib.animation import FuncAnimation
     except Exception:
         return _animation_result(path=None, reason="matplotlib_unavailable", extra={"csv": str(csv_path)})
     mp4_path = out_dir / "time_series" / "adsorbed_orientation_angle_timeseries.mp4"
@@ -970,6 +1002,22 @@ def _write_angle_timeseries(
         ax.legend(loc="best", fontsize="small")
         fig.tight_layout()
 
+    frame_meta = _save_animation_png_frames(
+        fig=fig,
+        update=_update,
+        frame_count=len(profiles),
+        frame_dir=out_dir / "time_series" / "frames" / "adsorbed_orientation_angle",
+    )
+    extra = {"csv": str(csv_path), "sample_windows": len(profiles), **frame_meta}
+    writer = _mp4_writer(fps)
+    if writer is None:
+        plt.close(fig)
+        return _animation_result(path=None, reason="ffmpeg_writer_unavailable", extra=extra)
+    try:
+        from matplotlib.animation import FuncAnimation
+    except Exception:
+        plt.close(fig)
+        return _animation_result(path=None, reason="matplotlib_unavailable", extra=extra)
     ani = FuncAnimation(fig, _update, frames=len(profiles), interval=1000)
     try:
         ani.save(mp4_path, writer=writer)
@@ -978,10 +1026,10 @@ def _write_angle_timeseries(
         return _animation_result(
             path=None,
             reason=f"mp4_write_failed:{exc.__class__.__name__}",
-            extra={"csv": str(csv_path), "sample_windows": len(profiles)},
+            extra=extra,
         )
     plt.close(fig)
-    return _animation_result(path=mp4_path, extra={"csv": str(csv_path), "sample_windows": len(profiles)})
+    return _animation_result(path=mp4_path, extra=extra)
 
 
 def _time_series_animations(

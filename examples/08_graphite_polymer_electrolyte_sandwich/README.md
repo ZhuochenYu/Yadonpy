@@ -159,8 +159,10 @@ semantic aliases such as `GRAPHITE`, `ELECTROLYTE`, `CMCNA`, and `MOBILE`.
   write `time_series/` CSVs and slow MP4 overlays.  The default samples ten
   equal time windows, so RDF/CN, molecule-COM z concentration, and
   adsorbed-angle distributions can be inspected without creating a dense movie.
-  MP4 output requires `ffmpeg` in the active conda environment; CSV artifacts
-  are written even if the movie writer is unavailable.
+  The plotting frames are also exported as PNG images under
+  `time_series/frames/` before MP4 encoding.  MP4 output uses the
+  pip-installed `imageio-ffmpeg` executable when available; CSV and PNG
+  artifacts are written even if the movie writer is unavailable.
 - RDF time-series outputs are cation-centered when Li+/Na+ sites exist.  The
   same animation and CSV set includes CN(r) curves and first-shell CN values
   versus time, so RDF changes are interpreted together with coordination-number

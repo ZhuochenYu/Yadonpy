@@ -587,9 +587,11 @@ pmf = run_solvated_ion_umbrella(umbrella_plan, mpi=1, omp=14, gpu=1, gpu_id=0)
 
 The standard post-processing writes PMF and histogram CSV/SVG files, merged
 PLUMED `COLVAR` data, `coordination_by_window.csv`,
-`pmf_coordination_overlay.svg`, `umbrella_pmf_summary.json`, and an MP4 overview
-when `ffmpeg` is available.  Example 12 contains the script-first version of
-this workflow and keeps metadynamics/Blue Moon folders as explicit placeholders.
+`pmf_coordination_overlay.svg`, `umbrella_pmf_summary.json`, PNG animation
+frames, and an MP4 overview when a movie writer is available.  MP4 output uses
+the pip-installed `imageio-ffmpeg` executable when available.  Example 12
+contains the script-first version of this workflow and keeps metadynamics/Blue
+Moon folders as explicit placeholders.
 
 Sandwich-specific interface builders are not part of the public workflow
 surface.  Use layer-stack specs for both simple two-layer contacts and

@@ -1412,15 +1412,16 @@ def _write_umbrella_animation(
         matplotlib.use("Agg")
         from matplotlib import animation
         import matplotlib.pyplot as plt
-        from matplotlib.animation import FuncAnimation
     except Exception as exc:
         return {"available": False, "mp4": None, "reason": f"matplotlib_unavailable:{exc.__class__.__name__}"}
     try:
-        if not animation.writers.is_available("ffmpeg"):
-            return {"available": False, "mp4": None, "reason": "ffmpeg_writer_unavailable"}
-        writer = animation.FFMpegWriter(fps=max(1, int(round(float(fps)))), bitrate=1800)
-    except Exception as exc:
-        return {"available": False, "mp4": None, "reason": f"ffmpeg_writer_unavailable:{exc.__class__.__name__}"}
+        import imageio_ffmpeg
+
+        ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
+        if ffmpeg_exe:
+            matplotlib.rcParams["animation.ffmpeg_path"] = str(ffmpeg_exe)
+    except Exception:
+        pass
     try:
         import pandas as pd
 
@@ -1463,14 +1464,29 @@ def _write_umbrella_animation(
         ax_right.legend(loc="best", fontsize="small")
         fig.tight_layout()
 
+    frame_dir = out_mp4.parent / "frames" / out_mp4.stem
+    frame_dir.mkdir(parents=True, exist_ok=True)
+    for frame_idx in range(int(frame_count)):
+        _update(int(frame_idx))
+        fig.savefig(frame_dir / f"frame_{frame_idx:03d}.png", dpi=160)
+    frame_meta = {"frames_dir": str(frame_dir), "frame_png_count": int(frame_count)}
+    try:
+        if not animation.writers.is_available("ffmpeg"):
+            plt.close(fig)
+            return {"available": False, "mp4": None, "reason": "ffmpeg_writer_unavailable", **frame_meta}
+        writer = animation.FFMpegWriter(fps=max(1, int(round(float(fps)))), bitrate=1800)
+        from matplotlib.animation import FuncAnimation
+    except Exception as exc:
+        plt.close(fig)
+        return {"available": False, "mp4": None, "reason": f"ffmpeg_writer_unavailable:{exc.__class__.__name__}", **frame_meta}
     ani = FuncAnimation(fig, _update, frames=frame_count, interval=1000)
     try:
         ani.save(out_mp4, writer=writer)
     except Exception as exc:
         plt.close(fig)
-        return {"available": False, "mp4": None, "reason": f"mp4_write_failed:{exc.__class__.__name__}"}
+        return {"available": False, "mp4": None, "reason": f"mp4_write_failed:{exc.__class__.__name__}", **frame_meta}
     plt.close(fig)
-    return {"available": True, "mp4": str(out_mp4)}
+    return {"available": True, "mp4": str(out_mp4), **frame_meta}
 
 
 def analyze_umbrella_pmf(
