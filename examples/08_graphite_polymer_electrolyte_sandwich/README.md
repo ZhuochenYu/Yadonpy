@@ -13,7 +13,7 @@ Six public scripts are kept in this folder:
 - `03_electrolyte_cmcna_graphite_basal.py`: basal graphite, CMC-Na, and electrolyte.
 - `04_graphite_basal_electrolyte_cmcna_graphite_basal.py`: two basal graphite layers around electrolyte and CMC-Na.
 - `05_charged_graphite_basal_electrolyte_cmcna_graphite_basal.py`: the same four-layer stack with a fixed-charge sweep of `0, +2, -2, +5, -5 uC/cm2`.
-- `06_large_flat_charged_graphite_basal_electrolyte_cmcna_graphite_basal.py`: a production-style broad-XY, thin-z graphite sandwich with DP=20 CMC-Na, eight CMC chains, local Na+/carboxylate initialization, fixed-charge regions, compression annealing, and 20 ns final NVT sampling.
+- `06_large_flat_charged_graphite_basal_electrolyte_cmcna_graphite_basal.py`: a production-style broad-XY, thin-z graphite sandwich with DP=20 CMC-Na, eight CMC chains, wall-confined `pbc=xy` CMC-Na slab pre-equilibration, fixed-charge regions, compression annealing, and 20 ns final NVT sampling.
 
 All six scripts use the same script-first style as Examples 02/05/07.  Examples
 08-01 through 08-05 are compact defaults; Example 08-06 is a production-sized
@@ -79,6 +79,13 @@ semantic aliases such as `GRAPHITE`, `ELECTROLYTE`, `CMCNA`, and `MOBILE`.
   repeated small fixed-XY z-compression geometry moves plus hot/high-pressure
   z-only annealing before final z-NPT.  This keeps graphite XY periodic bonding
   intact while letting an expanded-Z packing collapse gradually.
+- Example 08-06 now prepares CMC-Na with a separate z-open slab route before
+  stack assembly.  The script builds a dilute fixed-XY CMC-Na cell, runs
+  `EQ21step(...).exec(periodicity="xy", xy_slab=XYSlabEquilibrationSpec(...))`
+  with GROMACS z walls and `ewald-geometry=3dc`, and passes the resulting
+  `final_gro()` into `MolecularLayerSpec(prepared_slab_gro=...)`.  This prevents
+  CMC chains from relaxing through their z periodic image before they are placed
+  between electrolyte and graphite.
 - CMC-Na examples deliberately use a loose initial packing target below the
   approximate `1.5 g/cm3` bulk reference.  With `molecular_packing_expand="z"`,
   too many molecules under a fixed graphite footprint expand the initial z

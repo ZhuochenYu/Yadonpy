@@ -432,6 +432,50 @@ vacuum or padding already supplies it.  The NVT follow-up begins with a
 no-constraints steep minimization, so freshly stacked CMC/electrolyte/graphite
 cells can relax local contacts before GPU MD starts.
 
+For large CMC-Na layers, do not force all chains directly into a dense layer
+inside the final interface.  A more robust route is to pre-equilibrate CMC-Na as
+a z-open slab under the same XY footprint:
+
+```python
+from yadonpy import XYSlabEquilibrationSpec
+from yadonpy.interface import make_orthorhombic_pack_cell
+from yadonpy.sim.preset import eq
+
+cmcna_initial_cell = make_orthorhombic_pack_cell((graphite_x_nm, graphite_y_nm, dilute_z_nm))
+cmcna_ac = poly.amorphous_cell(
+    [CMC, Na],
+    [8, 160],
+    cell=cmcna_initial_cell,
+    density=None,
+    polyelectrolyte_mode=True,
+    large_system_mode="large",
+)
+
+cmcna_slab_eq = eq.EQ21step(cmcna_ac, work_dir="./work_cmcna_xy_slab")
+cmcna_slab_eq.exec(
+    temp=318.15,
+    press=1.0,
+    omp=14,
+    gpu=1,
+    gpu_id=0,
+    periodicity="xy",
+    xy_slab=XYSlabEquilibrationSpec(target_density_g_cm3=0.50),
+)
+
+cmcna = MolecularLayerSpec(
+    name="CMCNA",
+    species=(CMC, Na),
+    counts=(8, 160),
+    thickness_nm=2.6,
+    layer_kind="cmcna",
+    prepared_slab_gro=cmcna_slab_eq.final_gro(),
+)
+```
+
+This workflow adds GROMACS z walls and `ewald-geometry=3dc`, compresses the wall
+gap in small steps, and keeps XY fixed.  It prepares a stackable slab; it is not
+a true z-direction NPT ensemble.
+
 For electrolyte/CMCNA mutual-diffusion studies, use `run_layer_stack_relaxation`
 with `InterdiffusionStartSpec`.  The pre-release stages keep electrolyte and
 CMCNA under temporary z-only gates while density and contacts relax; the final

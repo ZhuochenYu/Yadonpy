@@ -181,6 +181,7 @@ def test_top_level_api_exports_mechanics_helpers():
     assert 'FixedChargeRegionSpec' in yadonpy.__all__
     assert 'GraphiteRestraintSpec' in yadonpy.__all__
     assert 'InterdiffusionStartSpec' in yadonpy.__all__
+    assert 'XYSlabEquilibrationSpec' in yadonpy.__all__
 
 
 def test_analyzer_does_not_expose_transport_bundle_api():

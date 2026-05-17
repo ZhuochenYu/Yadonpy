@@ -143,6 +143,10 @@ class MolecularLayerSpec:
         export metadata.
     layer_kind:
         Semantic label used for index groups and analysis routing.
+    prepared_slab_gro:
+        Optional pre-equilibrated slab coordinates.  When provided, the layer
+        reuses this GRO coordinate order and skips random packing; topology is
+        still generated from ``species`` and ``counts``.
     """
 
     name: str
@@ -159,6 +163,7 @@ class MolecularLayerSpec:
     large_system_mode: str = "auto"
     counterion_contact_mode: Literal["auto", "carboxylate", "none"] = "auto"
     counterion_contact_distance_nm: float = 0.235
+    prepared_slab_gro: str | Path | None = None
 
 
 @dataclass(frozen=True)
@@ -1107,6 +1112,139 @@ def _fragment_species_sequence(species: Sequence[Chem.Mol], counts: Sequence[int
     return order
 
 
+def _read_prepared_slab_gro(gro_path: Path) -> tuple[np.ndarray, tuple[float, float, float]]:
+    lines = Path(gro_path).read_text(encoding="utf-8", errors="replace").splitlines()
+    if len(lines) < 3:
+        raise ValueError(f"Invalid prepared slab GRO: {gro_path}")
+    try:
+        nat = int(lines[1].strip())
+    except Exception as exc:
+        raise ValueError(f"Invalid prepared slab atom count in {gro_path}") from exc
+    coords = np.zeros((nat, 3), dtype=float)
+    for i, raw in enumerate(lines[2 : 2 + nat]):
+        try:
+            coords[i, 0] = float(raw[20:28]) * 10.0
+            coords[i, 1] = float(raw[28:36]) * 10.0
+            coords[i, 2] = float(raw[36:44]) * 10.0
+        except Exception:
+            parts = raw.split()
+            if len(parts) < 3:
+                raise ValueError(f"Cannot parse prepared slab GRO coordinate line: {raw!r}")
+            coords[i, :] = [float(parts[-3]) * 10.0, float(parts[-2]) * 10.0, float(parts[-1]) * 10.0]
+    try:
+        box_vals = tuple(float(tok) for tok in lines[2 + nat].split()[:3])
+    except Exception as exc:
+        raise ValueError(f"Invalid prepared slab box line in {gro_path}") from exc
+    if len(box_vals) != 3:
+        raise ValueError(f"Prepared slab GRO box must contain x y z lengths: {gro_path}")
+    return coords, (float(box_vals[0]), float(box_vals[1]), float(box_vals[2]))
+
+
+def _molecular_layer_species_meta(layer: MolecularLayerSpec, *, pe_mode: bool) -> list[dict[str, Any]]:
+    entries: list[dict[str, Any]] = []
+    charge_scale = layer.charge_scale
+    for idx, (mol, count) in enumerate(zip(layer.species, layer.counts)):
+        try:
+            smiles = mol.GetProp("_yadonpy_smiles") if mol.HasProp("_yadonpy_smiles") else Chem.MolToSmiles(mol, isomericSmiles=True)
+        except Exception:
+            smiles = ""
+        cs_val = None
+        if isinstance(charge_scale, Sequence) and not isinstance(charge_scale, (str, bytes)):
+            try:
+                cs_val = float(charge_scale[idx])
+            except Exception:
+                cs_val = None
+        payload: dict[str, Any] = {
+            "smiles": smiles,
+            "n": int(count),
+            "natoms": int(mol.GetNumAtoms()),
+            "charge_scale": cs_val,
+            "name": _mol_name(mol, f"M{idx+1}"),
+            "polyelectrolyte_mode": False,
+        }
+        for prop, key in (
+            ("_yadonpy_bonded_requested", "bonded_requested"),
+            ("_yadonpy_bonded_method", "bonded_method"),
+            ("_yadonpy_bonded_signature", "bonded_signature"),
+            ("_yadonpy_bonded_itp", "bonded_itp"),
+            ("_yadonpy_bonded_json", "bonded_json"),
+            ("_yadonpy_molid", "cached_mol_id"),
+            ("_yadonpy_artifact_dir", "cached_artifact_dir"),
+            ("ff_name", "ff_name"),
+            ("_yadonpy_charge_method", "charge_method"),
+            ("_yadonpy_prefer_db", "prefer_db"),
+            ("_yadonpy_require_db", "require_db"),
+            ("_yadonpy_require_ready", "require_ready"),
+        ):
+            try:
+                if mol.HasProp(prop):
+                    payload[key] = str(mol.GetProp(prop)).strip() or None
+            except Exception:
+                pass
+        try:
+            if mol.HasProp("_yadonpy_bonded_explicit"):
+                payload["bonded_explicit"] = str(mol.GetProp("_yadonpy_bonded_explicit")).strip().lower() in {"1", "true", "yes", "on"}
+        except Exception:
+            payload["bonded_explicit"] = False
+        try:
+            payload["charge_groups"] = poly.get_charge_groups(mol)
+            payload["resp_constraints"] = poly.get_resp_constraints(mol)
+            payload["polyelectrolyte_summary"] = poly.get_polyelectrolyte_summary(mol)
+            payload["residue_map"] = poly.build_residue_map(mol, mol_name=_mol_name(mol, f"M{idx+1}"))
+            payload["polyelectrolyte_mode"] = bool(poly.uses_localized_charge_groups(payload["polyelectrolyte_summary"]))
+        except Exception:
+            if bool(pe_mode):
+                try:
+                    annotated = poly.annotate_polyelectrolyte_metadata(mol)
+                    payload["charge_groups"] = annotated["summary"]["groups"]
+                    payload["resp_constraints"] = annotated["constraints"]
+                    payload["polyelectrolyte_summary"] = annotated["summary"]
+                    payload["residue_map"] = poly.build_residue_map(mol, mol_name=_mol_name(mol, f"M{idx+1}"))
+                    payload["polyelectrolyte_mode"] = True
+                except Exception:
+                    payload["polyelectrolyte_mode"] = bool(pe_mode)
+        entries.append(payload)
+    if isinstance(charge_scale, Mapping):
+        for entry in entries:
+            entry["charge_scale"] = charge_scale
+    return entries
+
+
+def _cell_from_prepared_slab_gro(layer: MolecularLayerSpec, *, gro_path: Path, pe_mode: bool) -> Chem.Mol:
+    coords_ang, box_nm = _read_prepared_slab_gro(gro_path)
+    sequence = _fragment_species_sequence(layer.species, layer.counts)
+    expected_atoms = int(sum(int(layer.species[idx].GetNumAtoms()) for idx in sequence))
+    if int(coords_ang.shape[0]) != expected_atoms:
+        raise ValueError(
+            f"MolecularLayerSpec {layer.name!r}: prepared_slab_gro atom count mismatch. "
+            f"GRO has {int(coords_ang.shape[0])} atoms, but species/counts require {expected_atoms}."
+        )
+    combined: Chem.Mol | None = None
+    for species_idx in sequence:
+        frag = utils.deepcopy_mol(layer.species[int(species_idx)])
+        combined = frag if combined is None else poly.combine_mols(combined, frag)
+    if combined is None:
+        raise ValueError(f"MolecularLayerSpec {layer.name!r}: prepared slab layer has no molecules.")
+    while combined.GetNumConformers():
+        combined.RemoveConformer(combined.GetConformer().GetId())
+    conf = Chem.Conformer(int(combined.GetNumAtoms()))
+    for atom_idx, xyz in enumerate(coords_ang):
+        conf.SetAtomPosition(int(atom_idx), (float(xyz[0]), float(xyz[1]), float(xyz[2])))
+    combined.AddConformer(conf, assignId=True)
+    setattr(combined, "cell", utils.Cell(10.0 * box_nm[0], 0.0, 10.0 * box_nm[1], 0.0, 10.0 * box_nm[2], 0.0))
+    payload = {
+        "density_g_cm3": None,
+        "requested_density_g_cm3": layer.density_target_g_cm3,
+        "species": _molecular_layer_species_meta(layer, pe_mode=pe_mode),
+        "pack_mode": "prepared_xy_slab_gro",
+        "prepared_slab_gro": str(gro_path),
+        "target_atoms": int(expected_atoms),
+        "polyelectrolyte_mode": bool(pe_mode),
+    }
+    combined.SetProp("_yadonpy_cell_meta", json.dumps(payload, ensure_ascii=False))
+    return combined
+
+
 def _orthonormal_perp_basis(axis: np.ndarray, preferred: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     axis = np.asarray(axis, dtype=float)
     preferred = np.asarray(preferred, dtype=float)
@@ -1309,21 +1447,28 @@ def _prepare_molecular_layer(
         if layer.polyelectrolyte_mode is not None
         else str(layer.layer_kind).lower() in {"cmcna", "polyelectrolyte"}
     )
-    cell = poly.amorphous_cell(
-        list(layer.species),
-        list(int(v) for v in layer.counts),
-        cell=pack_cell,
-        density=None,
-        retry=int(layer.retry),
-        retry_step=int(layer.retry_step),
-        threshold=float(layer.threshold_ang),
-        charge_scale=layer.charge_scale,
-        polyelectrolyte_mode=pe_mode,
-        large_system_mode=layer.large_system_mode,
-        work_dir=layer_work_dir,
-        restart=restart,
-    )
-    counterion_report = _localize_cmcna_counterions(cell, layer)
+    prepared_slab_path = Path(layer.prepared_slab_gro).expanduser().resolve() if layer.prepared_slab_gro is not None else None
+    if prepared_slab_path is not None:
+        if not prepared_slab_path.is_file():
+            raise FileNotFoundError(f"MolecularLayerSpec {layer.name!r}: prepared_slab_gro not found: {prepared_slab_path}")
+        cell = _cell_from_prepared_slab_gro(layer, gro_path=prepared_slab_path, pe_mode=pe_mode)
+        counterion_report = {"enabled": False, "reason": "prepared_slab_gro_preserves_pre_equilibrated_counterions"}
+    else:
+        cell = poly.amorphous_cell(
+            list(layer.species),
+            list(int(v) for v in layer.counts),
+            cell=pack_cell,
+            density=None,
+            retry=int(layer.retry),
+            retry_step=int(layer.retry_step),
+            threshold=float(layer.threshold_ang),
+            charge_scale=layer.charge_scale,
+            polyelectrolyte_mode=pe_mode,
+            large_system_mode=layer.large_system_mode,
+            work_dir=layer_work_dir,
+            restart=restart,
+        )
+        counterion_report = _localize_cmcna_counterions(cell, layer)
     meta = _read_cell_meta(cell)
     species_entries = []
     for entry in meta.get("species") or []:
@@ -1343,6 +1488,8 @@ def _prepare_molecular_layer(
             float(packing_thickness) / float(target_thickness) if float(target_thickness) > 0.0 else None
         ),
         "molecular_packing_expand": expand_axis,
+        "prepared_slab_gro": (str(prepared_slab_path) if prepared_slab_path is not None else None),
+        "prepared_slab_mode": bool(prepared_slab_path is not None),
         "density_target_g_cm3": (float(layer.density_target_g_cm3) if layer.density_target_g_cm3 is not None else None),
         "density_target_role": (
             "initial_z_packing_density_at_fixed_xy"

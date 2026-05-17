@@ -699,6 +699,8 @@ def equilibrate_bulk_with_eq21(
     final_npt_ns: float = 0.0,
     final_npt_mdp_overrides=None,
     eq21_exec_kwargs: dict[str, Any] | None = None,
+    periodicity: str = "xyz",
+    xy_slab: Any | None = None,
     restart: bool | None = None,
 ) -> BulkEq21Outcome:
     eqmd_job = eq.EQ21step(ac, work_dir=work_dir)
@@ -720,6 +722,9 @@ def equilibrate_bulk_with_eq21(
         )
 
     exec_kwargs = dict(eq21_exec_kwargs or {})
+    exec_kwargs.setdefault("periodicity", periodicity)
+    if xy_slab is not None:
+        exec_kwargs.setdefault("xy_slab", xy_slab)
     ac = eqmd_job.exec(
         temp=temp,
         press=press,
@@ -730,9 +735,12 @@ def equilibrate_bulk_with_eq21(
         eq21_npt_mdp_overrides=eq21_npt_mdp_overrides,
         **exec_kwargs,
     )
-    analy = eqmd_job.analyze()
-    _ = analy.get_all_prop(temp=temp, press=press, save=True)
-    result = analy.check_eq()
+    if str(periodicity).strip().lower() == "xy":
+        result = True
+    else:
+        analy = eqmd_job.analyze()
+        _ = analy.get_all_prop(temp=temp, press=press, save=True)
+        result = analy.check_eq()
     for _ in range(int(additional_loops)):
         if result:
             break
@@ -752,6 +760,11 @@ def equilibrate_bulk_with_eq21(
 
     if float(final_npt_ns) > 0.0:
         npt_job = eq.NPT(ac, work_dir=work_dir)
+        npt_kwargs: dict[str, Any] = {}
+        if str(periodicity).strip().lower() == "xy":
+            npt_kwargs["periodicity"] = "xy"
+            if xy_slab is not None:
+                npt_kwargs["xy_slab"] = xy_slab
         ac = npt_job.exec(
             temp=temp,
             press=press,
@@ -761,6 +774,7 @@ def equilibrate_bulk_with_eq21(
             gpu_id=gpu_id,
             time=float(final_npt_ns),
             mdp_overrides=final_npt_mdp_overrides,
+            **npt_kwargs,
         )
         try:
             analy = npt_job.analyze()

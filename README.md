@@ -117,7 +117,8 @@ The examples above are built from a small set of reusable components:
 - MolDB storage and reuse for molecule-level geometries, charges, bonded
   patches, and metadata. MolDB is not a complete system-topology cache.
 - GROMACS export, EQ21 equilibration, NPT/NVT production, restart/resume
-  handling, fixed-XY z-NPT layer-stack relaxation, and adaptive output cadence.
+  handling, wall-confined `pbc=xy` slab EQ21 for stack-ready polymers,
+  fixed-XY z-NPT layer-stack relaxation, and adaptive output cadence.
 - Analysis routines used by the examples: density/thermo summaries, RDF, MSD,
   Nernst-Einstein and Einstein-Helfand conductivity, dielectric response,
   polymer metrics, Tg fitting, uniaxial mechanics, and layer-stack interface
@@ -343,16 +344,19 @@ For dense graphite/polymer/electrolyte sandwiches, `compression_anneal` adds
 small fixed-XY z-compression moves followed by hot/high-pressure z-only
 annealing before the final z-NPT.  In `auto` mode it skips explicit vacuum or
 open-z controls and enables the loop for closed graphite sandwich stacks.
-For CMC-Na, use a deliberately loose initial packing target, then let the
-fixed-XY compression anneal and z-NPT stages densify the confined layer.  The
-bulk CMC-Na density of about `1.5 g/cm3` is used only as a sanity reference,
-not as the insertion density.  The relaxation summary reports CMCNA phase
-density and the total mass density inside CMC-rich regions; it flags CMCNA core
-density below `0.90 g/cm3` as a warning and below `0.75 g/cm3` as severe.
-CMC-Na layers also initialize Na+ as local carboxylate counterions
-(`counterion_contact_mode="carboxylate"` in the examples).  The builder first
-does loose molecular packing, then moves each Na+ onto a bidentate COO-/Na+
-contact site and records the O-Na distances in `layer_stack_manifest.json`.
+For large CMC-Na layers, the preferred preparation route is an independent
+wall-confined slab before the final stack is assembled.  Build a very dilute
+fixed-XY CMC-Na amorphous cell, run EQ21 with `periodicity="xy"` and
+`XYSlabEquilibrationSpec(target_density_g_cm3=0.50)`, then pass the resulting
+`final_gro()` to `MolecularLayerSpec(prepared_slab_gro=...)`.  This keeps CMC
+from connecting through the z periodic image during bulk-like pre-relaxation,
+while preserving the graphite XY footprint needed for direct stacking.  The
+target `0.50 g/cm3` is a slab-construction density, not a final interface
+constraint.  CMC-Na layers that are still packed directly can initialize Na+ as
+local carboxylate counterions with `counterion_contact_mode="carboxylate"`;
+prepared slabs preserve the pre-equilibrated Na+/COO- contacts.  The relaxation
+summary reports CMCNA phase density and total mass density inside CMC-rich
+regions after stacking.
 When the observable is electrolyte/CMCNA interdiffusion, use
 `InterdiffusionStartSpec`: pre-release minimization/NVT/z-NPT applies temporary
 z-only phase gates to the two soft phases, and the gates are removed only for

@@ -16,9 +16,9 @@ import hashlib
 import json
 import os
 import shutil
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Optional, Sequence, Union
+from typing import Any, Literal, Optional, Sequence, Union
 
 import numpy as np
 
@@ -35,6 +35,33 @@ from ..performance import IOAnalysisPolicy, resolve_io_analysis_policy
 
 
 _EXPORT_SYSTEM_SCHEMA_VERSION = "0.8.61-export-v2"
+_AVOGADRO = 6.02214076e23
+
+
+@dataclass(frozen=True)
+class XYSlabEquilibrationSpec:
+    """Wall-confined ``pbc=xy`` slab equilibration for stack-ready polymers.
+
+    This spec is intentionally geometry-driven: the z density is set by the wall
+    gap/box height, while MD only relaxes local packing strain.  It is therefore
+    suitable for preparing a CMC-Na slab that should not connect through the z
+    periodic image before it is inserted into a layer stack.
+    """
+
+    target_density_g_cm3: float = 0.50
+    cycles: int | Literal["auto"] = "auto"
+    max_cycles: int = 30
+    max_z_shrink_per_cycle: float = 0.10
+    wall_padding_nm: float = 0.40
+    wall_mode: str = "12-6"
+    wall_atomtype: str | Literal["auto"] | None = "auto"
+    wall_r_linpot_nm: float = 0.05
+    ewald_geometry: str = "3dc"
+    xy_area_mode: Literal["fixed", "xy_npt"] = "fixed"
+    hot_nvt_ns: float = 0.01
+    cool_nvt_ns: float = 0.01
+    final_relax_ns: float = 0.20
+    rollback_on_failure: bool = True
 
 
 def _preset_log(message: str, *, level: int = 1) -> None:
@@ -54,6 +81,167 @@ def _fmt_elapsed(seconds: float) -> str:
 
 def _preset_item(label: str, value: object) -> None:
     _preset_log(f"[ITEM] {label:<18}: {value}")
+
+
+def _normalize_periodicity(periodicity: str | None) -> Literal["xyz", "xy"]:
+    mode = str(periodicity or "xyz").strip().lower()
+    if mode not in {"xyz", "xy"}:
+        raise ValueError("periodicity must be either 'xyz' or 'xy'.")
+    return mode  # type: ignore[return-value]
+
+
+def _resolve_xy_slab_spec(spec: XYSlabEquilibrationSpec | None) -> XYSlabEquilibrationSpec:
+    return spec if spec is not None else XYSlabEquilibrationSpec()
+
+
+def _merge_mdp_overrides(*items: Optional[dict[str, object]]) -> dict[str, object] | None:
+    merged: dict[str, object] = {}
+    for item in items:
+        if item:
+            merged.update(dict(item))
+    return merged or None
+
+
+def _iter_top_atomtypes(top_path: Path) -> tuple[str, ...]:
+    root = Path(top_path).resolve()
+    seen: set[Path] = set()
+    candidates: list[Path] = []
+
+    def _add_candidate(path: Path) -> None:
+        try:
+            resolved = path.resolve()
+        except Exception:
+            resolved = path
+        if resolved in seen or not resolved.is_file():
+            return
+        seen.add(resolved)
+        candidates.append(resolved)
+
+    def _extract_include_path(line: str, *, base: Path) -> Path | None:
+        text = line.split(";", 1)[0].strip()
+        if not text.startswith("#include"):
+            return None
+        rest = text[len("#include") :].strip()
+        if not rest:
+            return None
+        if rest[0] in {'"', "<"}:
+            closing = '"' if rest[0] == '"' else ">"
+            end = rest.find(closing, 1)
+            if end > 1:
+                rest = rest[1:end]
+        else:
+            rest = rest.split()[0]
+        if not rest:
+            return None
+        candidate = Path(rest)
+        if not candidate.is_absolute():
+            candidate = base / candidate
+        return candidate
+
+    def _visit(path: Path) -> None:
+        _add_candidate(path)
+        if not path.is_file():
+            return
+        try:
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except Exception:
+            return
+        for raw in lines:
+            included = _extract_include_path(raw, base=path.parent)
+            if included is not None:
+                _visit(included)
+
+    _visit(root)
+    _add_candidate(root.parent / "ff_parameters.itp")
+    mol_dir = root.parent / "molecules"
+    if mol_dir.is_dir():
+        for path in sorted(mol_dir.glob("**/*.itp")):
+            _add_candidate(path)
+
+    names: list[str] = []
+    atom_section_names: list[str] = []
+    for candidate in candidates:
+        section = ""
+        for raw in candidate.read_text(encoding="utf-8", errors="replace").splitlines():
+            line = raw.split(";", 1)[0].strip()
+            if not line:
+                continue
+            if line.startswith("[") and line.endswith("]"):
+                section = line.strip("[]").strip().lower()
+                continue
+            if section != "atomtypes":
+                if section == "atoms" and len(line.split()) >= 2:
+                    token = line.split()[1]
+                    if token and token not in names and token not in atom_section_names:
+                        atom_section_names.append(token)
+                continue
+            token = line.split()[0]
+            if token and token not in names:
+                names.append(token)
+    return tuple(names + atom_section_names)
+
+
+def _resolve_xy_wall_atomtype(top_path: Path, requested: str | None) -> str | None:
+    available = _iter_top_atomtypes(top_path)
+    req = None if requested is None else str(requested).strip()
+    if req and req.lower() != "auto":
+        if not available or req in available:
+            return req
+        raise ValueError(
+            f"Requested wall_atomtype={req!r} is not present in {top_path}; "
+            f"available atomtypes: {', '.join(available[:20])}"
+        )
+    for name in available:
+        if not str(name).upper().startswith("H"):
+            return name
+    return available[0] if available else None
+
+
+def xy_slab_mdp_overrides(
+    *,
+    top_path: str | Path,
+    spec: XYSlabEquilibrationSpec | None = None,
+    pressure_bar: float = 1.0,
+    npt_like: bool = False,
+) -> dict[str, object]:
+    """Return GROMACS-ready MDP overrides for a z-open, wall-confined slab."""
+
+    slab = _resolve_xy_slab_spec(spec)
+    wall_atomtype = _resolve_xy_wall_atomtype(Path(top_path), None if slab.wall_atomtype is None else str(slab.wall_atomtype))
+    wall_lines = [
+        "nwall                    = 2",
+        f"wall_type                = {str(slab.wall_mode)}",
+        f"ewald-geometry           = {str(slab.ewald_geometry)}",
+    ]
+    if wall_atomtype:
+        wall_lines.append(f"wall_atomtype            = {wall_atomtype} {wall_atomtype}")
+    else:
+        raise ValueError(
+            f"Could not auto-select a wall atomtype from {Path(top_path)}. "
+            "Set XYSlabEquilibrationSpec(wall_atomtype='...') to an atom type present in the topology."
+        )
+    if slab.wall_r_linpot_nm is not None:
+        wall_lines.append(f"wall-r-linpot            = {float(slab.wall_r_linpot_nm):.6g}")
+    overrides: dict[str, object] = {
+        "pbc": "xy",
+        "periodic_molecules": "yes",
+        "periodic-molecules": "yes",
+        "wall_mdp": "\n".join(wall_lines) + "\n",
+    }
+    if npt_like:
+        if str(slab.xy_area_mode).lower() == "xy_npt":
+            p = float(pressure_bar)
+            overrides.update(
+                {
+                    "pcoupl": "C-rescale",
+                    "pcoupltype": "semiisotropic",
+                    "ref_p": f"{p:.6g} {p:.6g}",
+                    "compressibility": "4.5e-5 0",
+                }
+            )
+        else:
+            overrides["pcoupl"] = "no"
+    return overrides
 
 
 def _env_flag(name: str, default: bool = False) -> bool:
@@ -192,6 +380,215 @@ def _outputs_newer_than_inputs(
     except Exception:
         return False
     return oldest_output >= newest_input
+
+
+def _read_gro_lines_coords_box(gro_path: Path) -> tuple[list[str], np.ndarray, tuple[float, float, float]]:
+    lines = Path(gro_path).read_text(encoding="utf-8", errors="replace").splitlines()
+    if len(lines) < 3:
+        raise ValueError(f"Invalid GRO file: {gro_path}")
+    try:
+        nat = int(lines[1].strip())
+    except Exception as exc:
+        raise ValueError(f"Invalid GRO atom count in {gro_path}") from exc
+    atom_lines = lines[2 : 2 + nat]
+    if len(atom_lines) != nat:
+        raise ValueError(f"GRO atom count mismatch in {gro_path}: expected {nat}, got {len(atom_lines)}")
+    coords = np.zeros((nat, 3), dtype=float)
+    for i, line in enumerate(atom_lines):
+        try:
+            coords[i, 0] = float(line[20:28])
+            coords[i, 1] = float(line[28:36])
+            coords[i, 2] = float(line[36:44])
+        except Exception:
+            parts = line.split()
+            if len(parts) < 3:
+                raise ValueError(f"Cannot parse GRO coordinates in {gro_path}: {line!r}")
+            coords[i, :] = [float(parts[-3]), float(parts[-2]), float(parts[-1])]
+    try:
+        raw_box = [float(tok) for tok in lines[2 + nat].split()]
+    except Exception as exc:
+        raise ValueError(f"Invalid GRO box line in {gro_path}") from exc
+    if len(raw_box) < 3:
+        raise ValueError(f"GRO box line must contain at least 3 values in {gro_path}")
+    return lines, coords, (float(raw_box[0]), float(raw_box[1]), float(raw_box[2]))
+
+
+def _write_z_rescaled_gro(
+    src_gro: Path,
+    dst_gro: Path,
+    *,
+    target_box_z_nm: float,
+    wall_padding_nm: float,
+) -> dict[str, float]:
+    lines, coords, box = _read_gro_lines_coords_box(Path(src_gro))
+    nat = int(coords.shape[0])
+    old_z_lo = float(np.min(coords[:, 2])) if nat else 0.0
+    old_z_hi = float(np.max(coords[:, 2])) if nat else 0.0
+    old_extent = max(old_z_hi - old_z_lo, 1.0e-6)
+    target_box_z = max(float(target_box_z_nm), 2.0 * float(wall_padding_nm) + 0.10)
+    target_lo = float(wall_padding_nm)
+    target_hi = max(target_lo + 0.05, target_box_z - float(wall_padding_nm))
+    target_extent = max(target_hi - target_lo, 1.0e-6)
+    scale = target_extent / old_extent
+    new_coords = np.array(coords, copy=True)
+    new_coords[:, 2] = target_lo + (coords[:, 2] - old_z_lo) * scale
+    new_coords[:, 0] = np.mod(new_coords[:, 0], max(float(box[0]), 1.0e-6))
+    new_coords[:, 1] = np.mod(new_coords[:, 1], max(float(box[1]), 1.0e-6))
+
+    out = list(lines)
+    for i in range(nat):
+        raw = out[2 + i]
+        head = raw[:20].ljust(20)
+        tail = raw[44:] if len(raw) > 44 else ""
+        out[2 + i] = f"{head}{new_coords[i,0]:8.3f}{new_coords[i,1]:8.3f}{new_coords[i,2]:8.3f}{tail}"
+    out[2 + nat] = f"{float(box[0]):10.5f}{float(box[1]):10.5f}{target_box_z:10.5f}"
+    dst_gro = Path(dst_gro)
+    dst_gro.parent.mkdir(parents=True, exist_ok=True)
+    dst_gro.write_text("\n".join(out) + "\n", encoding="utf-8")
+    return {
+        "old_box_z_nm": float(box[2]),
+        "new_box_z_nm": float(target_box_z),
+        "old_active_z_nm": float(old_extent),
+        "new_active_z_nm": float(target_extent),
+        "z_scale": float(scale),
+    }
+
+
+def _read_cell_meta_density(ac: object) -> float | None:
+    try:
+        if hasattr(ac, "HasProp") and ac.HasProp("_yadonpy_cell_meta"):
+            meta = json.loads(ac.GetProp("_yadonpy_cell_meta"))
+            for key in ("density_g_cm3", "requested_density_g_cm3"):
+                value = meta.get(key)
+                if value is not None and float(value) > 0.0:
+                    return float(value)
+    except Exception:
+        return None
+    return None
+
+
+def _parse_molecule_counts_from_top(top_path: Path) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    if not Path(top_path).is_file():
+        return counts
+    section = ""
+    for raw in Path(top_path).read_text(encoding="utf-8", errors="replace").splitlines():
+        line = raw.split(";", 1)[0].strip()
+        if not line:
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            section = line.strip("[]").strip().lower()
+            continue
+        if section == "molecules":
+            parts = line.split()
+            if len(parts) >= 2:
+                try:
+                    counts[parts[0]] = counts.get(parts[0], 0) + int(parts[1])
+                except Exception:
+                    continue
+    return counts
+
+
+def _parse_molecule_masses_from_itps(top_path: Path) -> dict[str, float]:
+    masses: dict[str, float] = {}
+    for itp in (Path(top_path).parent / "molecules").glob("*.itp"):
+        section = ""
+        moltype: str | None = None
+        mass = 0.0
+        for raw in itp.read_text(encoding="utf-8", errors="replace").splitlines():
+            line = raw.split(";", 1)[0].strip()
+            if not line:
+                continue
+            if line.startswith("[") and line.endswith("]"):
+                section = line.strip("[]").strip().lower()
+                continue
+            parts = line.split()
+            if section == "moleculetype" and moltype is None and parts:
+                moltype = parts[0]
+            elif section == "atoms" and len(parts) >= 8:
+                try:
+                    mass += float(parts[7])
+                except Exception:
+                    continue
+        if moltype and mass > 0.0:
+            masses[moltype] = mass
+    return masses
+
+
+def _estimate_total_mass_amu_from_top(top_path: Path) -> float | None:
+    counts = _parse_molecule_counts_from_top(top_path)
+    masses = _parse_molecule_masses_from_itps(top_path)
+    total = 0.0
+    for name, count in counts.items():
+        mw = masses.get(name)
+        if mw is None:
+            continue
+        total += float(mw) * float(count)
+    return float(total) if total > 0.0 else None
+
+
+def _target_xy_slab_box_z_nm(
+    *,
+    ac: object,
+    top_path: Path,
+    gro_path: Path,
+    spec: XYSlabEquilibrationSpec,
+) -> tuple[float, dict[str, object]]:
+    _lines, coords, box = _read_gro_lines_coords_box(gro_path)
+    density0 = _read_cell_meta_density(ac)
+    area_nm2 = max(float(box[0]) * float(box[1]), 1.0e-9)
+    target_density = max(float(spec.target_density_g_cm3), 1.0e-6)
+    if density0 is not None and density0 > 0.0:
+        active_z = max(float(box[2]) * float(density0) / target_density, 0.10)
+        source = "cell_meta_density"
+    else:
+        mass_amu = _estimate_total_mass_amu_from_top(top_path)
+        if mass_amu is None:
+            z_extent = float(np.max(coords[:, 2]) - np.min(coords[:, 2])) if coords.size else float(box[2])
+            active_z = max(z_extent, 0.10)
+            source = "coordinate_extent_fallback"
+        else:
+            mass_g = float(mass_amu) / _AVOGADRO
+            vol_cm3 = mass_g / target_density
+            vol_nm3 = vol_cm3 * 1.0e21
+            active_z = max(vol_nm3 / area_nm2, 0.10)
+            source = "topology_mass"
+    target_box_z = float(active_z) + 2.0 * float(spec.wall_padding_nm)
+    return target_box_z, {
+        "source": source,
+        "initial_box_nm": [float(box[0]), float(box[1]), float(box[2])],
+        "target_density_g_cm3": float(target_density),
+        "target_active_z_nm": float(active_z),
+        "wall_padding_nm": float(spec.wall_padding_nm),
+        "target_box_z_nm": float(target_box_z),
+    }
+
+
+def _xy_slab_z_schedule(current_z_nm: float, target_z_nm: float, spec: XYSlabEquilibrationSpec) -> list[float]:
+    current = float(current_z_nm)
+    target = min(float(target_z_nm), current)
+    max_shrink = min(max(float(spec.max_z_shrink_per_cycle), 1.0e-4), 0.95)
+    if target >= current * (1.0 - 1.0e-6):
+        return []
+    if spec.cycles == "auto":
+        out: list[float] = []
+        z = current
+        while z > target * (1.0 + 1.0e-6) and len(out) < int(spec.max_cycles):
+            z = max(target, z * (1.0 - max_shrink))
+            out.append(float(z))
+        return out
+    n = max(int(spec.cycles), 0)
+    if n <= 0:
+        return []
+    out = []
+    z = current
+    for i in range(1, n + 1):
+        desired = current + (target - current) * (float(i) / float(n))
+        z = max(desired, z * (1.0 - max_shrink))
+        out.append(float(max(target, z)))
+    if out and out[-1] > target * (1.0 + 1.0e-6):
+        out.append(float(target))
+    return out[: int(spec.max_cycles)]
 
 
 def _stage_done_tag_path(stage_dir: Path) -> Path:
@@ -1492,6 +1889,142 @@ def _build_eq21_stages(temp: float, press: float, *, final_ns: float, cfg: EQ21P
             )
 
     return stages, records, params
+
+
+def _xy_slab_nvt_params(
+    *,
+    temp: float,
+    dt_ps: float,
+    nsteps: int,
+    gen_vel: str,
+    continuation: str,
+    wall_overrides: dict[str, object],
+) -> dict[str, object]:
+    from ...gmx.mdp_templates import default_mdp_params
+
+    p = {
+        **default_mdp_params(),
+        **dict(wall_overrides),
+        "dt": float(dt_ps),
+        "nsteps": int(nsteps),
+        "ref_t": float(temp),
+        "tau_t": 0.1,
+        "tcoupl": "V-rescale",
+        "gen_vel": str(gen_vel),
+        "gen_temp": float(temp),
+        "gen_seed": -1,
+        "continuation": str(continuation),
+        "nstenergy": 1000,
+        "nstlog": 1000,
+        "nstxout": 10000,
+        "nstxout_trr": 10000,
+        "nstvout": 10000,
+    }
+    return p
+
+
+def _build_xy_slab_cycle_stages(
+    *,
+    temp: float,
+    hot_temp: float,
+    dt_ps: float,
+    spec: XYSlabEquilibrationSpec,
+    wall_overrides: dict[str, object],
+    cycle: int,
+) -> list[EqStage]:
+    from ...gmx.mdp_templates import MINIM_STEEP_MDP, NVT_NO_CONSTRAINTS_MDP, MdpSpec, default_mdp_params
+
+    hot_steps = _ns_to_steps_for_dt(float(spec.hot_nvt_ns), float(dt_ps))
+    cool_steps = _ns_to_steps_for_dt(float(spec.cool_nvt_ns), float(dt_ps))
+    prefix = f"cycle_{int(cycle):02d}"
+    return [
+        EqStage(
+            f"{prefix}_01_minimize",
+            "minim",
+            MdpSpec(
+                MINIM_STEEP_MDP,
+                {
+                    **default_mdp_params(),
+                    **dict(wall_overrides),
+                    "nsteps": 50000,
+                    "emtol": 500.0,
+                    "emstep": 0.001,
+                },
+            ),
+        ),
+        EqStage(
+            f"{prefix}_02_hot_nvt",
+            "nvt",
+            MdpSpec(
+                NVT_NO_CONSTRAINTS_MDP,
+                _xy_slab_nvt_params(
+                    temp=float(hot_temp),
+                    dt_ps=float(dt_ps),
+                    nsteps=int(hot_steps),
+                    gen_vel="yes" if int(cycle) == 1 else "no",
+                    continuation="no" if int(cycle) == 1 else "yes",
+                    wall_overrides=wall_overrides,
+                ),
+            ),
+        ),
+        EqStage(
+            f"{prefix}_03_cool_nvt",
+            "nvt",
+            MdpSpec(
+                NVT_NO_CONSTRAINTS_MDP,
+                _xy_slab_nvt_params(
+                    temp=float(temp),
+                    dt_ps=float(dt_ps),
+                    nsteps=int(cool_steps),
+                    gen_vel="no",
+                    continuation="yes",
+                    wall_overrides=wall_overrides,
+                ),
+            ),
+        ),
+    ]
+
+
+def _build_xy_slab_final_stages(
+    *,
+    temp: float,
+    dt_ps: float,
+    spec: XYSlabEquilibrationSpec,
+    wall_overrides: dict[str, object],
+) -> list[EqStage]:
+    from ...gmx.mdp_templates import MINIM_STEEP_MDP, NVT_NO_CONSTRAINTS_MDP, MdpSpec, default_mdp_params
+
+    return [
+        EqStage(
+            "final_01_minimize",
+            "minim",
+            MdpSpec(
+                MINIM_STEEP_MDP,
+                {
+                    **default_mdp_params(),
+                    **dict(wall_overrides),
+                    "nsteps": 50000,
+                    "emtol": 250.0,
+                    "emstep": 0.001,
+                },
+            ),
+        ),
+        EqStage(
+            "final_02_nvt_release",
+            "nvt",
+            MdpSpec(
+                NVT_NO_CONSTRAINTS_MDP,
+                _xy_slab_nvt_params(
+                    temp=float(temp),
+                    dt_ps=float(dt_ps),
+                    nsteps=_ns_to_steps_for_dt(float(spec.final_relax_ns), float(dt_ps)),
+                    gen_vel="no",
+                    continuation="yes",
+                    wall_overrides=wall_overrides,
+                ),
+            ),
+        ),
+    ]
 
 
 def _ns_to_steps_for_dt(ns: float, dt_ps: float) -> int:
@@ -3072,6 +3605,218 @@ class EQ21step:
             return False
         return True
 
+    def _exec_xy_slab(
+        self,
+        *,
+        temp: float,
+        press: float,
+        mpi: int,
+        omp: int,
+        gpu: int,
+        gpu_id: Optional[int],
+        xy_slab: XYSlabEquilibrationSpec | None,
+        eq21_tmax: float,
+        eq21_dt_ps: float,
+        gpu_offload_mode: str,
+        restart: bool,
+    ):
+        slab = _resolve_xy_slab_spec(xy_slab)
+        exp = self._ensure_system_exported()
+        run_dir = self.work_dir / "03_EQ21_XY_SLAB"
+        final_dir = run_dir / "final"
+        final_stage_dir = final_dir / "final_02_nvt_release"
+        target_box_z, target_report = _target_xy_slab_box_z_nm(
+            ac=self.ac,
+            top_path=exp.system_top,
+            gro_path=exp.system_gro,
+            spec=slab,
+        )
+        _lines, _coords, initial_box = _read_gro_lines_coords_box(exp.system_gro)
+        schedule = _xy_slab_z_schedule(float(initial_box[2]), float(target_box_z), slab)
+        wall_overrides = xy_slab_mdp_overrides(top_path=exp.system_top, spec=slab, pressure_bar=float(press), npt_like=False)
+        summary_path = run_dir / "xy_slab_summary.json"
+        outputs = [final_stage_dir / "md.tpr", final_stage_dir / "md.gro", summary_path]
+        xy_spec = StepSpec(
+            name="equilibration_eq21_xy_slab",
+            outputs=outputs,
+            inputs={
+                "input_gro_sig": file_signature(exp.system_gro),
+                "input_top_sig": file_signature(exp.system_top),
+                "input_ndx_sig": file_signature(exp.system_ndx),
+                "temp": float(temp),
+                "press": float(press),
+                "eq21_tmax": float(eq21_tmax),
+                "eq21_dt_ps": float(eq21_dt_ps),
+                "xy_slab": json.dumps(asdict(slab), sort_keys=True, default=str),
+                "target_box_z_nm": float(target_box_z),
+                "schedule": [float(v) for v in schedule],
+                "gpu_offload_mode": str(gpu_offload_mode),
+            },
+            description="Wall-confined pbc=xy CMC/polymer slab compression anneal",
+        )
+        _preset_item("run_dir", run_dir)
+        _preset_item("periodicity", "xy")
+        _preset_item("xy_slab_target_density_g_cm3", float(slab.target_density_g_cm3))
+        _preset_item("xy_slab_target_box_z_nm", f"{float(target_box_z):.4f}")
+        _preset_item("xy_slab_cycles", len(schedule))
+        _preset_item("xy_slab_wall_overrides", wall_overrides)
+
+        use_gpu, gid = _parse_gpu_args(gpu, gpu_id)
+        res = RunResources(
+            ntmpi=int(mpi),
+            ntomp=int(omp),
+            use_gpu=use_gpu,
+            gpu_id=gid,
+            gpu_offload_mode=_normalize_gpu_offload_mode(gpu_offload_mode),
+        )
+
+        def _run() -> Path:
+            if run_dir.exists():
+                shutil.rmtree(run_dir, ignore_errors=True)
+            run_dir.mkdir(parents=True, exist_ok=True)
+            current_gro = Path(exp.system_gro)
+            cycle_reports: list[dict[str, object]] = []
+            for i, z_target in enumerate(schedule, start=1):
+                cycle_dir = run_dir / f"cycle_{i:02d}"
+                start_gro = cycle_dir / "00_geometry" / "start.gro"
+                geom = _write_z_rescaled_gro(
+                    current_gro,
+                    start_gro,
+                    target_box_z_nm=float(z_target),
+                    wall_padding_nm=float(slab.wall_padding_nm),
+                )
+                stages = _build_xy_slab_cycle_stages(
+                    temp=float(temp),
+                    hot_temp=float(eq21_tmax),
+                    dt_ps=float(eq21_dt_ps),
+                    spec=slab,
+                    wall_overrides=wall_overrides,
+                    cycle=i,
+                )
+                job = EquilibrationJob(
+                    gro=start_gro,
+                    top=exp.system_top,
+                    provenance_ndx=exp.system_ndx,
+                    out_dir=cycle_dir,
+                    stages=stages,
+                    resources=res,
+                )
+                try:
+                    job.run(restart=False)
+                except Exception:
+                    if not bool(slab.rollback_on_failure):
+                        raise
+                    retry_z = 0.5 * (float(geom["old_box_z_nm"]) + float(z_target))
+                    retry_dir = run_dir / f"cycle_{i:02d}_retry"
+                    retry_start = retry_dir / "00_geometry" / "start.gro"
+                    retry_geom = _write_z_rescaled_gro(
+                        current_gro,
+                        retry_start,
+                        target_box_z_nm=retry_z,
+                        wall_padding_nm=float(slab.wall_padding_nm),
+                    )
+                    retry_job = EquilibrationJob(
+                        gro=retry_start,
+                        top=exp.system_top,
+                        provenance_ndx=exp.system_ndx,
+                        out_dir=retry_dir,
+                        stages=stages,
+                        resources=res,
+                    )
+                    retry_job.run(restart=False)
+                    current_gro = retry_job.final_gro()
+                    cycle_reports.append(
+                        {
+                            "cycle": i,
+                            "requested_box_z_nm": float(z_target),
+                            "used_box_z_nm": float(retry_z),
+                            "retried": True,
+                            "geometry": retry_geom,
+                            "final_gro": str(current_gro),
+                        }
+                    )
+                    continue
+                current_gro = job.final_gro()
+                cycle_reports.append(
+                    {
+                        "cycle": i,
+                        "requested_box_z_nm": float(z_target),
+                        "used_box_z_nm": float(z_target),
+                        "retried": False,
+                        "geometry": geom,
+                        "final_gro": str(current_gro),
+                    }
+                )
+
+            final_start = final_dir / "00_geometry" / "start.gro"
+            final_geom = _write_z_rescaled_gro(
+                current_gro,
+                final_start,
+                target_box_z_nm=float(target_box_z),
+                wall_padding_nm=float(slab.wall_padding_nm),
+            )
+            final_job = EquilibrationJob(
+                gro=final_start,
+                top=exp.system_top,
+                provenance_ndx=exp.system_ndx,
+                out_dir=final_dir,
+                stages=_build_xy_slab_final_stages(
+                    temp=float(temp),
+                    dt_ps=float(eq21_dt_ps),
+                    spec=slab,
+                    wall_overrides=wall_overrides,
+                ),
+                resources=res,
+            )
+            final_job.run(restart=False)
+            self._job = final_job
+            payload = {
+                "schema_version": "0.9.21-xy-slab-v1",
+                "periodicity": "xy",
+                "target": target_report,
+                "spec": asdict(slab),
+                "wall_mdp_overrides": wall_overrides,
+                "cycles": cycle_reports,
+                "final_geometry": final_geom,
+                "final_gro": str(final_job.final_gro()),
+            }
+            summary_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+            return summary_path
+
+        expected_gro_sig = file_signature(exp.system_gro)
+        expected_top_sig = file_signature(exp.system_top)
+        expected_ndx_sig = file_signature(exp.system_ndx)
+        if self._resume.is_done(xy_spec) and not summary_path.exists():
+            self._resume.mark_failed(xy_spec, error="missing xy_slab_summary.json", meta={"auto_rebuild": True})
+        if not bool(restart) and run_dir.exists():
+            shutil.rmtree(run_dir, ignore_errors=True)
+        self._resume.run(xy_spec, _run)
+        if self._job is None and (final_stage_dir / "md.gro").exists():
+            self._job = EquilibrationJob(
+                gro=exp.system_gro,
+                top=exp.system_top,
+                provenance_ndx=exp.system_ndx,
+                out_dir=final_dir,
+                stages=_build_xy_slab_final_stages(
+                    temp=float(temp),
+                    dt_ps=float(eq21_dt_ps),
+                    spec=slab,
+                    wall_overrides=wall_overrides,
+                ),
+                resources=res,
+            )
+        _recover_completed_workflow_step(
+            self._resume,
+            xy_spec,
+            summary_path=summary_path,
+            input_gro_sig=expected_gro_sig,
+            input_top_sig=expected_top_sig,
+            input_ndx_sig=expected_ndx_sig,
+            label="EQ21 xy slab workflow",
+            fallback_markers=(final_stage_dir / "summary.json",),
+        )
+        return self.ac
+
     def exec(
         self,
         *,
@@ -3105,6 +3850,8 @@ class EQ21step:
         eq21_final_extend_ns: float = 0.2,
         eq21_final_extend_density_slope_per_ps: float = 5.0e-2,
         eq21_final_extend_density_delta_kg_m3: float = 2.0,
+        periodicity: Literal["xyz", "xy"] = "xyz",
+        xy_slab: XYSlabEquilibrationSpec | None = None,
         gpu_offload_mode: str = "full",
     ):
         """Run the EQ21 multi-stage equilibration.
@@ -3126,6 +3873,23 @@ class EQ21step:
             self._export_raw = None
 
         exp = self._ensure_system_exported()
+        resolved_periodicity = _normalize_periodicity(periodicity)
+        if resolved_periodicity == "xy":
+            out = self._exec_xy_slab(
+                temp=float(temp),
+                press=float(press),
+                mpi=int(mpi),
+                omp=int(omp),
+                gpu=int(gpu),
+                gpu_id=gpu_id,
+                xy_slab=xy_slab,
+                eq21_tmax=float(eq21_tmax),
+                eq21_dt_ps=float(eq21_dt_ps),
+                gpu_offload_mode=str(gpu_offload_mode),
+                restart=bool(rst_flag),
+            )
+            _preset_done("EQ21 xy-slab preset", t_all, detail=f"output={self.work_dir / '03_EQ21_XY_SLAB'}")
+            return out
 
         run_dir = self.work_dir / "03_EQ21"
         if not rst_flag and run_dir.exists():
@@ -4392,6 +5156,8 @@ class NPT(EQ21step):
         bridge_lincs_iter: int = 4,
         bridge_lincs_order: int = 12,
         mdp_overrides: Optional[dict[str, object]] = None,
+        periodicity: Literal["xyz", "xy"] = "xyz",
+        xy_slab: XYSlabEquilibrationSpec | None = None,
         start_gro: Optional[Union[str, Path]] = None,
         restart: Optional[bool] = None,
     ):
@@ -4424,6 +5190,8 @@ class NPT(EQ21step):
         _preset_item("production_ns", float(time))
         _preset_item("dt_ps", float(dt_ps))
         _preset_item("constraints", _normalize_constraints_mode(constraints))
+        resolved_periodicity = _normalize_periodicity(periodicity)
+        _preset_item("periodicity", resolved_periodicity)
         _preset_item("lincs_iter", int(lincs_iter) if lincs_iter is not None else None)
         _preset_item("lincs_order", int(lincs_order) if lincs_order is not None else None)
         resolved_gpu_offload_mode = _resolve_production_gpu_offload_mode(self.ac, gpu_offload_mode)
@@ -4451,8 +5219,19 @@ class NPT(EQ21step):
             f"{float(resolved_bridge_ps):.1f} ps | dt={float(bridge_dt_fs):.3f} fs | "
             f"lincs_iter={int(bridge_lincs_iter)} | lincs_order={int(bridge_lincs_order)}",
         )
-        if mdp_overrides:
-            _preset_item("mdp_overrides", mdp_overrides)
+        effective_mdp_overrides = mdp_overrides
+        if resolved_periodicity == "xy":
+            effective_mdp_overrides = _merge_mdp_overrides(
+                xy_slab_mdp_overrides(
+                    top_path=exp.system_top,
+                    spec=xy_slab,
+                    pressure_bar=float(press),
+                    npt_like=True,
+                ),
+                mdp_overrides,
+            )
+        if effective_mdp_overrides:
+            _preset_item("mdp_overrides", effective_mdp_overrides)
         _preset_item("resources", f"mpi={int(mpi)} | omp={int(omp)} | gpu={int(gpu)} | gpu_id={gpu_id}")
         if not rst_flag and run_dir.exists():
             shutil.rmtree(run_dir, ignore_errors=True)
@@ -4480,7 +5259,7 @@ class NPT(EQ21step):
             log_ps=policy.log_ps,
             trr_ps=policy.trr_ps,
             velocity_ps=policy.velocity_ps,
-            mdp_overrides=mdp_overrides,
+            mdp_overrides=effective_mdp_overrides,
         )
         template = NPT_NO_CONSTRAINTS_MDP if not _constraints_use_lincs(constraints_mode) else NPT_MDP
         effective_dt_ps = float(p["dt"])
@@ -4541,7 +5320,9 @@ class NPT(EQ21step):
                 "bridge_dt_fs": float(bridge_dt_fs),
                 "bridge_lincs_iter": int(bridge_lincs_iter),
                 "bridge_lincs_order": int(bridge_lincs_order),
-                "mdp_overrides": json.dumps(mdp_overrides, sort_keys=True, default=str) if mdp_overrides else None,
+                "periodicity": str(resolved_periodicity),
+                "xy_slab": json.dumps(asdict(_resolve_xy_slab_spec(xy_slab)), sort_keys=True, default=str) if resolved_periodicity == "xy" else None,
+                "mdp_overrides": json.dumps(effective_mdp_overrides, sort_keys=True, default=str) if effective_mdp_overrides else None,
             },
             description="NPT production run",
         )

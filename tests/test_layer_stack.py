@@ -136,6 +136,76 @@ def test_layer_stack_supports_vacuum_and_arbitrary_order(monkeypatch, tmp_path: 
     assert "ELECTROLYTE" in result.system_ndx.read_text(encoding="utf-8")
 
 
+def test_molecular_layer_can_use_prepared_slab_gro(monkeypatch, tmp_path: Path):
+    _patch_fake_export(monkeypatch)
+    water = utils.mol_from_smiles("O", name="WAT")
+    nat = int(water.GetNumAtoms()) * 2
+    gro = tmp_path / "prepared_slab.gro"
+    lines = ["prepared slab", f"{nat:5d}"]
+    for i in range(nat):
+        lines.append(f"{1:5d}{'WAT':<5}{'O':>5}{i+1:5d}{0.1*i:8.3f}{0.0:8.3f}{0.2+0.02*i:8.3f}")
+    lines.append(f"{2.00000:10.5f}{2.00000:10.5f}{1.50000:10.5f}")
+    gro.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    result = build_layer_stack(
+        stack=LayerStackSpec(
+            layers=(
+                MolecularLayerSpec(
+                    name="PREPARED",
+                    species=(water,),
+                    counts=(2,),
+                    thickness_nm=1.0,
+                    layer_kind="generic",
+                    prepared_slab_gro=gro,
+                ),
+            )
+        ),
+        work_dir=tmp_path / "stack",
+        restart=False,
+    )
+
+    assert result.layer_reports[0]["prepared_slab_mode"] is True
+    assert result.layer_reports[0]["prepared_slab_gro"] == str(gro.resolve())
+    assert result.box_nm[2] > 0.0
+
+
+def test_molecular_layer_prepared_slab_rejects_atom_count_mismatch(monkeypatch, tmp_path: Path):
+    _patch_fake_export(monkeypatch)
+    water = utils.mol_from_smiles("O", name="WAT")
+    gro = tmp_path / "bad_slab.gro"
+    gro.write_text(
+        "\n".join(
+            [
+                "bad slab",
+                "    1",
+                "    1WAT      O    1   0.000   0.000   0.000",
+                "   1.00000   1.00000   1.00000",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    import pytest
+
+    with pytest.raises(ValueError, match="prepared_slab_gro atom count mismatch"):
+        build_layer_stack(
+            stack=LayerStackSpec(
+                layers=(
+                    MolecularLayerSpec(
+                        name="PREPARED",
+                        species=(water,),
+                        counts=(2,),
+                        thickness_nm=1.0,
+                        prepared_slab_gro=gro,
+                    ),
+                )
+            ),
+            work_dir=tmp_path / "stack_bad",
+            restart=False,
+        )
+
+
 def test_layer_stack_density_target_expands_z_not_graphite_xy_by_default():
     water = utils.mol_from_smiles("O", name="WAT")
     layer = MolecularLayerSpec(

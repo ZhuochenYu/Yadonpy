@@ -28,6 +28,7 @@ from yadonpy import (
     LayerStackRelaxationSpec,
     LayerStackSpec,
     MolecularLayerSpec,
+    XYSlabEquilibrationSpec,
     VacuumLayerSpec,
     ZCompressionAnnealSpec,
     analyze_layer_stack_interface,
@@ -96,6 +97,7 @@ Package root exports include:
 - `GraphiteRestraintSpec`
 - `InterdiffusionStartSpec`
 - `MolecularLayerSpec`
+- `XYSlabEquilibrationSpec`
 - `VacuumLayerSpec`
 - `ElectrodeChargeSpec`
 - `FixedChargeRegionSpec`
@@ -1131,6 +1133,7 @@ MolecularLayerSpec(
     polyelectrolyte_mode: bool | None = None,
     counterion_contact_mode: str = "auto",
     counterion_contact_distance_nm: float = 0.235,
+    prepared_slab_gro: str | Path | None = None,
 )
 
 VacuumLayerSpec(thickness_nm: float, name: str = "VACUUM")
@@ -1177,6 +1180,44 @@ InterdiffusionStartSpec(
     diffusion_t0_ps: float = 0.0,
 )
 ```
+
+For a CMC-Na layer that should be pre-relaxed without z periodicity, prepare a
+wall-confined slab first and then pass its final GRO to the molecular layer:
+
+```python
+from yadonpy import XYSlabEquilibrationSpec
+from yadonpy.sim.preset import eq
+
+cmcna_slab_eq = eq.EQ21step(cmcna_ac, work_dir=cmcna_slab_dir)
+cmcna_slab_eq.exec(
+    temp=318.15,
+    press=1.0,
+    mpi=1,
+    omp=14,
+    gpu=1,
+    gpu_id=0,
+    periodicity="xy",
+    xy_slab=XYSlabEquilibrationSpec(
+        target_density_g_cm3=0.50,
+        cycles="auto",
+        max_z_shrink_per_cycle=0.10,
+        xy_area_mode="fixed",
+    ),
+)
+
+cmcna = MolecularLayerSpec(
+    name="CMCNA",
+    species=(CMC, Na),
+    counts=(8, 160),
+    thickness_nm=2.6,
+    layer_kind="cmcna",
+    prepared_slab_gro=cmcna_slab_eq.final_gro(),
+)
+```
+
+`periodicity="xy"` emits `pbc=xy`, z walls, `periodic-molecules=yes`, and
+`ewald-geometry=3dc`.  The z density is controlled by staged wall/box-height
+compression; it is not a z-direction NPT ensemble.
 
 Main calls:
 
