@@ -137,6 +137,7 @@ def test_top_level_api_exports_mechanics_helpers():
     assert hasattr(api, 'analyze_layer_stack_interface')
     assert hasattr(api, 'run_layer_stack_nvt')
     assert hasattr(api, 'run_layer_stack_relaxation')
+    assert hasattr(yadonpy, 'ZCompressionAnnealSpec')
     assert hasattr(api, 'clean_md_trajectory_files')
     assert not hasattr(api, 'run_sandwich_nvt_followup')
     assert not hasattr(api, 'build_cmcna_graphite_electrolyte_stack')
@@ -155,6 +156,7 @@ def test_top_level_api_exports_mechanics_helpers():
     assert 'run_layer_stack_nvt' in api.__all__
     assert 'run_layer_stack_relaxation' in api.__all__
     assert 'clean_md_trajectory_files' in api.__all__
+    assert 'ZCompressionAnnealSpec' in yadonpy.__all__
 
 
 def test_analyzer_does_not_expose_transport_bundle_api():

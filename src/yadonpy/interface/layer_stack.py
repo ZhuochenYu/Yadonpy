@@ -14,7 +14,7 @@ style remains close to Examples 02/05.
 from __future__ import annotations
 
 import csv
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 import json
 import math
 import re
@@ -166,6 +166,29 @@ class LayerStackRelaxationSpec:
     freeze_layers: tuple[str, ...] = ()
     run_relaxation: bool = False
     sample_ns: float = 0.0
+
+
+@dataclass(frozen=True)
+class ZCompressionAnnealSpec:
+    """Controlled fixed-XY z-compression annealing for closed layer stacks."""
+
+    enabled: bool | Literal["auto"] = "auto"
+    cycles: int = 6
+    normal_temp_K: float | None = None
+    normal_pressure_bar: float | None = None
+    tmax_K: float = 380.0
+    pmax_bar: float = 2000.0
+    max_z_shrink_per_cycle: float = 0.04
+    target_z_nm: float | Literal["auto"] = "auto"
+    target_z_tolerance: float = 0.03
+    min_interlayer_gap_nm: float = 0.20
+    hot_nvt_ns: float = 0.01
+    compression_npt_ns: float = 0.05
+    cool_nvt_ns: float = 0.02
+    pressure_schedule: Literal["linear"] = "linear"
+    temperature_schedule: Literal["linear"] = "linear"
+    geometry_compression: Literal["auto", "inter_electrode", "global"] = "auto"
+    rollback_on_failure: bool = True
 
 
 @dataclass(frozen=True)
@@ -942,6 +965,12 @@ def _manifest_payload(
     pbc_mode = spec.pbc_mode
     if pbc_mode == "auto":
         pbc_mode = "xyz"
+    layer_payloads, z_compaction = _layer_stack_compaction_metadata(
+        layer_reports=layer_reports,
+        intervals=intervals,
+        gap_reports=gap_reports,
+        box_nm=box_nm,
+    )
     return {
         "schema_version": 1,
         "builder": "yadonpy.interface.layer_stack",
@@ -950,10 +979,11 @@ def _manifest_payload(
         "pbc_mode": pbc_mode,
         "master_xy_nm": list(planning.get("master_xy_nm", [])),
         "box_nm": [float(v) for v in box_nm],
-        "layers": [dict(v) for v in layer_reports],
+        "layers": layer_payloads,
         "layer_intervals_nm": [dict(v) for v in intervals],
         "gaps": [dict(v) for v in gap_reports],
         "acceptance": dict(acceptance),
+        "z_compaction": z_compaction,
         "relaxation_defaults": {
             "temperature_K": float(relaxation.temperature_K),
             "pressure_bar": float(relaxation.pressure_bar),
@@ -973,6 +1003,61 @@ def _manifest_payload(
             "system_meta": str(export.system_meta),
             "molecules_dir": str(export.molecules_dir),
         },
+    }
+
+
+def _layer_stack_compaction_metadata(
+    *,
+    layer_reports: Sequence[dict[str, Any]],
+    intervals: Sequence[dict[str, Any]],
+    gap_reports: Sequence[dict[str, Any]],
+    box_nm: tuple[float, float, float],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    interval_by_index = {int(v.get("layer_index", i)): dict(v) for i, v in enumerate(intervals)}
+    payloads: list[dict[str, Any]] = []
+    target_nonvac_z = 0.0
+    actual_nonvac_z = 0.0
+    for idx, report in enumerate(layer_reports):
+        payload = dict(report)
+        interval = interval_by_index.get(idx)
+        actual = None
+        if interval is not None:
+            actual = max(0.0, float(interval.get("z_hi_nm", 0.0)) - float(interval.get("z_lo_nm", 0.0)))
+            actual_nonvac_z += float(actual)
+        kind = str(payload.get("kind") or "").strip().lower()
+        if kind == "vacuum":
+            target = float(payload.get("thickness_nm", 0.0) or 0.0)
+        elif kind == "graphite":
+            target = float(actual or payload.get("thickness_nm", 0.0) or 0.0)
+        else:
+            target = float(payload.get("thickness_nm", actual or 0.0) or 0.0)
+        if kind != "vacuum":
+            target_nonvac_z += float(target)
+        payload["target_thickness_nm"] = float(target)
+        payload["actual_thickness_nm"] = float(actual) if actual is not None else None
+        payload["z_expansion_factor"] = (float(actual) / float(target)) if actual is not None and float(target) > 0.0 else None
+        payloads.append(payload)
+
+    target_gap_z = 0.0
+    actual_gap_z = 0.0
+    for gap in gap_reports:
+        try:
+            g = max(float(gap.get("gap_nm", 0.0) or 0.0), 0.0)
+        except Exception:
+            g = 0.0
+        target_gap_z += g
+        actual_gap_z += g
+    target_box_z = float(target_nonvac_z + target_gap_z)
+    if target_box_z <= 0.0:
+        target_box_z = float(box_nm[2])
+    return payloads, {
+        "initial_box_z_nm": float(box_nm[2]),
+        "target_box_z_nm": float(target_box_z),
+        "target_nonvacuum_z_nm": float(target_nonvac_z),
+        "actual_nonvacuum_z_nm": float(actual_nonvac_z),
+        "target_gap_z_nm": float(target_gap_z),
+        "actual_gap_z_nm": float(actual_gap_z),
+        "box_z_expansion_factor": (float(box_nm[2]) / target_box_z) if target_box_z > 0.0 else None,
     }
 
 
@@ -1164,6 +1249,225 @@ def _copy_system_export_dir(result: LayerStackResult, dst: Path) -> Path:
     _copy_text_file(Path(result.system_top), dst / "system.top")
     _copy_text_file(Path(result.system_ndx), dst / "system.ndx")
     return dst
+
+
+def _read_gro_lines_coords_box(gro_path: Path) -> tuple[list[str], np.ndarray, tuple[float, float, float]]:
+    lines = Path(gro_path).read_text(encoding="utf-8", errors="replace").splitlines()
+    if len(lines) < 3:
+        raise ValueError(f"Invalid GRO file: {gro_path}")
+    nat = int(lines[1].strip())
+    coords = np.zeros((nat, 3), dtype=float)
+    for i in range(nat):
+        line = lines[2 + i]
+        coords[i, 0] = float(line[20:28])
+        coords[i, 1] = float(line[28:36])
+        coords[i, 2] = float(line[36:44])
+    raw_box = [float(tok) for tok in lines[2 + nat].split()]
+    if len(raw_box) < 3:
+        raise ValueError(f"Invalid GRO box line in {gro_path}")
+    return lines, coords, (float(raw_box[0]), float(raw_box[1]), float(raw_box[2]))
+
+
+def _write_gro_lines_coords_box(src_lines: Sequence[str], coords: np.ndarray, box_nm: tuple[float, float, float], out_path: Path) -> None:
+    nat = int(coords.shape[0])
+    lines = list(src_lines)
+    for i in range(nat):
+        old = lines[2 + i]
+        suffix = old[44:] if len(old) > 44 else ""
+        lines[2 + i] = f"{old[:20]}{coords[i, 0]:8.3f}{coords[i, 1]:8.3f}{coords[i, 2]:8.3f}{suffix}"
+    lines[2 + nat] = f"{float(box_nm[0]):10.5f}{float(box_nm[1]):10.5f}{float(box_nm[2]):10.5f}"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _graphite_layer_group_names(manifest: Mapping[str, Any]) -> list[str]:
+    out: list[str] = []
+    for idx, layer in enumerate(manifest.get("layers") or []):
+        if str(layer.get("kind") or "").strip().lower() != "graphite":
+            continue
+        name = str(layer.get("name") or f"LAYER_{idx:02d}")
+        out.append(f"LAYER_{idx:02d}_{_safe_name(name)}")
+    return out
+
+
+def _auto_target_z_nm(manifest: Mapping[str, Any], fallback_box_z_nm: float) -> float:
+    compaction = manifest.get("z_compaction") if isinstance(manifest, Mapping) else None
+    if isinstance(compaction, Mapping):
+        try:
+            target = float(compaction.get("target_box_z_nm"))
+            if target > 0.0:
+                return target
+        except Exception:
+            pass
+    return float(fallback_box_z_nm)
+
+
+def _minimal_periodic_z_span(z_values: np.ndarray, box_z_nm: float) -> tuple[float, float, float]:
+    """Return the shortest circular z interval containing a group's atoms."""
+
+    vals = np.sort(np.mod(np.asarray(z_values, dtype=float), float(box_z_nm)))
+    if vals.size == 0:
+        raise ValueError("Cannot compute a periodic z span for an empty group.")
+    if vals.size == 1:
+        z = float(vals[0])
+        return z, z, 0.0
+    gaps = np.diff(vals)
+    wrap_gap = float(vals[0] + float(box_z_nm) - vals[-1])
+    all_gaps = np.concatenate([gaps, np.asarray([wrap_gap], dtype=float)])
+    largest_gap_idx = int(np.argmax(all_gaps))
+    start_idx = (largest_gap_idx + 1) % int(vals.size)
+    if start_idx == 0:
+        ordered = vals
+    else:
+        ordered = np.concatenate([vals[start_idx:], vals[:start_idx] + float(box_z_nm)])
+    start = float(ordered[0])
+    end = float(ordered[-1])
+    return start, end, float(max(end - start, 0.0))
+
+
+def _unwrap_z_after(z_values: np.ndarray, lower_bound_nm: float, box_z_nm: float) -> np.ndarray:
+    z = np.asarray(z_values, dtype=float).copy()
+    period = float(box_z_nm)
+    if period <= 0.0:
+        return z
+    mask = z <= float(lower_bound_nm)
+    if np.any(mask):
+        z[mask] += np.ceil((float(lower_bound_nm) - z[mask] + 1.0e-9) / period) * period
+    return z
+
+
+def _write_z_compressed_gro(
+    *,
+    input_gro: Path,
+    output_gro: Path,
+    ndx_path: Path,
+    manifest: Mapping[str, Any],
+    target_z_nm: float,
+    max_z_shrink_per_cycle: float,
+    target_z_tolerance: float,
+    min_interlayer_gap_nm: float,
+    geometry_mode: str,
+) -> dict[str, Any]:
+    lines, coords, box = _read_gro_lines_coords_box(input_gro)
+    current_z = float(box[2])
+    target_z = float(target_z_nm)
+    if current_z <= target_z * (1.0 + float(target_z_tolerance)):
+        shutil.copyfile(input_gro, output_gro)
+        return {
+            "applied": False,
+            "reason": "target_z_reached",
+            "input_box_z_nm": current_z,
+            "output_box_z_nm": current_z,
+            "target_z_nm": target_z,
+            "z_shrink_fraction": 0.0,
+        }
+
+    shrink_fraction = min(max(float(max_z_shrink_per_cycle), 0.0), 0.50)
+    requested_shrink_nm = min(current_z - target_z, current_z * shrink_fraction)
+    if requested_shrink_nm <= 1.0e-6:
+        shutil.copyfile(input_gro, output_gro)
+        return {
+            "applied": False,
+            "reason": "zero_shrink",
+            "input_box_z_nm": current_z,
+            "output_box_z_nm": current_z,
+            "target_z_nm": target_z,
+            "z_shrink_fraction": 0.0,
+        }
+
+    mode = "inter_electrode" if str(geometry_mode).strip().lower() == "auto" else str(geometry_mode).strip().lower()
+    groups = read_ndx_groups(ndx_path) if Path(ndx_path).is_file() else {}
+    graphite_names = _graphite_layer_group_names(manifest)
+    graphite_spans: list[dict[str, Any]] = []
+    for name in graphite_names:
+        atom_ids = [int(v) for v in groups.get(name, []) if 1 <= int(v) <= int(coords.shape[0])]
+        if not atom_ids:
+            continue
+        z = coords[[i - 1 for i in atom_ids], 2]
+        start, end, span = _minimal_periodic_z_span(z, current_z)
+        graphite_spans.append(
+            {
+                "name": name,
+                "atom_indices0": [int(i - 1) for i in atom_ids],
+                "start_nm": float(start),
+                "end_nm": float(end),
+                "span_nm": float(span),
+                "start_mod_nm": float(start % current_z),
+                "end_mod_nm": float(end % current_z),
+            }
+        )
+
+    new_coords = np.asarray(coords, dtype=float).copy()
+    applied_mode = mode
+    if mode == "inter_electrode" and len(graphite_spans) >= 2:
+        bottom_span = graphite_spans[0]
+        top_span = graphite_spans[-1]
+        soft_lo = float(bottom_span["end_nm"])
+        soft_hi = float(top_span["start_nm"])
+        top_end = float(top_span["end_nm"])
+        while soft_hi <= soft_lo + 1.0e-6:
+            soft_hi += current_z
+            top_end += current_z
+        soft_span = max(soft_hi - soft_lo, 0.0)
+        max_allowed_shrink = max(0.0, soft_span - float(min_interlayer_gap_nm))
+        shrink_nm = min(float(requested_shrink_nm), max_allowed_shrink)
+        if shrink_nm <= 1.0e-6:
+            shutil.copyfile(input_gro, output_gro)
+            return {
+                "applied": False,
+                "reason": "min_interlayer_gap_reached",
+                "input_box_z_nm": current_z,
+                "output_box_z_nm": current_z,
+                "target_z_nm": target_z,
+                "soft_region_nm": [float(soft_lo % current_z), float(soft_hi % current_z)],
+                "soft_region_unwrapped_nm": [soft_lo, soft_hi],
+                "graphite_spans_nm": [
+                    {k: v for k, v in span.items() if k != "atom_indices0"} for span in graphite_spans
+                ],
+                "z_shrink_fraction": 0.0,
+            }
+        scale = max((soft_span - shrink_nm) / max(soft_span, 1.0e-12), 1.0e-6)
+        bottom_mask = np.zeros(int(new_coords.shape[0]), dtype=bool)
+        for idx0 in bottom_span["atom_indices0"]:
+            if 0 <= int(idx0) < int(bottom_mask.size):
+                bottom_mask[int(idx0)] = True
+        z_unwrapped = _unwrap_z_after(new_coords[:, 2], soft_lo, current_z)
+        in_soft = (~bottom_mask) & (z_unwrapped > soft_lo) & (z_unwrapped < soft_hi)
+        above = (~bottom_mask) & (z_unwrapped >= soft_hi)
+        z_unwrapped[in_soft] = soft_lo + (z_unwrapped[in_soft] - soft_lo) * scale
+        z_unwrapped[above] -= shrink_nm
+        new_coords[:, 2] = z_unwrapped
+        soft_region = [float(soft_lo % current_z), float(soft_hi % current_z)]
+        soft_region_unwrapped = [soft_lo, soft_hi]
+    else:
+        applied_mode = "global"
+        shrink_nm = float(requested_shrink_nm)
+        scale = max((current_z - shrink_nm) / max(current_z, 1.0e-12), 1.0e-6)
+        new_coords[:, 2] *= scale
+        soft_region = [0.0, current_z]
+        soft_region_unwrapped = [0.0, current_z]
+
+    new_z = max(current_z - float(shrink_nm), target_z)
+    new_coords[:, 2] = np.mod(new_coords[:, 2], new_z)
+    _write_gro_lines_coords_box(lines, new_coords, (float(box[0]), float(box[1]), float(new_z)), output_gro)
+    return {
+        "applied": True,
+        "mode": applied_mode,
+        "input_gro": str(input_gro),
+        "output_gro": str(output_gro),
+        "input_box_z_nm": current_z,
+        "output_box_z_nm": float(new_z),
+        "target_z_nm": target_z,
+        "soft_region_nm": soft_region,
+        "soft_region_unwrapped_nm": soft_region_unwrapped,
+        "graphite_spans_nm": [
+            {k: v for k, v in span.items() if k != "atom_indices0"} for span in graphite_spans
+        ],
+        "z_shrink_nm": float(shrink_nm),
+        "z_shrink_fraction": float(shrink_nm) / current_z if current_z > 0.0 else None,
+        "requested_z_shrink_nm": float(requested_shrink_nm),
+        "scale": float(scale),
+    }
 
 
 def _ns_to_nsteps(time_ns: float, dt_ps: float) -> int:
@@ -1365,6 +1669,65 @@ def _resolve_relax_z(result: LayerStackResult, relax_z: bool | Literal["auto"]) 
     return True, "auto_closed_nonvacuum_stack"
 
 
+def _normalize_compression_anneal_spec(value: bool | ZCompressionAnnealSpec) -> ZCompressionAnnealSpec:
+    if isinstance(value, ZCompressionAnnealSpec):
+        return value
+    if isinstance(value, bool):
+        return ZCompressionAnnealSpec(enabled=bool(value))
+    raise TypeError("compression_anneal must be a bool or ZCompressionAnnealSpec.")
+
+
+def _resolve_compression_anneal(
+    *,
+    result: LayerStackResult,
+    compression_anneal: bool | ZCompressionAnnealSpec,
+    relax_z_enabled: bool,
+) -> tuple[ZCompressionAnnealSpec, bool, str]:
+    spec = _normalize_compression_anneal_spec(compression_anneal)
+    enabled_raw = spec.enabled
+    if isinstance(enabled_raw, bool):
+        requested = bool(enabled_raw)
+    else:
+        token = str(enabled_raw).strip().lower()
+        if token in {"1", "true", "yes", "on"}:
+            requested = True
+        elif token in {"0", "false", "no", "off"}:
+            requested = False
+        elif token in {"", "auto"}:
+            requested = None
+        else:
+            raise ValueError("ZCompressionAnnealSpec.enabled must be True, False, or 'auto'.")
+    if not relax_z_enabled:
+        return spec, False, "relax_z_disabled"
+    if requested is False:
+        return spec, False, "explicit_false"
+
+    layers = list(result.stack_spec.layers)
+    if any(isinstance(layer, VacuumLayerSpec) for layer in layers):
+        return spec, bool(requested is True), "explicit_true_with_vacuum" if requested is True else "auto_explicit_vacuum_layer"
+    pbc_mode = str(result.stack_spec.pbc_mode or "auto").strip().lower()
+    if pbc_mode == "xy":
+        return spec, bool(requested is True), "explicit_true_with_xy_pbc" if requested is True else "auto_xy_pbc_open_z"
+
+    graphite_count = sum(1 for layer in layers if isinstance(layer, GraphiteLayerSpec))
+    molecular_count = sum(1 for layer in layers if isinstance(layer, MolecularLayerSpec))
+    sandwich = graphite_count >= 2 and molecular_count >= 1
+    if requested is True:
+        return spec, True, "explicit_true"
+    if sandwich:
+        return spec, True, "auto_closed_graphite_sandwich"
+    return spec, False, "auto_no_two_graphite_boundaries"
+
+
+def _anneal_schedule_value(kind: str, cycle: int, cycles: int, normal: float, maximum: float) -> float:
+    if str(kind).strip().lower() != "linear":
+        raise ValueError("Only linear compression anneal schedules are supported.")
+    if int(cycles) <= 0:
+        return float(normal)
+    frac = float(cycle) / float(max(int(cycles), 1))
+    return float(normal) + (float(maximum) - float(normal)) * frac
+
+
 def run_layer_stack_relaxation(
     result: LayerStackResult,
     *,
@@ -1393,6 +1756,7 @@ def run_layer_stack_relaxation(
     analysis_profile: str = "interface_fast",
     run_analysis: bool = True,
     relax_z: bool | Literal["auto"] = "auto",
+    compression_anneal: bool | ZCompressionAnnealSpec = False,
 ) -> LayerStackRelaxationResult:
     """Relax an exported layer stack, optionally including fixed-XY z-NPT.
 
@@ -1424,11 +1788,21 @@ def run_layer_stack_relaxation(
 
     system_dir = _copy_system_export_dir(result, run_dir / "02_system")
     _copy_text_file(Path(result.manifest_path), run_dir / "layer_stack_manifest.json")
+    manifest_path = run_dir / "layer_stack_manifest.json"
+    try:
+        manifest_payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except Exception:
+        manifest_payload = {}
 
     pbc_mode = str(result.stack_spec.pbc_mode or "xyz")
     if pbc_mode == "auto":
         pbc_mode = "xyz"
     relax_z_enabled, relax_z_reason = _resolve_relax_z(result, relax_z)
+    anneal_spec, anneal_enabled, anneal_reason = _resolve_compression_anneal(
+        result=result,
+        compression_anneal=compression_anneal,
+        relax_z_enabled=relax_z_enabled,
+    )
     constraints_mode = str(constraints)
     dynamic_template_nvt = NVT_NO_CONSTRAINTS_MDP if constraints_mode.strip().lower() == "none" else NVT_MDP
     dynamic_template_npt = NPT_NO_CONSTRAINTS_MDP if constraints_mode.strip().lower() == "none" else NPT_MDP
@@ -1500,15 +1874,6 @@ def run_layer_stack_relaxation(
         velocity_ps=velocity_ps,
     )
 
-    stages = [
-        EqStage(name="01_pre_minimize", kind="minim", mdp=MdpSpec(MINIM_STEEP_MDP, minim)),
-        EqStage(name="02_pre_nvt", kind="nvt", mdp=MdpSpec(dynamic_template_nvt, pre_nvt)),
-    ]
-    final_stage_name = "03_final_nvt"
-    if relax_z_enabled and z_npt is not None:
-        stages.append(EqStage(name="03_z_npt", kind="npt", mdp=MdpSpec(dynamic_template_npt, z_npt)))
-        final_stage_name = "04_final_nvt"
-    stages.append(EqStage(name=final_stage_name, kind="nvt", mdp=MdpSpec(dynamic_template_nvt, final_nvt)))
     use_gpu = bool(int(gpu))
     resources = RunResources(
         ntmpi=int(mpi),
@@ -1518,16 +1883,267 @@ def run_layer_stack_relaxation(
         gpu_offload_mode=str(gpu_offload_mode),
     )
     workflow_dir = run_dir / "05_relaxation_workflow"
-    job = EquilibrationJob(
-        gro=system_dir / "system.gro",
-        top=system_dir / "system.top",
-        ndx=system_dir / "system.ndx",
-        provenance_ndx=system_dir / "system.ndx",
-        out_dir=workflow_dir,
-        stages=stages,
-        resources=resources,
-    )
-    job.run(restart=rst_flag)
+    stage_order: list[str] = []
+    compression_cycles: list[dict[str, Any]] = []
+
+    def _run_segment(start_gro: Path, segment_stages: Sequence[Any]) -> Path:
+        job = EquilibrationJob(
+            gro=Path(start_gro),
+            top=system_dir / "system.top",
+            ndx=system_dir / "system.ndx",
+            provenance_ndx=system_dir / "system.ndx",
+            out_dir=workflow_dir,
+            stages=segment_stages,
+            resources=resources,
+        )
+        job.run(restart=rst_flag)
+        last_dir = workflow_dir / segment_stages[-1].name
+        return last_dir / "md.gro"
+
+    def _make_nvt_params(*, time_ns_value: float, temp_value: float, gen_vel: str, continuation: str) -> dict[str, object]:
+        return _layer_stack_md_params(
+            time_ns=float(time_ns_value),
+            dt_ps=float(dt_ps),
+            temp=float(temp_value),
+            constraints=constraints_mode,
+            pbc_mode=pbc_mode,
+            gen_vel=gen_vel,
+            continuation=continuation,
+            traj_ps=traj_ps,
+            energy_ps=energy_ps,
+            log_ps=log_ps,
+            trr_ps=trr_ps,
+            velocity_ps=velocity_ps,
+        )
+
+    def _make_z_npt_params(
+        *,
+        time_ns_value: float,
+        temp_value: float,
+        pressure_xy_bar: float,
+        pressure_z_bar: float,
+        gen_vel: str,
+        continuation: str,
+    ) -> dict[str, object]:
+        params = _layer_stack_md_params(
+            time_ns=float(time_ns_value),
+            dt_ps=float(dt_ps),
+            temp=float(temp_value),
+            constraints=constraints_mode,
+            pbc_mode=pbc_mode,
+            gen_vel=gen_vel,
+            continuation=continuation,
+            traj_ps=traj_ps,
+            energy_ps=energy_ps,
+            log_ps=log_ps,
+            trr_ps=trr_ps,
+            velocity_ps=velocity_ps,
+        )
+        params["pcoupl"] = "C-rescale"
+        params["pcoupltype"] = "semiisotropic"
+        params["ref_p"] = f"{float(pressure_xy_bar):.6g} {float(pressure_z_bar):.6g}"
+        params["compressibility"] = f"{float(xy_compressibility):.6g} {float(z_compressibility_bar_inv):.6g}"
+        return params
+
+    if not anneal_enabled:
+        stages = [
+            EqStage(name="01_pre_minimize", kind="minim", mdp=MdpSpec(MINIM_STEEP_MDP, minim)),
+            EqStage(name="02_pre_nvt", kind="nvt", mdp=MdpSpec(dynamic_template_nvt, pre_nvt)),
+        ]
+        final_stage_name = "03_final_nvt"
+        if relax_z_enabled and z_npt is not None:
+            stages.append(EqStage(name="03_z_npt", kind="npt", mdp=MdpSpec(dynamic_template_npt, z_npt)))
+            final_stage_name = "04_final_nvt"
+        stages.append(EqStage(name=final_stage_name, kind="nvt", mdp=MdpSpec(dynamic_template_nvt, final_nvt)))
+        stage_order = [stage.name for stage in stages]
+        _run_segment(system_dir / "system.gro", stages)
+    else:
+        workflow_dir.mkdir(parents=True, exist_ok=True)
+        stage_index = 1
+
+        def _stage_name(label: str) -> str:
+            nonlocal stage_index
+            name = f"{stage_index:02d}_{label}"
+            stage_index += 1
+            return name
+
+        initial_stages = [
+            EqStage(name=_stage_name("pre_minimize"), kind="minim", mdp=MdpSpec(MINIM_STEEP_MDP, minim)),
+            EqStage(name=_stage_name("pre_nvt"), kind="nvt", mdp=MdpSpec(dynamic_template_nvt, pre_nvt)),
+        ]
+        stage_order.extend(stage.name for stage in initial_stages)
+        current_gro = _run_segment(system_dir / "system.gro", initial_stages)
+
+        normal_temp = float(temp if anneal_spec.normal_temp_K is None else anneal_spec.normal_temp_K)
+        normal_pressure = float(pressure_bar if anneal_spec.normal_pressure_bar is None else anneal_spec.normal_pressure_bar)
+        try:
+            current_box = _read_gro_lines_coords_box(current_gro)[2]
+            target_z = (
+                _auto_target_z_nm(manifest_payload, current_box[2])
+                if str(anneal_spec.target_z_nm).strip().lower() == "auto"
+                else float(anneal_spec.target_z_nm)
+            )
+        except Exception:
+            target_z = _auto_target_z_nm(manifest_payload, float(result.box_nm[2]))
+
+        for cycle in range(1, max(int(anneal_spec.cycles), 0) + 1):
+            hot_temp = _anneal_schedule_value(
+                anneal_spec.temperature_schedule,
+                cycle,
+                int(anneal_spec.cycles),
+                normal_temp,
+                float(anneal_spec.tmax_K),
+            )
+            hot_pressure = _anneal_schedule_value(
+                anneal_spec.pressure_schedule,
+                cycle,
+                int(anneal_spec.cycles),
+                normal_pressure,
+                float(anneal_spec.pmax_bar),
+            )
+            cycle_report: dict[str, Any] = {
+                "cycle": int(cycle),
+                "temperature_K": float(hot_temp),
+                "pressure_z_bar": float(hot_pressure),
+                "normal_temperature_K": float(normal_temp),
+                "normal_pressure_bar": float(normal_pressure),
+            }
+
+            attempts = 2 if bool(anneal_spec.rollback_on_failure) else 1
+            last_exc: Exception | None = None
+            for attempt in range(1, attempts + 1):
+                shrink = float(anneal_spec.max_z_shrink_per_cycle) / (2.0 ** (attempt - 1))
+                pressure_attempt = normal_pressure + (float(hot_pressure) - normal_pressure) / (2.0 ** (attempt - 1))
+                geom_name = _stage_name(f"compress_c{cycle:02d}_geometry" if attempt == 1 else f"compress_c{cycle:02d}_geometry_retry{attempt}")
+                geom_dir = workflow_dir / geom_name
+                geom_gro = geom_dir / "md.gro"
+                geom_dir.mkdir(parents=True, exist_ok=True)
+                geometry_report = _write_z_compressed_gro(
+                    input_gro=current_gro,
+                    output_gro=geom_gro,
+                    ndx_path=system_dir / "system.ndx",
+                    manifest=manifest_payload,
+                    target_z_nm=float(target_z),
+                    max_z_shrink_per_cycle=shrink,
+                    target_z_tolerance=float(anneal_spec.target_z_tolerance),
+                    min_interlayer_gap_nm=float(anneal_spec.min_interlayer_gap_nm),
+                    geometry_mode=str(anneal_spec.geometry_compression),
+                )
+                (geom_dir / "summary.json").write_text(json.dumps(geometry_report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+                stage_order.append(geom_name)
+                cycle_report.setdefault("attempts", []).append(
+                    {
+                        "attempt": int(attempt),
+                        "geometry_stage": geom_name,
+                        "max_z_shrink_per_cycle": float(shrink),
+                        "pressure_z_bar": float(pressure_attempt),
+                        "geometry": geometry_report,
+                    }
+                )
+                if not geometry_report.get("applied"):
+                    cycle_report["stopped"] = True
+                    cycle_report["reason"] = geometry_report.get("reason")
+                    compression_cycles.append(cycle_report)
+                    current_gro = geom_gro
+                    break
+                cycle_stages = [
+                    EqStage(name=_stage_name(f"compress_c{cycle:02d}_minimize"), kind="minim", mdp=MdpSpec(MINIM_STEEP_MDP, minim)),
+                    EqStage(
+                        name=_stage_name(f"compress_c{cycle:02d}_hot_nvt"),
+                        kind="nvt",
+                        mdp=MdpSpec(
+                            dynamic_template_nvt,
+                            _make_nvt_params(
+                                time_ns_value=float(anneal_spec.hot_nvt_ns),
+                                temp_value=float(hot_temp),
+                                gen_vel="yes",
+                                continuation="no",
+                            ),
+                        ),
+                    ),
+                    EqStage(
+                        name=_stage_name(f"compress_c{cycle:02d}_hot_z_npt"),
+                        kind="npt",
+                        mdp=MdpSpec(
+                            dynamic_template_npt,
+                            _make_z_npt_params(
+                                time_ns_value=float(anneal_spec.compression_npt_ns),
+                                temp_value=float(hot_temp),
+                                pressure_xy_bar=normal_pressure,
+                                pressure_z_bar=float(pressure_attempt),
+                                gen_vel="no",
+                                continuation="yes",
+                            ),
+                        ),
+                    ),
+                    EqStage(
+                        name=_stage_name(f"compress_c{cycle:02d}_cool_nvt"),
+                        kind="nvt",
+                        mdp=MdpSpec(
+                            dynamic_template_nvt,
+                            _make_nvt_params(
+                                time_ns_value=float(anneal_spec.cool_nvt_ns),
+                                temp_value=normal_temp,
+                                gen_vel="no",
+                                continuation="yes",
+                            ),
+                        ),
+                    ),
+                ]
+                cycle_report["attempts"][-1]["md_stages"] = [stage.name for stage in cycle_stages]
+                try:
+                    stage_order.extend(stage.name for stage in cycle_stages)
+                    current_gro = _run_segment(geom_gro, cycle_stages)
+                    cycle_report["accepted_attempt"] = int(attempt)
+                    cycle_report["final_gro"] = str(current_gro)
+                    compression_cycles.append(cycle_report)
+                    last_exc = None
+                    break
+                except Exception as exc:
+                    last_exc = exc
+                    cycle_report["attempts"][-1]["error"] = str(exc)
+                    if attempt >= attempts:
+                        cycle_report["failed"] = True
+                        cycle_report["error"] = str(exc)
+                        compression_cycles.append(cycle_report)
+                        raise
+            if last_exc is None and cycle_report.get("stopped"):
+                break
+
+        final_z_npt_name = _stage_name("final_z_npt")
+        final_stage_name = _stage_name("final_nvt")
+        final_stages = [
+            EqStage(
+                name=final_z_npt_name,
+                kind="npt",
+                mdp=MdpSpec(
+                    dynamic_template_npt,
+                    _make_z_npt_params(
+                        time_ns_value=float(z_npt_ns),
+                        temp_value=normal_temp,
+                        pressure_xy_bar=normal_pressure,
+                        pressure_z_bar=normal_pressure,
+                        gen_vel="yes",
+                        continuation="no",
+                    ),
+                ),
+            ),
+            EqStage(
+                name=final_stage_name,
+                kind="nvt",
+                mdp=MdpSpec(
+                    dynamic_template_nvt,
+                    _make_nvt_params(
+                        time_ns_value=float(time_ns if final_nvt_ns is None else final_nvt_ns),
+                        temp_value=normal_temp,
+                        gen_vel="no",
+                        continuation="yes",
+                    ),
+                ),
+            ),
+        ]
+        stage_order.extend(stage.name for stage in final_stages)
+        _run_segment(current_gro, final_stages)
 
     final_stage_dir = workflow_dir / final_stage_name
     final_gro = (
@@ -1572,14 +2188,25 @@ def run_layer_stack_relaxation(
         analysis_payload=analysis_payload,
     )
     summary_path = run_dir / "relaxation_followup_summary.json"
+    anneal_payload = {
+        "requested": bool(compression_anneal) if isinstance(compression_anneal, bool) else asdict(compression_anneal),
+        "resolved": bool(anneal_enabled),
+        "reason": anneal_reason,
+        "spec": asdict(anneal_spec),
+        "cycles": compression_cycles,
+        "initial_z_compaction": manifest_payload.get("z_compaction") if isinstance(manifest_payload, dict) else None,
+    }
     payload = {
         "schema_version": 1,
         "workflow": "layer_stack_relaxation",
         "work_dir": str(run_dir),
         "source_layer_stack": str(result.work_dir),
-        "stage_order": [stage.name for stage in stages],
+        "stage_order": stage_order,
         "time_ns": {
             "pre_nvt": float(pre_nvt_ns),
+            "compression_anneal_hot_nvt_per_cycle": float(anneal_spec.hot_nvt_ns) if anneal_enabled else 0.0,
+            "compression_anneal_z_npt_per_cycle": float(anneal_spec.compression_npt_ns) if anneal_enabled else 0.0,
+            "compression_anneal_cool_nvt_per_cycle": float(anneal_spec.cool_nvt_ns) if anneal_enabled else 0.0,
             "z_npt": float(z_npt_ns) if relax_z_enabled else 0.0,
             "final_nvt": float(time_ns if final_nvt_ns is None else final_nvt_ns),
         },
@@ -1588,6 +2215,7 @@ def run_layer_stack_relaxation(
             "resolved": bool(relax_z_enabled),
             "reason": relax_z_reason,
         },
+        "compression_anneal": anneal_payload,
         "temperature_K": float(temp),
         "pressure_bar": float(pressure_bar),
         "dt_ps": float(dt_ps),
@@ -1881,6 +2509,7 @@ __all__ = [
     "LayerStackSpec",
     "MolecularLayerSpec",
     "VacuumLayerSpec",
+    "ZCompressionAnnealSpec",
     "analyze_layer_stack_interface",
     "build_layer_stack",
     "run_layer_stack_relaxation",

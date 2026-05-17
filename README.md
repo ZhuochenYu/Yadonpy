@@ -286,6 +286,7 @@ from yadonpy.interface import (
     GraphiteLayerSpec,
     LayerStackSpec,
     MolecularLayerSpec,
+    ZCompressionAnnealSpec,
     analyze_layer_stack_interface,
     build_layer_stack,
     run_layer_stack_relaxation,
@@ -320,6 +321,10 @@ The layer density targets above define the initial geometry.  For sampled
 interfaces, let the stack relax in z before analysis: XY stays fixed by the
 graphite footprint, z is pressure-coupled, and the reported interface analysis
 uses the final NVT trajectory after that z-NPT density relaxation.
+For dense graphite/polymer/electrolyte sandwiches, `compression_anneal` adds
+small fixed-XY z-compression moves followed by hot/high-pressure z-only
+annealing before the final z-NPT.  In `auto` mode it skips explicit vacuum or
+open-z controls and enables the loop for closed graphite sandwich stacks.
 
 ```python
 relax = run_layer_stack_relaxation(
@@ -328,6 +333,13 @@ relax = run_layer_stack_relaxation(
     pre_nvt_ns=0.05,
     z_npt_ns=0.50,
     relax_z=True,
+    compression_anneal=ZCompressionAnnealSpec(
+        enabled="auto",
+        cycles=6,
+        tmax_K=380.0,
+        pmax_bar=2000.0,
+        max_z_shrink_per_cycle=0.04,
+    ),
     dt_ps=0.001,
     constraints="none",
 )

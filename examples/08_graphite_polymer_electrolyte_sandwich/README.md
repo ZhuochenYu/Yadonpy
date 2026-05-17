@@ -64,6 +64,10 @@ semantic aliases such as `GRAPHITE`, `ELECTROLYTE`, `CMCNA`, and `MOBILE`.
   removes fresh contacts, `02_pre_nvt` releases local overlaps at fixed volume,
   `03_z_npt` keeps XY fixed while the z length responds to 1 bar pressure, and
   `04_final_nvt` produces the trajectory used for interface analysis.
+- For high-chain-count CMC/electrolyte sandwiches, `compression_anneal` can add
+  repeated small fixed-XY z-compression geometry moves plus hot/high-pressure
+  z-only annealing before final z-NPT.  This keeps graphite XY periodic bonding
+  intact while letting an expanded-Z packing collapse gradually.
 - The z-NPT stage is controlled by `relax_z`. Use `relax_z=True` for confined
   graphite/polymer/electrolyte stacks such as graphite | electrolyte | CMC-Na |
   graphite. Use `relax_z=False` for explicit vacuum | electrolyte | vacuum

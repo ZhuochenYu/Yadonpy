@@ -15,6 +15,7 @@ from yadonpy.interface import (
     LayerStackRelaxationSpec,
     LayerStackSpec,
     MolecularLayerSpec,
+    ZCompressionAnnealSpec,
     analyze_layer_stack_interface,
     build_layer_stack,
     run_layer_stack_relaxation,
@@ -161,6 +162,13 @@ if __name__ == "__main__":
             gpu_id=gpu_id,
             run_analysis=True,
             relax_z=True,
+            compression_anneal=ZCompressionAnnealSpec(
+                enabled=True,
+                cycles=8,
+                tmax_K=380.0,
+                pmax_bar=3000.0,
+                max_z_shrink_per_cycle=0.04,
+            ),
             restart=restart_status,
         )
         print(f"relaxation_summary = {relax.summary_path}")

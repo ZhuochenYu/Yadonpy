@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 
 import numpy as np
@@ -15,6 +16,7 @@ from yadonpy.interface.layer_stack import (
     LayerStackSpec,
     MolecularLayerSpec,
     VacuumLayerSpec,
+    ZCompressionAnnealSpec,
     build_layer_stack,
     run_layer_stack_relaxation,
     run_layer_stack_nvt,
@@ -439,6 +441,7 @@ def test_run_layer_stack_relaxation_auto_skips_z_npt_for_vacuum_stack(monkeypatc
         time_ns=0.01,
         z_npt_ns=0.5,
         relax_z="auto",
+        compression_anneal=ZCompressionAnnealSpec(enabled="auto", cycles=1),
         gpu=0,
     )
 
@@ -454,3 +457,104 @@ def test_run_layer_stack_relaxation_auto_skips_z_npt_for_vacuum_stack(monkeypatc
     }
     assert summary["time_ns"]["z_npt"] == 0.0
     assert summary["z_npt_mdp_overrides"] is None
+    assert summary["compression_anneal"]["resolved"] is False
+    assert summary["compression_anneal"]["reason"] == "relax_z_disabled"
+
+
+def test_run_layer_stack_relaxation_compression_anneal_workflow(monkeypatch, tmp_path: Path):
+    _patch_fake_export(monkeypatch)
+    water = utils.mol_from_smiles("O", name="WAT")
+    result = build_layer_stack(
+        stack=LayerStackSpec(
+            layers=(
+                GraphiteLayerSpec(name="BOTTOM", nx=2, ny=2, n_layers=1),
+                MolecularLayerSpec(
+                    name="ELECTROLYTE",
+                    species=(water,),
+                    counts=(2,),
+                    thickness_nm=2.0,
+                    density_target_g_cm3=0.4,
+                    layer_kind="electrolyte",
+                ),
+                GraphiteLayerSpec(name="TOP", nx=2, ny=2, n_layers=1),
+            ),
+            name="compression_input",
+            default_gap_nm=0.35,
+        ),
+        work_dir=tmp_path / "compression_stack",
+        restart=False,
+    )
+    with result.system_ndx.open("a", encoding="utf-8") as fh:
+        top_atoms = " ".join(str(i) for i in range(23, 39))
+        fh.write(f"\n[ LAYER_02_TOP ]\n{top_atoms}\n[ TOP ]\n{top_atoms}\n")
+
+    jobs: list[dict[str, object]] = []
+
+    class DummyJob:
+        def __init__(self, *, gro, top, ndx=None, provenance_ndx=None, out_dir, stages, resources):
+            self.gro = Path(gro)
+            self.out_dir = Path(out_dir)
+            self.stages = list(stages)
+            jobs.append({"gro": self.gro, "out_dir": self.out_dir, "stages": self.stages})
+
+        def run(self, *, restart=False):
+            current = self.gro
+            for stage in self.stages:
+                stage_dir = self.out_dir / stage.name
+                stage_dir.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(current, stage_dir / "md.gro")
+                if stage.name.endswith("final_nvt"):
+                    (stage_dir / "md.xtc").write_bytes(b"")
+                current = stage_dir / "md.gro"
+            (self.out_dir / "summary.json").write_text("{}", encoding="utf-8")
+            return self.out_dir / "summary.json"
+
+    from yadonpy.gmx.workflows import eq as eqmod
+
+    monkeypatch.setattr(eqmod, "EquilibrationJob", DummyJob)
+    monkeypatch.setattr("yadonpy.interface.layer_stack.analyze_layer_stack_interface", lambda **kwargs: {"summary_path": str(tmp_path / "analysis.json"), "geometry_health": {"phase_order_ok": True}, "outputs": {}})
+
+    out = run_layer_stack_relaxation(
+        result,
+        work_dir=tmp_path / "compression_relax",
+        time_ns=0.01,
+        pre_nvt_ns=0.001,
+        z_npt_ns=0.001,
+        relax_z=True,
+        compression_anneal=ZCompressionAnnealSpec(
+            enabled=True,
+            cycles=1,
+            tmax_K=380.0,
+            pmax_bar=2000.0,
+            target_z_nm=float(result.box_nm[2]) * 0.90,
+            max_z_shrink_per_cycle=0.04,
+            hot_nvt_ns=0.001,
+            compression_npt_ns=0.001,
+            cool_nvt_ns=0.001,
+        ),
+        run_analysis=False,
+        gpu=0,
+    )
+
+    summary = json.loads(out.summary_path.read_text(encoding="utf-8"))
+    assert summary["compression_anneal"]["resolved"] is True
+    assert summary["compression_anneal"]["reason"] == "explicit_true"
+    assert summary["compression_anneal"]["cycles"][0]["accepted_attempt"] == 1
+    assert summary["stage_order"] == [
+        "01_pre_minimize",
+        "02_pre_nvt",
+        "03_compress_c01_geometry",
+        "04_compress_c01_minimize",
+        "05_compress_c01_hot_nvt",
+        "06_compress_c01_hot_z_npt",
+        "07_compress_c01_cool_nvt",
+        "08_final_z_npt",
+        "09_final_nvt",
+    ]
+    geometry = summary["compression_anneal"]["cycles"][0]["attempts"][0]["geometry"]
+    assert geometry["applied"] is True
+    assert geometry["mode"] == "inter_electrode"
+    hot_z_npt = jobs[1]["stages"][2].mdp.render()
+    assert "ref_p                     = 1 2000" in hot_z_npt
+    assert "compressibility           = 0 4.5e-05" in hot_z_npt
+    assert out.final_gro == tmp_path / "compression_relax" / "05_relaxation_workflow" / "09_final_nvt" / "md.gro"
