@@ -5,7 +5,7 @@ from pathlib import Path
 
 from rdkit import Chem
 
-import yadonpy as yp
+from yadonpy import AnalyzeResult, doctor
 
 
 # Example 10: standalone migration analysis for an existing YadonPy work directory.
@@ -27,9 +27,9 @@ EXPERT_MODE = False
 
 
 def main() -> None:
-    yp.doctor(print_report=True)
+    doctor(print_report=True)
 
-    analy = yp.AnalyzeResult.from_work_dir(WORK_DIR)
+    analy = AnalyzeResult.from_work_dir(WORK_DIR)
     center_mol = Chem.MolFromSmiles(CENTER_SMILES)
     if center_mol is None:
         raise RuntimeError(f"Failed to parse center SMILES: {CENTER_SMILES!r}")

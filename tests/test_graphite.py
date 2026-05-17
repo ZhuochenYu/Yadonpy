@@ -5,7 +5,7 @@ import pytest
 from rdkit import Chem
 from rdkit import Geometry as Geom
 
-import yadonpy as yp
+from yadonpy import build_graphite
 from yadonpy.core import poly, utils
 from yadonpy.core.graphite import _graphite_cif_path, register_cell_species_metadata, stack_cell_blocks
 from yadonpy.ff.gaff2_mod import GAFF2_mod
@@ -25,7 +25,7 @@ def _translated_copy(mol: Chem.Mol, shift_xyz) -> Chem.Mol:
 def test_build_graphite_basal_assigns_gaff_and_metadata():
     ff = GAFF2_mod()
 
-    out = yp.build_graphite(
+    out = build_graphite(
         nx=3,
         ny=2,
         n_layers=2,
@@ -59,7 +59,7 @@ def test_bundled_graphite_cif_exists():
 def test_build_graphite_edge_supports_random_oxygen_caps():
     ff = GAFF2_mod()
 
-    out = yp.build_graphite(
+    out = build_graphite(
         nx=2,
         ny=2,
         n_layers=2,
@@ -82,7 +82,7 @@ def test_build_graphite_edge_supports_random_oxygen_caps():
 def test_build_graphite_periodic_exports_without_hydrogen_caps(tmp_path: Path):
     ff = GAFF2_mod()
 
-    graphite = yp.build_graphite(
+    graphite = build_graphite(
         nx=4,
         ny=4,
         n_layers=2,
@@ -135,7 +135,7 @@ def test_build_graphite_periodic_exports_without_hydrogen_caps(tmp_path: Path):
 def test_periodic_graphite_basal_has_cross_boundary_bonds():
     ff = GAFF2_mod()
 
-    graphite = yp.build_graphite(
+    graphite = build_graphite(
         nx=4,
         ny=4,
         n_layers=1,
@@ -163,7 +163,7 @@ def test_periodic_graphite_basal_has_cross_boundary_bonds():
 def test_stack_cell_blocks_and_export_graphite_plus_solvent(tmp_path: Path):
     ff = GAFF2_mod()
 
-    graphite = yp.build_graphite(
+    graphite = build_graphite(
         nx=2,
         ny=2,
         n_layers=2,

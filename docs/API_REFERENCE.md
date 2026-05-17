@@ -9,73 +9,117 @@ For QM-derived charges, the supported environment is Psi4 plus `psiresp-base`.
 ## 1. Import Pattern
 
 ```python
-import yadonpy as yp
+from yadonpy import (
+    AnalyzeResult,
+    ElectrodeChargeSpec,
+    GraphiteLayerSpec,
+    IOAnalysisPolicy,
+    InterfaceBuilder,
+    InterfaceDynamics,
+    InterfaceProtocol,
+    LayerStackNvtResult,
+    LayerStackRelaxationSpec,
+    LayerStackSpec,
+    MolecularLayerSpec,
+    VacuumLayerSpec,
+    ZCompressionAnnealSpec,
+    analyze_layer_stack_interface,
+    assign_charges,
+    assign_forcefield,
+    build_graphite,
+    build_interface,
+    build_interface_from_workdirs,
+    build_layer_stack,
+    clean_md_trajectory_files,
+    conformation_search,
+    get_ff,
+    get_run_options,
+    list_charge_methods,
+    list_forcefields,
+    load_from_moldb,
+    mol_from_smiles,
+    parameterize_smiles,
+    print_mechanics_result_summary,
+    qm,
+    resolve_io_analysis_policy,
+    resolve_prepared_system,
+    run_elongation_gmx,
+    run_layer_stack_nvt,
+    run_layer_stack_relaxation,
+    run_options,
+    run_tg_scan_gmx,
+    set_run_options,
+)
 ```
 
 Package root exports include:
 
-- `yp.get_ff`
-- `yp.list_forcefields`
-- `yp.list_charge_methods`
-- `yp.mol_from_smiles`
-- `yp.build_graphite`
-- `yp.build_layer_stack`
-- `yp.run_layer_stack_nvt`
-- `yp.analyze_layer_stack_interface`
-- `yp.conformation_search`
-- `yp.assign_charges`
-- `yp.assign_forcefield`
-- `yp.load_from_moldb`
-- `yp.parameterize_smiles`
-- `yp.resolve_prepared_system`
-- `yp.run_tg_scan_gmx`
-- `yp.run_elongation_gmx`
-- `yp.AnalyzeResult`
-- `yp.IOAnalysisPolicy`
-- `yp.resolve_io_analysis_policy`
-- `yp.clean_md_trajectory_files`
-- `yp.LayerStackSpec`
-- `yp.GraphiteLayerSpec`
-- `yp.MolecularLayerSpec`
-- `yp.VacuumLayerSpec`
-- `yp.ElectrodeChargeSpec`
-- `yp.LayerStackNvtResult`
-- `yp.print_mechanics_result_summary`
-- `yp.InterfaceBuilder`
-- `yp.InterfaceProtocol`
-- `yp.InterfaceDynamics`
-- `yp.build_interface`
-- `yp.build_interface_from_workdirs`
-- `yp.get_run_options`
-- `yp.set_run_options`
-- `yp.run_options`
-- `yp.qm`
+- `get_ff`
+- `list_forcefields`
+- `list_charge_methods`
+- `mol_from_smiles`
+- `build_graphite`
+- `build_layer_stack`
+- `run_layer_stack_nvt`
+- `run_layer_stack_relaxation`
+- `analyze_layer_stack_interface`
+- `conformation_search`
+- `assign_charges`
+- `assign_forcefield`
+- `load_from_moldb`
+- `parameterize_smiles`
+- `resolve_prepared_system`
+- `run_tg_scan_gmx`
+- `run_elongation_gmx`
+- `AnalyzeResult`
+- `IOAnalysisPolicy`
+- `resolve_io_analysis_policy`
+- `clean_md_trajectory_files`
+- `LayerStackSpec`
+- `LayerStackRelaxationSpec`
+- `GraphiteLayerSpec`
+- `MolecularLayerSpec`
+- `VacuumLayerSpec`
+- `ElectrodeChargeSpec`
+- `ZCompressionAnnealSpec`
+- `LayerStackNvtResult`
+- `print_mechanics_result_summary`
+- `InterfaceBuilder`
+- `InterfaceProtocol`
+- `InterfaceDynamics`
+- `build_interface`
+- `build_interface_from_workdirs`
+- `get_run_options`
+- `set_run_options`
+- `run_options`
+- `qm`
 
 ## 2. High-Level Convenience API
 
 ```python
-yp.get_ff(ff_name: str, **kwargs)
-yp.list_forcefields() -> tuple[str, ...]
-yp.list_charge_methods() -> tuple[str, ...]
-yp.mol_from_smiles(smiles: str, *, coord: bool = True, name: str | None = None)
-yp.build_graphite(**kwargs)
-yp.build_layer_stack(stack=LayerStackSpec(...), work_dir="./work_layer_stack", ...)
-yp.run_layer_stack_nvt(result, *, time_ns=2.0, temp=318.15, ...)
-yp.analyze_layer_stack_interface(*, work_dir="./work_layer_stack", analysis_profile="interface_fast", ...)
-yp.resolve_prepared_system(
+get_ff(ff_name: str, **kwargs)
+list_forcefields() -> tuple[str, ...]
+list_charge_methods() -> tuple[str, ...]
+mol_from_smiles(smiles: str, *, coord: bool = True, name: str | None = None)
+build_graphite(**kwargs)
+build_layer_stack(stack=LayerStackSpec(...), work_dir="./work_layer_stack", ...)
+run_layer_stack_nvt(result, *, time_ns=2.0, temp=318.15, ...)
+run_layer_stack_relaxation(result, *, time_ns=2.0, temp=318.15, relax_z=True, ...)
+analyze_layer_stack_interface(*, work_dir="./work_layer_stack", analysis_profile="interface_fast", ...)
+resolve_prepared_system(
     *,
     gro: str | Path | None = None,
     top: str | Path | None = None,
     work_dir: str | Path | None = None,
     source_name: str | None = None,
 )
-yp.run_tg_scan_gmx(**kwargs)
-yp.run_elongation_gmx(**kwargs)
-yp.print_mechanics_result_summary(result)
-yp.conformation_search(mol, **kwargs)
-yp.assign_charges(mol, *, charge: str = "RESP", **kwargs)
-yp.assign_forcefield(mol, *, ff_name: str = "gaff2_mod", charge: str | None = None, **kwargs)
-yp.load_from_moldb(
+run_tg_scan_gmx(**kwargs)
+run_elongation_gmx(**kwargs)
+print_mechanics_result_summary(result)
+conformation_search(mol, **kwargs)
+assign_charges(mol, *, charge: str = "RESP", **kwargs)
+assign_forcefield(mol, *, ff_name: str = "gaff2_mod", charge: str | None = None, **kwargs)
+load_from_moldb(
     smiles: str,
     *,
     charge: str = "RESP",
@@ -86,7 +130,7 @@ yp.load_from_moldb(
     polyelectrolyte_mode: bool | None = None,
     polyelectrolyte_detection: str | None = None,
 )
-yp.parameterize_smiles(
+parameterize_smiles(
     smiles: str,
     *,
     ff_name: str = "gaff2_mod",
@@ -405,7 +449,7 @@ After all analyses are complete, remove heavy trajectory streams while keeping
 auditable outputs:
 
 ```python
-yp.clean_md_trajectory_files(work_dir, enabled=True)
+clean_md_trajectory_files(work_dir, enabled=True)
 ```
 
 The helper removes `.xtc`, `.trr`, `.trj`, and `.tng` recursively and writes

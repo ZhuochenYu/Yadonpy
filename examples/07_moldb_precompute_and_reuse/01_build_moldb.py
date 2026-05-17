@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-import yadonpy as yp
+from yadonpy import assign_charges, mol_from_smiles
 from yadonpy.core import workdir
 from yadonpy.core.data_dir import ensure_initialized
 from yadonpy.core.polyelectrolyte import detect_charged_groups, uses_localized_charge_groups
@@ -78,7 +78,7 @@ def _resolve_polyelectrolyte_mode(smiles: str, *, requested: bool = False) -> bo
     if bool(requested):
         return True
     try:
-        mol = yp.mol_from_smiles(smiles, coord=False)
+        mol = mol_from_smiles(smiles, coord=False)
         summary = detect_charged_groups(mol, detection="auto")
         return bool(uses_localized_charge_groups(summary))
     except Exception:
@@ -93,7 +93,7 @@ def _bonded_mode(spec: SpeciesSpec) -> str:
 
 
 def _resolve_qm_spec(smiles: str) -> QMSpec | None:
-    mol = yp.mol_from_smiles(smiles, coord=False)
+    mol = mol_from_smiles(smiles, coord=False)
     elements: list[str] = []
     seen: set[str] = set()
     formal_charge = 0
@@ -140,13 +140,13 @@ def run_one_species(
     psi4_memory_mb: int,
 ) -> dict[str, Any]:
     species_wd = workdir(job_wd / spec.name, restart=False)
-    mol = yp.mol_from_smiles(spec.smiles, name=spec.name)
+    mol = mol_from_smiles(spec.smiles, name=spec.name)
     formal_charge = int(sum(int(atom.GetFormalCharge()) for atom in mol.GetAtoms()))
     charge_groups = detect_charged_groups(mol, detection="auto") if spec.polyelectrolyte_mode else {}
     qm_spec = _resolve_qm_spec(spec.smiles)
     bonded_mode = _bonded_mode(spec)
     ok = bool(
-        yp.assign_charges(
+        assign_charges(
             mol,
             charge=spec.charge,
             opt=True,

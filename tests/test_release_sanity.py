@@ -201,8 +201,9 @@ def test_interface_examples_keep_linear_script_style():
         '04_graphite_basal_electrolyte_cmcna_graphite_basal.py',
         '05_charged_graphite_basal_electrolyte_cmcna_graphite_basal.py',
     ]
+    alias_import = 'import yadonpy as ' + 'yp'
     helper_patterns = (
-        'import yadonpy as yp',
+        alias_import,
         'os.environ',
         'YADONPY_',
     )
@@ -272,7 +273,8 @@ def test_example08_scripts_use_one_shot_builder_and_interface_summary_printer():
 
     for rel, required_calls in expected.items():
         text = (root / rel).read_text(encoding='utf-8')
-        assert 'import yadonpy as yp' not in text
+        alias_import = 'import yadonpy as ' + 'yp'
+        assert alias_import not in text
         assert 'from yadonpy.runtime import set_run_options' in text
         assert 'from yadonpy.diagnostics import doctor' in text
         assert 'from yadonpy.ff.gaff2_mod import GAFF2_mod' in text
@@ -351,12 +353,29 @@ def test_mechanics_examples_use_high_level_api_and_not_workflow_steps():
         'examples/04_elongation_gmx/run_elong.py',
     ):
         text = (root / rel).read_text(encoding='utf-8')
-        assert 'import yadonpy as yp' in text
-        assert 'yp.resolve_prepared_system(' in text
-        assert 'yp.print_mechanics_result_summary(' in text
+        alias_import = 'import yadonpy as ' + 'yp'
+        assert alias_import not in text
+        assert 'resolve_prepared_system(' in text
+        assert 'print_mechanics_result_summary(' in text
         assert 'from yadonpy.workflow import steps' not in text
         assert 'from yadonpy.workflow import ' not in text
         assert 'steps.' not in text
+
+
+def test_public_docs_and_examples_do_not_use_yadonpy_alias():
+    root = Path(__file__).resolve().parents[1]
+    offenders: list[str] = []
+    alias_import = 'import yadonpy as ' + 'yp'
+    alias_prefix = 'y' + 'p.'
+    for base in (root / 'docs', root / 'examples'):
+        for path in sorted(base.rglob('*')):
+            if path.suffix not in {'.md', '.py'}:
+                continue
+            text = path.read_text(encoding='utf-8')
+            if alias_import in text or alias_prefix in text:
+                offenders.append(str(path.relative_to(root)))
+
+    assert offenders == []
 
 
 def test_docs_reference_thermomechanical_high_level_helpers():

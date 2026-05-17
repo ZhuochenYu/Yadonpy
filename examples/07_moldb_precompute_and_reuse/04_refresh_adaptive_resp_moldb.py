@@ -28,7 +28,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-import yadonpy as yp
+from yadonpy import assign_charges, mol_from_smiles
 from yadonpy.core import chem_utils, workdir
 from yadonpy.core.data_dir import ensure_initialized
 from yadonpy.core.polyelectrolyte import detect_charged_groups
@@ -203,7 +203,7 @@ def _load_geometry(spec: SpeciesSpec, *, dbs: list[tuple[str, MolDB]], resp_prof
                 return mol, f"{label}-db-{profile or 'any'}", False
             except Exception:
                 continue
-    return yp.mol_from_smiles(spec.smiles, name=spec.name), "fresh-smiles", True
+    return mol_from_smiles(spec.smiles, name=spec.name), "fresh-smiles", True
 
 
 def _charge_values(mol, prop: str = "AtomicCharge") -> list[float | None]:
@@ -434,7 +434,7 @@ def _build_refresh_tasks(
 ) -> list[RefreshTask]:
     tasks: list[RefreshTask] = []
     for spec in specs:
-        mol = yp.mol_from_smiles(spec.smiles, coord=False, name=spec.name)
+        mol = mol_from_smiles(spec.smiles, coord=False, name=spec.name)
         heavy_atoms = _heavy_atom_count(mol)
         formal_charge = _formal_charge(mol)
         profile, priority = _task_profile(spec)
@@ -555,7 +555,7 @@ def _worker_refresh_candidate(
             f"source={geometry_source} opt={int(optimize)}",
             flush=True,
         )
-        ok = yp.assign_charges(
+        ok = assign_charges(
             mol,
             charge="RESP",
             resp_profile=resp_profile,
@@ -1109,7 +1109,7 @@ def refresh_one(
         f"poly={int(spec.polyelectrolyte_mode)} groups={len(charge_groups.get('groups') or [])} "
         f"source={geometry_source} opt={int(needs_new_opt)}"
     )
-    ok = yp.assign_charges(
+    ok = assign_charges(
         mol,
         charge="RESP",
         resp_profile=args.resp_profile,

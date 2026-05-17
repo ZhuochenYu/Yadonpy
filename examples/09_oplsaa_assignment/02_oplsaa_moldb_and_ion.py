@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import yadonpy as yp
+from yadonpy import get_ff, load_from_moldb
 from yadonpy.core import workdir
 from yadonpy.core.data_dir import ensure_initialized
 from yadonpy.diagnostics import doctor
@@ -15,7 +15,7 @@ from yadonpy.runtime import set_run_options
 restart_status = False
 set_run_options(restart=restart_status)
 
-ff = yp.get_ff("oplsaa")
+ff = get_ff("oplsaa")
 
 smiles_ec = "O=C1OCCO1"
 smiles_na = "[Na+]"
@@ -30,7 +30,7 @@ if __name__ == "__main__":
 
     example_wd = workdir(work_dir, restart=restart_status)
 
-    ec = yp.load_from_moldb(
+    ec = load_from_moldb(
         smiles_ec,
         charge="RESP",
         require_ready=True,

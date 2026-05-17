@@ -17,7 +17,7 @@ from dataclasses import dataclass
 import os
 from pathlib import Path
 
-import yadonpy as yp
+from yadonpy import assign_charges, mol_from_smiles
 from yadonpy.core import workdir
 from yadonpy.core.data_dir import ensure_initialized
 from yadonpy.core.polyelectrolyte import detect_charged_groups
@@ -108,7 +108,7 @@ def _refresh_one(spec: SpeciesSpec, *, default_db: MolDB, repo_db: MolDB, job_wd
             continue
 
     if mol is None:
-        mol = yp.mol_from_smiles(spec.smiles, name=spec.name)
+        mol = mol_from_smiles(spec.smiles, name=spec.name)
 
     charge_groups = detect_charged_groups(mol, detection="auto")
     formal_charge = _formal_charge(mol)
@@ -119,7 +119,7 @@ def _refresh_one(spec: SpeciesSpec, *, default_db: MolDB, repo_db: MolDB, job_wd
         f"source={source} opt={need_opt}"
     )
 
-    ok = yp.assign_charges(
+    ok = assign_charges(
         mol,
         charge="RESP",
         opt=need_opt,

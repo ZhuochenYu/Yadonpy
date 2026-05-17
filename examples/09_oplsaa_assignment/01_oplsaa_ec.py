@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import yadonpy as yp
+from yadonpy import get_ff, mol_from_smiles
 from yadonpy.core import workdir
 from yadonpy.core.data_dir import ensure_initialized
 from yadonpy.diagnostics import doctor
@@ -15,7 +15,7 @@ from yadonpy.runtime import set_run_options
 restart_status = False
 set_run_options(restart=restart_status)
 
-ff = yp.get_ff("oplsaa")
+ff = get_ff("oplsaa")
 smiles_ec = "O=C1OCCO1"
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -28,7 +28,7 @@ if __name__ == "__main__":
 
     example_wd = workdir(work_dir, restart=restart_status)
 
-    ec = yp.mol_from_smiles(smiles_ec)
+    ec = mol_from_smiles(smiles_ec)
     if not ff.ff_assign(ec, charge="opls"):
         raise RuntimeError("OPLS-AA assignment failed for ethylene carbonate (EC).")
 

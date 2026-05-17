@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 from dataclasses import dataclass
 
-import yadonpy as yp
+from yadonpy import get_ff
 from yadonpy.core import workdir
 from yadonpy.core.data_dir import ensure_initialized
 from yadonpy.diagnostics import doctor
@@ -80,8 +80,8 @@ if __name__ == "__main__":
     doctor(print_report=True)
     ensure_initialized()
 
-    ff = yp.get_ff("gaff2_mod")
-    ion_ff = yp.get_ff("merz")
+    ff = get_ff("gaff2_mod")
+    ion_ff = get_ff("merz")
 
     build_mod = _load_build_module()
     species = build_mod._read_species_csv(build_mod.CATALOG_CSV)

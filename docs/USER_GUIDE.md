@@ -40,7 +40,7 @@ YadonPy works best when you pick the smallest API layer that still matches the j
 Use the top-level package API when you want concise scripts:
 
 ```python
-import yadonpy as yp
+from yadonpy import get_ff, mol_from_smiles
 ```
 
 Use `yadonpy.sim.qm` when you need explicit control of:
@@ -63,9 +63,9 @@ Use `yadonpy.interface` when the work is about:
 ### Minimal force-field assignment
 
 ```python
-import yadonpy as yp
+from yadonpy import get_ff
 
-ff = yp.get_ff("gaff2_mod")
+ff = get_ff("gaff2_mod")
 mol = ff.mol("O=C1OCCO1")
 ok = ff.ff_assign(mol)
 ```
@@ -73,12 +73,12 @@ ok = ff.ff_assign(mol)
 ### QM-derived charges
 
 ```python
-import yadonpy as yp
+from yadonpy import assign_charges, get_ff
 
-ff = yp.get_ff("gaff2_mod")
+ff = get_ff("gaff2_mod")
 mol = ff.mol("O=C1OCCO1")
 
-yp.assign_charges(
+assign_charges(
     mol,
     charge="RESP",
     work_dir="./work_ec",
@@ -118,9 +118,9 @@ It does not treat exported `.top`, `.itp`, or `.gro` files as the canonical pers
 Typical lookup:
 
 ```python
-import yadonpy as yp
+from yadonpy import load_from_moldb
 
-pf6 = yp.load_from_moldb(
+pf6 = load_from_moldb(
     "F[P-](F)(F)(F)(F)F",
     charge="RESP",
     require_ready=True,
@@ -336,19 +336,28 @@ The builder:
 Smoke-scale example:
 
 ```python
-import yadonpy as yp
+from yadonpy import (
+    GraphiteLayerSpec,
+    LayerStackSpec,
+    MolecularLayerSpec,
+    VacuumLayerSpec,
+    analyze_layer_stack_interface,
+    build_layer_stack,
+    get_ff,
+    run_layer_stack_nvt,
+)
 
-ff = yp.get_ff("gaff2_mod")
-ion_ff = yp.get_ff("merz")
+ff = get_ff("gaff2_mod")
+ion_ff = get_ff("merz")
 EC = ff.mol("O=C1OCCO1", charge="RESP", prefer_db=True, require_ready=True)
 ff.ff_assign(EC)
 Li = ion_ff.mol("[Li+]")
 ion_ff.ff_assign(Li)
 
-stack = yp.LayerStackSpec(
+stack = LayerStackSpec(
     layers=(
-        yp.GraphiteLayerSpec(name="GRAPHITE", nx=6, ny=5, n_layers=3),
-        yp.MolecularLayerSpec(
+        GraphiteLayerSpec(name="GRAPHITE", nx=6, ny=5, n_layers=3),
+        MolecularLayerSpec(
             name="ELECTROLYTE",
             species=(EC, Li),
             counts=(100, 10),
@@ -356,12 +365,12 @@ stack = yp.LayerStackSpec(
             density_target_g_cm3=1.2,
             layer_kind="electrolyte",
         ),
-        yp.VacuumLayerSpec(thickness_nm=2.0),
+        VacuumLayerSpec(thickness_nm=2.0),
     )
 )
 
-result = yp.build_layer_stack(stack=stack, work_dir="./work_layer_stack")
-profile = yp.analyze_layer_stack_interface(
+result = build_layer_stack(stack=stack, work_dir="./work_layer_stack")
+profile = analyze_layer_stack_interface(
     work_dir="./work_layer_stack",
     analysis_profile="interface_fast",
 )
@@ -377,7 +386,7 @@ Use `run_layer_stack_nvt(...)` to append a short NVT observation run from the
 exported stack artifact without rebuilding the layers:
 
 ```python
-nvt = yp.run_layer_stack_nvt(result, time_ns=2.0, temp=318.15, omp=14, gpu_id=0)
+nvt = run_layer_stack_nvt(result, time_ns=2.0, temp=318.15, omp=14, gpu_id=0)
 ```
 
 For all MD helpers, `gpu=0` is an explicit CPU-mode switch.  If `gpu_id` is
@@ -557,18 +566,22 @@ For `Tg` and elongation, the recommended pattern is:
 Example:
 
 ```python
-import yadonpy as yp
+from yadonpy import (
+    print_mechanics_result_summary,
+    resolve_prepared_system,
+    run_tg_scan_gmx,
+)
 
-prepared = yp.resolve_prepared_system(
+prepared = resolve_prepared_system(
     work_dir="./examples/02_polymer_electrolyte/work_dir",
 )
 
-tg_result = yp.run_tg_scan_gmx(
+tg_result = run_tg_scan_gmx(
     prepared=prepared,
     out_dir="./work_tg",
     profile="default",
 )
-yp.print_mechanics_result_summary(tg_result)
+print_mechanics_result_summary(tg_result)
 ```
 
 `run_tg_scan_gmx(...)` writes:

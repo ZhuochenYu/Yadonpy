@@ -271,14 +271,14 @@ def test_example07_adaptive_refresh_hard_replace_keeps_non_resp_variant(tmp_path
         polyelectrolyte_mode=False,
     )
 
-    legacy = mod.yp.mol_from_smiles(smiles, coord=True, name="EC")
+    legacy = mod.mol_from_smiles(smiles, coord=True, name="EC")
     for atom in legacy.GetAtoms():
         atom.SetDoubleProp("AtomicCharge", -0.01)
     legacy.SetProp("_yadonpy_resp_profile", "legacy")
     rec = repo_db.update_from_mol(legacy, smiles_or_psmiles=smiles, name="EC", charge="RESP", resp_profile="legacy")
     legacy_vid = next(iter(rec.variants))
 
-    gasteiger = mod.yp.mol_from_smiles(smiles, coord=True, name="EC")
+    gasteiger = mod.mol_from_smiles(smiles, coord=True, name="EC")
     for atom in gasteiger.GetAtoms():
         atom.SetDoubleProp("AtomicCharge", 0.02)
     rec = repo_db.update_from_mol(gasteiger, smiles_or_psmiles=smiles, name="EC", charge="gasteiger")
@@ -287,7 +287,7 @@ def test_example07_adaptive_refresh_hard_replace_keeps_non_resp_variant(tmp_path
     ]
     assert gasteiger_vids
 
-    adaptive = mod.yp.mol_from_smiles(smiles, coord=True, name="EC")
+    adaptive = mod.mol_from_smiles(smiles, coord=True, name="EC")
     for idx, atom in enumerate(adaptive.GetAtoms()):
         atom.SetDoubleProp("AtomicCharge", 0.001 * idx)
     adaptive.SetProp("_yadonpy_resp_profile", "adaptive")
@@ -320,7 +320,7 @@ def test_example07_adaptive_refresh_charge_diff_reports_per_atom_delta():
         bonded=None,
         polyelectrolyte_mode=False,
     )
-    mol = mod.yp.mol_from_smiles(smiles, coord=True, name="EC")
+    mol = mod.mol_from_smiles(smiles, coord=True, name="EC")
     old_charges = [0.0 for _ in mol.GetAtoms()]
     for idx, atom in enumerate(mol.GetAtoms()):
         atom.SetDoubleProp("AtomicCharge", 0.01 * idx)
@@ -464,7 +464,7 @@ def test_example07_run_one_species_uses_charge_first_then_moldb(monkeypatch, tmp
             captured["bonded_method"] = mol.GetProp("_yadonpy_bonded_method") if mol.HasProp("_yadonpy_bonded_method") else None
             return SimpleNamespace(key="fake-key")
 
-    monkeypatch.setattr(mod.yp, "assign_charges", fake_assign_charges)
+    monkeypatch.setattr(mod, "assign_charges", fake_assign_charges)
     monkeypatch.setattr(mod, "MolDB", FakeMolDB)
 
     spec = mod.SpeciesSpec(
