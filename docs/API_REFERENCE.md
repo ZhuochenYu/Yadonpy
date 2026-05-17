@@ -14,6 +14,8 @@ from yadonpy import (
     ElectrodeChargeSpec,
     FixedChargeRegionSpec,
     GraphiteLayerSpec,
+    GraphiteRestraintSpec,
+    InterdiffusionStartSpec,
     SolvatedIonPullSpec,
     SolvatedIonUmbrellaSpec,
     UmbrellaPmfResult,
@@ -91,6 +93,8 @@ Package root exports include:
 - `LayerStackSpec`
 - `LayerStackRelaxationSpec`
 - `GraphiteLayerSpec`
+- `GraphiteRestraintSpec`
+- `InterdiffusionStartSpec`
 - `MolecularLayerSpec`
 - `VacuumLayerSpec`
 - `ElectrodeChargeSpec`
@@ -122,7 +126,17 @@ mol_from_smiles(smiles: str, *, coord: bool = True, name: str | None = None)
 build_graphite(**kwargs)
 build_layer_stack(stack=LayerStackSpec(...), work_dir="./work_layer_stack", ...)
 run_layer_stack_nvt(result, *, time_ns=2.0, temp=318.15, ...)
-run_layer_stack_relaxation(result, *, time_ns=2.0, temp=318.15, relax_z=True, ...)
+run_layer_stack_relaxation(
+    result,
+    *,
+    time_ns=2.0,
+    temp=318.15,
+    relax_z=True,
+    graphite_restraint=GraphiteRestraintSpec(enabled="auto"),
+    interdiffusion_start=InterdiffusionStartSpec(enabled=False),
+    compression_anneal=ZCompressionAnnealSpec(enabled="auto"),
+    ...
+)
 analyze_layer_stack_interface(*, work_dir="./work_layer_stack", analysis_profile="interface_fast", ...)
 resolve_prepared_system(
     *,
@@ -1108,6 +1122,25 @@ ElectrodeChargeSpec(
     top_surface_charge_uC_cm2: float | None = None,
     bottom_surface_charge_uC_cm2: float | None = None,
 )
+
+GraphiteRestraintSpec(
+    enabled: bool | str = "auto",
+    mode: str = "z_position",
+    k_pre_kj_mol_nm2: float = 5000.0,
+    k_final_kj_mol_nm2: float = 1000.0,
+)
+
+InterdiffusionStartSpec(
+    enabled: bool = False,
+    strategy: str = "soft_wall_release",
+    hold_interphase: bool = True,
+    phase_pre_equilibrate: bool = True,
+    release_at_final_nvt: bool = True,
+    phase_gate_k_kj_mol_nm2: float = 1500.0,
+    phase_gate_layers: tuple[str, ...] = ("ELECTROLYTE", "CMCNA"),
+    diffusion_t0_stage: str = "final_nvt",
+    diffusion_t0_ps: float = 0.0,
+)
 ```
 
 Main calls:
@@ -1115,6 +1148,12 @@ Main calls:
 ```python
 build_layer_stack(stack=LayerStackSpec(...), work_dir="./work")
 run_layer_stack_nvt(result, time_ns=2.0, temp=318.15, omp=14, gpu_id=0)
+run_layer_stack_relaxation(
+    result,
+    relax_z=True,
+    graphite_restraint=GraphiteRestraintSpec(enabled="auto"),
+    interdiffusion_start=InterdiffusionStartSpec(enabled=True),
+)
 analyze_layer_stack_interface(work_dir="./work", analysis_profile="interface_fast")
 ```
 
@@ -1147,6 +1186,13 @@ Notes:
   then a short bridge NVT, then the requested NVT.  This protects freshly
   stacked CMC/electrolyte/graphite models from local-contact explosions at
   step 0.
+- `run_layer_stack_relaxation(...)` can keep electrolyte and CMCNA separated
+  until production by passing `InterdiffusionStartSpec(enabled=True)`.  The
+  temporary z-gate is present in pre-release stages and absent in the final NVT;
+  `relaxation_followup_summary.json` records `phase_gate_removed=True`.
+- `GraphiteRestraintSpec(enabled="auto")` adds z-only graphite position
+  restraints.  It suppresses basal-plane wrinkling without freezing in-plane
+  graphite motion.
 - The generated `system.ndx` contains `LAYER_XX_NAME`, semantic phase groups
   such as `GRAPHITE`, `ELECTROLYTE`, `CMCNA`, and `MOBILE`.
 

@@ -29,7 +29,7 @@ from .sim.interface_analysis import InterfaceAnalysis  # noqa: F401
 from .sim.performance import IOAnalysisPolicy, resolve_io_analysis_policy  # noqa: F401
 from .diagnostics import doctor  # noqa: F401
 from .interface import InterfaceBuilder, InterfaceDynamics, InterfaceProtocol, InterfaceRouteSpec, build_interface, build_interface_from_workdirs  # noqa: F401
-from .interface import ElectrodeChargeSpec, EnhancedSamplingPlan, FixedChargeRegionSpec, GraphiteLayerSpec, LayerStackNvtResult, LayerStackRelaxationResult, LayerStackRelaxationSpec, LayerStackResult, LayerStackSpec, MolecularLayerSpec, SolvatedIonPullSpec, SolvatedIonUmbrellaSpec, UmbrellaPmfResult, UmbrellaSamplingPlan, VacuumLayerSpec, ZCompressionAnnealSpec, analyze_layer_stack_interface, analyze_umbrella_pmf, build_layer_stack, prepare_solvated_ion_pull, prepare_solvated_ion_umbrella, run_layer_stack_nvt, run_layer_stack_relaxation, run_solvated_ion_umbrella  # noqa: F401
+from .interface import ElectrodeChargeSpec, EnhancedSamplingPlan, FixedChargeRegionSpec, GraphiteLayerSpec, GraphiteRestraintSpec, InterdiffusionStartSpec, LayerStackNvtResult, LayerStackRelaxationResult, LayerStackRelaxationSpec, LayerStackResult, LayerStackSpec, MolecularLayerSpec, SolvatedIonPullSpec, SolvatedIonUmbrellaSpec, UmbrellaPmfResult, UmbrellaSamplingPlan, VacuumLayerSpec, ZCompressionAnnealSpec, analyze_layer_stack_interface, analyze_umbrella_pmf, build_layer_stack, prepare_solvated_ion_pull, prepare_solvated_ion_umbrella, run_layer_stack_nvt, run_layer_stack_relaxation, run_solvated_ion_umbrella  # noqa: F401
 from .runtime import get_run_options, set_run_options, run_options  # noqa: F401
 from .api import (  # noqa: F401
     audit_default_moldb_sync,
@@ -85,6 +85,8 @@ __all__ = [
     'EnhancedSamplingPlan',
     'FixedChargeRegionSpec',
     'GraphiteLayerSpec',
+    'GraphiteRestraintSpec',
+    'InterdiffusionStartSpec',
     'InterfaceBuilder',
     'InterfaceAnalysis',
     'InterfaceDynamics',

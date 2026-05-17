@@ -156,6 +156,8 @@ def test_top_level_api_exports_mechanics_helpers():
     assert not hasattr(yadonpy, 'InterfaceBuildPolicy')
     assert hasattr(yadonpy, 'LayerStackSpec')
     assert hasattr(yadonpy, 'GraphiteLayerSpec')
+    assert hasattr(yadonpy, 'GraphiteRestraintSpec')
+    assert hasattr(yadonpy, 'InterdiffusionStartSpec')
     assert hasattr(yadonpy, 'MolecularLayerSpec')
     assert hasattr(yadonpy, 'VacuumLayerSpec')
     assert hasattr(yadonpy, 'ElectrodeChargeSpec')
@@ -177,6 +179,8 @@ def test_top_level_api_exports_mechanics_helpers():
     assert 'UmbrellaSamplingPlan' in yadonpy.__all__
     assert 'UmbrellaPmfResult' in yadonpy.__all__
     assert 'FixedChargeRegionSpec' in yadonpy.__all__
+    assert 'GraphiteRestraintSpec' in yadonpy.__all__
+    assert 'InterdiffusionStartSpec' in yadonpy.__all__
 
 
 def test_analyzer_does_not_expose_transport_bundle_api():

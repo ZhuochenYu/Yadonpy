@@ -340,12 +340,15 @@ Smoke-scale example:
 from yadonpy import (
     FixedChargeRegionSpec,
     GraphiteLayerSpec,
+    GraphiteRestraintSpec,
+    InterdiffusionStartSpec,
     LayerStackSpec,
     MolecularLayerSpec,
     VacuumLayerSpec,
     analyze_layer_stack_interface,
     build_layer_stack,
     get_ff,
+    run_layer_stack_relaxation,
     run_layer_stack_nvt,
 )
 
@@ -428,6 +431,25 @@ closing interface and reserves the same `default_gap_nm` spacer unless explicit
 vacuum or padding already supplies it.  The NVT follow-up begins with a
 no-constraints steep minimization, so freshly stacked CMC/electrolyte/graphite
 cells can relax local contacts before GPU MD starts.
+
+For electrolyte/CMCNA mutual-diffusion studies, use `run_layer_stack_relaxation`
+with `InterdiffusionStartSpec`.  The pre-release stages keep electrolyte and
+CMCNA under temporary z-only gates while density and contacts relax; the final
+NVT removes those gates and defines the diffusion time origin.  Use
+`GraphiteRestraintSpec` at the same time when basal graphite must stay flat:
+
+```python
+relax = run_layer_stack_relaxation(
+    result,
+    relax_z=True,
+    graphite_restraint=GraphiteRestraintSpec(enabled="auto"),
+    interdiffusion_start=InterdiffusionStartSpec(
+        enabled=True,
+        hold_interphase=True,
+        release_at_final_nvt=True,
+    ),
+)
+```
 
 Interface analysis is not bulk analysis.  For a sampled layer stack, prefer the
 eg02-style facade:

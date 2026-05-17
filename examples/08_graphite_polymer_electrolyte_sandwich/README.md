@@ -66,6 +66,15 @@ semantic aliases such as `GRAPHITE`, `ELECTROLYTE`, `CMCNA`, and `MOBILE`.
   removes fresh contacts, `02_pre_nvt` releases local overlaps at fixed volume,
   `03_z_npt` keeps XY fixed while the z length responds to 1 bar pressure, and
   `04_final_nvt` produces the trajectory used for interface analysis.
+- For interdiffusion studies, `InterdiffusionStartSpec(enabled=True)` renames
+  the early stages as pre-release relaxation and applies temporary z-only phase
+  gates to ELECTROLYTE and CMCNA.  These gates are removed from the final NVT
+  stage, so `relaxation_followup_summary.json` records
+  `diffusion_t0_stage="final_nvt"` and the final production trajectory starts
+  the real electrolyte/CMCNA mutual diffusion clock.
+- `GraphiteRestraintSpec(enabled="auto")` adds z-only graphite position
+  restraints during pre-release and final sampling.  This keeps basal graphite
+  flat without freezing its in-plane thermal motion.
 - For high-chain-count CMC/electrolyte sandwiches, `compression_anneal` can add
   repeated small fixed-XY z-compression geometry moves plus hot/high-pressure
   z-only annealing before final z-NPT.  This keeps graphite XY periodic bonding

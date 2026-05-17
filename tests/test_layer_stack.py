@@ -13,6 +13,8 @@ from yadonpy.interface.layer_stack import (
     ElectrodeChargeSpec,
     FixedChargeRegionSpec,
     GraphiteLayerSpec,
+    GraphiteRestraintSpec,
+    InterdiffusionStartSpec,
     LayerStackNvtResult,
     LayerStackRelaxationResult,
     LayerStackSpec,
@@ -504,6 +506,150 @@ def test_run_layer_stack_relaxation_builds_fixed_xy_z_npt_workflow(monkeypatch, 
     assert (tmp_path / "relax" / "layer_stack_manifest.json").is_file()
     copied_ndx = (tmp_path / "relax" / "02_system" / "system.ndx").read_text(encoding="utf-8")
     assert "LAYER_00_GRAPHITE" in copied_ndx
+
+
+def _write_fake_molecule_itp(root: Path, moltype: str, atom_count: int = 2) -> None:
+    mol_dir = root / "molecules" / moltype
+    mol_dir.mkdir(parents=True, exist_ok=True)
+    lines = [
+        "[ moleculetype ]",
+        "; Name nrexcl",
+        f"{moltype} 3",
+        "",
+        "[ atoms ]",
+        "; nr type resnr residue atom cgnr charge mass",
+    ]
+    for idx in range(1, int(atom_count) + 1):
+        lines.append(f"{idx:5d} C {1:5d} {moltype[:5]:<5s} C{idx:<4d} {idx:5d} 0.0 12.011")
+    (mol_dir / f"{moltype}.itp").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def test_run_layer_stack_relaxation_interdiffusion_release_removes_phase_gate(monkeypatch, tmp_path: Path):
+    _patch_fake_export(monkeypatch)
+    water = utils.mol_from_smiles("O", name="WAT")
+    result = build_layer_stack(
+        stack=LayerStackSpec(
+            layers=(
+                GraphiteLayerSpec(name="GRAPHITE_BOTTOM", nx=2, ny=2, n_layers=1),
+                MolecularLayerSpec(
+                    name="ELECTROLYTE",
+                    species=(water,),
+                    counts=(1,),
+                    thickness_nm=1.0,
+                    density_target_g_cm3=0.4,
+                    layer_kind="electrolyte",
+                ),
+                MolecularLayerSpec(
+                    name="CMCNA",
+                    species=(water,),
+                    counts=(1,),
+                    thickness_nm=1.0,
+                    density_target_g_cm3=0.4,
+                    layer_kind="cmcna",
+                ),
+                GraphiteLayerSpec(name="GRAPHITE_TOP", nx=2, ny=2, n_layers=1),
+            ),
+            name="interdiffusion_input",
+        ),
+        work_dir=tmp_path / "interdiffusion_stack",
+        restart=False,
+    )
+    system_root = result.system_gro.parent
+    for moltype in ("GRAPHITE_BOTTOM", "GRAPHITE_TOP", "EC", "CMC"):
+        _write_fake_molecule_itp(system_root, moltype, atom_count=2)
+    (system_root / "system.top").write_text(
+        "\n".join(
+            [
+                '#include "molecules/GRAPHITE_BOTTOM/GRAPHITE_BOTTOM.itp"',
+                '#include "molecules/EC/EC.itp"',
+                '#include "molecules/CMC/CMC.itp"',
+                '#include "molecules/GRAPHITE_TOP/GRAPHITE_TOP.itp"',
+                "",
+                "[ system ]",
+                "fake",
+                "",
+                "[ molecules ]",
+                "GRAPHITE_BOTTOM 1",
+                "EC 1",
+                "CMC 1",
+                "GRAPHITE_TOP 1",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (system_root / "system_meta.json").write_text(
+        json.dumps(
+            {
+                "species": [
+                    {"moltype": "GRAPHITE_BOTTOM", "layer_name": "GRAPHITE_BOTTOM", "layer_kind": "graphite"},
+                    {"moltype": "EC", "layer_name": "ELECTROLYTE", "layer_kind": "electrolyte"},
+                    {"moltype": "CMC", "layer_name": "CMCNA", "layer_kind": "cmcna"},
+                    {"moltype": "GRAPHITE_TOP", "layer_name": "GRAPHITE_TOP", "layer_kind": "graphite"},
+                ]
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    captured: dict[str, object] = {}
+
+    class DummyJob:
+        def __init__(self, *, gro, top, ndx=None, provenance_ndx=None, out_dir, stages, resources):
+            captured["out_dir"] = Path(out_dir)
+            captured["stages"] = list(stages)
+
+        def run(self, *, restart=False):
+            out_dir = Path(captured["out_dir"])
+            final = out_dir / captured["stages"][-1].name
+            final.mkdir(parents=True, exist_ok=True)
+            (final / "md.gro").write_text("dummy\n0\n   1.0   1.0   3.0\n", encoding="utf-8")
+            (final / "md.xtc").write_bytes(b"")
+            (out_dir / "summary.json").write_text("{}", encoding="utf-8")
+            return out_dir / "summary.json"
+
+    from yadonpy.gmx.workflows import eq as eqmod
+
+    monkeypatch.setattr(eqmod, "EquilibrationJob", DummyJob)
+    monkeypatch.setattr("yadonpy.interface.layer_stack.analyze_layer_stack_interface", lambda **kwargs: {"summary_path": str(tmp_path / "analysis.json"), "geometry_health": {"phase_order_ok": True}, "outputs": {}})
+
+    out = run_layer_stack_relaxation(
+        result,
+        work_dir=tmp_path / "interdiffusion_relax",
+        time_ns=0.01,
+        pre_nvt_ns=0.001,
+        z_npt_ns=0.001,
+        graphite_restraint=GraphiteRestraintSpec(enabled=True, k_pre_kj_mol_nm2=5000.0, k_final_kj_mol_nm2=1000.0),
+        interdiffusion_start=InterdiffusionStartSpec(enabled=True, phase_gate_k_kj_mol_nm2=1500.0),
+        run_analysis=False,
+        gpu=0,
+    )
+
+    stages = captured["stages"]
+    assert [stage.name for stage in stages] == [
+        "01_pre_release_minimize",
+        "02_pre_release_nvt",
+        "03_pre_release_z_npt",
+        "04_final_nvt_release",
+    ]
+    pre_mdp = stages[1].mdp.render()
+    final_mdp = stages[3].mdp.render()
+    assert "YADONPY_PHASE_Z_GATE" in pre_mdp
+    assert "YADONPY_POSRES_GRAPHITE" in pre_mdp
+    assert "YADONPY_GRAPHITE_FCZ=5000" in pre_mdp
+    assert "YADONPY_PHASE_Z_GATE" not in final_mdp
+    assert "YADONPY_POSRES_GRAPHITE" in final_mdp
+    assert "YADONPY_GRAPHITE_FCZ=1000" in final_mdp
+
+    copied = tmp_path / "interdiffusion_relax" / "02_system"
+    assert "YADONPY_PHASE_Z_GATE" in (copied / "molecules" / "EC" / "EC.itp").read_text(encoding="utf-8")
+    assert "YADONPY_POSRES_GRAPHITE" in (copied / "molecules" / "GRAPHITE_BOTTOM" / "GRAPHITE_BOTTOM.itp").read_text(encoding="utf-8")
+    summary = json.loads(out.summary_path.read_text(encoding="utf-8"))
+    assert summary["interdiffusion_start"]["resolved"] is True
+    assert summary["interdiffusion_start"]["phase_gate_removed"] is True
+    assert summary["interdiffusion_start"]["diffusion_t0_stage"] == "final_nvt"
+    assert summary["artifacts"]["restraint_report"]["phase_gate"]["prepared"] is True
 
 
 def test_run_layer_stack_relaxation_auto_skips_z_npt_for_vacuum_stack(monkeypatch, tmp_path: Path):

@@ -294,6 +294,8 @@ Layer-stack scripts use the same style:
 from yadonpy.interface import (
     FixedChargeRegionSpec,
     GraphiteLayerSpec,
+    GraphiteRestraintSpec,
+    InterdiffusionStartSpec,
     LayerStackSpec,
     MolecularLayerSpec,
     ZCompressionAnnealSpec,
@@ -346,6 +348,14 @@ CMC-Na layers also initialize Na+ as local carboxylate counterions
 (`counterion_contact_mode="carboxylate"` in the examples).  The builder first
 does loose molecular packing, then moves each Na+ onto a bidentate COO-/Na+
 contact site and records the O-Na distances in `layer_stack_manifest.json`.
+When the observable is electrolyte/CMCNA interdiffusion, use
+`InterdiffusionStartSpec`: pre-release minimization/NVT/z-NPT applies temporary
+z-only phase gates to the two soft phases, and the gates are removed only for
+final NVT.  The summary records `diffusion_t0_stage="final_nvt"`, so the final
+trajectory is the only trajectory used for diffusion statistics.
+Graphite flatness is controlled separately by `GraphiteRestraintSpec`, which
+uses z-only position restraints to suppress electrode wrinkling without
+freezing in-plane graphite motion.
 
 Constant-charge interface studies should use `FixedChargeRegionSpec` on
 `LayerStackSpec.fixed_charge_regions`.  This is a fixed-charge approximation,
@@ -363,6 +373,17 @@ relax = run_layer_stack_relaxation(
     pre_nvt_ns=0.05,
     z_npt_ns=0.50,
     relax_z=True,
+    graphite_restraint=GraphiteRestraintSpec(
+        enabled="auto",
+        k_pre_kj_mol_nm2=5000.0,
+        k_final_kj_mol_nm2=1000.0,
+    ),
+    interdiffusion_start=InterdiffusionStartSpec(
+        enabled=True,
+        hold_interphase=True,
+        release_at_final_nvt=True,
+        phase_gate_k_kj_mol_nm2=1500.0,
+    ),
     compression_anneal=ZCompressionAnnealSpec(
         enabled="auto",
         cycles=6,

@@ -221,6 +221,44 @@ class ZCompressionAnnealSpec:
 
 
 @dataclass(frozen=True)
+class GraphiteRestraintSpec:
+    """Temporary z-only flatness restraint for graphitic boundary layers.
+
+    The restraint is intentionally one-dimensional: graphite can still move in
+    the interface plane, while its out-of-plane wrinkling is suppressed during
+    early relaxation and can remain weakly active during production.
+    """
+
+    enabled: bool | Literal["auto"] = "auto"
+    mode: Literal["z_position", "off"] = "z_position"
+    k_pre_kj_mol_nm2: float = 5000.0
+    k_final_kj_mol_nm2: float = 1000.0
+    fcx_kj_mol_nm2: float = 0.0
+    fcy_kj_mol_nm2: float = 0.0
+
+
+@dataclass(frozen=True)
+class InterdiffusionStartSpec:
+    """Keep molecular phases separated until final production starts.
+
+    ``soft_wall_release`` is implemented with temporary z-only phase gates on
+    electrolyte/CMCNA molecules during pre-release relaxation.  The gate is
+    removed from the final NVT stage, whose first frame is therefore the
+    diffusion time origin.
+    """
+
+    enabled: bool = False
+    strategy: Literal["soft_wall_release"] = "soft_wall_release"
+    hold_interphase: bool = True
+    phase_pre_equilibrate: bool = True
+    release_at_final_nvt: bool = True
+    phase_gate_k_kj_mol_nm2: float = 1500.0
+    phase_gate_layers: tuple[str, ...] = ("ELECTROLYTE", "CMCNA")
+    diffusion_t0_stage: str = "final_nvt"
+    diffusion_t0_ps: float = 0.0
+
+
+@dataclass(frozen=True)
 class LayerStackSpec:
     """Ordered stack recipe.
 
@@ -2178,6 +2216,344 @@ def _layer_stack_md_params(
     return p
 
 
+def _normalize_graphite_restraint_spec(
+    value: bool | GraphiteRestraintSpec | Literal["auto"],
+) -> GraphiteRestraintSpec:
+    if isinstance(value, GraphiteRestraintSpec):
+        return value
+    if isinstance(value, bool):
+        return GraphiteRestraintSpec(enabled=bool(value))
+    token = str(value).strip().lower()
+    if token in {"", "auto"}:
+        return GraphiteRestraintSpec(enabled="auto")
+    if token in {"1", "true", "yes", "on"}:
+        return GraphiteRestraintSpec(enabled=True)
+    if token in {"0", "false", "no", "off", "none"}:
+        return GraphiteRestraintSpec(enabled=False)
+    raise TypeError("graphite_restraint must be True, False, 'auto', or GraphiteRestraintSpec.")
+
+
+def _resolve_graphite_restraint(
+    *,
+    result: LayerStackResult,
+    graphite_restraint: bool | GraphiteRestraintSpec | Literal["auto"],
+) -> tuple[GraphiteRestraintSpec, bool, str]:
+    spec = _normalize_graphite_restraint_spec(graphite_restraint)
+    if str(spec.mode).strip().lower() == "off":
+        return spec, False, "mode_off"
+    enabled = spec.enabled
+    if isinstance(enabled, bool):
+        return spec, bool(enabled), "explicit_true" if enabled else "explicit_false"
+    token = str(enabled).strip().lower()
+    if token not in {"", "auto"}:
+        if token in {"1", "true", "yes", "on"}:
+            return spec, True, "explicit_true"
+        if token in {"0", "false", "no", "off"}:
+            return spec, False, "explicit_false"
+        raise ValueError("GraphiteRestraintSpec.enabled must be True, False, or 'auto'.")
+    graphite_count = sum(1 for layer in result.stack_spec.layers if isinstance(layer, GraphiteLayerSpec))
+    if graphite_count > 0:
+        return spec, True, "auto_graphite_layers_present"
+    return spec, False, "auto_no_graphite_layers"
+
+
+def _normalize_interdiffusion_start_spec(value: bool | InterdiffusionStartSpec) -> InterdiffusionStartSpec:
+    if isinstance(value, InterdiffusionStartSpec):
+        return value
+    if isinstance(value, bool):
+        return InterdiffusionStartSpec(enabled=bool(value))
+    raise TypeError("interdiffusion_start must be a bool or InterdiffusionStartSpec.")
+
+
+def _load_json_file(path: Path) -> dict[str, Any]:
+    try:
+        if Path(path).is_file():
+            payload = json.loads(Path(path).read_text(encoding="utf-8"))
+            return payload if isinstance(payload, dict) else {}
+    except Exception:
+        return {}
+    return {}
+
+
+def _layer_names_by_kind(manifest: Mapping[str, Any], kinds: set[str]) -> set[str]:
+    out: set[str] = set()
+    for row in manifest.get("layers") or []:
+        if not isinstance(row, Mapping):
+            continue
+        kind = str(row.get("kind") or row.get("layer_kind") or "").strip().upper()
+        name = str(row.get("name") or "").strip().upper()
+        if kind in kinds and name:
+            out.add(_safe_name(name))
+    return out
+
+
+def _species_layer_token(species: Mapping[str, Any]) -> tuple[str, str, str]:
+    layer_name = _safe_name(str(species.get("layer_name") or species.get("layer") or ""))
+    layer_kind = str(species.get("layer_kind") or species.get("kind") or "").strip().upper()
+    moltype = str(species.get("moltype") or species.get("mol_name") or species.get("mol_id") or "").strip()
+    return layer_name, layer_kind, moltype
+
+
+def _parse_molecule_counts(top_path: Path) -> dict[str, int]:
+    if not Path(top_path).is_file():
+        return {}
+    counts: dict[str, int] = {}
+    section = ""
+    for raw in Path(top_path).read_text(encoding="utf-8", errors="replace").splitlines():
+        line = raw.split(";", 1)[0].strip()
+        if not line:
+            continue
+        m = re.match(r"^\[\s*([^\]]+)\s*\]$", line)
+        if m:
+            section = m.group(1).strip().lower()
+            continue
+        if section != "molecules":
+            continue
+        parts = line.split()
+        if len(parts) >= 2:
+            try:
+                counts[str(parts[0])] = int(parts[1])
+            except Exception:
+                continue
+    return counts
+
+
+def _infer_restraint_moltypes(
+    *,
+    system_dir: Path,
+    manifest: Mapping[str, Any],
+    interdiffusion: InterdiffusionStartSpec,
+) -> dict[str, Any]:
+    meta = _load_json_file(Path(system_dir) / "system_meta.json")
+    species_rows = [row for row in (meta.get("species") or []) if isinstance(row, Mapping)]
+    molecule_counts = _parse_molecule_counts(Path(system_dir) / "system.top")
+    graphite_layers = _layer_names_by_kind(manifest, {"GRAPHITE"})
+    phase_layer_tokens = {_safe_name(v) for v in interdiffusion.phase_gate_layers}
+    phase_kind_tokens = {str(v).strip().upper() for v in interdiffusion.phase_gate_layers}
+    graphite_moltypes: set[str] = set()
+    phase_gate_moltypes: set[str] = set()
+
+    for sp in species_rows:
+        layer_name, layer_kind, moltype = _species_layer_token(sp)
+        if not moltype:
+            continue
+        label = " ".join(
+            [
+                moltype,
+                str(sp.get("mol_name") or ""),
+                str(sp.get("name") or ""),
+                str(sp.get("smiles") or ""),
+                layer_name,
+                layer_kind,
+            ]
+        ).upper()
+        if layer_name in graphite_layers or layer_kind == "GRAPHITE" or "GRAPHITE" in label:
+            graphite_moltypes.add(moltype)
+            continue
+        if layer_name in phase_layer_tokens or layer_kind in phase_kind_tokens:
+            phase_gate_moltypes.add(moltype)
+
+    for moltype in molecule_counts:
+        label = str(moltype).upper()
+        if "GRAPH" in label:
+            graphite_moltypes.add(moltype)
+        elif any(tok and tok in label for tok in phase_layer_tokens | phase_kind_tokens):
+            phase_gate_moltypes.add(moltype)
+
+    return {
+        "system_meta": str(Path(system_dir) / "system_meta.json"),
+        "species_count": int(len(species_rows)),
+        "molecule_counts": {str(k): int(v) for k, v in molecule_counts.items()},
+        "graphite_moltypes": sorted(graphite_moltypes),
+        "phase_gate_moltypes": sorted(phase_gate_moltypes),
+        "phase_gate_layers": sorted(phase_layer_tokens),
+    }
+
+
+def _find_molecule_itp(system_dir: Path, moltype: str) -> Path | None:
+    base = Path(system_dir) / "molecules" / str(moltype)
+    candidates = [base / f"{moltype}.itp"]
+    if base.is_dir():
+        candidates.extend(sorted(base.glob("*.itp")))
+    for candidate in candidates:
+        if Path(candidate).is_file():
+            return Path(candidate)
+    return None
+
+
+def _itp_atom_count(itp_path: Path) -> int:
+    section = ""
+    count = 0
+    for raw in Path(itp_path).read_text(encoding="utf-8", errors="replace").splitlines():
+        line = raw.split(";", 1)[0].strip()
+        if not line:
+            continue
+        m = re.match(r"^\[\s*([^\]]+)\s*\]$", line)
+        if m:
+            section = m.group(1).strip().lower()
+            continue
+        if section == "atoms":
+            parts = line.split()
+            if parts and parts[0].isdigit():
+                count += 1
+    return count
+
+
+def _write_z_posre_file(
+    *,
+    itp_path: Path,
+    moltype: str,
+    suffix: str,
+    macro_prefix: str,
+    atom_count: int,
+    default_fcx: float,
+    default_fcy: float,
+    default_fcz: float,
+) -> Path:
+    include_path = Path(itp_path).parent / f"posre_{_safe_name(moltype).lower()}_{suffix}.itp"
+    lines = [
+        f"; yadonpy generated z-only position restraints for {moltype}",
+        f"#ifndef {macro_prefix}_FCX",
+        f"#define {macro_prefix}_FCX {float(default_fcx):.8g}",
+        "#endif",
+        f"#ifndef {macro_prefix}_FCY",
+        f"#define {macro_prefix}_FCY {float(default_fcy):.8g}",
+        "#endif",
+        f"#ifndef {macro_prefix}_FCZ",
+        f"#define {macro_prefix}_FCZ {float(default_fcz):.8g}",
+        "#endif",
+        "",
+        "[ position_restraints ]",
+        "; i  funct  fcx  fcy  fcz",
+    ]
+    for idx in range(1, int(atom_count) + 1):
+        lines.append(f"{idx:6d}     1   {macro_prefix}_FCX   {macro_prefix}_FCY   {macro_prefix}_FCZ")
+    include_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return include_path
+
+
+def _append_include_once(itp_path: Path, *, macro: str, include_name: str) -> bool:
+    text = Path(itp_path).read_text(encoding="utf-8", errors="replace")
+    needle = f'#include "{include_name}"'
+    if needle in text:
+        return False
+    block = (
+        "\n"
+        f"#ifdef {macro}\n"
+        f'#include "{include_name}"\n'
+        "#endif\n"
+    )
+    Path(itp_path).write_text(text.rstrip() + "\n" + block, encoding="utf-8")
+    return True
+
+
+def _prepare_layer_stack_restraints(
+    *,
+    system_dir: Path,
+    manifest: Mapping[str, Any],
+    graphite_enabled: bool,
+    graphite_spec: GraphiteRestraintSpec,
+    interdiffusion: InterdiffusionStartSpec,
+) -> dict[str, Any]:
+    inferred = _infer_restraint_moltypes(system_dir=system_dir, manifest=manifest, interdiffusion=interdiffusion)
+    report: dict[str, Any] = {
+        "inference": inferred,
+        "graphite": {"requested": bool(graphite_enabled), "moltypes": [], "files": []},
+        "phase_gate": {"requested": bool(interdiffusion.enabled and interdiffusion.hold_interphase), "moltypes": [], "files": []},
+    }
+
+    def _prepare_one(moltype: str, *, kind: str, macro: str, suffix: str, prefix: str, default_fcz: float) -> None:
+        itp = _find_molecule_itp(system_dir, moltype)
+        if itp is None:
+            report.setdefault("missing_itp", []).append({"kind": kind, "moltype": str(moltype)})
+            return
+        nat = _itp_atom_count(itp)
+        if nat <= 0:
+            report.setdefault("empty_itp", []).append({"kind": kind, "moltype": str(moltype), "itp": str(itp)})
+            return
+        posre = _write_z_posre_file(
+            itp_path=itp,
+            moltype=moltype,
+            suffix=suffix,
+            macro_prefix=prefix,
+            atom_count=nat,
+            default_fcx=float(graphite_spec.fcx_kj_mol_nm2) if kind == "graphite" else 0.0,
+            default_fcy=float(graphite_spec.fcy_kj_mol_nm2) if kind == "graphite" else 0.0,
+            default_fcz=float(default_fcz),
+        )
+        added = _append_include_once(itp, macro=macro, include_name=posre.name)
+        rec = {"moltype": str(moltype), "itp": str(itp), "posre": str(posre), "atom_count": int(nat), "include_added": bool(added)}
+        report[kind]["moltypes"].append(str(moltype))
+        report[kind]["files"].append(rec)
+
+    if graphite_enabled:
+        for moltype in inferred.get("graphite_moltypes") or []:
+            _prepare_one(
+                str(moltype),
+                kind="graphite",
+                macro="YADONPY_POSRES_GRAPHITE",
+                suffix="graphite_z",
+                prefix="YADONPY_GRAPHITE",
+                default_fcz=float(graphite_spec.k_final_kj_mol_nm2),
+            )
+    if interdiffusion.enabled and interdiffusion.hold_interphase:
+        for moltype in inferred.get("phase_gate_moltypes") or []:
+            _prepare_one(
+                str(moltype),
+                kind="phase_gate",
+                macro="YADONPY_PHASE_Z_GATE",
+                suffix="phase_z_gate",
+                prefix="YADONPY_PHASE_GATE",
+                default_fcz=float(interdiffusion.phase_gate_k_kj_mol_nm2),
+            )
+    report["graphite"]["prepared"] = bool(report["graphite"]["files"])
+    report["phase_gate"]["prepared"] = bool(report["phase_gate"]["files"])
+    return report
+
+
+def _restraint_extra_mdp(
+    *,
+    graphite: GraphiteRestraintSpec | None = None,
+    graphite_k: float | None = None,
+    phase_gate: InterdiffusionStartSpec | None = None,
+) -> str:
+    tokens: list[str] = []
+    if graphite is not None and graphite_k is not None:
+        tokens.extend(
+            [
+                "-DYADONPY_POSRES_GRAPHITE",
+                f"-DYADONPY_GRAPHITE_FCX={float(graphite.fcx_kj_mol_nm2):.8g}",
+                f"-DYADONPY_GRAPHITE_FCY={float(graphite.fcy_kj_mol_nm2):.8g}",
+                f"-DYADONPY_GRAPHITE_FCZ={float(graphite_k):.8g}",
+            ]
+        )
+    if phase_gate is not None and phase_gate.enabled and phase_gate.hold_interphase:
+        tokens.extend(
+            [
+                "-DYADONPY_PHASE_Z_GATE",
+                "-DYADONPY_PHASE_GATE_FCX=0",
+                "-DYADONPY_PHASE_GATE_FCY=0",
+                f"-DYADONPY_PHASE_GATE_FCZ={float(phase_gate.phase_gate_k_kj_mol_nm2):.8g}",
+            ]
+        )
+    if not tokens:
+        return ""
+    return "define = " + " ".join(tokens) + "\nrefcoord_scaling = com"
+
+
+def _with_extra_mdp(params: Mapping[str, object], extra_mdp: str) -> dict[str, object]:
+    out = dict(params)
+    existing = str(out.get("extra_mdp") or "").strip()
+    extra = str(extra_mdp or "").strip()
+    if existing and extra:
+        out["extra_mdp"] = existing + "\n" + extra
+    elif extra:
+        out["extra_mdp"] = extra
+    else:
+        out["extra_mdp"] = existing
+    return out
+
+
 def _summarize_density_profile(
     analysis_payload: dict[str, Any] | None,
     *,
@@ -2511,6 +2887,8 @@ def run_layer_stack_relaxation(
     run_analysis: bool = True,
     relax_z: bool | Literal["auto"] = "auto",
     compression_anneal: bool | ZCompressionAnnealSpec = False,
+    graphite_restraint: bool | GraphiteRestraintSpec | Literal["auto"] = "auto",
+    interdiffusion_start: bool | InterdiffusionStartSpec = False,
 ) -> LayerStackRelaxationResult:
     """Relax an exported layer stack, optionally including fixed-XY z-NPT.
 
@@ -2557,6 +2935,36 @@ def run_layer_stack_relaxation(
         compression_anneal=compression_anneal,
         relax_z_enabled=relax_z_enabled,
     )
+    graphite_spec, graphite_enabled, graphite_reason = _resolve_graphite_restraint(
+        result=result,
+        graphite_restraint=graphite_restraint,
+    )
+    interdiffusion_spec = _normalize_interdiffusion_start_spec(interdiffusion_start)
+    if interdiffusion_spec.enabled and str(interdiffusion_spec.strategy).strip().lower() != "soft_wall_release":
+        raise ValueError("Only InterdiffusionStartSpec(strategy='soft_wall_release') is supported.")
+    restraint_report = _prepare_layer_stack_restraints(
+        system_dir=system_dir,
+        manifest=manifest_payload,
+        graphite_enabled=graphite_enabled,
+        graphite_spec=graphite_spec,
+        interdiffusion=interdiffusion_spec,
+    )
+    pre_restraint_extra = _restraint_extra_mdp(
+        graphite=graphite_spec if graphite_enabled else None,
+        graphite_k=float(graphite_spec.k_pre_kj_mol_nm2) if graphite_enabled else None,
+        phase_gate=interdiffusion_spec if interdiffusion_spec.enabled and interdiffusion_spec.hold_interphase else None,
+    )
+    final_restraint_extra = _restraint_extra_mdp(
+        graphite=graphite_spec if graphite_enabled else None,
+        graphite_k=float(graphite_spec.k_final_kj_mol_nm2) if graphite_enabled else None,
+        phase_gate=(
+            interdiffusion_spec
+            if interdiffusion_spec.enabled
+            and interdiffusion_spec.hold_interphase
+            and not bool(interdiffusion_spec.release_at_final_nvt)
+            else None
+        ),
+    )
     constraints_mode = str(constraints)
     dynamic_template_nvt = NVT_NO_CONSTRAINTS_MDP if constraints_mode.strip().lower() == "none" else NVT_MDP
     dynamic_template_npt = NPT_NO_CONSTRAINTS_MDP if constraints_mode.strip().lower() == "none" else NPT_MDP
@@ -2572,6 +2980,7 @@ def run_layer_stack_relaxation(
             "constraints": "none",
         }
     )
+    minim = _with_extra_mdp(minim, pre_restraint_extra)
 
     pre_nvt = _layer_stack_md_params(
         time_ns=float(pre_nvt_ns),
@@ -2587,6 +2996,7 @@ def run_layer_stack_relaxation(
         trr_ps=trr_ps,
         velocity_ps=velocity_ps,
     )
+    pre_nvt = _with_extra_mdp(pre_nvt, pre_restraint_extra)
     z_npt: dict[str, object] | None = None
     if relax_z_enabled:
         z_npt = _layer_stack_md_params(
@@ -2612,6 +3022,7 @@ def run_layer_stack_relaxation(
             )
         )
         z_npt["compressibility"] = f"{float(xy_compressibility):.6g} {float(z_compressibility_bar_inv):.6g}"
+        z_npt = _with_extra_mdp(z_npt, pre_restraint_extra)
 
     final_nvt = _layer_stack_md_params(
         time_ns=float(time_ns if final_nvt_ns is None else final_nvt_ns),
@@ -2627,6 +3038,7 @@ def run_layer_stack_relaxation(
         trr_ps=trr_ps,
         velocity_ps=velocity_ps,
     )
+    final_nvt = _with_extra_mdp(final_nvt, final_restraint_extra)
 
     use_gpu = bool(int(gpu))
     resources = RunResources(
@@ -2654,8 +3066,15 @@ def run_layer_stack_relaxation(
         last_dir = workflow_dir / segment_stages[-1].name
         return last_dir / "md.gro"
 
-    def _make_nvt_params(*, time_ns_value: float, temp_value: float, gen_vel: str, continuation: str) -> dict[str, object]:
-        return _layer_stack_md_params(
+    def _make_nvt_params(
+        *,
+        time_ns_value: float,
+        temp_value: float,
+        gen_vel: str,
+        continuation: str,
+        extra_mdp: str = pre_restraint_extra,
+    ) -> dict[str, object]:
+        params = _layer_stack_md_params(
             time_ns=float(time_ns_value),
             dt_ps=float(dt_ps),
             temp=float(temp_value),
@@ -2669,6 +3088,7 @@ def run_layer_stack_relaxation(
             trr_ps=trr_ps,
             velocity_ps=velocity_ps,
         )
+        return _with_extra_mdp(params, extra_mdp)
 
     def _make_z_npt_params(
         *,
@@ -2678,6 +3098,7 @@ def run_layer_stack_relaxation(
         pressure_z_bar: float,
         gen_vel: str,
         continuation: str,
+        extra_mdp: str = pre_restraint_extra,
     ) -> dict[str, object]:
         params = _layer_stack_md_params(
             time_ns=float(time_ns_value),
@@ -2697,17 +3118,21 @@ def run_layer_stack_relaxation(
         params["pcoupltype"] = "semiisotropic"
         params["ref_p"] = f"{float(pressure_xy_bar):.6g} {float(pressure_z_bar):.6g}"
         params["compressibility"] = f"{float(xy_compressibility):.6g} {float(z_compressibility_bar_inv):.6g}"
-        return params
+        return _with_extra_mdp(params, extra_mdp)
+
+    pre_label = "pre_release" if interdiffusion_spec.enabled else "pre"
+    final_label = "final_nvt_release" if interdiffusion_spec.enabled and interdiffusion_spec.release_at_final_nvt else "final_nvt"
+    z_stage_label = "pre_release_z_npt" if interdiffusion_spec.enabled else "z_npt"
 
     if not anneal_enabled:
         stages = [
-            EqStage(name="01_pre_minimize", kind="minim", mdp=MdpSpec(MINIM_STEEP_MDP, minim)),
-            EqStage(name="02_pre_nvt", kind="nvt", mdp=MdpSpec(dynamic_template_nvt, pre_nvt)),
+            EqStage(name=f"01_{pre_label}_minimize", kind="minim", mdp=MdpSpec(MINIM_STEEP_MDP, minim)),
+            EqStage(name=f"02_{pre_label}_nvt", kind="nvt", mdp=MdpSpec(dynamic_template_nvt, pre_nvt)),
         ]
-        final_stage_name = "03_final_nvt"
+        final_stage_name = f"03_{final_label}"
         if relax_z_enabled and z_npt is not None:
-            stages.append(EqStage(name="03_z_npt", kind="npt", mdp=MdpSpec(dynamic_template_npt, z_npt)))
-            final_stage_name = "04_final_nvt"
+            stages.append(EqStage(name=f"03_{z_stage_label}", kind="npt", mdp=MdpSpec(dynamic_template_npt, z_npt)))
+            final_stage_name = f"04_{final_label}"
         stages.append(EqStage(name=final_stage_name, kind="nvt", mdp=MdpSpec(dynamic_template_nvt, final_nvt)))
         stage_order = [stage.name for stage in stages]
         _run_segment(system_dir / "system.gro", stages)
@@ -2722,8 +3147,8 @@ def run_layer_stack_relaxation(
             return name
 
         initial_stages = [
-            EqStage(name=_stage_name("pre_minimize"), kind="minim", mdp=MdpSpec(MINIM_STEEP_MDP, minim)),
-            EqStage(name=_stage_name("pre_nvt"), kind="nvt", mdp=MdpSpec(dynamic_template_nvt, pre_nvt)),
+            EqStage(name=_stage_name(f"{pre_label}_minimize"), kind="minim", mdp=MdpSpec(MINIM_STEEP_MDP, minim)),
+            EqStage(name=_stage_name(f"{pre_label}_nvt"), kind="nvt", mdp=MdpSpec(dynamic_template_nvt, pre_nvt)),
         ]
         stage_order.extend(stage.name for stage in initial_stages)
         current_gro = _run_segment(system_dir / "system.gro", initial_stages)
@@ -2864,8 +3289,8 @@ def run_layer_stack_relaxation(
             if last_exc is None and cycle_report.get("stopped"):
                 break
 
-        final_z_npt_name = _stage_name("final_z_npt")
-        final_stage_name = _stage_name("final_nvt")
+        final_z_npt_name = _stage_name("final_z_npt_pre_release" if interdiffusion_spec.enabled else "final_z_npt")
+        final_stage_name = _stage_name(final_label)
         final_stages = [
             EqStage(
                 name=final_z_npt_name,
@@ -2892,6 +3317,7 @@ def run_layer_stack_relaxation(
                         temp_value=normal_temp,
                         gen_vel="no",
                         continuation="yes",
+                        extra_mdp=final_restraint_extra,
                     ),
                 ),
             ),
@@ -2950,6 +3376,34 @@ def run_layer_stack_relaxation(
         "cycles": compression_cycles,
         "initial_z_compaction": manifest_payload.get("z_compaction") if isinstance(manifest_payload, dict) else None,
     }
+    interdiffusion_payload = {
+        "requested": bool(interdiffusion_start) if isinstance(interdiffusion_start, bool) else asdict(interdiffusion_start),
+        "resolved": bool(interdiffusion_spec.enabled),
+        "spec": asdict(interdiffusion_spec),
+        "strategy": str(interdiffusion_spec.strategy),
+        "phase_pre_equilibrate": {
+            "requested": bool(interdiffusion_spec.phase_pre_equilibrate),
+            "mode": "assembled_pre_release_z_gate",
+        },
+        "pre_release_gate_active": bool(interdiffusion_spec.enabled and interdiffusion_spec.hold_interphase),
+        "phase_gate_removed": bool(
+            interdiffusion_spec.enabled
+            and interdiffusion_spec.hold_interphase
+            and bool(interdiffusion_spec.release_at_final_nvt)
+        ),
+        "diffusion_t0_stage": str(interdiffusion_spec.diffusion_t0_stage),
+        "diffusion_t0_ps": float(interdiffusion_spec.diffusion_t0_ps),
+        "production_stage": final_stage_name,
+        "production_trajectory_policy": "final_nvt_only",
+    }
+    graphite_payload = {
+        "requested": graphite_restraint if isinstance(graphite_restraint, str) else (bool(graphite_restraint) if isinstance(graphite_restraint, bool) else asdict(graphite_restraint)),
+        "resolved": bool(graphite_enabled),
+        "reason": graphite_reason,
+        "spec": asdict(graphite_spec),
+        "pre_force_constant_kj_mol_nm2": float(graphite_spec.k_pre_kj_mol_nm2) if graphite_enabled else 0.0,
+        "final_force_constant_kj_mol_nm2": float(graphite_spec.k_final_kj_mol_nm2) if graphite_enabled else 0.0,
+    }
     payload = {
         "schema_version": 1,
         "workflow": "layer_stack_relaxation",
@@ -2970,6 +3424,8 @@ def run_layer_stack_relaxation(
             "reason": relax_z_reason,
         },
         "compression_anneal": anneal_payload,
+        "interdiffusion_start": interdiffusion_payload,
+        "graphite_restraint": graphite_payload,
         "temperature_K": float(temp),
         "pressure_bar": float(pressure_bar),
         "dt_ps": float(dt_ps),
@@ -2996,6 +3452,7 @@ def run_layer_stack_relaxation(
             "xtc": str(xtc) if xtc is not None else None,
             "trr": str(trr) if trr is not None else None,
             "manifest": str(run_dir / "layer_stack_manifest.json"),
+            "restraint_report": restraint_report,
         },
         "diagnostics": diagnostics,
         "analysis": analysis_payload,
@@ -3256,7 +3713,9 @@ def analyze_layer_stack_interface(
 __all__ = [
     "ElectrodeChargeSpec",
     "FixedChargeRegionSpec",
+    "GraphiteRestraintSpec",
     "GraphiteLayerSpec",
+    "InterdiffusionStartSpec",
     "LayerStackNvtResult",
     "LayerStackRelaxationResult",
     "LayerStackRelaxationSpec",
