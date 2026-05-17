@@ -200,6 +200,7 @@ def test_interface_examples_keep_linear_script_style():
         '03_electrolyte_cmcna_graphite_basal.py',
         '04_graphite_basal_electrolyte_cmcna_graphite_basal.py',
         '05_charged_graphite_basal_electrolyte_cmcna_graphite_basal.py',
+        '06_large_flat_charged_graphite_basal_electrolyte_cmcna_graphite_basal.py',
     ]
     alias_import = 'import yadonpy as ' + 'yp'
     helper_patterns = (
@@ -271,6 +272,18 @@ def test_example08_scripts_use_one_shot_builder_and_interface_summary_printer():
             'surface_charge_sweep_uC_cm2 = (0.0, 2.0, -2.0, 5.0, -5.0)',
             'build_layer_stack(',
         ),
+        'examples/08_graphite_polymer_electrolyte_sandwich/06_large_flat_charged_graphite_basal_electrolyte_cmcna_graphite_basal.py': (
+            'FixedChargeRegionSpec(',
+            'layer_name="GRAPHITE_BOTTOM"',
+            'layer_name="GRAPHITE_TOP"',
+            'surface_charge_uC_cm2 = 0.0',
+            'cmc_dp = 20',
+            'cmc_chain_count = 8',
+            'nx=20',
+            'ny=18',
+            'sample_ns = 20.0',
+            'build_layer_stack(',
+        ),
     }
 
     for rel, required_calls in expected.items():
@@ -307,10 +320,11 @@ def test_example08_scripts_use_one_shot_builder_and_interface_summary_printer():
             '03_electrolyte_cmcna_graphite_basal.py',
             '04_graphite_basal_electrolyte_cmcna_graphite_basal.py',
             '05_charged_graphite_basal_electrolyte_cmcna_graphite_basal.py',
+            '06_large_flat_charged_graphite_basal_electrolyte_cmcna_graphite_basal.py',
         )):
             assert 'ZCompressionAnnealSpec(' in text
             assert 'compression_anneal=' in text
-            assert 'pmax_bar=3000.0' in text
+            assert 'pmax_bar=3000.0' in text or 'pmax_bar=4000.0' in text
         assert 'interface = analy.interface(' in text
         assert 'interface.geometry_health(time_series_analysis=time_series_analysis)' in text
         assert 'interface.z_profiles(time_series_analysis=time_series_analysis)' in text

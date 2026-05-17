@@ -502,7 +502,8 @@ CSV tables, and plots.
 - `examples/07_moldb_precompute_and_reuse`: curated MolDB build, adaptive RESP
   refresh, force-field assignment check, and bundled-catalog audit.
 - `examples/08_graphite_polymer_electrolyte_sandwich`: generic graphite,
-  electrolyte, and CMC-Na layer stacks with interface-specific post-processing.
+  electrolyte, and CMC-Na layer stacks with interface-specific post-processing,
+  including a large flat DP=20 CMC-Na graphite sandwich template.
 - `examples/09_oplsaa_assignment`: OPLS-AA assignment diagnostics.
 - `examples/10_migration_analysis`: migration-analysis workflow entry point.
 - `examples/11_segment_branch_polymer`: segment-first long-block and branched

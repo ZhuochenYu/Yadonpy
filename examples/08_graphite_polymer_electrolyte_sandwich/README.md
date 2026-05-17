@@ -6,18 +6,20 @@ bottom to top, and YadonPy plans a shared XY footprint, packs/places each layer,
 adds physically separated z gaps or vacuum spacers, writes `system.gro/top/ndx`,
 and records `layer_stack_manifest.json`.
 
-Five public scripts are kept in this folder:
+Six public scripts are kept in this folder:
 
 - `01_electrolyte_graphite_basal.py`: basal graphite plus carbonate/LiPF6 electrolyte.
 - `02_electrolyte_graphite_edge.py`: finite edge graphite plus electrolyte, with editable `edge_cap`.
 - `03_electrolyte_cmcna_graphite_basal.py`: basal graphite, CMC-Na, and electrolyte.
 - `04_graphite_basal_electrolyte_cmcna_graphite_basal.py`: two basal graphite layers around electrolyte and CMC-Na.
 - `05_charged_graphite_basal_electrolyte_cmcna_graphite_basal.py`: the same four-layer stack with a fixed-charge sweep of `0, +2, -2, +5, -5 uC/cm2`.
+- `06_large_flat_charged_graphite_basal_electrolyte_cmcna_graphite_basal.py`: a production-style broad-XY, thin-z graphite sandwich with DP=20 CMC-Na, eight CMC chains, local Na+/carboxylate initialization, fixed-charge regions, compression annealing, and 20 ns final NVT sampling.
 
-All five scripts use the same script-first style as Examples 02/05/07.  The
-default systems are compact and, when executed directly, run a fixed-XY
-relaxation workflow: steep pre-minimization, short pre-NVT, z-only
-semi-isotropic NPT, then a 2 ns final NVT sampling stage.
+All six scripts use the same script-first style as Examples 02/05/07.  Examples
+08-01 through 08-05 are compact defaults; Example 08-06 is a production-sized
+flat-cell template.  When executed directly, they run a fixed-XY relaxation
+workflow: steep pre-minimization, short pre-NVT, z-only semi-isotropic NPT, then
+the final NVT sampling stage configured in each script.
 
 ## MolDB Requirements
 
@@ -77,6 +79,12 @@ semantic aliases such as `GRAPHITE`, `ELECTROLYTE`, `CMCNA`, and `MOBILE`.
   `relaxation_followup_summary.json` reports both CMCNA phase density and total
   mass density in CMC-rich regions, and flags CMCNA core density below
   `0.90 g/cm3` as a warning and below `0.75 g/cm3` as severe.
+- Example 08-06 is intentionally a flat large-cell template: it increases the
+  graphite XY footprint instead of forcing high initial CMC density.  Its
+  default neutral fixed-charge setting (`0 uC/cm2`) is meant for the first
+  structural validation; change `surface_charge_uC_cm2` only after the neutral
+  large cell has healthy phase order, Na+/carboxylate contacts, graphite
+  periodic bonds, and CMC-rich-region density diagnostics.
 - The z-NPT stage is controlled by `relax_z`. Use `relax_z=True` for confined
   graphite/polymer/electrolyte stacks such as graphite | electrolyte | CMC-Na |
   graphite. Use `relax_z=False` for explicit vacuum | electrolyte | vacuum
