@@ -443,22 +443,32 @@ def _write_membrane_permeation_svg(path: Path, summary_by_species: dict[str, Any
     labels = [str(k) for k in summary_by_species.keys()]
     if not labels:
         return None
-    uptake = [
-        float((summary_by_species.get(k) or {}).get("mean_membrane_loading_mol_L") or 0.0)
-        for k in labels
-    ]
-    flux = [
-        float((summary_by_species.get(k) or {}).get("apparent_entry_flux_events_nm2_ns") or 0.0)
+    feed = [100.0 * float((summary_by_species.get(k) or {}).get("feed_frame_fraction") or 0.0) for k in labels]
+    membrane = [100.0 * float((summary_by_species.get(k) or {}).get("membrane_frame_fraction") or 0.0) for k in labels]
+    permeate = [100.0 * float((summary_by_species.get(k) or {}).get("permeate_frame_fraction") or 0.0) for k in labels]
+    entry = [100.0 * float((summary_by_species.get(k) or {}).get("entry_event_fraction_per_initial_feed") or 0.0) for k in labels]
+    trans = [
+        100.0 * float((summary_by_species.get(k) or {}).get("translocation_fraction_per_initial_feed") or 0.0)
         for k in labels
     ]
     path.parent.mkdir(parents=True, exist_ok=True)
     fig, axes = plt.subplots(1, 2, figsize=(max(7.0, 0.8 * len(labels)), 3.2))
-    axes[0].bar(labels, uptake)
-    axes[0].set_ylabel("mean membrane loading / mol L$^{-1}$")
-    axes[0].set_title("Membrane uptake")
-    axes[1].bar(labels, flux)
-    axes[1].set_ylabel("entry flux / events nm$^{-2}$ ns$^{-1}$")
-    axes[1].set_title("Apparent finite-slab flux")
+    axes[0].bar(labels, feed, label="feed")
+    axes[0].bar(labels, membrane, bottom=feed, label="membrane")
+    axes[0].bar(labels, permeate, bottom=[a + b for a, b in zip(feed, membrane)], label="permeate")
+    axes[0].set_ylabel("sampled molecule-frame fraction / %")
+    axes[0].set_ylim(0.0, 100.0)
+    axes[0].set_title("Permeant state occupancy")
+    axes[0].legend(loc="best", fontsize="small")
+    width = 0.38
+    xpos = np.arange(len(labels), dtype=float)
+    axes[1].bar((xpos - 0.5 * width).tolist(), entry, width=width, label="entry")
+    axes[1].bar((xpos + 0.5 * width).tolist(), trans, width=width, label="translocation")
+    axes[1].set_xticks(xpos.tolist(), labels)
+    axes[1].set_ylabel("fraction of initially fed molecules / %")
+    axes[1].set_ylim(0.0, max(100.0, max(entry + trans) * 1.15 if (entry or trans) else 100.0))
+    axes[1].set_title("Crossing-event yield")
+    axes[1].legend(loc="best", fontsize="small")
     for ax in axes:
         ax.tick_params(axis="x", rotation=30)
     fig.tight_layout()
@@ -497,6 +507,155 @@ def _write_membrane_timeseries_svg(path: Path, rows: Sequence[dict[str, Any]]) -
     fig.savefig(path)
     plt.close(fig)
     return path
+
+
+def _write_penetration_depth_distribution(
+    *,
+    out_csv: Path,
+    out_svg: Path,
+    rows: Sequence[dict[str, Any]],
+    bin_nm: float = 0.10,
+) -> tuple[Path, Path | None]:
+    by_species: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        moltype = str(row.get("moltype") or "")
+        if moltype:
+            by_species.setdefault(moltype, []).append(dict(row))
+    max_depth = max(
+        [
+            float(row.get("polymer_region_depth_nm") or 0.0)
+            for species_rows in by_species.values()
+            for row in species_rows
+            if row.get("polymer_region_depth_nm") is not None
+        ]
+        or [0.0]
+    )
+    step = max(float(bin_nm), 1.0e-6)
+    hi = max(step, math.ceil(max_depth / step) * step)
+    edges = np.arange(0.0, hi + 0.5 * step, step)
+    if edges.size < 2:
+        edges = np.asarray([0.0, step], dtype=float)
+    out_rows: list[dict[str, Any]] = []
+    for moltype, species_rows in sorted(by_species.items()):
+        sample_count = max(1, len(species_rows))
+        depths = np.asarray(
+            [
+                float(row.get("polymer_region_depth_nm"))
+                for row in species_rows
+                if row.get("polymer_region_depth_nm") is not None and float(row.get("polymer_region_depth_nm") or 0.0) > 0.0
+            ],
+            dtype=float,
+        )
+        hist = np.histogram(depths, bins=edges)[0].astype(float)
+        penetrated = max(1, int(np.sum(hist)))
+        for i, count in enumerate(hist.tolist()):
+            out_rows.append(
+                {
+                    "moltype": moltype,
+                    "depth_lo_nm": float(edges[i]),
+                    "depth_hi_nm": float(edges[i + 1]),
+                    "depth_mid_nm": float(0.5 * (edges[i] + edges[i + 1])),
+                    "sample_frame_count": int(sample_count),
+                    "penetrated_frame_count": int(np.sum(hist)),
+                    "bin_frame_count": int(count),
+                    "percent_of_all_sampled_frames": float(100.0 * count / sample_count),
+                    "percent_of_penetrated_frames": float(100.0 * count / penetrated) if np.sum(hist) > 0 else 0.0,
+                }
+            )
+    _write_rows_csv(out_csv, out_rows)
+    try:
+        import matplotlib.pyplot as plt
+    except Exception:
+        return out_csv, None
+    if not out_rows:
+        return out_csv, None
+    out_svg.parent.mkdir(parents=True, exist_ok=True)
+    fig, ax = plt.subplots(figsize=(6.4, 3.6))
+    for moltype in sorted(by_species):
+        series = [row for row in out_rows if row.get("moltype") == moltype]
+        x = [float(row["depth_mid_nm"]) for row in series]
+        y = [float(row["percent_of_all_sampled_frames"]) for row in series]
+        if any(val > 0.0 for val in y):
+            ax.step(x, y, where="mid", linewidth=1.8, label=moltype)
+    ax.set_xlabel("COM depth inside CMC/polymer-rich region / nm")
+    ax.set_ylabel("sampled molecule-frame fraction / %")
+    ax.set_title("Penetration depth distribution")
+    ax.set_xlim(float(edges[0]), float(edges[-1]))
+    ax.set_ylim(bottom=0.0)
+    ax.legend(loc="best", fontsize="small")
+    fig.tight_layout()
+    fig.savefig(out_svg)
+    plt.close(fig)
+    return out_csv, out_svg
+
+
+def _write_adsorbed_orientation_distribution(
+    *,
+    out_csv: Path,
+    out_svg: Path,
+    rows: Sequence[dict[str, Any]],
+    bin_deg: float = 15.0,
+) -> tuple[Path, Path | None]:
+    selected = [dict(row) for row in rows if bool(row.get("adsorbed")) and bool(row.get("orientation_available"))]
+    edges = np.arange(0.0, 180.0 + float(bin_deg), float(bin_deg))
+    if edges[-1] < 180.0:
+        edges = np.append(edges, 180.0)
+    angle_specs = (("carbonyl", "carbonyl_angle_deg"), ("dipole_proxy", "dipole_proxy_angle_deg"))
+    out_rows: list[dict[str, Any]] = []
+    moltypes = sorted({str(row.get("moltype") or "") for row in selected if row.get("moltype")})
+    for moltype in moltypes:
+        species_rows = [row for row in selected if str(row.get("moltype") or "") == moltype]
+        for angle_kind, key in angle_specs:
+            angles = np.asarray(
+                [float(row[key]) for row in species_rows if row.get(key) is not None and np.isfinite(float(row[key]))],
+                dtype=float,
+            )
+            hist = np.histogram(angles, bins=edges)[0].astype(float)
+            denom = max(1, int(np.sum(hist)))
+            for i, count in enumerate(hist.tolist()):
+                out_rows.append(
+                    {
+                        "moltype": moltype,
+                        "orientation_kind": angle_kind,
+                        "angle_lo_deg": float(edges[i]),
+                        "angle_hi_deg": float(edges[i + 1]),
+                        "angle_mid_deg": float(0.5 * (edges[i] + edges[i + 1])),
+                        "adsorbed_oriented_sample_count": int(np.sum(hist)),
+                        "bin_sample_count": int(count),
+                        "percent_of_adsorbed_oriented_frames": float(100.0 * count / denom) if np.sum(hist) > 0 else 0.0,
+                    }
+                )
+    _write_rows_csv(out_csv, out_rows)
+    try:
+        import matplotlib.pyplot as plt
+    except Exception:
+        return out_csv, None
+    if not out_rows:
+        return out_csv, None
+    out_svg.parent.mkdir(parents=True, exist_ok=True)
+    fig, axes = plt.subplots(1, 2, figsize=(9.0, 3.6), sharey=True)
+    for ax, (angle_kind, _key) in zip(axes, angle_specs):
+        for moltype in moltypes:
+            series = [
+                row
+                for row in out_rows
+                if row.get("moltype") == moltype and row.get("orientation_kind") == angle_kind
+            ]
+            x = [float(row["angle_mid_deg"]) for row in series]
+            y = [float(row["percent_of_adsorbed_oriented_frames"]) for row in series]
+            if any(val > 0.0 for val in y):
+                ax.step(x, y, where="mid", linewidth=1.8, label=moltype)
+        ax.set_title("carbonyl C->O" if angle_kind == "carbonyl" else "charge-dipole proxy")
+        ax.set_xlabel("angle to graphite surface normal / deg")
+        ax.set_xlim(0.0, 180.0)
+        ax.set_ylim(bottom=0.0)
+        ax.legend(loc="best", fontsize="small")
+    axes[0].set_ylabel("adsorbed EDL oriented-frame fraction / %")
+    fig.suptitle("Adsorbed orientation distribution within graphite EDL cutoff")
+    fig.tight_layout()
+    fig.savefig(out_svg)
+    plt.close(fig)
+    return out_csv, out_svg
 
 
 def _mp4_writer(fps: float):
@@ -1877,13 +2036,17 @@ def _membrane_permeation_analysis(
         residence_counted = int(rec.get("membrane_residence_time_ps_counted") or 0)
         total_residence = float(rec.get("membrane_residence_time_ps_total") or 0.0)
         loading_nm3 = mean_membrane_count / membrane_volume_nm3
+        initial_feed_denom = max(1, int(initial_feed_count))
         summary_by_species[moltype] = {
             "molecule_count": int(rec.get("molecule_count") or 0),
             "initial_feed_count": int(initial_feed_count),
+            "feed_frame_fraction": float(rec.get("feed_frame_count") or 0) / float(sample_frames),
             "membrane_frame_fraction": float(rec.get("membrane_frame_count") or 0) / float(sample_frames),
             "permeate_frame_fraction": float(rec.get("permeate_frame_count") or 0) / float(sample_frames),
             "entry_event_count": int(rec.get("entry_event_count") or 0),
             "translocation_event_count": int(rec.get("translocation_event_count") or 0),
+            "entry_event_fraction_per_initial_feed": float(rec.get("entry_event_count") or 0) / float(initial_feed_denom),
+            "translocation_fraction_per_initial_feed": float(rec.get("translocation_event_count") or 0) / float(initial_feed_denom),
             "mean_membrane_count": float(mean_membrane_count),
             "mean_membrane_loading_molecules_nm3": float(loading_nm3),
             "mean_membrane_loading_mol_L": float(loading_nm3 * 1.0e24 / _AVOGADRO),
@@ -2613,12 +2776,11 @@ def compute_interface_profile(
     _write_json(out_dir / "edl_summary.json", edl)
     _write_rows_csv(out_dir / "penetration_events.csv", penetration.get("rows") or [])
     _write_json(out_dir / "penetration_summary.json", {key: value for key, value in penetration.items() if key != "rows"})
-    penetration_depth_svg = _write_fraction_bar_svg(
-        out_dir / "penetration_depth.svg",
-        penetration.get("summary_by_species") or {},
-        "polymer_frame_fraction",
-        "polymer-region frame fraction",
-        "Molecular penetration into polymer-rich regions",
+    penetration_depth_csv, penetration_depth_svg = _write_penetration_depth_distribution(
+        out_csv=out_dir / "penetration_depth_distribution.csv",
+        out_svg=out_dir / "penetration_depth.svg",
+        rows=penetration.get("rows") or [],
+        bin_nm=max(0.05, float(bin_nm)),
     )
     _write_rows_csv(out_dir / "membrane_permeation_events.csv", membrane_permeation.get("events") or [])
     _write_rows_csv(out_dir / "membrane_permeation_timeseries.csv", membrane_permeation.get("time_series_rows") or [])
@@ -2661,12 +2823,10 @@ def compute_interface_profile(
         out_dir / "adsorption_summary.json",
         {key: value for key, value in adsorption.items() if key not in {"rows", "surface_map_rows"}},
     )
-    adsorbed_orientation_svg = _write_fraction_bar_svg(
-        out_dir / "adsorbed_orientation.svg",
-        adsorption.get("summary_by_species") or {},
-        "adsorbed_frame_fraction",
-        "adsorbed frame fraction",
-        "Graphite-near adsorption occupancy",
+    adsorbed_orientation_distribution_csv, adsorbed_orientation_svg = _write_adsorbed_orientation_distribution(
+        out_csv=out_dir / "adsorbed_orientation_distribution.csv",
+        out_svg=out_dir / "adsorbed_orientation.svg",
+        rows=adsorption.get("rows") or [],
     )
     _write_json(out_dir / "region_transport_summary.json", transport)
     coord_rows: list[dict[str, Any]] = []
@@ -2763,6 +2923,7 @@ def compute_interface_profile(
             "edl_summary_json": str(out_dir / "edl_summary.json"),
             "penetration_events_csv": str(out_dir / "penetration_events.csv"),
             "penetration_summary_json": str(out_dir / "penetration_summary.json"),
+            "penetration_depth_distribution_csv": str(penetration_depth_csv),
             "penetration_depth_svg": None if penetration_depth_svg is None else str(penetration_depth_svg),
             "membrane_permeation_events_csv": str(out_dir / "membrane_permeation_events.csv"),
             "membrane_permeation_timeseries_csv": str(out_dir / "membrane_permeation_timeseries.csv"),
@@ -2772,6 +2933,7 @@ def compute_interface_profile(
             "adsorption_summary_json": str(out_dir / "adsorption_summary.json"),
             "adsorption_events_csv": str(out_dir / "adsorption_events.csv"),
             "adsorbed_orientation_csv": str(out_dir / "adsorbed_orientation.csv"),
+            "adsorbed_orientation_distribution_csv": str(adsorbed_orientation_distribution_csv),
             "adsorbed_orientation_svg": None if adsorbed_orientation_svg is None else str(adsorbed_orientation_svg),
             "region_transport_summary_json": str(out_dir / "region_transport_summary.json"),
             "region_summary_json": str(out_dir / "region_summary.json"),

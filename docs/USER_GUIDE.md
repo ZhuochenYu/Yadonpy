@@ -482,9 +482,9 @@ summary = interface.summary()
 
 The helper writes `06_analysis/layer_stack_interface/` with z density and charge
 profiles, electrostatic potential diagnostics for fixed-charge stacks, EDL
-species layering, penetration/residence diagnostics, separator/membrane uptake
-and finite-slab permeation estimates, graphite-near adsorption statistics,
-Li/Na coordination partitioning, and anisotropic MSD summaries.
+species layering, penetration-depth distributions, separator/membrane uptake
+and finite-slab permeation estimates, graphite-near EDL adsorption orientation
+distributions, Li/Na coordination partitioning, and anisotropic MSD summaries.
 Treat `Dxy` as the main interface transport metric; `Dz` is confined-direction
 mobility, not a bulk diffusion coefficient. Bulk-style 3D diffusion,
 conductivity, and dielectric analysis should be used only as explicit controls.

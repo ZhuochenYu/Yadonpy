@@ -162,6 +162,8 @@ def test_interface_profile_extracts_phase_order_density_overlap_and_coordination
     assert out["time_series"]["reason"] == "disabled"
     assert (tmp_path / "analysis" / "z_density_profiles.csv").exists()
     assert (tmp_path / "analysis" / "region_summary.json").exists()
+    assert (tmp_path / "analysis" / "penetration_depth_distribution.csv").exists()
+    assert (tmp_path / "analysis" / "adsorbed_orientation_distribution.csv").exists()
     assert (tmp_path / "analysis" / "membrane_permeation_summary.json").exists()
     assert (tmp_path / "analysis" / "membrane_permeation_timeseries.csv").exists()
     assert (tmp_path / "analysis" / "coordination_by_region.json").exists()
@@ -261,9 +263,11 @@ def test_interface_facade_exposes_stepwise_outputs(tmp_path: Path):
         "integrated_charge_csv",
         "electrostatic_potential_csv",
         "penetration_summary_json",
+        "penetration_depth_distribution_csv",
         "membrane_permeation_summary_json",
         "membrane_permeation_timeseries_csv",
         "adsorption_summary_json",
+        "adsorbed_orientation_distribution_csv",
         "coordination_z_profile_csv",
     ):
         assert Path(outputs[key]).exists()

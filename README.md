@@ -90,8 +90,9 @@ YadonPy currently focuses on these concrete workflows.
    `system.gro/top/ndx` files plus `layer_stack_manifest.json`, relaxes compact
    stacks with pre-minimization, short pre-NVT, fixed-XY z-NPT, and final NVT,
    then provides interface-specific post-processing for z profiles,
-   fixed-charge EDL diagnostics, penetration, adsorption, cation coordination,
-   and anisotropic in-plane transport.
+   fixed-charge EDL diagnostics, penetration-depth distributions, graphite-EDL
+   adsorption orientation distributions, membrane permeation fractions, cation
+   coordination, and anisotropic in-plane transport.
 
 9. **Enhanced sampling at interfaces**
 

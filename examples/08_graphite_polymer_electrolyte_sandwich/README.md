@@ -146,9 +146,9 @@ semantic aliases such as `GRAPHITE`, `ELECTROLYTE`, `CMCNA`, and `MOBILE`.
   pressure-gradient permeability constants.
 - The interface report includes z density, charge density, integrated charge,
   electrostatic potential diagnostics for fixed-charge graphite, double-layer
-  species profiles, small-molecule penetration into CMC/polymer-rich regions,
-  membrane uptake/permeation diagnostics, graphite-near adsorption/residence and
-  orientation proxies, cation
+  species profiles, small-molecule penetration-depth distributions in
+  CMC/polymer-rich regions, membrane uptake/permeation fractions,
+  graphite-near EDL adsorption orientation distributions, cation
   coordination partitioning, and anisotropic MSD summaries when trajectories are
   present. Use `Dxy` as the in-plane interface mobility metric; treat `Dz` as
   confined-direction mobility.

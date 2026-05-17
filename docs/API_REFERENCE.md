@@ -458,11 +458,12 @@ Facade method semantics:
 - `edl_profiles()` returns fixed-charge EDL species profiles, integrated charge,
   electric field, and reference-shifted electrostatic potential diagnostics.
 - `penetration(...)` reports molecule COM residence in CMC/polymer-rich or mixed
-  regions.
+  regions and writes depth-window distributions as percentages of sampled
+  molecule frames.
 - `membrane_permeation(...)` reports separator-style uptake, entry,
   translocation, residence, finite-slab flux, and apparent permeability metrics.
 - `graphite_adsorption(...)` reports graphite-near residence, surface occupancy,
-  and simple carbonyl/dipole orientation proxies.
+  and EDL-layer carbonyl/dipole orientation angle distributions.
 - `coordination_by_region()` partitions cation donor states by z region using
   fallback O/F contact cutoffs.
 - `region_transport()` returns anisotropic MSD summaries when transport is
