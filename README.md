@@ -1,8 +1,8 @@
 # YadonPy
 
 YadonPy is a script-first molecular-modeling workflow toolkit for the
-polymer-electrolyte and graphite-interface workflows shipped in `examples/01`
-through `examples/08`.  It is designed for research scripts where the chemistry,
+polymer-electrolyte, graphite-interface, and enhanced-sampling workflows shipped
+in `examples/01` through `examples/12`.  It is designed for research scripts where the chemistry,
 force-field choices, MD settings, restart policy, and analysis calls remain
 visible in ordinary Python rather than hidden behind a large configuration file.
 
@@ -93,6 +93,13 @@ YadonPy currently focuses on these concrete workflows.
    fixed-charge EDL diagnostics, penetration, adsorption, cation coordination,
    and anisotropic in-plane transport.
 
+9. **Enhanced sampling at interfaces**
+
+   Example 12 adds a GROMACS + PLUMED umbrella-sampling workflow for a solvated
+   Li+ crossing from electrolyte into CMC-Na.  GROMACS pull-code supplies the
+   umbrella bias and `gmx wham` PMF reconstruction, while PLUMED records
+   solvent/CMC/anion coordination CVs for mechanistic interpretation.
+
 ## What The Toolkit Provides
 
 The examples above are built from a small set of reusable components:
@@ -114,6 +121,8 @@ The examples above are built from a small set of reusable components:
   Nernst-Einstein and Einstein-Helfand conductivity, dielectric response,
   polymer metrics, Tg fitting, uniaxial mechanics, and layer-stack interface
   profiles.
+- Enhanced-sampling preparation and umbrella-PMF post-processing for the
+  CMC/electrolyte Li+ transfer example.
 
 YadonPy does not claim to be a universal force-field generator or a general
 constant-potential electrode engine.  In particular, the charged-graphite
@@ -405,6 +414,23 @@ pull_plan = prepare_solvated_ion_pull(
 # ("-plumed", ".../plumed.dat")
 ```
 
+For PMF production, use the umbrella workflow instead of hand-editing windows:
+
+```python
+from yadonpy import SolvatedIonUmbrellaSpec, prepare_solvated_ion_umbrella
+
+umbrella_plan = prepare_solvated_ion_umbrella(
+    system_dir=relaxed.work_dir / "02_system",
+    gro_path=relaxed.final_gro,
+    spec=SolvatedIonUmbrellaSpec(
+        target_group="CMCNA",
+        target_coordination_number=4,
+        window_count=31,
+        window_production_ns=1.0,
+    ),
+)
+```
+
 ## Simulation And Analysis Notes
 
 - Production presets use adaptive output cadence.  Production writes TRR
@@ -473,9 +499,12 @@ CSV tables, and plots.
   refresh, force-field assignment check, and bundled-catalog audit.
 - `examples/08_graphite_polymer_electrolyte_sandwich`: generic graphite,
   electrolyte, and CMC-Na layer stacks with interface-specific post-processing.
-
-Additional example folders may exist for narrower diagnostics or newer feature
-work, but the list above is the stable introduction path.
+- `examples/09_oplsaa_assignment`: OPLS-AA assignment diagnostics.
+- `examples/10_migration_analysis`: migration-analysis workflow entry point.
+- `examples/11_segment_branch_polymer`: segment-first long-block and branched
+  polymer construction.
+- `examples/12_enhanced_sampling`: umbrella PMF for Li+ transfer from
+  electrolyte into CMC-Na, with metadynamics and Blue Moon placeholders.
 
 ## Documentation
 

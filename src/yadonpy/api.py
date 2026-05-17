@@ -82,6 +82,27 @@ def prepare_solvated_ion_pull(*args, **kwargs):
     return _prepare_solvated_ion_pull(*args, **kwargs)
 
 
+def prepare_solvated_ion_umbrella(*args, **kwargs):
+    """Prepare GROMACS pull-code umbrella windows and PLUMED CV inputs."""
+    from .interface import prepare_solvated_ion_umbrella as _prepare_solvated_ion_umbrella
+
+    return _prepare_solvated_ion_umbrella(*args, **kwargs)
+
+
+def run_solvated_ion_umbrella(*args, **kwargs):
+    """Run the prepared solvated-ion umbrella PMF workflow."""
+    from .interface import run_solvated_ion_umbrella as _run_solvated_ion_umbrella
+
+    return _run_solvated_ion_umbrella(*args, **kwargs)
+
+
+def analyze_umbrella_pmf(*args, **kwargs):
+    """Post-process GROMACS WHAM and PLUMED COLVAR outputs from umbrella sampling."""
+    from .interface import analyze_umbrella_pmf as _analyze_umbrella_pmf
+
+    return _analyze_umbrella_pmf(*args, **kwargs)
+
+
 def clean_md_trajectory_files(*args, **kwargs):
     """Remove large trajectory streams after analysis has finished."""
     from .sim.cleanup import clean_md_trajectory_files as _clean_md_trajectory_files
@@ -291,6 +312,7 @@ __all__ = [
     'audit_oplsaa_assignment',
     'audit_oplsaa_reference',
     'analyze_layer_stack_interface',
+    'analyze_umbrella_pmf',
     'assign_charges',
     'assign_forcefield',
     'build_graphite',
@@ -307,9 +329,11 @@ __all__ = [
     'parameterize_smiles',
     'print_mechanics_result_summary',
     'prepare_solvated_ion_pull',
+    'prepare_solvated_ion_umbrella',
     'resolve_prepared_system',
     'run_layer_stack_nvt',
     'run_layer_stack_relaxation',
+    'run_solvated_ion_umbrella',
     'run_elongation_gmx',
     'run_tg_scan_gmx',
 ]

@@ -29,7 +29,7 @@ from .sim.interface_analysis import InterfaceAnalysis  # noqa: F401
 from .sim.performance import IOAnalysisPolicy, resolve_io_analysis_policy  # noqa: F401
 from .diagnostics import doctor  # noqa: F401
 from .interface import InterfaceBuilder, InterfaceDynamics, InterfaceProtocol, InterfaceRouteSpec, build_interface, build_interface_from_workdirs  # noqa: F401
-from .interface import ElectrodeChargeSpec, EnhancedSamplingPlan, FixedChargeRegionSpec, GraphiteLayerSpec, LayerStackNvtResult, LayerStackRelaxationResult, LayerStackRelaxationSpec, LayerStackResult, LayerStackSpec, MolecularLayerSpec, SolvatedIonPullSpec, VacuumLayerSpec, ZCompressionAnnealSpec, analyze_layer_stack_interface, build_layer_stack, prepare_solvated_ion_pull, run_layer_stack_nvt, run_layer_stack_relaxation  # noqa: F401
+from .interface import ElectrodeChargeSpec, EnhancedSamplingPlan, FixedChargeRegionSpec, GraphiteLayerSpec, LayerStackNvtResult, LayerStackRelaxationResult, LayerStackRelaxationSpec, LayerStackResult, LayerStackSpec, MolecularLayerSpec, SolvatedIonPullSpec, SolvatedIonUmbrellaSpec, UmbrellaPmfResult, UmbrellaSamplingPlan, VacuumLayerSpec, ZCompressionAnnealSpec, analyze_layer_stack_interface, analyze_umbrella_pmf, build_layer_stack, prepare_solvated_ion_pull, prepare_solvated_ion_umbrella, run_layer_stack_nvt, run_layer_stack_relaxation, run_solvated_ion_umbrella  # noqa: F401
 from .runtime import get_run_options, set_run_options, run_options  # noqa: F401
 from .api import (  # noqa: F401
     audit_default_moldb_sync,
@@ -37,6 +37,7 @@ from .api import (  # noqa: F401
     audit_oplsaa_assignment,
     audit_oplsaa_reference,
     analyze_layer_stack_interface,
+    analyze_umbrella_pmf,
     assign_charges,
     assign_forcefield,
     build_graphite,
@@ -53,10 +54,12 @@ from .api import (  # noqa: F401
     parameterize_smiles,
     print_mechanics_result_summary,
     prepare_solvated_ion_pull,
+    prepare_solvated_ion_umbrella,
     resolve_prepared_system,
     run_elongation_gmx,
     run_layer_stack_nvt,
     run_layer_stack_relaxation,
+    run_solvated_ion_umbrella,
     run_tg_scan_gmx,
 )
 
@@ -72,6 +75,7 @@ __all__ = [
     'audit_oplsaa_assignment',
     'audit_oplsaa_reference',
     'analyze_layer_stack_interface',
+    'analyze_umbrella_pmf',
     'build_graphite',
     'build_layer_stack',
     'clean_md_trajectory_files',
@@ -105,6 +109,7 @@ __all__ = [
     'parameterize_smiles',
     'print_mechanics_result_summary',
     'prepare_solvated_ion_pull',
+    'prepare_solvated_ion_umbrella',
     'qm',
     'resolve_prepared_system',
     'resolve_io_analysis_policy',
@@ -112,9 +117,13 @@ __all__ = [
     'run_layer_stack_nvt',
     'run_layer_stack_relaxation',
     'run_options',
+    'run_solvated_ion_umbrella',
     'run_tg_scan_gmx',
     'set_run_options',
     'SolvatedIonPullSpec',
+    'SolvatedIonUmbrellaSpec',
+    'UmbrellaPmfResult',
+    'UmbrellaSamplingPlan',
     'VacuumLayerSpec',
     'ZCompressionAnnealSpec',
     'format_mechanics_result_summary',

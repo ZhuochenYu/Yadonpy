@@ -15,6 +15,9 @@ from yadonpy import (
     FixedChargeRegionSpec,
     GraphiteLayerSpec,
     SolvatedIonPullSpec,
+    SolvatedIonUmbrellaSpec,
+    UmbrellaPmfResult,
+    UmbrellaSamplingPlan,
     IOAnalysisPolicy,
     InterfaceBuilder,
     InterfaceDynamics,
@@ -42,13 +45,16 @@ from yadonpy import (
     mol_from_smiles,
     parameterize_smiles,
     print_mechanics_result_summary,
+    analyze_umbrella_pmf,
     prepare_solvated_ion_pull,
+    prepare_solvated_ion_umbrella,
     qm,
     resolve_io_analysis_policy,
     resolve_prepared_system,
     run_elongation_gmx,
     run_layer_stack_nvt,
     run_layer_stack_relaxation,
+    run_solvated_ion_umbrella,
     run_options,
     run_tg_scan_gmx,
     set_run_options,
@@ -79,6 +85,9 @@ Package root exports include:
 - `resolve_io_analysis_policy`
 - `clean_md_trajectory_files`
 - `prepare_solvated_ion_pull`
+- `prepare_solvated_ion_umbrella`
+- `run_solvated_ion_umbrella`
+- `analyze_umbrella_pmf`
 - `LayerStackSpec`
 - `LayerStackRelaxationSpec`
 - `GraphiteLayerSpec`
@@ -87,6 +96,9 @@ Package root exports include:
 - `ElectrodeChargeSpec`
 - `FixedChargeRegionSpec`
 - `SolvatedIonPullSpec`
+- `SolvatedIonUmbrellaSpec`
+- `UmbrellaSamplingPlan`
+- `UmbrellaPmfResult`
 - `ZCompressionAnnealSpec`
 - `LayerStackNvtResult`
 - `print_mechanics_result_summary`
@@ -149,6 +161,9 @@ parameterize_smiles(
     polyelectrolyte_mode: bool = False,
     polyelectrolyte_detection: str = "auto",
 )
+prepare_solvated_ion_umbrella(system_dir=..., gro_path=..., spec=SolvatedIonUmbrellaSpec(...))
+run_solvated_ion_umbrella(plan, mpi=1, omp=14, gpu=1, gpu_id=0)
+analyze_umbrella_pmf(plan)
 ```
 
 Key points:
@@ -1169,6 +1184,35 @@ Returned `EnhancedSamplingPlan` fields:
 The generated CV names are `d_ion_target.<axis>`, `cn_solvent`, `cn_target`,
 and `cn_anion`.  These CVs are a preparation layer for SMD, umbrella sampling,
 or metadynamics; they do not replace the unbiased interface analysis summary.
+
+For production umbrella PMFs, use `prepare_solvated_ion_umbrella(...)`,
+`run_solvated_ion_umbrella(...)`, and `analyze_umbrella_pmf(...)`.  The
+umbrella helper uses GROMACS pull-code for the bias and `gmx wham` for PMF
+reconstruction, while PLUMED records coordination CVs without adding a second
+bias.
+
+```python
+from yadonpy import SolvatedIonUmbrellaSpec, prepare_solvated_ion_umbrella
+
+umbrella_plan = prepare_solvated_ion_umbrella(
+    system_dir=relaxed.work_dir / "02_system",
+    gro_path=relaxed.final_gro,
+    spec=SolvatedIonUmbrellaSpec(
+        target_group="CMCNA",
+        target_coordination_number=4,
+        window_count=31,
+        steering_ns=0.5,
+        window_equilibration_ns=0.2,
+        window_production_ns=1.0,
+        umbrella_k_kj_mol_nm2=1000.0,
+    ),
+)
+```
+
+`UmbrellaSamplingPlan` records the selected Li atom, window centers, per-window
+MDP/PLUMED files, WHAM input lists, and output directories.  `UmbrellaPmfResult`
+records `pmf.csv`, `histogram.csv`, `coordination_by_window.csv`, SVG plots,
+and `umbrella_pmf_summary.json`.
 
 ## 11. Layer-Stack Interface Scope
 

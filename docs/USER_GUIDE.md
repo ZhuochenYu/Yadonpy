@@ -533,6 +533,32 @@ counts, the CMCNA target group, and `mdrun_extra_args=("-plumed",
 printing `cn_solvent`, `cn_target`, and `cn_anion`, so the biased path can be
 read together with the ordinary `coordination_by_region()` analysis.
 
+For a full umbrella PMF, use the GROMACS pull-code workflow.  GROMACS applies
+the umbrella bias and writes `pullx/pullf` files for `gmx wham`; PLUMED records
+Li coordination CVs in each window:
+
+```python
+from yadonpy import SolvatedIonUmbrellaSpec, prepare_solvated_ion_umbrella, run_solvated_ion_umbrella
+
+umbrella_plan = prepare_solvated_ion_umbrella(
+    system_dir=relaxed.work_dir / "02_system",
+    gro_path=relaxed.final_gro,
+    spec=SolvatedIonUmbrellaSpec(
+        target_group="CMCNA",
+        target_coordination_number=4,
+        window_count=31,
+        window_production_ns=1.0,
+    ),
+)
+pmf = run_solvated_ion_umbrella(umbrella_plan, mpi=1, omp=14, gpu=1, gpu_id=0)
+```
+
+The standard post-processing writes PMF and histogram CSV/SVG files, merged
+PLUMED `COLVAR` data, `coordination_by_window.csv`,
+`pmf_coordination_overlay.svg`, `umbrella_pmf_summary.json`, and an MP4 overview
+when `ffmpeg` is available.  Example 12 contains the script-first version of
+this workflow and keeps metadynamics/Blue Moon folders as explicit placeholders.
+
 Sandwich-specific interface builders are not part of the public workflow
 surface.  Use layer-stack specs for both simple two-layer contacts and
 multi-layer graphite/polymer/electrolyte systems.

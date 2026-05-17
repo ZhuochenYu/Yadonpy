@@ -321,6 +321,30 @@ def test_example08_scripts_use_one_shot_builder_and_interface_summary_printer():
         assert 'clean_md_trajectory_files(' in text
 
 
+def test_example12_umbrella_sampling_layout_is_explicit():
+    root = Path(__file__).resolve().parents[1]
+    script = root / 'examples/12_enhanced_sampling/01_umbrella_sampling_pmf/run_li_to_cmc_umbrella_pmf.py'
+    text = script.read_text(encoding='utf-8')
+    alias_import = 'import yadonpy as ' + 'yp'
+    assert alias_import not in text
+    assert 'SolvatedIonUmbrellaSpec(' in text
+    assert 'prepare_solvated_ion_umbrella(' in text
+    assert 'run_solvated_ion_umbrella(' in text
+    assert 'analyze_umbrella_pmf(' in text
+    assert 'build_layer_stack(' in text
+    assert 'run_layer_stack_relaxation(' in text
+    assert 'YADONPY_UMBRELLA_WINDOWS' in text
+    assert 'YADONPY_UMBRELLA_WINDOW_NS' in text
+
+    for rel in (
+        'examples/12_enhanced_sampling/02_metadynamics/README.md',
+        'examples/12_enhanced_sampling/03_blue_moon/README.md',
+    ):
+        placeholder = (root / rel).read_text(encoding='utf-8').lower()
+        assert 'placeholder' in placeholder
+        assert 'not implemented' in placeholder
+
+
 def test_example07_includes_bundled_moldb_audit_script():
     root = Path(__file__).resolve().parents[1]
     script = root / 'examples' / '07_moldb_precompute_and_reuse' / '06_audit_bundled_moldb.py'
