@@ -879,6 +879,8 @@ def test_run_layer_stack_relaxation_compression_anneal_workflow(monkeypatch, tmp
         pre_nvt_ns=0.001,
         z_npt_ns=0.001,
         relax_z=True,
+        z_compressibility_bar_inv=4.5e-6,
+        z_npt_tau_p_ps=20.0,
         compression_anneal=ZCompressionAnnealSpec(
             enabled=True,
             cycles=1,
@@ -918,6 +920,10 @@ def test_run_layer_stack_relaxation_compression_anneal_workflow(monkeypatch, tmp
     assert "ref_p                     = 1 2000" in hot_z_npt
     assert "tau_p                     = 20.0" in hot_z_npt
     assert "compressibility           = 0 4.5e-06" in hot_z_npt
+    final_z_npt = jobs[2]["stages"][0].mdp.render()
+    assert "ref_p                     = 1 1" in final_z_npt
+    assert "tau_p                     = 20.0" in final_z_npt
+    assert "compressibility           = 0 4.5e-06" in final_z_npt
     assert out.final_gro == tmp_path / "compression_relax" / "05_relaxation_workflow" / "09_final_nvt" / "md.gro"
 
 

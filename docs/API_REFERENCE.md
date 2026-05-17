@@ -134,6 +134,8 @@ run_layer_stack_relaxation(
     time_ns=2.0,
     temp=318.15,
     relax_z=True,
+    z_compressibility_bar_inv=4.5e-6,
+    z_npt_tau_p_ps=20.0,
     graphite_restraint=GraphiteRestraintSpec(enabled="auto"),
     interdiffusion_start=InterdiffusionStartSpec(enabled=False),
     compression_anneal=ZCompressionAnnealSpec(
@@ -1233,6 +1235,8 @@ run_layer_stack_nvt(result, time_ns=2.0, temp=318.15, omp=14, gpu_id=0)
 run_layer_stack_relaxation(
     result,
     relax_z=True,
+    z_compressibility_bar_inv=4.5e-6,
+    z_npt_tau_p_ps=20.0,
     graphite_restraint=GraphiteRestraintSpec(enabled="auto"),
     interdiffusion_start=InterdiffusionStartSpec(enabled=True),
 )

@@ -3128,6 +3128,7 @@ def run_layer_stack_relaxation(
     temp: float = 318.15,
     pressure_bar: float = 1.0,
     z_compressibility_bar_inv: float = 4.5e-5,
+    z_npt_tau_p_ps: float | None = None,
     xy_compressibility: float = 0.0,
     mpi: int = 1,
     omp: int = 14,
@@ -3155,6 +3156,9 @@ def run_layer_stack_relaxation(
     true, a z-NPT stage keeps the graphite-defined XY footprint fixed while the
     box length in z responds to pressure; when false, explicit-vacuum or open-z
     systems keep their constructed z spacing and go straight to final NVT.
+    Large polymer/interface stacks can pass ``z_npt_tau_p_ps`` together with a
+    reduced ``z_compressibility_bar_inv`` to make the final z-NPT barostat as
+    conservative as the compression-anneal z-NPT stages.
     """
 
     from ..gmx.mdp_templates import (
@@ -3274,6 +3278,8 @@ def run_layer_stack_relaxation(
         )
         z_npt["pcoupl"] = "C-rescale"
         z_npt["ref_p"] = f"{float(pressure_bar):.6g} {float(pressure_bar):.6g}"
+        if z_npt_tau_p_ps is not None:
+            z_npt["tau_p"] = float(z_npt_tau_p_ps)
         z_npt.update(
             fixed_xy_semiisotropic_npt_overrides(
                 pressure_bar=float(pressure_bar),
@@ -3605,6 +3611,8 @@ def run_layer_stack_relaxation(
                         pressure_z_bar=normal_pressure,
                         gen_vel="yes",
                         continuation="no",
+                        tau_p_ps=(None if z_npt_tau_p_ps is None else float(z_npt_tau_p_ps)),
+                        z_compressibility_bar_inv_value=float(z_compressibility_bar_inv),
                     ),
                 ),
             ),
@@ -3729,6 +3737,7 @@ def run_layer_stack_relaxation(
         "graphite_restraint": graphite_payload,
         "temperature_K": float(temp),
         "pressure_bar": float(pressure_bar),
+        "z_npt_tau_p_ps": None if z_npt_tau_p_ps is None else float(z_npt_tau_p_ps),
         "dt_ps": float(dt_ps),
         "constraints": constraints_mode,
         "z_npt_mdp_overrides": (
@@ -3736,6 +3745,7 @@ def run_layer_stack_relaxation(
                 "pcoupl": "C-rescale",
                 "pcoupltype": "semiisotropic",
                 "ref_p": z_npt["ref_p"],
+                "tau_p": z_npt.get("tau_p"),
                 "compressibility": z_npt["compressibility"],
             }
             if relax_z_enabled and z_npt is not None

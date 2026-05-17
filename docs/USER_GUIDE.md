@@ -486,13 +486,17 @@ periodic graphite bonds in the same lateral box.
 For electrolyte/CMCNA mutual-diffusion studies, use `run_layer_stack_relaxation`
 with `InterdiffusionStartSpec`.  The pre-release stages keep electrolyte and
 CMCNA under temporary z-only gates while density and contacts relax; the final
-NVT removes those gates and defines the diffusion time origin.  Use
+NVT removes those gates and defines the diffusion time origin.  For large slabs
+or high-DP CMC layers, keep the final z-NPT gentle with
+`z_compressibility_bar_inv=4.5e-6` and `z_npt_tau_p_ps=20.0`.  Use
 `GraphiteRestraintSpec` at the same time when basal graphite must stay flat:
 
 ```python
 relax = run_layer_stack_relaxation(
     result,
     relax_z=True,
+    z_compressibility_bar_inv=4.5e-6,
+    z_npt_tau_p_ps=20.0,
     graphite_restraint=GraphiteRestraintSpec(enabled="auto"),
     interdiffusion_start=InterdiffusionStartSpec(
         enabled=True,

@@ -345,6 +345,10 @@ For dense graphite/polymer/electrolyte sandwiches, `compression_anneal` adds
 small fixed-XY z-compression moves followed by hot/high-pressure z-only
 annealing before the final z-NPT.  In `auto` mode it skips explicit vacuum or
 open-z controls and enables the loop for closed graphite sandwich stacks.
+For large slab or high-DP CMC systems, also make the final z-NPT conservative
+with `z_compressibility_bar_inv=4.5e-6` and `z_npt_tau_p_ps=20.0`; this keeps
+the last density-relaxation step from applying a sudden large z scaling after
+the gentle compression cycles.
 For large CMC-Na layers, the preferred preparation route is an independent
 wall-confined slab before the final stack is assembled.  Build a very dilute
 fixed-XY CMC-Na amorphous cell, run EQ21 with `periodicity="xy"` and
@@ -383,6 +387,8 @@ relax = run_layer_stack_relaxation(
     pre_nvt_ns=0.05,
     z_npt_ns=0.50,
     relax_z=True,
+    z_compressibility_bar_inv=4.5e-6,
+    z_npt_tau_p_ps=20.0,
     graphite_restraint=GraphiteRestraintSpec(
         enabled="auto",
         k_pre_kj_mol_nm2=5000.0,
