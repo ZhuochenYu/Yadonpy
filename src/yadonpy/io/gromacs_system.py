@@ -1792,8 +1792,19 @@ def export_system_from_cell_meta(
         n = int(sp.get("n", 0))
         if not smiles or n <= 0:
             continue
-        frag_start = frag_cursor
-        frag_cursor += n
+        force_write_from_fragment = bool(sp.get("force_write_from_fragment", False))
+        fragment_index = None
+        if sp.get("fragment_index") is not None:
+            try:
+                fragment_index = int(sp.get("fragment_index"))
+            except Exception:
+                fragment_index = None
+        if fragment_index is not None:
+            frag_start = int(fragment_index)
+            frag_cursor = max(int(frag_cursor), int(fragment_index) + int(n))
+        else:
+            frag_start = frag_cursor
+            frag_cursor += n
 
         species_ff_name = str(sp.get("ff_name") or ff_name).strip() or str(ff_name)
         species_charge_policy = _species_charge_policy(sp, charge_method)
@@ -1864,7 +1875,7 @@ def export_system_from_cell_meta(
 
             return bool(dst_itp.exists() and dst_gro.exists())
 
-        if source_molecules_dir is not None:
+        if source_molecules_dir is not None and not force_write_from_fragment:
             src_dir = source_molecules_dir / mol_name_fs
             src_itp = (src_dir / f"{mol_name_fs}.itp")
             src_gro = (src_dir / f"{mol_name_fs}.gro")
@@ -1898,10 +1909,10 @@ def export_system_from_cell_meta(
 
         copied = False
         src_meta_dir = str(sp.get('cached_artifact_dir') or '').strip()
-        if src_meta_dir:
+        if src_meta_dir and not force_write_from_fragment:
             copied = _copy_from_src_dir(Path(src_meta_dir))
 
-        if (not copied) and sp.get('cached_mol_id'):
+        if (not copied) and sp.get('cached_mol_id') and not force_write_from_fragment:
             try:
                 from .molecule_cache import _default_cache_root
 
@@ -1962,7 +1973,7 @@ def export_system_from_cell_meta(
             copied = False
             try:
                 # Last resort: recover ids from representative fragment atom props.
-                if not copied:
+                if not copied and not force_write_from_fragment:
                     molid = None
                     try:
                         a0 = rep_mol.GetAtomWithIdx(0)
@@ -2420,64 +2431,49 @@ def export_system_from_cell_meta(
                     frags = []
                 total_needed = int(sum(int(sp.get("n", 0)) for sp in species))
                 if frags and len(frags) >= total_needed:
-                    # RDKit does not guarantee fragment ordering. Build buckets so we can
-                    # match each packed fragment back to the requested species.
-                    frags = frags[:total_needed]
-                    frag_buckets: dict[tuple[int, tuple[tuple[int, int], ...]], list[tuple[Chem.Mol, np.ndarray]]] = {}
-                    big_min: Optional[np.ndarray] = None
-                    big_max: Optional[np.ndarray] = None
-                    max_abs = 0.0
-                    for m in frags:
-                        c = _mol_coords_from_rdkit(m)
-                        if c is None:
-                            frag_buckets = {}
-                            break
-                        frag_buckets.setdefault(_mol_signature(m), []).append((m, c))
-                        cur_min = np.min(c, axis=0)
-                        cur_max = np.max(c, axis=0)
-                        max_abs = max(max_abs, float(np.max(np.abs(cur_min))), float(np.max(np.abs(cur_max))))
-                        if big_min is None:
-                            big_min = cur_min
-                            big_max = cur_max
-                        else:
-                            big_min = np.minimum(big_min, cur_min)
-                            big_max = np.maximum(big_max, cur_max)
+                    exact_fragment_mode = all(
+                        tpl.species.get("fragment_index") is not None and int(tpl.species.get("n", 0)) == 1
+                        for tpl in species_templates
+                    )
+                    if exact_fragment_mode:
+                        try:
+                            exact_indices = [int(tpl.species.get("fragment_index")) for tpl in species_templates]
+                        except Exception:
+                            exact_indices = []
+                        exact_fragment_mode = bool(exact_indices) and max(exact_indices) < len(frags) and min(exact_indices) >= 0
 
-                    if frag_buckets and big_min is not None and big_max is not None:
-                        have_explicit_box = cell_origin_nm is not None and np.all(box_vec_nm > 0.0)
-                        # Packed amorphous_cell coordinates share the same Angstrom-like
-                        # unit system as the stored RDKit cell bounds. Once the cell box
-                        # is explicitly available we should convert with the same fixed
-                        # Angstrom -> nm factor instead of relying on a magnitude
-                        # heuristic, which breaks for small boxes whose coordinates stay
-                        # below 20 in absolute value.
-                        to_nm = 0.1 if have_explicit_box else (0.1 if max_abs > 20.0 else 1.0)
-                        mn = big_min * to_nm
-                        mx = big_max * to_nm
-                        span = mx - mn
-                        span_safe = np.where(span > 1.0e-9, span, 1.0)
-                        scale_vec = np.where(span > 1.0e-9, box_vec_nm / span_safe, 1.0)
-
-                        for tpl in species_templates:
-                            sp = tpl.species
-                            name = tpl.name
-                            nat_expect = len(tpl.atom_names)
-                            sig = _species_signature_from_smiles(str(sp.get("smiles", "") or ""))
-                            for _k in range(int(sp["n"])):
-                                frag_entry = None
-                                if sig is not None and sig in frag_buckets and frag_buckets[sig]:
-                                    frag_entry = frag_buckets[sig].pop()
-                                else:
-                                    for (nat, _sig2), lst in frag_buckets.items():
-                                        if nat == nat_expect and lst:
-                                            frag_entry = lst.pop()
-                                            break
-                                if frag_entry is None:
-                                    remain = {k: len(v) for k, v in frag_buckets.items() if v}
-                                    raise RuntimeError(
-                                        f"Packed cell fragment matching failed for {name or 'mol'}: need nat={nat_expect}. Remaining buckets={remain}"
-                                    )
-                                _m, c = frag_entry
+                    if exact_fragment_mode:
+                        big_min: Optional[np.ndarray] = None
+                        big_max: Optional[np.ndarray] = None
+                        max_abs = 0.0
+                        coord_by_index: dict[int, np.ndarray] = {}
+                        for frag_index in exact_indices:
+                            c = _mol_coords_from_rdkit(frags[frag_index])
+                            if c is None:
+                                coord_by_index = {}
+                                break
+                            coord_by_index[frag_index] = c
+                            cur_min = np.min(c, axis=0)
+                            cur_max = np.max(c, axis=0)
+                            max_abs = max(max_abs, float(np.max(np.abs(cur_min))), float(np.max(np.abs(cur_max))))
+                            if big_min is None:
+                                big_min = cur_min
+                                big_max = cur_max
+                            else:
+                                big_min = np.minimum(big_min, cur_min)
+                                big_max = np.maximum(big_max, cur_max)
+                        if coord_by_index and big_min is not None and big_max is not None:
+                            have_explicit_box = cell_origin_nm is not None and np.all(box_vec_nm > 0.0)
+                            to_nm = 0.1 if have_explicit_box else (0.1 if max_abs > 20.0 else 1.0)
+                            mn = big_min * to_nm
+                            mx = big_max * to_nm
+                            span = mx - mn
+                            span_safe = np.where(span > 1.0e-9, span, 1.0)
+                            scale_vec = np.where(span > 1.0e-9, box_vec_nm / span_safe, 1.0)
+                            for tpl, frag_index in zip(species_templates, exact_indices):
+                                name = tpl.name
+                                nat_expect = len(tpl.atom_names)
+                                c = coord_by_index[int(frag_index)]
                                 if c.shape[0] != nat_expect:
                                     raise RuntimeError(
                                         f"Packed cell coordinates mismatch for {name}: got {c.shape[0]} atoms, expect {nat_expect}."
@@ -2495,7 +2491,87 @@ def export_system_from_cell_meta(
                                     )
                                     atom_counter += 1
                                 res_counter += 1
-                        used_cell_coords = True
+                            used_cell_coords = True
+
+                    if used_cell_coords:
+                        pass
+                    else:
+                        # RDKit does not guarantee fragment ordering. Build buckets so we can
+                        # match each packed fragment back to the requested species.
+                        frags = frags[:total_needed]
+                        frag_buckets: dict[tuple[int, tuple[tuple[int, int], ...]], list[tuple[Chem.Mol, np.ndarray]]] = {}
+                        big_min: Optional[np.ndarray] = None
+                        big_max: Optional[np.ndarray] = None
+                        max_abs = 0.0
+                        for m in frags:
+                            c = _mol_coords_from_rdkit(m)
+                            if c is None:
+                                frag_buckets = {}
+                                break
+                            frag_buckets.setdefault(_mol_signature(m), []).append((m, c))
+                            cur_min = np.min(c, axis=0)
+                            cur_max = np.max(c, axis=0)
+                            max_abs = max(max_abs, float(np.max(np.abs(cur_min))), float(np.max(np.abs(cur_max))))
+                            if big_min is None:
+                                big_min = cur_min
+                                big_max = cur_max
+                            else:
+                                big_min = np.minimum(big_min, cur_min)
+                                big_max = np.maximum(big_max, cur_max)
+
+                        if frag_buckets and big_min is not None and big_max is not None:
+                            have_explicit_box = cell_origin_nm is not None and np.all(box_vec_nm > 0.0)
+                            # Packed amorphous_cell coordinates share the same Angstrom-like
+                            # unit system as the stored RDKit cell bounds. Once the cell box
+                            # is explicitly available we should convert with the same fixed
+                            # Angstrom -> nm factor instead of relying on a magnitude
+                            # heuristic, which breaks for small boxes whose coordinates stay
+                            # below 20 in absolute value.
+                            to_nm = 0.1 if have_explicit_box else (0.1 if max_abs > 20.0 else 1.0)
+                            mn = big_min * to_nm
+                            mx = big_max * to_nm
+                            span = mx - mn
+                            span_safe = np.where(span > 1.0e-9, span, 1.0)
+                            scale_vec = np.where(span > 1.0e-9, box_vec_nm / span_safe, 1.0)
+
+                            for tpl in species_templates:
+                                sp = tpl.species
+                                name = tpl.name
+                                nat_expect = len(tpl.atom_names)
+                                sig = _species_signature_from_smiles(str(sp.get("smiles", "") or ""))
+                                for _k in range(int(sp["n"])):
+                                    frag_entry = None
+                                    if sig is not None and sig in frag_buckets and frag_buckets[sig]:
+                                        frag_entry = frag_buckets[sig].pop()
+                                    else:
+                                        for (nat, _sig2), lst in frag_buckets.items():
+                                            if nat == nat_expect and lst:
+                                                frag_entry = lst.pop()
+                                                break
+                                    if frag_entry is None:
+                                        remain = {k: len(v) for k, v in frag_buckets.items() if v}
+                                        raise RuntimeError(
+                                            f"Packed cell fragment matching failed for {name or 'mol'}: need nat={nat_expect}. Remaining buckets={remain}"
+                                        )
+                                    _m, c = frag_entry
+                                    if c.shape[0] != nat_expect:
+                                        raise RuntimeError(
+                                            f"Packed cell coordinates mismatch for {name}: got {c.shape[0]} atoms, expect {nat_expect}."
+                                        )
+                                    if have_explicit_box:
+                                        coords = (0.1 * c) - np.asarray(cell_origin_nm, dtype=float)
+                                    else:
+                                        coords = (c * to_nm - mn) * scale_vec
+                                    coords = _wrap_fragment_center_into_box(coords, box_vec_nm)
+                                    resname = (name[:5] if name else "MOL")
+                                    for a_name, (x, y, z) in zip(tpl.atom_names, coords):
+                                        _buffer_line(
+                                            f,
+                                            _format_gro_atom_line(resnr=res_counter, resname=resname, atomname=a_name, atomnr=atom_counter, x=x, y=y, z=z) + "\n",
+                                        )
+                                        atom_counter += 1
+                                    res_counter += 1
+                            used_cell_coords = True
 
             if not used_cell_coords:
                 placed_xyz: np.ndarray = np.zeros((0, 3), dtype=float)

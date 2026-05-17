@@ -283,6 +283,7 @@ Layer-stack scripts use the same style:
 
 ```python
 from yadonpy.interface import (
+    FixedChargeRegionSpec,
     GraphiteLayerSpec,
     LayerStackSpec,
     MolecularLayerSpec,
@@ -332,6 +333,15 @@ bulk CMC-Na density of about `1.5 g/cm3` is used only as a sanity reference,
 not as the insertion density.  The relaxation summary reports CMCNA phase
 density and the total mass density inside CMC-rich regions; it flags CMCNA core
 density below `0.90 g/cm3` as a warning and below `0.75 g/cm3` as severe.
+
+Constant-charge interface studies should use `FixedChargeRegionSpec` on
+`LayerStackSpec.fixed_charge_regions`.  This is a fixed-charge approximation,
+not a constant-potential electrode model: the selected atoms are assigned charge
+once when `system.top` is generated, and the same topology is used through
+compression annealing, final z-NPT, and final NVT sampling.  The selector is
+layer based, so basal graphite can charge `region="top"` or `"bottom"` faces,
+edge graphite can target a named edge slab, and amorphous layers can use
+`region="z_range"` or `thickness_nm` with optional `elements` filters.
 
 ```python
 relax = run_layer_stack_relaxation(

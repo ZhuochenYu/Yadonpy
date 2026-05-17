@@ -71,6 +71,31 @@ class ElectrodeChargeSpec:
 
 
 @dataclass(frozen=True)
+class FixedChargeRegionSpec:
+    """Fixed-charge selector for a named layer region.
+
+    This is the stack-level, geometry-aware replacement for layer-local
+    electrode-only charge placement.  It assigns a constant total charge either
+    directly or from an areal charge density to atoms selected from a named
+    layer.  The selected region can be the whole layer, a top/bottom slab, or a
+    layer-local z window.  The generated topology then carries those charges
+    through every subsequent relaxation and final sampling stage.
+    """
+
+    layer_name: str
+    mode: Literal["total_charge", "surface_charge_density"] = "total_charge"
+    region: Literal["all", "top", "bottom", "z_range"] = "all"
+    charge_e: float | None = None
+    surface_charge_uC_cm2: float | None = None
+    thickness_nm: float | None = None
+    z_min_nm: float | None = None
+    z_max_nm: float | None = None
+    elements: Sequence[str] = ()
+    exclude_elements: Sequence[str] = ()
+    label: str | None = None
+
+
+@dataclass(frozen=True)
 class GraphiteLayerSpec:
     """Graphite layer in a generic stack.
 
@@ -211,6 +236,7 @@ class LayerStackSpec:
     top_padding_nm: float = 0.0
     auto_expand_graphite: bool = True
     molecular_packing_expand: Literal["z", "xy"] = "z"
+    fixed_charge_regions: Sequence[FixedChargeRegionSpec] = ()
 
 
 @dataclass(frozen=True)
@@ -616,6 +642,283 @@ def _apply_graphite_surface_charge(
     return report
 
 
+def _atom_charge(atom: Chem.Atom) -> float:
+    for key in ("AtomicCharge", "RESP", "RESP2", "ESP"):
+        try:
+            if atom.HasProp(key):
+                return float(atom.GetDoubleProp(key))
+        except Exception:
+            continue
+    return 0.0
+
+
+def _normalize_element_filter(values: Sequence[str] | None) -> tuple[str, ...]:
+    out: list[str] = []
+    for value in values or ():
+        text = str(value).strip()
+        if not text:
+            continue
+        if text.isdigit():
+            try:
+                sym = Chem.GetPeriodicTable().GetElementSymbol(int(text))
+            except Exception:
+                sym = text
+        else:
+            sym = text[:1].upper() + text[1:].lower()
+        if sym:
+            out.append(sym)
+    return tuple(dict.fromkeys(out))
+
+
+def _fixed_charge_region_target_charge(spec: FixedChargeRegionSpec, *, area_nm2: float) -> float:
+    mode = str(spec.mode).strip().lower()
+    if mode == "total_charge":
+        if spec.charge_e is None:
+            raise ValueError(
+                f"FixedChargeRegionSpec {spec.layer_name!r}: charge_e is required when mode='total_charge'."
+            )
+        return float(spec.charge_e)
+    if mode == "surface_charge_density":
+        if spec.surface_charge_uC_cm2 is None:
+            raise ValueError(
+                f"FixedChargeRegionSpec {spec.layer_name!r}: surface_charge_uC_cm2 is required when "
+                "mode='surface_charge_density'."
+            )
+        return float(spec.surface_charge_uC_cm2) * _UCM2_TO_E_PER_NM2 * float(area_nm2)
+    raise ValueError("FixedChargeRegionSpec.mode must be 'total_charge' or 'surface_charge_density'.")
+
+
+def _interval_for_layer_name(intervals: Sequence[Mapping[str, Any]], layer_name: str) -> dict[str, Any]:
+    wanted = str(layer_name).strip()
+    matches = [dict(v) for v in intervals if str(v.get("name", "")).strip() == wanted]
+    if not matches:
+        safe = _safe_name(wanted)
+        matches = [dict(v) for v in intervals if _safe_name(str(v.get("name", ""))) == safe]
+    if not matches:
+        known = ", ".join(str(v.get("name", "")) for v in intervals)
+        raise ValueError(f"FixedChargeRegionSpec layer_name={layer_name!r} did not match any non-vacuum layer. Known layers: {known}")
+    if len(matches) > 1:
+        raise ValueError(f"FixedChargeRegionSpec layer_name={layer_name!r} is ambiguous; use unique layer names.")
+    return matches[0]
+
+
+def _fixed_charge_z_window(
+    *,
+    interval: Mapping[str, Any],
+    spec: FixedChargeRegionSpec,
+    coords_nm: np.ndarray,
+) -> tuple[float, float]:
+    layer_lo = float(interval["z_lo_nm"])
+    layer_hi = float(interval["z_hi_nm"])
+    region = str(spec.region).strip().lower()
+    layer_indices = [i for i, z in enumerate(coords_nm[:, 2]) if layer_lo - 1.0e-4 <= float(z) <= layer_hi + 1.0e-4]
+    if layer_indices:
+        z_values = coords_nm[layer_indices, 2]
+        atom_lo = float(np.min(z_values))
+        atom_hi = float(np.max(z_values))
+    else:
+        atom_lo = layer_lo
+        atom_hi = layer_hi
+    if region == "all":
+        return layer_lo - 1.0e-4, layer_hi + 1.0e-4
+    if region in {"top", "bottom"}:
+        if spec.thickness_nm is not None:
+            thickness = max(float(spec.thickness_nm), 1.0e-6)
+            if region == "top":
+                return max(layer_lo, atom_hi - thickness) - 1.0e-4, layer_hi + 1.0e-4
+            return layer_lo - 1.0e-4, min(layer_hi, atom_lo + thickness) + 1.0e-4
+        tol = max(0.008, 0.02 * max(atom_hi - atom_lo, 0.1))
+        if region == "top":
+            return atom_hi - tol, layer_hi + 1.0e-4
+        return layer_lo - 1.0e-4, atom_lo + tol
+    if region == "z_range":
+        if spec.z_min_nm is None or spec.z_max_nm is None:
+            raise ValueError(
+                f"FixedChargeRegionSpec {spec.layer_name!r}: z_min_nm and z_max_nm are required when region='z_range'."
+            )
+        z0 = layer_lo + float(spec.z_min_nm)
+        z1 = layer_lo + float(spec.z_max_nm)
+        if z1 < z0:
+            z0, z1 = z1, z0
+        return max(layer_lo, z0) - 1.0e-4, min(layer_hi, z1) + 1.0e-4
+    raise ValueError("FixedChargeRegionSpec.region must be 'all', 'top', 'bottom', or 'z_range'.")
+
+
+def _select_fixed_charge_region_atoms(
+    cell: Chem.Mol,
+    *,
+    interval: Mapping[str, Any],
+    spec: FixedChargeRegionSpec,
+) -> tuple[list[int], tuple[float, float]]:
+    coords_nm = _coords(cell) * 0.1
+    z0, z1 = _fixed_charge_z_window(interval=interval, spec=spec, coords_nm=coords_nm)
+    include = set(_normalize_element_filter(spec.elements))
+    exclude = set(_normalize_element_filter(spec.exclude_elements))
+    selected: list[int] = []
+    for atom in cell.GetAtoms():
+        idx = int(atom.GetIdx())
+        z = float(coords_nm[idx, 2])
+        if z < z0 or z > z1:
+            continue
+        sym = atom.GetSymbol()
+        if include and sym not in include:
+            continue
+        if exclude and sym in exclude:
+            continue
+        selected.append(idx)
+    return selected, (float(z0), float(z1))
+
+
+def _apply_fixed_charge_regions(
+    cell: Chem.Mol,
+    *,
+    intervals: Sequence[Mapping[str, Any]],
+    specs: Sequence[FixedChargeRegionSpec],
+    box_nm: tuple[float, float, float],
+) -> list[dict[str, Any]]:
+    reports: list[dict[str, Any]] = []
+    area_nm2 = float(box_nm[0]) * float(box_nm[1])
+    for idx, spec in enumerate(specs or ()):
+        interval = _interval_for_layer_name(intervals, spec.layer_name)
+        selected, z_window = _select_fixed_charge_region_atoms(cell, interval=interval, spec=spec)
+        target_q = _fixed_charge_region_target_charge(spec, area_nm2=area_nm2)
+        if abs(target_q) > 1.0e-12 and not selected:
+            raise RuntimeError(
+                f"FixedChargeRegionSpec {spec.layer_name!r}/{spec.region!r} selected no atoms for nonzero charge."
+            )
+        q_per_atom = float(target_q) / float(len(selected)) if selected else 0.0
+        before = float(sum(_atom_charge(cell.GetAtomWithIdx(i)) for i in selected))
+        for atom_idx in selected:
+            _charge_atom(cell.GetAtomWithIdx(atom_idx), q_per_atom)
+        after = float(sum(_atom_charge(cell.GetAtomWithIdx(i)) for i in selected))
+        reports.append(
+            {
+                "index": int(idx),
+                "label": spec.label or f"{_safe_name(spec.layer_name)}_{spec.region}_{idx:02d}",
+                "layer_name": str(spec.layer_name),
+                "layer_index": int(interval.get("layer_index", -1)),
+                "region": str(spec.region),
+                "mode": str(spec.mode),
+                "target_charge_e": float(target_q),
+                "charge_per_atom_e": float(q_per_atom),
+                "selected_atom_count": int(len(selected)),
+                "selected_atom_indices": [int(i) for i in selected],
+                "z_window_nm": [float(z_window[0]), float(z_window[1])],
+                "thickness_nm": (float(spec.thickness_nm) if spec.thickness_nm is not None else None),
+                "z_min_nm": (float(spec.z_min_nm) if spec.z_min_nm is not None else None),
+                "z_max_nm": (float(spec.z_max_nm) if spec.z_max_nm is not None else None),
+                "elements": list(_normalize_element_filter(spec.elements)),
+                "exclude_elements": list(_normalize_element_filter(spec.exclude_elements)),
+                "charge_before_e": float(before),
+                "charge_after_e": float(after),
+                "applied_charge_e": float(after - before),
+            }
+        )
+    return reports
+
+
+def _fragment_layer_index(atom_indices: Sequence[int], coords_nm: np.ndarray, intervals: Sequence[Mapping[str, Any]]) -> int | None:
+    if not atom_indices:
+        return None
+    z_mid = float(np.mean(coords_nm[list(atom_indices), 2]))
+    best_idx = None
+    best_dist = float("inf")
+    for interval in intervals:
+        lo = float(interval["z_lo_nm"])
+        hi = float(interval["z_hi_nm"])
+        if lo - 1.0e-4 <= z_mid <= hi + 1.0e-4:
+            return int(interval["layer_index"])
+        dist = min(abs(z_mid - lo), abs(z_mid - hi))
+        if dist < best_dist:
+            best_dist = dist
+            best_idx = int(interval["layer_index"])
+    return best_idx
+
+
+def _fragment_smiles(frag: Chem.Mol) -> str:
+    try:
+        return Chem.MolToSmiles(frag, canonical=True)
+    except Exception:
+        return ""
+
+
+def _fragment_species_entries_from_stacked_cell(
+    cell: Chem.Mol,
+    *,
+    intervals: Sequence[Mapping[str, Any]],
+    layers: Sequence[LayerSpec],
+    original_species: Sequence[Mapping[str, Any]],
+    force_write_from_fragment: bool,
+) -> list[dict[str, Any]]:
+    try:
+        frag_atom_indices = list(Chem.GetMolFrags(cell, asMols=False, sanitizeFrags=False))
+        frag_mols = list(Chem.GetMolFrags(cell, asMols=True, sanitizeFrags=False))
+    except Exception as exc:  # pragma: no cover - RDKit defensive branch.
+        raise RuntimeError("Could not enumerate layer-stack fragments for fixed-charge export.") from exc
+    if len(frag_atom_indices) != len(frag_mols):
+        raise RuntimeError("RDKit returned inconsistent fragment metadata for fixed-charge export.")
+
+    coords_nm = _coords(cell) * 0.1
+    by_layer: dict[int, list[dict[str, Any]]] = {}
+    for entry in original_species:
+        layer_idx = int(entry.get("layer_index", -1))
+        count = int(entry.get("n", 0) or 0)
+        for _ in range(max(count, 0)):
+            copied = dict(entry)
+            copied["n"] = 1
+            by_layer.setdefault(layer_idx, []).append(copied)
+
+    names_seen: set[str] = set()
+    entries: list[dict[str, Any]] = []
+    for frag_idx, (atom_ids, frag) in enumerate(zip(frag_atom_indices, frag_mols)):
+        atom_ids_list = [int(v) for v in atom_ids]
+        layer_idx = _fragment_layer_index(atom_ids_list, coords_nm, intervals)
+        pending = by_layer.setdefault(int(layer_idx if layer_idx is not None else -1), [])
+        match_pos = None
+        for pos, candidate in enumerate(pending):
+            if int(candidate.get("natoms", 0) or 0) == len(atom_ids_list):
+                match_pos = pos
+                break
+        if match_pos is None and pending:
+            match_pos = 0
+        base = dict(pending.pop(match_pos)) if match_pos is not None else {}
+        layer = layers[int(layer_idx)] if layer_idx is not None and 0 <= int(layer_idx) < len(layers) else None
+        layer_name = str(base.get("layer_name") or getattr(layer, "name", f"LAYER_{layer_idx if layer_idx is not None else frag_idx:02d}"))
+        layer_kind = str(
+            base.get("layer_kind")
+            or ("graphite" if isinstance(layer, GraphiteLayerSpec) else getattr(layer, "layer_kind", "generic"))
+        )
+        base_name = _safe_name(str(base.get("name") or layer_name or "FRAG"))
+        name = f"{base_name}_{frag_idx:04d}"
+        while name in names_seen:
+            name = f"{base_name}_{frag_idx:04d}_{len(names_seen):04d}"
+        names_seen.add(name)
+        charge_sum = float(sum(_atom_charge(cell.GetAtomWithIdx(i)) for i in atom_ids_list))
+        entry = {
+            **base,
+            "smiles": _fragment_smiles(frag) or str(base.get("smiles", "")),
+            "n": 1,
+            "natoms": int(len(atom_ids_list)),
+            "name": name,
+            "layer_index": int(layer_idx) if layer_idx is not None else None,
+            "layer_name": layer_name,
+            "layer_kind": layer_kind,
+            "fragment_index": int(frag_idx),
+            "fragment_atom_indices": atom_ids_list,
+            "force_write_from_fragment": bool(force_write_from_fragment),
+            "prefer_db": False,
+            "require_db": False,
+            "require_ready": False,
+            "net_charge_raw": float(charge_sum),
+            "net_charge_scaled": float(charge_sum),
+        }
+        if isinstance(layer, GraphiteLayerSpec):
+            entry.setdefault("ff_name", layer.ff_name)
+            entry.setdefault("charge_method", layer.charge_method)
+        entries.append(entry)
+    return entries
+
+
 def _prepare_graphite_layer(
     layer: GraphiteLayerSpec,
     *,
@@ -1000,6 +1303,7 @@ def _manifest_payload(
     layer_reports: Sequence[dict[str, Any]],
     intervals: Sequence[dict[str, Any]],
     gap_reports: Sequence[dict[str, Any]],
+    fixed_charge_reports: Sequence[dict[str, Any]] = (),
     box_nm: tuple[float, float, float],
     export: SystemExportResult,
     acceptance: Mapping[str, Any],
@@ -1024,6 +1328,10 @@ def _manifest_payload(
         "layers": layer_payloads,
         "layer_intervals_nm": [dict(v) for v in intervals],
         "gaps": [dict(v) for v in gap_reports],
+        "fixed_charge_regions": [
+            {k: v for k, v in dict(report).items() if k != "selected_atom_indices"}
+            for report in fixed_charge_reports
+        ],
         "acceptance": dict(acceptance),
         "z_compaction": z_compaction,
         "relaxation_defaults": {
@@ -1188,6 +1496,24 @@ def build_layer_stack(
         top_padding_nm=float(stack.top_padding_nm),
         periodic_closing_gap_nm=(float(stack.default_gap_nm) if resolved_pbc_mode == "xyz" else 0.0),
     )
+    fixed_charge_reports = _apply_fixed_charge_regions(
+        stacked_cell,
+        intervals=intervals,
+        specs=stack.fixed_charge_regions,
+        box_nm=box_nm,
+    )
+    needs_fragment_precise_export = bool(stack.fixed_charge_regions) or any(
+        isinstance(layer, GraphiteLayerSpec) and layer.electrode_charge is not None
+        for layer in ordered_layers
+    )
+    if needs_fragment_precise_export:
+        all_species = _fragment_species_entries_from_stacked_cell(
+            stacked_cell,
+            intervals=intervals,
+            layers=ordered_layers,
+            original_species=all_species,
+            force_write_from_fragment=True,
+        )
     _write_combined_cell_meta(
         stacked_cell,
         species_entries=all_species,
@@ -1204,6 +1530,10 @@ def build_layer_stack(
                 "layer_intervals_nm": [dict(v) for v in intervals],
                 "master_xy_nm": [float(master_xy_nm[0]), float(master_xy_nm[1])],
                 "box_nm": [float(v) for v in box_nm],
+                "fixed_charge_regions": [
+                    {k: v for k, v in dict(report).items() if k != "selected_atom_indices"}
+                    for report in fixed_charge_reports
+                ],
             },
             ensure_ascii=False,
         ),
@@ -1248,12 +1578,14 @@ def build_layer_stack(
             top_padding_nm=stack.top_padding_nm,
             auto_expand_graphite=stack.auto_expand_graphite,
             molecular_packing_expand=stack.molecular_packing_expand,
+            fixed_charge_regions=tuple(stack.fixed_charge_regions),
         ),
         relaxation=relaxation,
         planning=planning,
         layer_reports=layer_reports,
         intervals=intervals,
         gap_reports=gap_reports,
+        fixed_charge_reports=fixed_charge_reports,
         box_nm=box_nm,
         export=system_export,
         acceptance=acceptance,
@@ -2661,6 +2993,7 @@ def analyze_layer_stack_interface(
 
 __all__ = [
     "ElectrodeChargeSpec",
+    "FixedChargeRegionSpec",
     "GraphiteLayerSpec",
     "LayerStackNvtResult",
     "LayerStackRelaxationResult",

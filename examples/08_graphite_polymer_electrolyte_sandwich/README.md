@@ -86,9 +86,17 @@ semantic aliases such as `GRAPHITE`, `ELECTROLYTE`, `CMCNA`, and `MOBILE`.
   throughout the relaxation workflow, which avoids an early constrained-settle
   minimization on a deliberately tight fresh interface. Larger production runs
   can switch back to `h-bonds + 2 fs` after additional relaxation.
-- Constant-charge graphite is a fixed-charge model: surface charge is
-  distributed over selected top/bottom surface atoms once at build time.  It is
-  not a constant-potential electrode model.
+- Constant-charge graphite is a fixed-charge model, not a constant-potential
+  electrode model.  Example 08-05 uses `FixedChargeRegionSpec` on
+  `LayerStackSpec.fixed_charge_regions` to charge only the two interior basal
+  graphite faces.  The selected layer, side, z window, atom count, and charge
+  are written to `layer_stack_manifest.json`, and the exported topology keeps
+  those fragment charges tied to the intended coordinate region through
+  compression annealing, final z-NPT, and final NVT sampling.
+- The same fixed-charge selector can target other geometries: graphite edge
+  slabs can use a named edge layer with `region="top"`/`"bottom"` and
+  `thickness_nm`, while amorphous layers can use `region="z_range"` plus
+  layer-local `z_min_nm/z_max_nm` and optional element filters.
 - Interface analysis is intentionally different from bulk analysis. The scripts
   use `analy = relax.analyze()` followed by `analy.interface(...)`, then call
   readable methods such as `geometry_health()`, `z_profiles()`,

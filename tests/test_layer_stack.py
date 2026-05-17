@@ -11,6 +11,7 @@ from yadonpy.core.graphite import build_graphite
 from yadonpy.interface import layer_stack as layer_stack_mod
 from yadonpy.interface.layer_stack import (
     ElectrodeChargeSpec,
+    FixedChargeRegionSpec,
     GraphiteLayerSpec,
     LayerStackNvtResult,
     LayerStackRelaxationResult,
@@ -193,6 +194,90 @@ def test_layer_stack_side_specific_surface_charge_manifest(monkeypatch, tmp_path
     assert bottom_charge["bottom_charge_e"] == 0.0
     assert top_charge["bottom_charge_e"] < 0.0
     assert top_charge["top_charge_e"] == 0.0
+
+
+def test_layer_stack_fixed_charge_region_targets_named_layer_face(monkeypatch, tmp_path: Path):
+    _patch_fake_export(monkeypatch)
+    result = build_layer_stack(
+        stack=LayerStackSpec(
+            layers=(
+                GraphiteLayerSpec(name="BOTTOM", nx=2, ny=2, n_layers=2),
+                GraphiteLayerSpec(name="TOP", nx=2, ny=2, n_layers=2),
+            ),
+            name="region_charged_graphite",
+            fixed_charge_regions=(
+                FixedChargeRegionSpec(
+                    layer_name="BOTTOM",
+                    region="top",
+                    mode="surface_charge_density",
+                    surface_charge_uC_cm2=2.0,
+                    elements=("C",),
+                    label="bottom_inner_face",
+                ),
+                FixedChargeRegionSpec(
+                    layer_name="TOP",
+                    region="bottom",
+                    mode="surface_charge_density",
+                    surface_charge_uC_cm2=-2.0,
+                    elements=("C",),
+                    label="top_inner_face",
+                ),
+            ),
+        ),
+        work_dir=tmp_path,
+        restart=False,
+    )
+    manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
+    reports = manifest["fixed_charge_regions"]
+    assert [r["label"] for r in reports] == ["bottom_inner_face", "top_inner_face"]
+    assert reports[0]["selected_atom_count"] > 0
+    assert reports[0]["target_charge_e"] > 0.0
+    assert reports[1]["target_charge_e"] < 0.0
+
+    meta = json.loads(result.stacked_cell.GetProp("_yadonpy_cell_meta"))
+    species = meta["species"]
+    assert all(sp.get("fragment_index") is not None for sp in species)
+    assert all(sp.get("force_write_from_fragment") is True for sp in species)
+    assert abs(float(meta["net_charge_scaled"])) < 1.0e-8
+
+
+def test_layer_stack_fixed_charge_region_can_target_molecular_slab(monkeypatch, tmp_path: Path):
+    _patch_fake_export(monkeypatch)
+    water = utils.mol_from_smiles("O", name="WAT")
+    result = build_layer_stack(
+        stack=LayerStackSpec(
+            layers=(
+                MolecularLayerSpec(
+                    name="AMORPHOUS",
+                    species=(water,),
+                    counts=(4,),
+                    thickness_nm=1.2,
+                    density_target_g_cm3=0.2,
+                    layer_kind="generic",
+                ),
+            ),
+            name="charged_amorphous_slab",
+            fixed_charge_regions=(
+                FixedChargeRegionSpec(
+                    layer_name="AMORPHOUS",
+                    region="top",
+                    thickness_nm=0.6,
+                    mode="total_charge",
+                    charge_e=0.5,
+                    exclude_elements=("H",),
+                ),
+            ),
+        ),
+        work_dir=tmp_path,
+        restart=False,
+        charge_method="gasteiger",
+    )
+    manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
+    report = manifest["fixed_charge_regions"][0]
+    assert report["selected_atom_count"] >= 1
+    assert report["target_charge_e"] == 0.5
+    meta = json.loads(result.stacked_cell.GetProp("_yadonpy_cell_meta"))
+    assert any(sp.get("layer_name") == "AMORPHOUS" and sp.get("fragment_index") is not None for sp in meta["species"])
 
 
 def test_layer_stack_adds_periodic_closing_gap_for_xyz(monkeypatch, tmp_path: Path):

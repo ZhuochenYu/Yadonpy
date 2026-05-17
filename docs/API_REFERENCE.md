@@ -12,6 +12,7 @@ For QM-derived charges, the supported environment is Psi4 plus `psiresp-base`.
 from yadonpy import (
     AnalyzeResult,
     ElectrodeChargeSpec,
+    FixedChargeRegionSpec,
     GraphiteLayerSpec,
     IOAnalysisPolicy,
     InterfaceBuilder,
@@ -81,6 +82,7 @@ Package root exports include:
 - `MolecularLayerSpec`
 - `VacuumLayerSpec`
 - `ElectrodeChargeSpec`
+- `FixedChargeRegionSpec`
 - `ZCompressionAnnealSpec`
 - `LayerStackNvtResult`
 - `print_mechanics_result_summary`
@@ -1034,6 +1036,8 @@ LayerStackSpec(
     bottom_padding_nm: float = 0.0,
     top_padding_nm: float = 0.0,
     auto_expand_graphite: bool = True,
+    molecular_packing_expand: str = "z",
+    fixed_charge_regions: Sequence[FixedChargeRegionSpec] = (),
 )
 
 GraphiteLayerSpec(
@@ -1061,6 +1065,20 @@ MolecularLayerSpec(
 
 VacuumLayerSpec(thickness_nm: float, name: str = "VACUUM")
 
+FixedChargeRegionSpec(
+    layer_name: str,
+    mode: str = "total_charge",
+    region: str = "all",
+    charge_e: float | None = None,
+    surface_charge_uC_cm2: float | None = None,
+    thickness_nm: float | None = None,
+    z_min_nm: float | None = None,
+    z_max_nm: float | None = None,
+    elements: Sequence[str] = (),
+    exclude_elements: Sequence[str] = (),
+    label: str | None = None,
+)
+
 ElectrodeChargeSpec(
     mode: str = "total_charge",
     top_charge_e: float | None = None,
@@ -1085,11 +1103,19 @@ Notes:
   construction. Edge graphite defaults to `periodic_xy=False` and is capped as a
   finite bonded slab.
 - `edge_cap` supports `H`, `OH`, `O`/carbonyl, `CHO`, `COOH`, and random mixtures.
-- Fixed graphite electrode charge is assigned once to surface atoms.  It is not
-  a constant-potential model.
-- For two-electrode stacks, use `top_surface_charge_uC_cm2` on the lower
-  graphite and `bottom_surface_charge_uC_cm2` on the upper graphite to charge
-  only the interior surfaces.
+- `fixed_charge_regions` assigns constant charges once at topology generation.
+  It is not a constant-potential model.  Use `mode="surface_charge_density"`
+  for electrode-like areal charge in `uC/cm2`, or `mode="total_charge"` for an
+  explicit electron charge total.
+- `FixedChargeRegionSpec(region="top"|"bottom")` targets the outer atomic
+  plane of a named layer by default; add `thickness_nm` to charge a finite slab.
+  `region="z_range"` uses layer-local `z_min_nm/z_max_nm`, which also works for
+  graphite edge slabs or amorphous layers.  `elements` and `exclude_elements`
+  restrict the selected atoms.
+- `ElectrodeChargeSpec` remains as a compatibility shortcut for graphite-only
+  surface charging. New scripts should prefer `fixed_charge_regions` because it
+  records the selected layer/region explicitly in the manifest and preserves
+  fragment-to-coordinate mapping during export.
 - `pbc_mode="auto"` resolves to `xyz`; vacuum layers are explicit
   empty z regions, not implicit GROMACS walls.
 - In `xyz` stacks, the top-bottom periodic boundary is treated as a closing

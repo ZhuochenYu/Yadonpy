@@ -329,7 +329,7 @@ The builder:
 - packs molecular layers under that shared XY footprint,
 - keeps CMC-Na polymer and its Na+ counterions in one layer group,
 - stacks layers by z quantiles plus adaptive gaps,
-- supports explicit fixed graphite surface charge,
+- supports explicit fixed-charge regions on graphite or molecular layers,
 - writes `layer_stack_manifest.json`, `system.gro`, `system.top`, and layer-aware `system.ndx`.
 - treats basal graphite as XY-periodic by default and edge graphite as a finite capped slab.
 
@@ -337,6 +337,7 @@ Smoke-scale example:
 
 ```python
 from yadonpy import (
+    FixedChargeRegionSpec,
     GraphiteLayerSpec,
     LayerStackSpec,
     MolecularLayerSpec,
@@ -376,11 +377,39 @@ profile = analyze_layer_stack_interface(
 )
 ```
 
-Use `ElectrodeChargeSpec` for fixed-charge graphite electrodes.  This is a
-static charge assignment to surface atoms, not a constant-potential model.  In
-two-electrode stacks, use `top_surface_charge_uC_cm2` on the lower electrode and
-`bottom_surface_charge_uC_cm2` on the upper electrode to charge only the interior
-faces.
+Use `FixedChargeRegionSpec` for constant-charge regions.  This is a static
+topology charge assignment, not a constant-potential electrode model.  In a
+basal graphite sandwich, charge only the interior faces by selecting the named
+bottom layer `region="top"` and the named top layer `region="bottom"`:
+
+```python
+stack = LayerStackSpec(
+    layers=(graphite_bottom, electrolyte, cmcna, graphite_top),
+    fixed_charge_regions=(
+        FixedChargeRegionSpec(
+            layer_name="GRAPHITE_BOTTOM",
+            region="top",
+            mode="surface_charge_density",
+            surface_charge_uC_cm2=5.0,
+            elements=("C",),
+        ),
+        FixedChargeRegionSpec(
+            layer_name="GRAPHITE_TOP",
+            region="bottom",
+            mode="surface_charge_density",
+            surface_charge_uC_cm2=-5.0,
+            elements=("C",),
+        ),
+    ),
+)
+```
+
+For graphite edge or amorphous layers, keep the same API and change the region:
+`thickness_nm=0.3` charges a finite top/bottom slab, while
+`region="z_range"` with layer-local `z_min_nm/z_max_nm` targets an internal
+slice.  The manifest records the selected layer, z window, atom count, and
+assigned charge, and the exporter preserves fragment-to-coordinate mapping so
+the final sampling topology charges the intended region.
 
 Use `run_layer_stack_nvt(...)` to append a short NVT observation run from the
 exported stack artifact without rebuilding the layers:

@@ -150,6 +150,7 @@ def test_top_level_api_exports_mechanics_helpers():
     assert hasattr(yadonpy, 'MolecularLayerSpec')
     assert hasattr(yadonpy, 'VacuumLayerSpec')
     assert hasattr(yadonpy, 'ElectrodeChargeSpec')
+    assert hasattr(yadonpy, 'FixedChargeRegionSpec')
     assert hasattr(yadonpy, 'LayerStackNvtResult')
     assert hasattr(yadonpy, 'clean_md_trajectory_files')
     assert hasattr(yadonpy, 'InterfaceAnalysis')
@@ -157,6 +158,7 @@ def test_top_level_api_exports_mechanics_helpers():
     assert 'run_layer_stack_relaxation' in api.__all__
     assert 'clean_md_trajectory_files' in api.__all__
     assert 'ZCompressionAnnealSpec' in yadonpy.__all__
+    assert 'FixedChargeRegionSpec' in yadonpy.__all__
 
 
 def test_analyzer_does_not_expose_transport_bundle_api():

@@ -37,6 +37,7 @@ from .bulk_resize import (
 from .charge_audit import format_cell_charge_audit, format_charge_meta_audit, summarize_cell_charge, summarize_charge_meta
 from .layer_stack import (
     ElectrodeChargeSpec,
+    FixedChargeRegionSpec,
     GraphiteLayerSpec,
     LayerStackNvtResult,
     LayerStackRelaxationResult,
@@ -92,6 +93,7 @@ __all__ = [
     "ResizedElectrolytePreparation",
     "FixedXYDirectPackPlan",
     "ElectrodeChargeSpec",
+    "FixedChargeRegionSpec",
     "GraphiteLayerSpec",
     "LayerStackNvtResult",
     "LayerStackRelaxationResult",

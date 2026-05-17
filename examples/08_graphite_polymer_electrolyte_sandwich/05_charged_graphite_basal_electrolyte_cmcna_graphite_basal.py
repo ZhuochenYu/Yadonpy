@@ -17,7 +17,7 @@ from yadonpy.diagnostics import doctor
 from yadonpy.ff.gaff2_mod import GAFF2_mod
 from yadonpy.ff.merz import MERZ
 from yadonpy.interface import (
-    ElectrodeChargeSpec,
+    FixedChargeRegionSpec,
     GraphiteLayerSpec,
     LayerStackRelaxationSpec,
     LayerStackSpec,
@@ -168,10 +168,6 @@ if __name__ == "__main__":
             n_layers=3,
             orientation="basal",
             periodic_xy=True,
-            electrode_charge=ElectrodeChargeSpec(
-                mode="surface_charge_density",
-                top_surface_charge_uC_cm2=surface_charge,
-            ),
         )
         graphite_top = GraphiteLayerSpec(
             name="GRAPHITE_TOP",
@@ -180,10 +176,6 @@ if __name__ == "__main__":
             n_layers=3,
             orientation="basal",
             periodic_xy=True,
-            electrode_charge=ElectrodeChargeSpec(
-                mode="surface_charge_density",
-                bottom_surface_charge_uC_cm2=-surface_charge,
-            ),
         )
         electrolyte = MolecularLayerSpec(
             name="ELECTROLYTE",
@@ -213,6 +205,32 @@ if __name__ == "__main__":
             name=f"charged_graphite_stack_{case_name}",
             default_gap_nm=0.35,
             molecular_packing_expand="z",
+            # Constant-charge, not constant-potential: assign the prescribed
+            # areal charge to the two graphite faces that touch the confined
+            # electrolyte/CMC region.  `FixedChargeRegionSpec` is deliberately
+            # layer- and region-based, so the same interface can later target a
+            # graphite edge face, an amorphous layer slab (`region="z_range"`),
+            # or a finite-thickness top/bottom region by changing only this
+            # block.  The generated topology carries these charges through
+            # compression annealing, final z-NPT, and final NVT sampling.
+            fixed_charge_regions=(
+                FixedChargeRegionSpec(
+                    layer_name="GRAPHITE_BOTTOM",
+                    region="top",
+                    mode="surface_charge_density",
+                    surface_charge_uC_cm2=surface_charge,
+                    elements=("C",),
+                    label="bottom_graphite_inner_face",
+                ),
+                FixedChargeRegionSpec(
+                    layer_name="GRAPHITE_TOP",
+                    region="bottom",
+                    mode="surface_charge_density",
+                    surface_charge_uC_cm2=-surface_charge,
+                    elements=("C",),
+                    label="top_graphite_inner_face",
+                ),
+            ),
         )
         relaxation = LayerStackRelaxationSpec(temperature_K=temp, sample_ns=sample_ns)
 
