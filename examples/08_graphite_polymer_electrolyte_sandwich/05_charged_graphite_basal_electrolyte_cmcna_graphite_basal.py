@@ -199,7 +199,7 @@ if __name__ == "__main__":
             species=(CMC, Na),
             counts=(cmc_chain_count, cmc_chain_count * cmc_dp),
             thickness_nm=1.8,
-            density_target_g_cm3=1.25,
+            density_target_g_cm3=1.5,
             layer_kind="cmcna",
             charge_scale=(charge_scale, charge_scale),
             polyelectrolyte_mode=True,

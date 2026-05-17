@@ -1536,6 +1536,9 @@ def _summarize_density_profile(
     *,
     low_density_threshold_g_cm3: float = 0.02,
     extended_vacuum_span_nm: float = 0.75,
+    cmc_reference_density_g_cm3: float = 1.5,
+    cmc_warning_floor_g_cm3: float = 0.90,
+    cmc_severe_floor_g_cm3: float = 0.75,
 ) -> dict[str, Any]:
     outputs = (analysis_payload or {}).get("outputs") if isinstance(analysis_payload, dict) else None
     profile_csv = Path(str((outputs or {}).get("z_density_profiles_csv") or ""))
@@ -1597,6 +1600,12 @@ def _summarize_density_profile(
         "available": True,
         "phase_density_g_cm3": phase_density,
         "focus_phase_density_g_cm3": focus,
+        "cmc_density_gate": _cmc_density_gate(
+            phase_density,
+            reference_density_g_cm3=float(cmc_reference_density_g_cm3),
+            warning_floor_g_cm3=float(cmc_warning_floor_g_cm3),
+            severe_floor_g_cm3=float(cmc_severe_floor_g_cm3),
+        ),
         "vacuum_like": {
             "threshold_g_cm3": float(low_density_threshold_g_cm3),
             "extended_span_threshold_nm": float(extended_vacuum_span_nm),
@@ -1604,6 +1613,82 @@ def _summarize_density_profile(
             "max_contiguous_span_nm": float(max_span),
             "has_extended_vacuum_like_region": bool(max_span >= float(extended_vacuum_span_nm)),
         },
+    }
+
+
+def _cmc_density_gate(
+    phase_density: Mapping[str, Mapping[str, float | None]],
+    *,
+    reference_density_g_cm3: float = 1.5,
+    warning_floor_g_cm3: float = 0.90,
+    severe_floor_g_cm3: float = 0.75,
+) -> dict[str, Any]:
+    """Return a CMCNA density sanity gate without enforcing exact bulk density."""
+
+    metric_priority = ("rich_region_mean_g_cm3", "core_region_mean_g_cm3", "mean_nonzero_g_cm3", "max_g_cm3")
+    candidates: list[dict[str, Any]] = []
+    for name, payload in phase_density.items():
+        if "CMC" not in str(name).upper():
+            continue
+        metric = None
+        value = None
+        for key in metric_priority:
+            raw = payload.get(key)
+            if raw is None:
+                continue
+            try:
+                value = float(raw)
+            except Exception:
+                continue
+            metric = key
+            break
+        if value is None or metric is None:
+            continue
+        candidates.append(
+            {
+                "phase": str(name),
+                "metric": metric,
+                "density_g_cm3": float(value),
+                "fraction_of_reference": (
+                    float(value) / float(reference_density_g_cm3) if float(reference_density_g_cm3) > 0.0 else None
+                ),
+                "all_metrics": dict(payload),
+            }
+        )
+
+    if not candidates:
+        return {
+            "available": False,
+            "reason": "no_cmc_phase_density",
+            "reference_bulk_density_g_cm3": float(reference_density_g_cm3),
+            "warning_floor_g_cm3": float(warning_floor_g_cm3),
+            "severe_floor_g_cm3": float(severe_floor_g_cm3),
+        }
+
+    primary = min(candidates, key=lambda item: float(item["density_g_cm3"]))
+    primary_density = float(primary["density_g_cm3"])
+    if primary_density < float(severe_floor_g_cm3):
+        severity = "severe"
+    elif primary_density < float(warning_floor_g_cm3):
+        severity = "warning"
+    else:
+        severity = "ok"
+    return {
+        "available": True,
+        "ok": severity == "ok",
+        "severity": severity,
+        "reference_bulk_density_g_cm3": float(reference_density_g_cm3),
+        "warning_floor_g_cm3": float(warning_floor_g_cm3),
+        "severe_floor_g_cm3": float(severe_floor_g_cm3),
+        "primary_phase": primary["phase"],
+        "primary_metric": primary["metric"],
+        "primary_density_g_cm3": primary_density,
+        "primary_fraction_of_reference": primary["fraction_of_reference"],
+        "phases": candidates,
+        "message": (
+            "CMCNA density is a layer-model sanity check, not a requirement to equal the "
+            f"{float(reference_density_g_cm3):.2f} g/cm^3 bulk reference."
+        ),
     }
 
 
@@ -1645,7 +1730,9 @@ def _relaxation_diagnostics(
         diagnostics["phase_order_ok"] = health.get("phase_order_ok")
         diagnostics["adjacent_gaps_nm"] = health.get("adjacent_gaps_nm")
         diagnostics["pbc_closing_gap_nm"] = health.get("pbc_closing_gap_nm")
-        diagnostics["density_profile"] = _summarize_density_profile(analysis_payload)
+        density_summary = _summarize_density_profile(analysis_payload)
+        diagnostics["density_profile"] = density_summary
+        diagnostics["cmc_density_gate"] = density_summary.get("cmc_density_gate")
     return diagnostics
 
 

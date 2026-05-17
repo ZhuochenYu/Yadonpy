@@ -8,6 +8,7 @@ import numpy as np
 
 from yadonpy.core import utils
 from yadonpy.core.graphite import build_graphite
+from yadonpy.interface import layer_stack as layer_stack_mod
 from yadonpy.interface.layer_stack import (
     ElectrodeChargeSpec,
     GraphiteLayerSpec,
@@ -558,3 +559,34 @@ def test_run_layer_stack_relaxation_compression_anneal_workflow(monkeypatch, tmp
     assert "ref_p                     = 1 2000" in hot_z_npt
     assert "compressibility           = 0 4.5e-05" in hot_z_npt
     assert out.final_gro == tmp_path / "compression_relax" / "05_relaxation_workflow" / "09_final_nvt" / "md.gro"
+
+
+def test_density_profile_flags_low_cmc_density(tmp_path: Path):
+    profile = tmp_path / "z_density_profiles.csv"
+    profile.write_text(
+        "\n".join(
+            [
+                "entity_kind,entity,z_lo_nm,z_hi_nm,mass_density_g_cm3",
+                "phase,CMCNA,0.0,0.1,0.20",
+                "phase,CMCNA,0.1,0.2,0.45",
+                "phase,CMCNA,0.2,0.3,0.55",
+                "phase,ELECTROLYTE,0.0,0.1,1.10",
+                "phase,ELECTROLYTE,0.1,0.2,1.20",
+                "phase,ELECTROLYTE,0.2,0.3,1.00",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    summary = layer_stack_mod._summarize_density_profile({"outputs": {"z_density_profiles_csv": str(profile)}})
+
+    gate = summary["cmc_density_gate"]
+    assert gate["available"] is True
+    assert gate["ok"] is False
+    assert gate["severity"] == "severe"
+    assert gate["reference_bulk_density_g_cm3"] == 1.5
+    assert gate["warning_floor_g_cm3"] == 0.90
+    assert gate["severe_floor_g_cm3"] == 0.75
+    assert gate["primary_phase"] == "CMCNA"
+    assert gate["primary_density_g_cm3"] < 0.75

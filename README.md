@@ -325,6 +325,10 @@ For dense graphite/polymer/electrolyte sandwiches, `compression_anneal` adds
 small fixed-XY z-compression moves followed by hot/high-pressure z-only
 annealing before the final z-NPT.  In `auto` mode it skips explicit vacuum or
 open-z controls and enables the loop for closed graphite sandwich stacks.
+CMC-Na uses a bulk-density reference of about `1.5 g/cm3` for initial geometry.
+The layer model is not forced to end at exactly that value, but the relaxation
+summary flags CMCNA rich-region density below `0.90 g/cm3` as a warning and
+below `0.75 g/cm3` as severe.
 
 ```python
 relax = run_layer_stack_relaxation(
