@@ -216,6 +216,10 @@ class ZCompressionAnnealSpec:
     cool_nvt_ns: float = 0.02
     compression_tau_p_ps: float = 20.0
     compression_z_compressibility_bar_inv: float = 4.5e-6
+    geometry_clash_check: bool = True
+    geometry_clash_cutoff_nm: float = 0.10
+    severe_geometry_clash_cutoff_nm: float = 0.065
+    max_geometry_clash_retries: int = 3
     pressure_schedule: Literal["linear"] = "linear"
     temperature_schedule: Literal["linear"] = "linear"
     geometry_compression: Literal["auto", "inter_electrode", "global"] = "auto"
@@ -1967,6 +1971,112 @@ def _write_gro_lines_coords_box(src_lines: Sequence[str], coords: np.ndarray, bo
     out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def _gro_residue_keys(lines: Sequence[str], nat: int) -> list[tuple[str, str]]:
+    keys: list[tuple[str, str]] = []
+    for i in range(int(nat)):
+        line = lines[2 + i] if 2 + i < len(lines) else ""
+        keys.append((line[:5].strip(), line[5:10].strip()))
+    return keys
+
+
+def _geometry_clash_report(
+    gro_path: Path,
+    *,
+    cutoff_nm: float = 0.10,
+    severe_cutoff_nm: float = 0.065,
+    ignore_same_residue: bool = True,
+    max_pairs: int = 12,
+) -> dict[str, Any]:
+    """Fast pre-minimization screen for severe inter-residue overlaps."""
+
+    try:
+        lines, coords, box = _read_gro_lines_coords_box(gro_path)
+    except Exception as exc:
+        return {"available": False, "reason": str(exc), "risk": False}
+    nat = int(coords.shape[0])
+    cutoff = max(float(cutoff_nm), 1.0e-6)
+    severe = max(min(float(severe_cutoff_nm), cutoff), 0.0)
+    if nat <= 1:
+        return {
+            "available": True,
+            "risk": False,
+            "atom_count": nat,
+            "cutoff_nm": cutoff,
+            "severe_cutoff_nm": severe,
+            "min_distance_nm": None,
+            "close_pair_count": 0,
+            "severe_pair_count": 0,
+            "pairs": [],
+        }
+
+    box_arr = np.asarray(box, dtype=float)
+    safe_box = np.where(box_arr > 1.0e-9, box_arr, np.inf)
+    coords_mod = np.mod(coords, safe_box, where=np.isfinite(safe_box), out=np.asarray(coords, dtype=float).copy())
+    residue_keys = _gro_residue_keys(lines, nat)
+    cell_size = cutoff
+    dims = np.maximum(np.floor(np.where(np.isfinite(safe_box), safe_box, cutoff) / cell_size).astype(int), 1)
+    cell_map: dict[tuple[int, int, int], list[int]] = {}
+    for idx, xyz in enumerate(coords_mod):
+        key = tuple((np.floor(xyz / cell_size).astype(int) % dims).tolist())
+        cell_map.setdefault(key, []).append(int(idx))
+
+    min_d = float("inf")
+    close_count = 0
+    severe_count = 0
+    pairs: list[dict[str, Any]] = []
+    offsets = [(dx, dy, dz) for dx in (-1, 0, 1) for dy in (-1, 0, 1) for dz in (-1, 0, 1)]
+    seen_cells: set[tuple[tuple[int, int, int], tuple[int, int, int]]] = set()
+    for cell, atom_ids in cell_map.items():
+        for off in offsets:
+            neigh = tuple(((np.asarray(cell, dtype=int) + np.asarray(off, dtype=int)) % dims).tolist())
+            pair_key = tuple(sorted((cell, neigh)))
+            if pair_key in seen_cells:
+                continue
+            seen_cells.add(pair_key)
+            neigh_ids = cell_map.get(neigh, [])
+            if not neigh_ids:
+                continue
+            for i in atom_ids:
+                for j in neigh_ids:
+                    if j <= i:
+                        continue
+                    if ignore_same_residue and residue_keys[i] == residue_keys[j]:
+                        continue
+                    delta = coords_mod[j] - coords_mod[i]
+                    for axis in range(3):
+                        if np.isfinite(safe_box[axis]) and safe_box[axis] > 0.0:
+                            delta[axis] -= safe_box[axis] * round(float(delta[axis] / safe_box[axis]))
+                    d = float(np.linalg.norm(delta))
+                    if d < min_d:
+                        min_d = d
+                    if d < cutoff:
+                        close_count += 1
+                        if d < severe:
+                            severe_count += 1
+                        if len(pairs) < int(max_pairs):
+                            pairs.append(
+                                {
+                                    "atom_i": int(i + 1),
+                                    "atom_j": int(j + 1),
+                                    "distance_nm": d,
+                                    "residue_i": "/".join(residue_keys[i]),
+                                    "residue_j": "/".join(residue_keys[j]),
+                                }
+                            )
+
+    return {
+        "available": True,
+        "risk": bool(severe_count > 0),
+        "atom_count": nat,
+        "cutoff_nm": cutoff,
+        "severe_cutoff_nm": severe,
+        "min_distance_nm": (None if not np.isfinite(min_d) else float(min_d)),
+        "close_pair_count": int(close_count),
+        "severe_pair_count": int(severe_count),
+        "pairs": pairs,
+    }
+
+
 def _graphite_layer_group_names(manifest: Mapping[str, Any]) -> list[str]:
     out: list[str] = []
     for idx, layer in enumerate(manifest.get("layers") or []):
@@ -3198,6 +3308,8 @@ def run_layer_stack_relaxation(
             }
 
             attempts = 2 if bool(anneal_spec.rollback_on_failure) else 1
+            if bool(anneal_spec.geometry_clash_check):
+                attempts = max(attempts, 1 + max(int(anneal_spec.max_geometry_clash_retries), 0))
             last_exc: Exception | None = None
             for attempt in range(1, attempts + 1):
                 shrink = float(anneal_spec.max_z_shrink_per_cycle) / (2.0 ** (attempt - 1))
@@ -3217,19 +3329,48 @@ def run_layer_stack_relaxation(
                     min_interlayer_gap_nm=float(anneal_spec.min_interlayer_gap_nm),
                     geometry_mode=str(anneal_spec.geometry_compression),
                 )
+                if bool(anneal_spec.geometry_clash_check) and bool(geometry_report.get("applied")):
+                    geometry_report["clash_precheck"] = _geometry_clash_report(
+                        geom_gro,
+                        cutoff_nm=float(anneal_spec.geometry_clash_cutoff_nm),
+                        severe_cutoff_nm=float(anneal_spec.severe_geometry_clash_cutoff_nm),
+                    )
+                else:
+                    geometry_report["clash_precheck"] = {
+                        "available": False,
+                        "risk": False,
+                        "reason": "disabled_or_no_geometry_change",
+                    }
                 (geom_dir / "summary.json").write_text(json.dumps(geometry_report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
                 stage_order.append(geom_name)
-                cycle_report.setdefault("attempts", []).append(
-                    {
-                        "attempt": int(attempt),
-                        "geometry_stage": geom_name,
-                        "max_z_shrink_per_cycle": float(shrink),
-                        "pressure_z_bar": float(pressure_attempt),
-                        "tau_p_ps": float(anneal_spec.compression_tau_p_ps),
-                        "z_compressibility_bar_inv": float(anneal_spec.compression_z_compressibility_bar_inv),
-                        "geometry": geometry_report,
-                    }
-                )
+                attempt_report = {
+                    "attempt": int(attempt),
+                    "geometry_stage": geom_name,
+                    "max_z_shrink_per_cycle": float(shrink),
+                    "pressure_z_bar": float(pressure_attempt),
+                    "tau_p_ps": float(anneal_spec.compression_tau_p_ps),
+                    "z_compressibility_bar_inv": float(anneal_spec.compression_z_compressibility_bar_inv),
+                    "geometry": geometry_report,
+                }
+                cycle_report.setdefault("attempts", []).append(attempt_report)
+                clash = geometry_report.get("clash_precheck") if isinstance(geometry_report, Mapping) else None
+                if bool((clash or {}).get("risk")):
+                    attempt_report["precheck_rejected"] = True
+                    cycle_report.setdefault("precheck_rejections", []).append(
+                        {
+                            "attempt": int(attempt),
+                            "geometry_stage": geom_name,
+                            "min_distance_nm": (clash or {}).get("min_distance_nm"),
+                            "severe_pair_count": (clash or {}).get("severe_pair_count"),
+                            "close_pair_count": (clash or {}).get("close_pair_count"),
+                        }
+                    )
+                    if attempt < attempts:
+                        continue
+                    cycle_report["stopped"] = True
+                    cycle_report["reason"] = "geometry_clash_precheck_failed"
+                    compression_cycles.append(cycle_report)
+                    break
                 if not geometry_report.get("applied"):
                     cycle_report["stopped"] = True
                     cycle_report["reason"] = geometry_report.get("reason")

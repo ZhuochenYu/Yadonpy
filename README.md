@@ -392,6 +392,7 @@ relax = run_layer_stack_relaxation(
         max_z_shrink_per_cycle=0.04,
         compression_tau_p_ps=20.0,
         compression_z_compressibility_bar_inv=4.5e-6,
+        geometry_clash_check=True,
     ),
     dt_ps=0.001,
     constraints="none",

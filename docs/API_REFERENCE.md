@@ -138,6 +138,7 @@ run_layer_stack_relaxation(
         enabled="auto",
         compression_tau_p_ps=20.0,
         compression_z_compressibility_bar_inv=4.5e-6,
+        geometry_clash_check=True,
     ),
     ...
 )

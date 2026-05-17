@@ -47,6 +47,32 @@ def _write_fake_gro_from_cell(cell, path: Path) -> None:
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def test_geometry_clash_report_flags_inter_residue_overlap(tmp_path: Path):
+    gro = tmp_path / "clash.gro"
+    gro.write_text(
+        "\n".join(
+            [
+                "clash",
+                "    3",
+                "    1AAA      C    1   0.000   0.000   0.000",
+                "    1AAA      H    2   0.030   0.000   0.000",
+                "    2BBB      O    3   0.050   0.000   0.000",
+                "   1.00000   1.00000   1.00000",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    report = layer_stack_mod._geometry_clash_report(gro, cutoff_nm=0.10, severe_cutoff_nm=0.065)
+
+    assert report["available"] is True
+    assert report["risk"] is True
+    assert report["severe_pair_count"] == 2
+    assert report["min_distance_nm"] < 0.065
+    assert all(pair["residue_i"] != pair["residue_j"] for pair in report["pairs"])
+
+
 def _patch_fake_export(monkeypatch):
     from yadonpy.interface import layer_stack as mod
 
@@ -816,6 +842,8 @@ def test_run_layer_stack_relaxation_compression_anneal_workflow(monkeypatch, tmp
     geometry = summary["compression_anneal"]["cycles"][0]["attempts"][0]["geometry"]
     assert geometry["applied"] is True
     assert geometry["mode"] == "inter_electrode"
+    assert geometry["clash_precheck"]["available"] is True
+    assert geometry["clash_precheck"]["risk"] is False
     hot_z_npt = jobs[1]["stages"][2].mdp.render()
     assert "ref_p                     = 1 2000" in hot_z_npt
     assert "tau_p                     = 20.0" in hot_z_npt
