@@ -818,7 +818,8 @@ def test_run_layer_stack_relaxation_compression_anneal_workflow(monkeypatch, tmp
     assert geometry["mode"] == "inter_electrode"
     hot_z_npt = jobs[1]["stages"][2].mdp.render()
     assert "ref_p                     = 1 2000" in hot_z_npt
-    assert "compressibility           = 0 4.5e-05" in hot_z_npt
+    assert "tau_p                     = 20.0" in hot_z_npt
+    assert "compressibility           = 0 4.5e-06" in hot_z_npt
     assert out.final_gro == tmp_path / "compression_relax" / "05_relaxation_workflow" / "09_final_nvt" / "md.gro"
 
 

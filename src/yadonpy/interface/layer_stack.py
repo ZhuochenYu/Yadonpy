@@ -214,6 +214,8 @@ class ZCompressionAnnealSpec:
     hot_nvt_ns: float = 0.01
     compression_npt_ns: float = 0.05
     cool_nvt_ns: float = 0.02
+    compression_tau_p_ps: float = 20.0
+    compression_z_compressibility_bar_inv: float = 4.5e-6
     pressure_schedule: Literal["linear"] = "linear"
     temperature_schedule: Literal["linear"] = "linear"
     geometry_compression: Literal["auto", "inter_electrode", "global"] = "auto"
@@ -3099,6 +3101,8 @@ def run_layer_stack_relaxation(
         gen_vel: str,
         continuation: str,
         extra_mdp: str = pre_restraint_extra,
+        tau_p_ps: float | None = None,
+        z_compressibility_bar_inv_value: float | None = None,
     ) -> dict[str, object]:
         params = _layer_stack_md_params(
             time_ns=float(time_ns_value),
@@ -3117,7 +3121,10 @@ def run_layer_stack_relaxation(
         params["pcoupl"] = "C-rescale"
         params["pcoupltype"] = "semiisotropic"
         params["ref_p"] = f"{float(pressure_xy_bar):.6g} {float(pressure_z_bar):.6g}"
-        params["compressibility"] = f"{float(xy_compressibility):.6g} {float(z_compressibility_bar_inv):.6g}"
+        if tau_p_ps is not None:
+            params["tau_p"] = float(tau_p_ps)
+        z_comp = float(z_compressibility_bar_inv if z_compressibility_bar_inv_value is None else z_compressibility_bar_inv_value)
+        params["compressibility"] = f"{float(xy_compressibility):.6g} {z_comp:.6g}"
         return _with_extra_mdp(params, extra_mdp)
 
     pre_label = "pre_release" if interdiffusion_spec.enabled else "pre"
@@ -3184,6 +3191,8 @@ def run_layer_stack_relaxation(
                 "cycle": int(cycle),
                 "temperature_K": float(hot_temp),
                 "pressure_z_bar": float(hot_pressure),
+                "compression_tau_p_ps": float(anneal_spec.compression_tau_p_ps),
+                "compression_z_compressibility_bar_inv": float(anneal_spec.compression_z_compressibility_bar_inv),
                 "normal_temperature_K": float(normal_temp),
                 "normal_pressure_bar": float(normal_pressure),
             }
@@ -3216,6 +3225,8 @@ def run_layer_stack_relaxation(
                         "geometry_stage": geom_name,
                         "max_z_shrink_per_cycle": float(shrink),
                         "pressure_z_bar": float(pressure_attempt),
+                        "tau_p_ps": float(anneal_spec.compression_tau_p_ps),
+                        "z_compressibility_bar_inv": float(anneal_spec.compression_z_compressibility_bar_inv),
                         "geometry": geometry_report,
                     }
                 )
@@ -3252,6 +3263,8 @@ def run_layer_stack_relaxation(
                                 pressure_z_bar=float(pressure_attempt),
                                 gen_vel="no",
                                 continuation="yes",
+                                tau_p_ps=float(anneal_spec.compression_tau_p_ps),
+                                z_compressibility_bar_inv_value=float(anneal_spec.compression_z_compressibility_bar_inv),
                             ),
                         ),
                     ),

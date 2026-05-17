@@ -134,7 +134,11 @@ run_layer_stack_relaxation(
     relax_z=True,
     graphite_restraint=GraphiteRestraintSpec(enabled="auto"),
     interdiffusion_start=InterdiffusionStartSpec(enabled=False),
-    compression_anneal=ZCompressionAnnealSpec(enabled="auto"),
+    compression_anneal=ZCompressionAnnealSpec(
+        enabled="auto",
+        compression_tau_p_ps=20.0,
+        compression_z_compressibility_bar_inv=4.5e-6,
+    ),
     ...
 )
 analyze_layer_stack_interface(*, work_dir="./work_layer_stack", analysis_profile="interface_fast", ...)

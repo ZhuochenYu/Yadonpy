@@ -324,7 +324,7 @@ def test_example08_scripts_use_one_shot_builder_and_interface_summary_printer():
         )):
             assert 'ZCompressionAnnealSpec(' in text
             assert 'compression_anneal=' in text
-            assert 'pmax_bar=3000.0' in text or 'pmax_bar=4000.0' in text
+            assert 'pmax_bar=3000.0' in text or 'pmax_bar=4000.0' in text or 'pmax_bar=1500.0' in text
         assert 'interface = analy.interface(' in text
         assert 'interface.geometry_health(time_series_analysis=time_series_analysis)' in text
         assert 'interface.z_profiles(time_series_analysis=time_series_analysis)' in text
