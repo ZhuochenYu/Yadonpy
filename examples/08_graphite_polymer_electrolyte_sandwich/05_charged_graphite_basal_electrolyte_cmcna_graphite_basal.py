@@ -197,6 +197,9 @@ if __name__ == "__main__":
             layer_kind="cmcna",
             charge_scale=(charge_scale, charge_scale),
             polyelectrolyte_mode=True,
+            # Start Na+ next to CMC carboxylates so the charged-interface
+            # relaxation preserves physically meaningful local counterions.
+            counterion_contact_mode="carboxylate",
         )
         stack = LayerStackSpec(
             layers=(graphite_bottom, electrolyte, cmcna, graphite_top),

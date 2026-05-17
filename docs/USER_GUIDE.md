@@ -327,7 +327,8 @@ The builder:
 
 - plans one master XY footprint from graphite and molecular density targets,
 - packs molecular layers under that shared XY footprint,
-- keeps CMC-Na polymer and its Na+ counterions in one layer group,
+- keeps CMC-Na polymer and its Na+ counterions in one layer group, with Na+
+  initialized at carboxylate contact sites for `layer_kind="cmcna"`,
 - stacks layers by z quantiles plus adaptive gaps,
 - supports explicit fixed-charge regions on graphite or molecular layers,
 - writes `layer_stack_manifest.json`, `system.gro`, `system.top`, and layer-aware `system.ndx`.

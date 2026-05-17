@@ -1080,6 +1080,8 @@ MolecularLayerSpec(
     layer_kind: str = "generic",
     charge_scale: float | Sequence[float] | dict | None = None,
     polyelectrolyte_mode: bool | None = None,
+    counterion_contact_mode: str = "auto",
+    counterion_contact_distance_nm: float = 0.235,
 )
 
 VacuumLayerSpec(thickness_nm: float, name: str = "VACUUM")

@@ -117,6 +117,9 @@ if __name__ == "__main__":
         layer_kind="cmcna",
         charge_scale=(charge_scale, charge_scale),
         polyelectrolyte_mode=True,
+        # Place Na+ at local carboxylate contact sites after loose packing so
+        # early relaxation starts from CMC-Na ion pairs, not free Na in the layer.
+        counterion_contact_mode="carboxylate",
     )
     electrolyte = MolecularLayerSpec(
         name="ELECTROLYTE",

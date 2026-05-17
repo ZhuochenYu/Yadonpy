@@ -120,6 +120,9 @@ if __name__ == "__main__":
         layer_kind="cmcna",
         charge_scale=(charge_scale, charge_scale),
         polyelectrolyte_mode=True,
+        # Keep Na+ initialized as CMC carboxylate counterions instead of random
+        # free ions that can drift into electrolyte during the first relaxation.
+        counterion_contact_mode="carboxylate",
     )
     stack = LayerStackSpec(
         layers=(graphite_bottom, electrolyte, cmcna, graphite_top),

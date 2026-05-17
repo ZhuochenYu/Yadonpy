@@ -347,6 +347,13 @@ def test_cmcna_layer_keeps_polymer_and_na_in_same_layer_group(monkeypatch, tmp_p
     manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
     cmc_layer = [layer for layer in manifest["layers"] if layer["name"] == "CMCNA"][0]
     assert cmc_layer["polyelectrolyte_mode"] is True
+    contact = cmc_layer["counterion_contact"]
+    assert contact["enabled"] is True
+    assert contact["paired_count"] == 1
+    assert contact["unpaired_carboxylate_sites"] == 0
+    assert contact["unpaired_na_counterions"] == 0
+    assert 0.20 <= contact["o_na_distance_min_nm"] <= 0.27
+    assert 0.20 <= contact["o_na_distance_max_nm"] <= 0.27
 
 
 def test_run_layer_stack_nvt_uses_exported_stack_artifact(monkeypatch, tmp_path: Path):

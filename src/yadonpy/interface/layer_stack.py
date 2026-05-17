@@ -157,6 +157,8 @@ class MolecularLayerSpec:
     retry_step: int = 1000
     threshold_ang: float = 2.0
     large_system_mode: str = "auto"
+    counterion_contact_mode: Literal["auto", "carboxylate", "none"] = "auto"
+    counterion_contact_distance_nm: float = 0.235
 
 
 @dataclass(frozen=True)
@@ -978,6 +980,264 @@ def _prepare_graphite_layer(
     return built.cell, species_entries, report
 
 
+def _mol_net_charge(mol: Chem.Mol) -> float:
+    total = 0.0
+    for atom in mol.GetAtoms():
+        if atom.HasProp("AtomicCharge"):
+            try:
+                total += float(atom.GetDoubleProp("AtomicCharge"))
+                continue
+            except Exception:
+                pass
+        if atom.HasProp("RESP"):
+            try:
+                total += float(atom.GetDoubleProp("RESP"))
+                continue
+            except Exception:
+                pass
+        total += float(atom.GetFormalCharge())
+    return float(total)
+
+
+def _is_na_counterion_species(mol: Chem.Mol) -> bool:
+    if int(mol.GetNumAtoms()) != 1:
+        return False
+    atom = mol.GetAtomWithIdx(0)
+    if atom.GetAtomicNum() != 11:
+        return False
+    try:
+        if float(_mol_net_charge(mol)) > 0.2:
+            return True
+    except Exception:
+        pass
+    return int(atom.GetFormalCharge()) > 0
+
+
+def _carboxylate_sites_for_mol(mol: Chem.Mol) -> list[dict[str, Any]]:
+    try:
+        from ..core.polyelectrolyte import get_charge_groups
+
+        groups = get_charge_groups(mol)
+    except Exception:
+        groups = []
+    sites: list[dict[str, Any]] = []
+    for group in groups or []:
+        label = str(group.get("label") or "").strip().lower()
+        if "carboxylate" not in label:
+            continue
+        atom_set = {int(v) for v in group.get("atom_indices", [])}
+        if not atom_set:
+            continue
+        for idx in sorted(atom_set):
+            atom = mol.GetAtomWithIdx(int(idx))
+            if atom.GetSymbol() != "C":
+                continue
+            oxygens: list[int] = []
+            for nb in atom.GetNeighbors():
+                nb_idx = int(nb.GetIdx())
+                if nb_idx not in atom_set or nb.GetSymbol() != "O":
+                    continue
+                oxygens.append(nb_idx)
+            if len(oxygens) == 2:
+                sites.append(
+                    {
+                        "group_id": group.get("group_id"),
+                        "label": label,
+                        "carbon": int(idx),
+                        "oxygens": tuple(int(v) for v in oxygens),
+                    }
+                )
+                break
+    return sites
+
+
+def _fragment_species_sequence(species: Sequence[Chem.Mol], counts: Sequence[int]) -> list[int]:
+    try:
+        batches = poly._amorphous_pack_batches(list(species), [int(v) for v in counts])  # type: ignore[attr-defined]
+    except Exception:
+        batches = [{"indices": tuple(i for i, count in enumerate(counts) if int(count) > 0)}]
+    order: list[int] = []
+    for batch in batches:
+        for species_idx in batch.get("indices", ()):
+            order.extend([int(species_idx)] * int(counts[int(species_idx)]))
+    return order
+
+
+def _orthonormal_perp_basis(axis: np.ndarray, preferred: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    axis = np.asarray(axis, dtype=float)
+    preferred = np.asarray(preferred, dtype=float)
+    axis_norm = float(np.linalg.norm(axis))
+    if axis_norm <= 1.0e-12:
+        axis = np.asarray([1.0, 0.0, 0.0], dtype=float)
+    else:
+        axis = axis / axis_norm
+    v1 = preferred - axis * float(np.dot(preferred, axis))
+    if float(np.linalg.norm(v1)) <= 1.0e-12:
+        for trial in (np.asarray([1.0, 0.0, 0.0]), np.asarray([0.0, 1.0, 0.0]), np.asarray([0.0, 0.0, 1.0])):
+            v1 = trial - axis * float(np.dot(trial, axis))
+            if float(np.linalg.norm(v1)) > 1.0e-12:
+                break
+    v1 = v1 / max(float(np.linalg.norm(v1)), 1.0e-12)
+    v2 = np.cross(axis, v1)
+    v2 = v2 / max(float(np.linalg.norm(v2)), 1.0e-12)
+    return v1, v2
+
+
+def _choose_carboxylate_na_position(
+    *,
+    coords_ang: np.ndarray,
+    carbon_idx: int,
+    oxygen_indices: tuple[int, int],
+    occupied_indices: set[int],
+    target_o_na_ang: float,
+) -> tuple[np.ndarray, dict[str, Any]]:
+    o1 = np.asarray(coords_ang[int(oxygen_indices[0])], dtype=float)
+    o2 = np.asarray(coords_ang[int(oxygen_indices[1])], dtype=float)
+    carbon = np.asarray(coords_ang[int(carbon_idx)], dtype=float)
+    midpoint = 0.5 * (o1 + o2)
+    o_axis = o2 - o1
+    half_oo = 0.5 * float(np.linalg.norm(o_axis))
+    target = max(float(target_o_na_ang), half_oo + 0.05)
+    radial = math.sqrt(max(target * target - half_oo * half_oo, 0.05 * 0.05))
+    outward = midpoint - carbon
+    v1, v2 = _orthonormal_perp_basis(o_axis, outward)
+
+    best_pos = midpoint + radial * v1
+    best_clearance = -1.0
+    candidate_angles = [0.0, math.pi / 6.0, -math.pi / 6.0, math.pi / 3.0, -math.pi / 3.0, math.pi / 2.0, -math.pi / 2.0, math.pi, 2.0 * math.pi / 3.0, -2.0 * math.pi / 3.0]
+    ignore = {int(carbon_idx), int(oxygen_indices[0]), int(oxygen_indices[1])}
+    check_indices = [idx for idx in occupied_indices if idx not in ignore]
+    for theta in candidate_angles:
+        direction = math.cos(theta) * v1 + math.sin(theta) * v2
+        pos = midpoint + radial * direction
+        if check_indices:
+            distances = np.linalg.norm(coords_ang[check_indices] - pos.reshape(1, 3), axis=1)
+            clearance = float(np.min(distances))
+        else:
+            clearance = 999.0
+        # Prefer the outward side of the carboxylate if clearances tie.
+        outward_score = float(np.dot(direction, v1))
+        score = clearance + 0.02 * outward_score
+        if score > best_clearance:
+            best_clearance = score
+            best_pos = pos
+
+    o_na = [float(np.linalg.norm(best_pos - o1)), float(np.linalg.norm(best_pos - o2))]
+    return best_pos, {
+        "o_na_distances_nm": [0.1 * float(v) for v in o_na],
+        "min_non_carboxylate_clearance_nm": (0.1 * float(best_clearance) if best_clearance < 900.0 else None),
+    }
+
+
+def _localize_cmcna_counterions(cell: Chem.Mol, layer: MolecularLayerSpec) -> dict[str, Any]:
+    mode = str(layer.counterion_contact_mode or "auto").strip().lower()
+    if mode in {"none", "off", "false", "0"}:
+        return {"enabled": False, "reason": "disabled"}
+    if mode == "auto" and str(layer.layer_kind).lower() not in {"cmcna", "polyelectrolyte"}:
+        return {"enabled": False, "reason": "not_cmcna_layer"}
+    if mode not in {"auto", "carboxylate"}:
+        return {"enabled": False, "reason": f"unsupported_mode:{mode}"}
+    if cell.GetNumConformers() == 0:
+        return {"enabled": False, "reason": "missing_conformer"}
+
+    species = list(layer.species)
+    counts = [int(v) for v in layer.counts]
+    na_species = [idx for idx, mol in enumerate(species) if _is_na_counterion_species(mol)]
+    if not na_species:
+        return {"enabled": False, "reason": "no_na_counterion_species"}
+
+    carboxylate_by_species = {idx: _carboxylate_sites_for_mol(mol) for idx, mol in enumerate(species)}
+    host_species = [idx for idx, sites in carboxylate_by_species.items() if sites]
+    if not host_species:
+        return {"enabled": False, "reason": "no_carboxylate_sites"}
+
+    try:
+        fragments = list(Chem.GetMolFrags(cell, asMols=False, sanitizeFrags=False))
+    except Exception:
+        return {"enabled": False, "reason": "fragment_detection_failed"}
+    sequence = _fragment_species_sequence(species, counts)
+    if len(fragments) < len(sequence):
+        return {"enabled": False, "reason": "fragment_sequence_mismatch", "fragments": len(fragments), "expected": len(sequence)}
+
+    carboxylate_targets: list[dict[str, Any]] = []
+    na_fragments: list[tuple[int, ...]] = []
+    for frag, species_idx in zip(fragments, sequence):
+        species_idx = int(species_idx)
+        if species_idx in na_species:
+            na_fragments.append(tuple(int(v) for v in frag))
+            continue
+        sites = carboxylate_by_species.get(species_idx) or []
+        for site in sites:
+            try:
+                carboxylate_targets.append(
+                    {
+                        "fragment": tuple(int(v) for v in frag),
+                        "species_index": int(species_idx),
+                        "group_id": site.get("group_id"),
+                        "label": site.get("label"),
+                        "carbon": int(frag[int(site["carbon"])]),
+                        "oxygens": (int(frag[int(site["oxygens"][0])]), int(frag[int(site["oxygens"][1])])),
+                    }
+                )
+            except Exception:
+                continue
+
+    pair_count = min(len(carboxylate_targets), len(na_fragments))
+    if pair_count <= 0:
+        return {
+            "enabled": False,
+            "reason": "no_counterion_pairs",
+            "carboxylate_sites": int(len(carboxylate_targets)),
+            "na_counterions": int(len(na_fragments)),
+        }
+
+    conf = cell.GetConformer(0)
+    coords = np.asarray(conf.GetPositions(), dtype=float)
+    occupied = set(range(int(cell.GetNumAtoms())))
+    target_o_na_ang = 10.0 * float(layer.counterion_contact_distance_nm)
+    pair_reports: list[dict[str, Any]] = []
+    for pair_idx in range(pair_count):
+        target = carboxylate_targets[pair_idx]
+        na_frag = na_fragments[pair_idx]
+        pos, placement = _choose_carboxylate_na_position(
+            coords_ang=coords,
+            carbon_idx=int(target["carbon"]),
+            oxygen_indices=tuple(int(v) for v in target["oxygens"]),
+            occupied_indices=occupied.difference(set(na_frag)),
+            target_o_na_ang=target_o_na_ang,
+        )
+        na_coords = coords[list(na_frag)]
+        delta = pos - np.mean(na_coords, axis=0)
+        for atom_idx in na_frag:
+            new_pos = coords[int(atom_idx)] + delta
+            coords[int(atom_idx)] = new_pos
+            conf.SetAtomPosition(int(atom_idx), new_pos)
+        pair_reports.append(
+            {
+                "pair_index": int(pair_idx),
+                "na_atom_indices": [int(v) for v in na_frag],
+                "carboxylate_carbon_index": int(target["carbon"]),
+                "carboxylate_oxygen_indices": [int(v) for v in target["oxygens"]],
+                **placement,
+            }
+        )
+
+    distances = [d for pair in pair_reports for d in pair.get("o_na_distances_nm", [])]
+    return {
+        "enabled": True,
+        "mode": "carboxylate",
+        "paired_count": int(pair_count),
+        "carboxylate_sites": int(len(carboxylate_targets)),
+        "na_counterions": int(len(na_fragments)),
+        "unpaired_carboxylate_sites": int(max(0, len(carboxylate_targets) - pair_count)),
+        "unpaired_na_counterions": int(max(0, len(na_fragments) - pair_count)),
+        "target_o_na_distance_nm": float(layer.counterion_contact_distance_nm),
+        "o_na_distance_min_nm": (float(min(distances)) if distances else None),
+        "o_na_distance_max_nm": (float(max(distances)) if distances else None),
+        "pairs": pair_reports[:50],
+    }
+
+
 def _prepare_molecular_layer(
     layer: MolecularLayerSpec,
     *,
@@ -1019,6 +1279,7 @@ def _prepare_molecular_layer(
         work_dir=layer_work_dir,
         restart=restart,
     )
+    counterion_report = _localize_cmcna_counterions(cell, layer)
     meta = _read_cell_meta(cell)
     species_entries = []
     for entry in meta.get("species") or []:
@@ -1046,6 +1307,7 @@ def _prepare_molecular_layer(
         ),
         "charge_scale": layer.charge_scale,
         "polyelectrolyte_mode": bool(pe_mode),
+        "counterion_contact": counterion_report,
         "work_dir": str(layer_work_dir),
     }
     return cell, species_entries, report

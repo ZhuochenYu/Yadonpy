@@ -342,6 +342,10 @@ bulk CMC-Na density of about `1.5 g/cm3` is used only as a sanity reference,
 not as the insertion density.  The relaxation summary reports CMCNA phase
 density and the total mass density inside CMC-rich regions; it flags CMCNA core
 density below `0.90 g/cm3` as a warning and below `0.75 g/cm3` as severe.
+CMC-Na layers also initialize Na+ as local carboxylate counterions
+(`counterion_contact_mode="carboxylate"` in the examples).  The builder first
+does loose molecular packing, then moves each Na+ onto a bidentate COO-/Na+
+contact site and records the O-Na distances in `layer_stack_manifest.json`.
 
 Constant-charge interface studies should use `FixedChargeRegionSpec` on
 `LayerStackSpec.fixed_charge_regions`.  This is a fixed-charge approximation,

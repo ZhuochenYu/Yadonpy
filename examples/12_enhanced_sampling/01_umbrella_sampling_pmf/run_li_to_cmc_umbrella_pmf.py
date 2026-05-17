@@ -136,6 +136,7 @@ def _build_and_relax_interface(root_dir: Path):
         layer_kind="cmcna",
         charge_scale=(charge_scale, charge_scale),
         polyelectrolyte_mode=True,
+        counterion_contact_mode="carboxylate",
     )
     electrolyte = MolecularLayerSpec(
         name="ELECTROLYTE",
