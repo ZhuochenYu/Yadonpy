@@ -287,6 +287,89 @@ def _stamp_species_resp_metadata_on_mol(mol, species_payload: Mapping[str, Any])
         pass
 
 
+def _species_bonded_request(species_payload: Mapping[str, Any]) -> str | None:
+    """Return the explicit bonded override requested by species metadata."""
+
+    try:
+        value = species_payload.get("bonded_requested")
+        if value:
+            return str(value).strip() or None
+        if bool(species_payload.get("bonded_explicit")) and species_payload.get("bonded_method"):
+            return str(species_payload.get("bonded_method")).strip() or None
+    except Exception:
+        return None
+    return None
+
+
+def _species_requests_drih(species_payload: Mapping[str, Any]) -> bool:
+    req = str(_species_bonded_request(species_payload) or "").strip().lower()
+    method = str(species_payload.get("bonded_method") or "").strip().lower()
+    sig = str(species_payload.get("bonded_signature") or "").strip().lower()
+    return "drih" in {req, method, sig}
+
+
+def _itp_ax6_angle_counts(itp_text: str) -> tuple[bool, int, int]:
+    """Return whether the ITP is AX6-like plus harmonic/cross angle counts."""
+
+    text = str(itp_text or "")
+    section: str | None = None
+    bonds: list[tuple[int, int]] = []
+    harmonic = 0
+    cross = 0
+    for raw in text.splitlines():
+        line = raw.split(";", 1)[0].strip()
+        if not line:
+            continue
+        if line.startswith("[") and "]" in line:
+            section = line[1 : line.index("]")].strip().lower()
+            continue
+        toks = line.split()
+        if section == "bonds" and len(toks) >= 2:
+            try:
+                bonds.append((int(toks[0]), int(toks[1])))
+            except Exception:
+                continue
+        elif section == "angles" and len(toks) >= 4:
+            try:
+                funct = int(float(toks[3]))
+            except Exception:
+                continue
+            if funct == 1:
+                harmonic += 1
+            elif funct == 3:
+                cross += 1
+    neighbors: dict[int, set[int]] = {}
+    for i, j in bonds:
+        neighbors.setdefault(i, set()).add(j)
+        neighbors.setdefault(j, set()).add(i)
+    ax6_like = any(len(vals) == 6 for vals in neighbors.values())
+    return bool(ax6_like), int(harmonic), int(cross)
+
+
+def _stamp_species_bonded_metadata_on_mol(mol, species_payload: Mapping[str, Any]) -> None:
+    """Attach bonded override metadata that may have been lost by RDKit fragments."""
+
+    if mol is None or not hasattr(mol, "SetProp"):
+        return
+    mapping = {
+        "bonded_itp": "_yadonpy_bonded_itp",
+        "bonded_json": "_yadonpy_bonded_json",
+        "bonded_method": "_yadonpy_bonded_method",
+        "bonded_requested": "_yadonpy_bonded_requested",
+        "bonded_signature": "_yadonpy_bonded_signature",
+    }
+    try:
+        for src, dst in mapping.items():
+            value = species_payload.get(src)
+            if value:
+                mol.SetProp(dst, str(value).strip())
+        if bool(species_payload.get("bonded_explicit")) or _species_bonded_request(species_payload):
+            mol.SetProp("_yadonpy_bonded_explicit", "1")
+            mol.SetProp("_yadonpy_bonded_override", "1")
+    except Exception:
+        pass
+
+
 def _cached_artifact_compatible(
     src_dir: Path | None,
     *,
@@ -297,12 +380,34 @@ def _cached_artifact_compatible(
     allow_missing_meta: bool = False,
 ) -> bool:
     try:
-        from .gromacs_molecule import itp_has_invalid_bond_parameters
+        from .gromacs_molecule import itp_has_invalid_bond_parameters, itp_has_legacy_drih_ax6_angles
 
+        candidate_itps = list(Path(src_dir).glob("*.itp")) if src_dir is not None else []
         if src_dir is not None:
-            for itp in Path(src_dir).glob("*.itp"):
+            for itp in candidate_itps:
                 if itp_has_invalid_bond_parameters(itp):
                     return False
+        if _species_requests_drih(species_payload):
+            if not candidate_itps:
+                return False
+            saw_drih = False
+            ax6_seen = False
+            ax6_drih_ok = False
+            for itp in candidate_itps:
+                text = itp.read_text(encoding="utf-8", errors="replace")
+                if itp_has_legacy_drih_ax6_angles(text):
+                    return False
+                if "DRIH" in text or "drih" in text:
+                    saw_drih = True
+                ax6_like, harmonic_count, cross_count = _itp_ax6_angle_counts(text)
+                if ax6_like:
+                    ax6_seen = True
+                    if harmonic_count >= 15 and cross_count >= 15:
+                        ax6_drih_ok = True
+            if not saw_drih:
+                return False
+            if ax6_seen and not ax6_drih_ok:
+                return False
     except Exception:
         return False
 
@@ -330,6 +435,12 @@ def _cached_artifact_compatible(
         and not _requires_charge_groups(species_payload)
     )
     current = _species_compatibility_context(species_payload)
+
+    expected_bonded = str(species_payload.get("bonded_signature") or _species_bonded_request(species_payload) or "").strip().lower()
+    cached_bonded = str(meta.get("bonded_signature") or meta.get("_yadonpy_bonded_signature") or "").strip().lower()
+    if expected_bonded:
+        if not cached_bonded or cached_bonded != expected_bonded:
+            return False
 
     current_group_sig = str(current.get("charge_group_signature") or "").strip()
     cached_group_sig = str(meta.get("charge_group_signature") or "").strip()
@@ -1809,6 +1920,7 @@ def export_system_from_cell_meta(
         species_ff_name = str(sp.get("ff_name") or ff_name).strip() or str(ff_name)
         species_charge_policy = _species_charge_policy(sp, charge_method)
         species_charge_method = str(species_charge_policy["charge_method"])
+        bonded_req = _species_bonded_request(sp)
 
         natoms_meta = int(sp.get("natoms") or 0)
         formal_charge = _formal_charge_from_smiles(smiles)
@@ -1954,6 +2066,18 @@ def export_system_from_cell_meta(
         rep_has_ff = False
         if rep_mol is not None:
             _stamp_species_resp_metadata_on_mol(rep_mol, sp)
+            _stamp_species_bonded_metadata_on_mol(rep_mol, sp)
+            if bonded_req and not _has_external_bonded_patch(rep_mol):
+                try:
+                    ff_obj = get_ff(species_ff_name)
+                    ok = bool(ff_obj.ff_assign(rep_mol, bonded=bonded_req, report=False))
+                    if not ok:
+                        raise RuntimeError("ff_assign failed")
+                except Exception as exc:
+                    raise RuntimeError(
+                        f"Explicit bonded override {bonded_req!r} was requested for {mol_name_fs}, "
+                        "but the packed fragment lost its bonded patch and could not be regenerated."
+                    ) from exc
             try:
                 rep_has_ff = any(a.HasProp("ff_type") and a.GetProp("ff_type") for a in rep_mol.GetAtoms())
             except Exception:
@@ -2033,6 +2157,7 @@ def export_system_from_cell_meta(
             ff_obj = None
 
         try:
+            assigned_by_fallback = False
             # Prefer MolDB for geometry + charges.
             if ff_obj is not None and hasattr(ff_obj.__class__, "mol_rdkit"):
                 rep_mol = ff_obj.__class__.mol_rdkit(
@@ -2049,22 +2174,19 @@ def export_system_from_cell_meta(
                 rep_mol = utils.mol_from_smiles(smiles)
 
                 if ff_obj is not None:
-                    bonded_req = None
-                    try:
-                        if sp.get('bonded_requested'):
-                            bonded_req = str(sp.get('bonded_requested')).strip()
-                        elif bool(sp.get('bonded_explicit')) and sp.get('bonded_method'):
-                            bonded_req = str(sp.get('bonded_method')).strip()
-                    except Exception:
-                        bonded_req = None
                     assign_kwargs = {}
                     if str(species_ff_name).strip().lower() == "oplsaa" and str(species_charge_method).strip().lower() == "opls":
                         assign_kwargs["charge"] = "opls"
                     if bonded_req:
                         assign_kwargs["bonded"] = bonded_req
-                    ok = bool(ff_obj.ff_assign(rep_mol, **assign_kwargs))
+                    ok = bool(ff_obj.ff_assign(rep_mol, report=False, **assign_kwargs))
                     if not ok:
                         raise RuntimeError("ff_assign failed")
+                    assigned_by_fallback = True
+            if ff_obj is not None and bonded_req and not assigned_by_fallback:
+                ok = bool(ff_obj.ff_assign(rep_mol, bonded=bonded_req, report=False))
+                if not ok:
+                    raise RuntimeError("ff_assign failed for bonded override")
         except Exception as e:
             raise RuntimeError(
                 f"Failed to resolve species[{i}] from MolDB. "
@@ -2278,6 +2400,13 @@ def export_system_from_cell_meta(
         # Extract any parameter blocks before [ moleculetype ] and accumulate them.
         params_text, mol_text = _split_itp_params_and_mol_text(itp_text)
         _accumulate_param_blocks(params_text)
+        if _species_requests_drih(sp):
+            ax6_like, harmonic_count, cross_count = _itp_ax6_angle_counts(mol_text)
+            if ax6_like and (harmonic_count < 15 or cross_count < 15):
+                raise RuntimeError(
+                    f"DRIH bonded override for {mol_name_fs} was lost during system export: "
+                    f"harmonic_angles={harmonic_count}, bond_bond_cross_terms={cross_count}."
+                )
         # Write molecule part only (starts with [ moleculetype ]).
         dst_itp.write_text(mol_text, encoding="utf-8")
 

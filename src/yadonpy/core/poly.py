@@ -4579,6 +4579,8 @@ def amorphous_cell(
             _bonded_method = None
             _bonded_explicit = False
             _bonded_signature = None
+            _bonded_itp = None
+            _bonded_json = None
             _cached_mol_id = None
             _cached_artifact_dir = None
             _ff_name = None
@@ -4600,6 +4602,10 @@ def amorphous_cell(
                         _bonded_explicit = str(_mol.GetProp('_yadonpy_bonded_explicit')).strip().lower() in ('1','true','yes','on')
                     if _mol.HasProp('_yadonpy_bonded_signature'):
                         _bonded_signature = str(_mol.GetProp('_yadonpy_bonded_signature')).strip() or None
+                    if _mol.HasProp('_yadonpy_bonded_itp'):
+                        _bonded_itp = str(_mol.GetProp('_yadonpy_bonded_itp')).strip() or None
+                    if _mol.HasProp('_yadonpy_bonded_json'):
+                        _bonded_json = str(_mol.GetProp('_yadonpy_bonded_json')).strip() or None
                     if _mol.HasProp('_yadonpy_molid'):
                         _cached_mol_id = str(_mol.GetProp('_yadonpy_molid')).strip() or None
                     if _mol.HasProp('_yadonpy_artifact_dir'):
@@ -4630,6 +4636,8 @@ def amorphous_cell(
                 _bonded_method = None
                 _bonded_explicit = False
                 _bonded_signature = None
+                _bonded_itp = None
+                _bonded_json = None
                 _cached_mol_id = None
                 _cached_artifact_dir = None
                 _ff_name = None
@@ -4657,6 +4665,8 @@ def amorphous_cell(
                 'bonded_method': _bonded_method,
                 'bonded_explicit': bool(_bonded_explicit),
                 'bonded_signature': _bonded_signature,
+                'bonded_itp': _bonded_itp,
+                'bonded_json': _bonded_json,
                 'cached_mol_id': _cached_mol_id,
                 'cached_artifact_dir': _cached_artifact_dir,
                 'ff_name': _ff_name,

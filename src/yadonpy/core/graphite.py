@@ -690,6 +690,9 @@ def register_cell_species_metadata(
             "_yadonpy_bonded_requested",
             "_yadonpy_bonded_method",
             "_yadonpy_bonded_override",
+            "_yadonpy_bonded_explicit",
+            "_yadonpy_bonded_itp",
+            "_yadonpy_bonded_json",
             "_yadonpy_molid",
             "_yadonpy_artifact_dir",
         ):
@@ -709,6 +712,12 @@ def register_cell_species_metadata(
                     entry["bonded_method"] = value
                 elif key == "_yadonpy_bonded_override":
                     entry["bonded_explicit"] = value.lower() in {"1", "true", "yes", "on"}
+                elif key == "_yadonpy_bonded_explicit":
+                    entry["bonded_explicit"] = value.lower() in {"1", "true", "yes", "on"}
+                elif key == "_yadonpy_bonded_itp":
+                    entry["bonded_itp"] = value
+                elif key == "_yadonpy_bonded_json":
+                    entry["bonded_json"] = value
         species.append(entry)
 
     q_raw = 0.0
