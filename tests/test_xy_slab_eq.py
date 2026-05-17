@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from yadonpy.sim.preset.eq import XYSlabEquilibrationSpec, _xy_slab_z_schedule, xy_slab_mdp_overrides
+from yadonpy.sim.preset.eq import XYSlabEquilibrationSpec, _estimate_total_mass_amu_from_top, _xy_slab_z_schedule, xy_slab_mdp_overrides
 
 
 def test_xy_slab_mdp_overrides_emit_walls_and_3dc(tmp_path: Path):
@@ -61,3 +61,20 @@ def test_xy_slab_wall_atomtype_falls_back_to_molecule_atoms(tmp_path: Path):
     overrides = xy_slab_mdp_overrides(top_path=top, spec=XYSlabEquilibrationSpec())
 
     assert "wall_atomtype            = c3 c3" in str(overrides["wall_mdp"])
+
+
+def test_xy_slab_mass_estimate_reads_nested_molecule_itps(tmp_path: Path):
+    top = tmp_path / "system.top"
+    mol_dir = tmp_path / "molecules" / "polymer"
+    mol_dir.mkdir(parents=True)
+    top.write_text('#include "molecules/polymer/CMC.itp"\n\n[ molecules ]\nCMC 3\nNA  6\n', encoding="utf-8")
+    (mol_dir / "CMC.itp").write_text(
+        "[ moleculetype ]\nCMC 3\n\n[ atoms ]\n1 c 1 CMC C1 1 0.0 12.000\n2 o 1 CMC O1 2 0.0 16.000\n",
+        encoding="utf-8",
+    )
+    (mol_dir / "NA.itp").write_text(
+        "[ moleculetype ]\nNA 1\n\n[ atoms ]\n1 na 1 NA NA 1 1.0 23.000\n",
+        encoding="utf-8",
+    )
+
+    assert _estimate_total_mass_amu_from_top(top) == 3 * 28.0 + 6 * 23.0

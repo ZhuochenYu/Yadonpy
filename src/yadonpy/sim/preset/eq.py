@@ -102,7 +102,29 @@ def _merge_mdp_overrides(*items: Optional[dict[str, object]]) -> dict[str, objec
     return merged or None
 
 
-def _iter_top_atomtypes(top_path: Path) -> tuple[str, ...]:
+def _extract_topology_include_path(line: str, *, base: Path) -> Path | None:
+    text = line.split(";", 1)[0].strip()
+    if not text.startswith("#include"):
+        return None
+    rest = text[len("#include") :].strip()
+    if not rest:
+        return None
+    if rest[0] in {'"', "<"}:
+        closing = '"' if rest[0] == '"' else ">"
+        end = rest.find(closing, 1)
+        if end > 1:
+            rest = rest[1:end]
+    else:
+        rest = rest.split()[0]
+    if not rest:
+        return None
+    candidate = Path(rest)
+    if not candidate.is_absolute():
+        candidate = base / candidate
+    return candidate
+
+
+def _iter_topology_related_files(top_path: Path) -> tuple[Path, ...]:
     root = Path(top_path).resolve()
     seen: set[Path] = set()
     candidates: list[Path] = []
@@ -117,27 +139,6 @@ def _iter_top_atomtypes(top_path: Path) -> tuple[str, ...]:
         seen.add(resolved)
         candidates.append(resolved)
 
-    def _extract_include_path(line: str, *, base: Path) -> Path | None:
-        text = line.split(";", 1)[0].strip()
-        if not text.startswith("#include"):
-            return None
-        rest = text[len("#include") :].strip()
-        if not rest:
-            return None
-        if rest[0] in {'"', "<"}:
-            closing = '"' if rest[0] == '"' else ">"
-            end = rest.find(closing, 1)
-            if end > 1:
-                rest = rest[1:end]
-        else:
-            rest = rest.split()[0]
-        if not rest:
-            return None
-        candidate = Path(rest)
-        if not candidate.is_absolute():
-            candidate = base / candidate
-        return candidate
-
     def _visit(path: Path) -> None:
         _add_candidate(path)
         if not path.is_file():
@@ -147,7 +148,7 @@ def _iter_top_atomtypes(top_path: Path) -> tuple[str, ...]:
         except Exception:
             return
         for raw in lines:
-            included = _extract_include_path(raw, base=path.parent)
+            included = _extract_topology_include_path(raw, base=path.parent)
             if included is not None:
                 _visit(included)
 
@@ -157,10 +158,13 @@ def _iter_top_atomtypes(top_path: Path) -> tuple[str, ...]:
     if mol_dir.is_dir():
         for path in sorted(mol_dir.glob("**/*.itp")):
             _add_candidate(path)
+    return tuple(candidates)
 
+
+def _iter_top_atomtypes(top_path: Path) -> tuple[str, ...]:
     names: list[str] = []
     atom_section_names: list[str] = []
-    for candidate in candidates:
+    for candidate in _iter_topology_related_files(top_path):
         section = ""
         for raw in candidate.read_text(encoding="utf-8", errors="replace").splitlines():
             line = raw.split(";", 1)[0].strip()
@@ -491,7 +495,7 @@ def _parse_molecule_counts_from_top(top_path: Path) -> dict[str, int]:
 
 def _parse_molecule_masses_from_itps(top_path: Path) -> dict[str, float]:
     masses: dict[str, float] = {}
-    for itp in (Path(top_path).parent / "molecules").glob("*.itp"):
+    for itp in _iter_topology_related_files(top_path):
         section = ""
         moltype: str | None = None
         mass = 0.0

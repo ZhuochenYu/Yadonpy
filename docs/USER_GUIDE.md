@@ -476,6 +476,13 @@ This workflow adds GROMACS z walls and `ewald-geometry=3dc`, compresses the wall
 gap in small steps, and keeps XY fixed.  It prepares a stackable slab; it is not
 a true z-direction NPT ensemble.
 
+When the CMC-Na membrane should define the final lateral footprint, use the
+Example 08-07 pattern: choose a nominal CMC slab XY, round it to a basal-graphite
+lattice-compatible XY before the slab EQ21 run, read the relaxed slab GRO box
+back, and use the matching graphite repeat counts for the final
+graphite/electrolyte/CMC stack.  This keeps the XY-periodic CMC slab and the
+periodic graphite bonds in the same lateral box.
+
 For electrolyte/CMCNA mutual-diffusion studies, use `run_layer_stack_relaxation`
 with `InterdiffusionStartSpec`.  The pre-release stages keep electrolyte and
 CMCNA under temporary z-only gates while density and contacts relax; the final

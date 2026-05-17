@@ -1219,6 +1219,12 @@ cmcna = MolecularLayerSpec(
 `ewald-geometry=3dc`.  The z density is controlled by staged wall/box-height
 compression; it is not a z-direction NPT ensemble.
 
+For a CMC-first layer stack, read the relaxed slab GRO box and choose basal
+graphite `nx/ny` values whose periodic box matches that XY before calling
+`build_layer_stack(...)`.  Example 08-07 shows this pattern and keeps temporary
+electrolyte/CMC phase gates until final NVT, so final NVT frame 0 is the
+interdiffusion `t=0`.
+
 Main calls:
 
 ```python

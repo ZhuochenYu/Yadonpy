@@ -201,6 +201,7 @@ def test_interface_examples_keep_linear_script_style():
         '04_graphite_basal_electrolyte_cmcna_graphite_basal.py',
         '05_charged_graphite_basal_electrolyte_cmcna_graphite_basal.py',
         '06_large_flat_charged_graphite_basal_electrolyte_cmcna_graphite_basal.py',
+        '07_cmcna_xy_slab_matched_graphite_electrolyte_cmcna_graphite.py',
     ]
     alias_import = 'import yadonpy as ' + 'yp'
     helper_patterns = (
@@ -284,6 +285,20 @@ def test_example08_scripts_use_one_shot_builder_and_interface_summary_printer():
             'sample_ns = 20.0',
             'build_layer_stack(',
         ),
+        'examples/08_graphite_polymer_electrolyte_sandwich/07_cmcna_xy_slab_matched_graphite_electrolyte_cmcna_graphite.py': (
+            'XYSlabEquilibrationSpec(',
+            'read_gro_xy_nm(',
+            'graphite_repeats_for_xy(',
+            'cmc_slab_nominal_xy_nm = ',
+            'prepared_slab_gro=cmcna_prepared_slab_gro',
+            'InterdiffusionStartSpec(',
+            'phase_gate_layers=("ELECTROLYTE", "CMCNA")',
+            'surface_charge_uC_cm2 = 0.0',
+            'cmc_dp = 20',
+            'cmc_chain_count = 8',
+            'sample_ns = 20.0',
+            'build_layer_stack(',
+        ),
     }
 
     for rel, required_calls in expected.items():
@@ -321,6 +336,7 @@ def test_example08_scripts_use_one_shot_builder_and_interface_summary_printer():
             '04_graphite_basal_electrolyte_cmcna_graphite_basal.py',
             '05_charged_graphite_basal_electrolyte_cmcna_graphite_basal.py',
             '06_large_flat_charged_graphite_basal_electrolyte_cmcna_graphite_basal.py',
+            '07_cmcna_xy_slab_matched_graphite_electrolyte_cmcna_graphite.py',
         )):
             assert 'ZCompressionAnnealSpec(' in text
             assert 'compression_anneal=' in text
