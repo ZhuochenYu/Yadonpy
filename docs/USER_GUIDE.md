@@ -473,6 +473,7 @@ health = interface.geometry_health()
 z_profile = interface.z_profiles()
 edl = interface.edl_profiles(potential_reference="zero_mean", report_potential_drop=True)
 penetration = interface.penetration(species=("EC", "EMC", "DEC", "PF6"))
+membrane = interface.membrane_permeation(species=("EC", "EMC", "DEC", "PF6"))
 adsorption = interface.graphite_adsorption(species=("EC", "EMC", "DEC"))
 coordination = interface.coordination_by_region()
 transport = interface.region_transport()
@@ -481,8 +482,9 @@ summary = interface.summary()
 
 The helper writes `06_analysis/layer_stack_interface/` with z density and charge
 profiles, electrostatic potential diagnostics for fixed-charge stacks, EDL
-species layering, penetration/residence diagnostics, graphite-near adsorption
-statistics, Li/Na coordination partitioning, and anisotropic MSD summaries.
+species layering, penetration/residence diagnostics, separator/membrane uptake
+and finite-slab permeation estimates, graphite-near adsorption statistics,
+Li/Na coordination partitioning, and anisotropic MSD summaries.
 Treat `Dxy` as the main interface transport metric; `Dz` is confined-direction
 mobility, not a bulk diffusion coefficient. Bulk-style 3D diffusion,
 conductivity, and dielectric analysis should be used only as explicit controls.
@@ -510,6 +512,11 @@ Parameter meanings:
   charge model.
 - `penetration_species` and `adsorption_species` filter moltype names by exact
   or substring match.
+- `membrane_permeation(...)` is intended for separator/membrane geometries where
+  liquid starts on one side of CMC/polymer. It reports entry events, membrane
+  residence, uptake/loading, translocation counts, finite-reservoir flux, and
+  apparent permeability estimates. These are MD slab diagnostics, not direct
+  pressure-gradient macroscopic permeability constants.
 - `compute_transport=True` adds anisotropic MSD summaries when a trajectory is
   available. Use `compute_transport=False` for static build-only sanity checks.
 
@@ -522,6 +529,8 @@ Method meanings:
   field, and potential diagnostics.
 - `penetration(...)` reports molecule COM residence in CMC/polymer-rich or mixed
   regions.
+- `membrane_permeation(...)` reports separator-style uptake, entry,
+  translocation, residence, finite-slab flux, and apparent permeability metrics.
 - `graphite_adsorption(...)` reports graphite-near residence, surface occupancy,
   and simple orientation proxies.
 - `coordination_by_region()` reports cation donor-state partitioning by z region.

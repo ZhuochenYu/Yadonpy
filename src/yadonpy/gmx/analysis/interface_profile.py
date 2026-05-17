@@ -435,6 +435,70 @@ def _write_fraction_bar_svg(path: Path, summary_by_species: dict[str, Any], key:
     return path
 
 
+def _write_membrane_permeation_svg(path: Path, summary_by_species: dict[str, Any]) -> Path | None:
+    try:
+        import matplotlib.pyplot as plt
+    except Exception:
+        return None
+    labels = [str(k) for k in summary_by_species.keys()]
+    if not labels:
+        return None
+    uptake = [
+        float((summary_by_species.get(k) or {}).get("mean_membrane_loading_mol_L") or 0.0)
+        for k in labels
+    ]
+    flux = [
+        float((summary_by_species.get(k) or {}).get("apparent_entry_flux_events_nm2_ns") or 0.0)
+        for k in labels
+    ]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fig, axes = plt.subplots(1, 2, figsize=(max(7.0, 0.8 * len(labels)), 3.2))
+    axes[0].bar(labels, uptake)
+    axes[0].set_ylabel("mean membrane loading / mol L$^{-1}$")
+    axes[0].set_title("Membrane uptake")
+    axes[1].bar(labels, flux)
+    axes[1].set_ylabel("entry flux / events nm$^{-2}$ ns$^{-1}$")
+    axes[1].set_title("Apparent finite-slab flux")
+    for ax in axes:
+        ax.tick_params(axis="x", rotation=30)
+    fig.tight_layout()
+    fig.savefig(path)
+    plt.close(fig)
+    return path
+
+
+def _write_membrane_timeseries_svg(path: Path, rows: Sequence[dict[str, Any]]) -> Path | None:
+    try:
+        import matplotlib.pyplot as plt
+    except Exception:
+        return None
+    by_species: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        by_species.setdefault(str(row.get("moltype") or ""), []).append(dict(row))
+    if not by_species:
+        return None
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fig, axes = plt.subplots(1, 2, figsize=(8.0, 3.4), sharex=True)
+    for moltype, series in by_species.items():
+        series = sorted(series, key=lambda item: float(item.get("time_ps") or 0.0))
+        t_ns = [float(item.get("time_ps") or 0.0) / 1000.0 for item in series]
+        membrane_count = [float(item.get("membrane_count") or 0.0) for item in series]
+        cumulative_entries = [float(item.get("cumulative_entry_events") or 0.0) for item in series]
+        axes[0].plot(t_ns, membrane_count, marker="o", linewidth=1.2, label=moltype)
+        axes[1].plot(t_ns, cumulative_entries, marker="o", linewidth=1.2, label=moltype)
+    axes[0].set_ylabel("molecules in membrane")
+    axes[0].set_title("Membrane uptake vs time")
+    axes[1].set_ylabel("cumulative entries")
+    axes[1].set_title("Entry events")
+    for ax in axes:
+        ax.set_xlabel("time / ns")
+        ax.legend(loc="best", fontsize="small")
+    fig.tight_layout()
+    fig.savefig(path)
+    plt.close(fig)
+    return path
+
+
 def _mp4_writer(fps: float):
     try:
         from matplotlib import animation
@@ -1508,6 +1572,335 @@ def _penetration_analysis(
     }
 
 
+def _membrane_permeation_analysis(
+    *,
+    frames: Sequence[tuple[float, np.ndarray, tuple[float, float, float]]],
+    instances: Sequence[dict[str, Any]],
+    regions: dict[str, dict[str, float]],
+    box_nm: tuple[float, float, float],
+    species: Sequence[str] | None = None,
+    penetration_threshold_nm: float = 0.20,
+) -> dict[str, Any]:
+    membrane_regions = [
+        name
+        for name in regions
+        if any(token in name.lower() for token in ("polymer", "cmc", "membrane", "separator", "mixed"))
+    ]
+    if not frames:
+        return {"available": False, "reason": "no_frames", "species": None if species is None else [str(x) for x in species]}
+    if not membrane_regions:
+        return {
+            "available": False,
+            "reason": "no_polymer_or_membrane_regions",
+            "species": None if species is None else [str(x) for x in species],
+        }
+    membrane_lo = min(float(regions[name]["z_lo_nm"]) for name in membrane_regions)
+    membrane_hi = max(float(regions[name]["z_hi_nm"]) for name in membrane_regions)
+    membrane_thickness = max(0.0, membrane_hi - membrane_lo)
+    box_x, box_y, box_z = (float(box_nm[0]), float(box_nm[1]), float(box_nm[2]))
+    area_nm2 = max(box_x * box_y, 1.0e-12)
+    membrane_volume_nm3 = max(area_nm2 * membrane_thickness, 1.0e-12)
+    threshold = max(0.0, float(penetration_threshold_nm))
+    selected: list[tuple[int, dict[str, Any]]] = []
+    for inst_id, inst in enumerate(instances):
+        moltype = str(inst.get("moltype") or "")
+        kind = str(inst.get("kind") or "").lower()
+        label = moltype.lower()
+        if not moltype:
+            continue
+        if "graph" in label or "substrate" in kind:
+            continue
+        if "polymer" in kind or "poly" in label or "cmc" in label:
+            continue
+        if not _species_matches(moltype, species):
+            continue
+        selected.append((int(inst_id), inst))
+    if not selected:
+        return {
+            "available": False,
+            "reason": "no_matching_mobile_permeant_instances",
+            "species": None if species is None else [str(x) for x in species],
+            "membrane_regions": membrane_regions,
+        }
+
+    first_coords = frames[0][1]
+    first_side_counts = {"below": 0, "above": 0}
+    for _inst_id, inst in selected:
+        z0 = _instance_com_z(first_coords, inst)
+        if z0 < membrane_lo:
+            first_side_counts["below"] += 1
+        elif z0 > membrane_hi:
+            first_side_counts["above"] += 1
+    if first_side_counts["below"] > first_side_counts["above"]:
+        feed_side = "below"
+    elif first_side_counts["above"] > first_side_counts["below"]:
+        feed_side = "above"
+    else:
+        electrolyte_regions = [name for name in regions if "electrolyte" in name.lower()]
+        electrolyte_mid = [
+            0.5 * (float(regions[name]["z_lo_nm"]) + float(regions[name]["z_hi_nm"]))
+            for name in electrolyte_regions
+        ]
+        below_score = sum(1 for z in electrolyte_mid if z < membrane_lo)
+        above_score = sum(1 for z in electrolyte_mid if z > membrane_hi)
+        feed_side = "below" if below_score > above_score else "above"
+    permeate_side = "above" if feed_side == "below" else "below"
+
+    def classify_z(z_nm: float) -> tuple[str, float | None]:
+        z = float(z_nm)
+        if membrane_lo <= z <= membrane_hi:
+            depth = max(0.0, min(z - membrane_lo, membrane_hi - z))
+            if depth >= threshold:
+                return "membrane", float(depth)
+            return "membrane_interface", float(depth)
+        side = "below" if z < membrane_lo else "above"
+        if side == feed_side:
+            return "feed", None
+        if side == permeate_side:
+            return "permeate", None
+        return "outside", None
+
+    times = [float(item[0]) for item in frames]
+    duration_ps = max(0.0, float(times[-1] - times[0])) if len(times) >= 2 else 0.0
+    duration_ns = duration_ps / 1000.0
+    dt_ps = _frame_interval_ps(frames)
+    species_records: dict[str, dict[str, Any]] = {}
+    event_rows: list[dict[str, Any]] = []
+    per_instance: list[dict[str, Any]] = []
+    for inst_id, inst in selected:
+        moltype = str(inst.get("moltype") or "")
+        states: list[str] = []
+        depths: list[float | None] = []
+        z_values: list[float] = []
+        for _time_ps, coords, _box in frames:
+            z = _instance_com_z(coords, inst)
+            state, depth = classify_z(z)
+            states.append(state)
+            depths.append(depth)
+            z_values.append(float(z))
+        feed_seen = False
+        membrane_seen_after_feed = False
+        first_entry_time = None
+        first_arrival_time = None
+        entry_count = 0
+        for idx, state in enumerate(states):
+            prev = states[idx - 1] if idx > 0 else None
+            if state == "feed":
+                feed_seen = True
+            if state == "membrane" and prev != "membrane" and (feed_seen or prev in {"feed", "membrane_interface"}):
+                entry_count += 1
+                if first_entry_time is None:
+                    first_entry_time = float(times[idx])
+            if state == "membrane" and feed_seen:
+                membrane_seen_after_feed = True
+            if state == "permeate" and feed_seen and membrane_seen_after_feed and first_arrival_time is None:
+                first_arrival_time = float(times[idx])
+        membrane_flags = [state == "membrane" for state in states]
+        feed_flags = [state == "feed" for state in states]
+        permeate_flags = [state == "permeate" for state in states]
+        valid_depths = [float(depth) for depth in depths if depth is not None and float(depth) >= threshold]
+        residence_ps = None if dt_ps is None else float(sum(1 for flag in membrane_flags if flag)) * float(dt_ps)
+        event = {
+            "moltype": moltype,
+            "instance_index": int(inst_id),
+            "initial_state": states[0] if states else None,
+            "final_state": states[-1] if states else None,
+            "entry_event_count": int(entry_count),
+            "translocation_event_count": int(1 if first_arrival_time is not None else 0),
+            "first_entry_time_ps": first_entry_time,
+            "first_permeate_arrival_time_ps": first_arrival_time,
+            "membrane_frame_count": int(sum(1 for flag in membrane_flags if flag)),
+            "feed_frame_count": int(sum(1 for flag in feed_flags if flag)),
+            "permeate_frame_count": int(sum(1 for flag in permeate_flags if flag)),
+            "membrane_residence_time_ps": residence_ps,
+            "max_membrane_depth_nm": None if not valid_depths else float(max(valid_depths)),
+            "mean_membrane_depth_nm": None if not valid_depths else float(sum(valid_depths) / len(valid_depths)),
+            "min_z_nm": float(min(z_values)) if z_values else None,
+            "max_z_nm": float(max(z_values)) if z_values else None,
+        }
+        event_rows.append(event)
+        per_instance.append({**event, "states": states, "depths": depths})
+        rec = species_records.setdefault(
+            moltype,
+            {
+                "molecule_count": 0,
+                "sample_frame_count": 0,
+                "membrane_frame_count": 0,
+                "feed_frame_count": 0,
+                "permeate_frame_count": 0,
+                "entry_event_count": 0,
+                "translocation_event_count": 0,
+                "membrane_residence_time_ps_total": 0.0,
+                "membrane_residence_time_ps_counted": 0,
+                "first_entry_times_ps": [],
+                "first_permeate_arrival_times_ps": [],
+                "max_membrane_depth_nm": None,
+            },
+        )
+        rec["molecule_count"] += 1
+        rec["sample_frame_count"] += len(states)
+        rec["membrane_frame_count"] += int(event["membrane_frame_count"])
+        rec["feed_frame_count"] += int(event["feed_frame_count"])
+        rec["permeate_frame_count"] += int(event["permeate_frame_count"])
+        rec["entry_event_count"] += int(event["entry_event_count"])
+        rec["translocation_event_count"] += int(event["translocation_event_count"])
+        if residence_ps is not None:
+            rec["membrane_residence_time_ps_total"] += float(residence_ps)
+            rec["membrane_residence_time_ps_counted"] += 1
+        if first_entry_time is not None:
+            rec["first_entry_times_ps"].append(float(first_entry_time))
+        if first_arrival_time is not None:
+            rec["first_permeate_arrival_times_ps"].append(float(first_arrival_time))
+        if event["max_membrane_depth_nm"] is not None:
+            old = rec.get("max_membrane_depth_nm")
+            rec["max_membrane_depth_nm"] = float(event["max_membrane_depth_nm"]) if old is None else max(float(old), float(event["max_membrane_depth_nm"]))
+
+    timeseries_rows: list[dict[str, Any]] = []
+    species_names = sorted(species_records)
+    for frame_idx, time_ps in enumerate(times):
+        for moltype in species_names:
+            relevant = [item for item in per_instance if str(item.get("moltype")) == moltype]
+            feed_count = sum(1 for item in relevant if item["states"][frame_idx] == "feed")
+            membrane_count = sum(1 for item in relevant if item["states"][frame_idx] == "membrane")
+            permeate_count = sum(1 for item in relevant if item["states"][frame_idx] == "permeate")
+            depths_at_t = [
+                float(item["depths"][frame_idx])
+                for item in relevant
+                if item["depths"][frame_idx] is not None and item["states"][frame_idx] == "membrane"
+            ]
+            cumulative_entries = sum(
+                int((item.get("first_entry_time_ps") is not None) and float(item["first_entry_time_ps"]) <= float(time_ps))
+                for item in relevant
+            )
+            cumulative_translocations = sum(
+                int(
+                    (item.get("first_permeate_arrival_time_ps") is not None)
+                    and float(item["first_permeate_arrival_time_ps"]) <= float(time_ps)
+                )
+                for item in relevant
+            )
+            timeseries_rows.append(
+                {
+                    "time_ps": float(time_ps),
+                    "moltype": moltype,
+                    "feed_count": int(feed_count),
+                    "membrane_count": int(membrane_count),
+                    "permeate_count": int(permeate_count),
+                    "cumulative_entry_events": int(cumulative_entries),
+                    "cumulative_translocation_events": int(cumulative_translocations),
+                    "mean_membrane_depth_nm": None if not depths_at_t else float(sum(depths_at_t) / len(depths_at_t)),
+                }
+            )
+
+    feed_thickness_nm = membrane_lo if feed_side == "below" else max(0.0, box_z - membrane_hi)
+    feed_volume_nm3 = max(area_nm2 * feed_thickness_nm, 1.0e-12)
+    summary_by_species: dict[str, dict[str, Any]] = {}
+    for moltype, rec in species_records.items():
+        sample_frames = max(1, int(rec.get("sample_frame_count") or 0))
+        mean_membrane_count = float(rec.get("membrane_frame_count") or 0) / float(max(1, len(frames)))
+        initial_feed_count = sum(
+            1
+            for item in per_instance
+            if str(item.get("moltype")) == moltype and item["states"] and item["states"][0] == "feed"
+        )
+        feed_density_nm3 = float(initial_feed_count) / feed_volume_nm3 if feed_volume_nm3 > 0.0 else None
+        entry_flux = (
+            None
+            if duration_ns <= 0.0
+            else float(rec.get("entry_event_count") or 0) / area_nm2 / float(duration_ns)
+        )
+        translocation_flux = (
+            None
+            if duration_ns <= 0.0
+            else float(rec.get("translocation_event_count") or 0) / area_nm2 / float(duration_ns)
+        )
+        permeability = (
+            None
+            if translocation_flux is None or feed_density_nm3 is None or feed_density_nm3 <= 0.0
+            else float(translocation_flux) / float(feed_density_nm3)
+        )
+        entry_permeability = (
+            None
+            if entry_flux is None or feed_density_nm3 is None or feed_density_nm3 <= 0.0
+            else float(entry_flux) / float(feed_density_nm3)
+        )
+        first_entry_times = [float(x) for x in rec.get("first_entry_times_ps", [])]
+        first_arrival_times = [float(x) for x in rec.get("first_permeate_arrival_times_ps", [])]
+        residence_counted = int(rec.get("membrane_residence_time_ps_counted") or 0)
+        total_residence = float(rec.get("membrane_residence_time_ps_total") or 0.0)
+        loading_nm3 = mean_membrane_count / membrane_volume_nm3
+        summary_by_species[moltype] = {
+            "molecule_count": int(rec.get("molecule_count") or 0),
+            "initial_feed_count": int(initial_feed_count),
+            "membrane_frame_fraction": float(rec.get("membrane_frame_count") or 0) / float(sample_frames),
+            "permeate_frame_fraction": float(rec.get("permeate_frame_count") or 0) / float(sample_frames),
+            "entry_event_count": int(rec.get("entry_event_count") or 0),
+            "translocation_event_count": int(rec.get("translocation_event_count") or 0),
+            "mean_membrane_count": float(mean_membrane_count),
+            "mean_membrane_loading_molecules_nm3": float(loading_nm3),
+            "mean_membrane_loading_mol_L": float(loading_nm3 * 1.0e24 / _AVOGADRO),
+            "feed_number_density_nm3": feed_density_nm3,
+            "apparent_entry_flux_events_nm2_ns": entry_flux,
+            "apparent_translocation_flux_events_nm2_ns": translocation_flux,
+            "apparent_entry_permeability_nm_ns": entry_permeability,
+            "apparent_translocation_permeability_nm_ns": permeability,
+            "apparent_entry_permeability_m_s": entry_permeability,
+            "apparent_translocation_permeability_m_s": permeability,
+            "first_entry_time_ps_min": None if not first_entry_times else float(min(first_entry_times)),
+            "first_entry_time_ps_mean": None if not first_entry_times else float(sum(first_entry_times) / len(first_entry_times)),
+            "first_permeate_arrival_time_ps_min": None if not first_arrival_times else float(min(first_arrival_times)),
+            "first_permeate_arrival_time_ps_mean": None if not first_arrival_times else float(sum(first_arrival_times) / len(first_arrival_times)),
+            "membrane_residence_time_ps_total": None if residence_counted <= 0 else float(total_residence),
+            "membrane_residence_time_ps_mean_per_molecule": None if residence_counted <= 0 else float(total_residence / residence_counted),
+            "max_membrane_depth_nm": rec.get("max_membrane_depth_nm"),
+        }
+    reference_species = next(
+        (
+            name
+            for name, rec in summary_by_species.items()
+            if rec.get("apparent_entry_flux_events_nm2_ns") is not None
+            and float(rec.get("apparent_entry_flux_events_nm2_ns") or 0.0) > 0.0
+        ),
+        next(iter(summary_by_species), None),
+    )
+    if reference_species is not None:
+        ref_entry = summary_by_species[reference_species].get("apparent_entry_flux_events_nm2_ns")
+        ref_perm = summary_by_species[reference_species].get("apparent_translocation_permeability_nm_ns")
+        for rec in summary_by_species.values():
+            entry = rec.get("apparent_entry_flux_events_nm2_ns")
+            perm = rec.get("apparent_translocation_permeability_nm_ns")
+            rec["selectivity_reference_species"] = reference_species
+            rec["entry_flux_selectivity_vs_reference"] = (
+                None if ref_entry is None or float(ref_entry) <= 0.0 or entry is None else float(entry) / float(ref_entry)
+            )
+            rec["translocation_permeability_selectivity_vs_reference"] = (
+                None if ref_perm is None or float(ref_perm) <= 0.0 or perm is None else float(perm) / float(ref_perm)
+            )
+
+    return {
+        "available": True,
+        "species": None if species is None else [str(x) for x in species],
+        "membrane_regions": membrane_regions,
+        "membrane_z_lo_nm": float(membrane_lo),
+        "membrane_z_hi_nm": float(membrane_hi),
+        "membrane_thickness_nm": float(membrane_thickness),
+        "membrane_area_nm2": float(area_nm2),
+        "membrane_volume_nm3": float(membrane_volume_nm3),
+        "feed_side": feed_side,
+        "permeate_side": permeate_side,
+        "feed_volume_nm3": float(feed_volume_nm3),
+        "duration_ps": float(duration_ps),
+        "penetration_threshold_nm": float(threshold),
+        "summary_by_species": summary_by_species,
+        "events": event_rows,
+        "time_series_rows": timeseries_rows,
+        "note": (
+            "Finite-slab membrane diagnostic from molecule COM trajectories. "
+            "Flux and permeability are apparent reservoir estimates, not pressure-gradient macroscopic permeabilities."
+        ),
+    }
+
+
 def _graphite_surface_positions(phase_stats: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
     surfaces: list[dict[str, Any]] = []
     for phase, stats in phase_stats.items():
@@ -2068,6 +2461,14 @@ def compute_interface_profile(
         species=penetration_species,
         penetration_threshold_nm=float(penetration_threshold_nm),
     )
+    membrane_permeation = _membrane_permeation_analysis(
+        frames=frames,
+        instances=atom_payload["instances"],
+        regions=regions,
+        box_nm=final_box,
+        species=penetration_species,
+        penetration_threshold_nm=float(penetration_threshold_nm),
+    )
     adsorption = _adsorption_analysis(
         frames=frames,
         instances=atom_payload["instances"],
@@ -2171,6 +2572,20 @@ def compute_interface_profile(
         "polymer-region frame fraction",
         "Molecular penetration into polymer-rich regions",
     )
+    _write_rows_csv(out_dir / "membrane_permeation_events.csv", membrane_permeation.get("events") or [])
+    _write_rows_csv(out_dir / "membrane_permeation_timeseries.csv", membrane_permeation.get("time_series_rows") or [])
+    _write_json(
+        out_dir / "membrane_permeation_summary.json",
+        {key: value for key, value in membrane_permeation.items() if key not in {"events", "time_series_rows"}},
+    )
+    membrane_permeation_svg = _write_membrane_permeation_svg(
+        out_dir / "membrane_permeation_summary.svg",
+        membrane_permeation.get("summary_by_species") or {},
+    )
+    membrane_permeation_timeseries_svg = _write_membrane_timeseries_svg(
+        out_dir / "membrane_permeation_timeseries.svg",
+        membrane_permeation.get("time_series_rows") or [],
+    )
     _write_rows_csv(out_dir / "adsorption_events.csv", adsorption.get("rows") or [])
     _write_rows_csv(out_dir / "adsorption_surface_map.csv", adsorption.get("surface_map_rows") or [])
     _write_rows_csv(
@@ -2232,6 +2647,9 @@ def compute_interface_profile(
         "enrichment": enrichment,
         "edl_diagnostics": edl,
         "penetration": {key: value for key, value in penetration.items() if key != "rows"},
+        "membrane_permeation": {
+            key: value for key, value in membrane_permeation.items() if key not in {"events", "time_series_rows"}
+        },
         "adsorption": {key: value for key, value in adsorption.items() if key not in {"rows", "surface_map_rows"}},
         "time_series": time_series,
     }
@@ -2253,6 +2671,7 @@ def compute_interface_profile(
             "report_potential_drop": bool(report_potential_drop),
             "penetration_species": None if penetration_species is None else [str(x) for x in penetration_species],
             "adsorption_species": None if adsorption_species is None else [str(x) for x in adsorption_species],
+            "membrane_permeation_analysis": True,
             "phase_groups": [str(x) for x in phase_groups],
             "time_series_analysis": bool(time_series_options.enabled),
             "time_series_sample_count": int(time_series_options.sample_count),
@@ -2278,6 +2697,9 @@ def compute_interface_profile(
         "anisotropic_msd_summary": transport,
         "edl_profiles": edl,
         "penetration": {key: value for key, value in penetration.items() if key != "rows"},
+        "membrane_permeation": {
+            key: value for key, value in membrane_permeation.items() if key not in {"events", "time_series_rows"}
+        },
         "graphite_adsorption": {key: value for key, value in adsorption.items() if key not in {"rows", "surface_map_rows"}},
         "region_transport_summary": transport,
         "time_series": time_series,
@@ -2294,6 +2716,11 @@ def compute_interface_profile(
             "penetration_events_csv": str(out_dir / "penetration_events.csv"),
             "penetration_summary_json": str(out_dir / "penetration_summary.json"),
             "penetration_depth_svg": None if penetration_depth_svg is None else str(penetration_depth_svg),
+            "membrane_permeation_events_csv": str(out_dir / "membrane_permeation_events.csv"),
+            "membrane_permeation_timeseries_csv": str(out_dir / "membrane_permeation_timeseries.csv"),
+            "membrane_permeation_summary_json": str(out_dir / "membrane_permeation_summary.json"),
+            "membrane_permeation_summary_svg": None if membrane_permeation_svg is None else str(membrane_permeation_svg),
+            "membrane_permeation_timeseries_svg": None if membrane_permeation_timeseries_svg is None else str(membrane_permeation_timeseries_svg),
             "adsorption_summary_json": str(out_dir / "adsorption_summary.json"),
             "adsorption_events_csv": str(out_dir / "adsorption_events.csv"),
             "adsorbed_orientation_csv": str(out_dir / "adsorbed_orientation.csv"),

@@ -117,8 +117,9 @@ semantic aliases such as `GRAPHITE`, `ELECTROLYTE`, `CMCNA`, and `MOBILE`.
 - Interface analysis is intentionally different from bulk analysis. The scripts
   use `analy = relax.analyze()` followed by `analy.interface(...)`, then call
   readable methods such as `geometry_health()`, `z_profiles()`,
-  `edl_profiles()`, `penetration(...)`, `graphite_adsorption(...)`,
-  `coordination_by_region()`, `region_transport()`, and `time_series()`.
+  `edl_profiles()`, `penetration(...)`, `membrane_permeation(...)`,
+  `graphite_adsorption(...)`, `coordination_by_region()`,
+  `region_transport()`, and `time_series()`.
 - Static stack post-processing uses `analyze_layer_stack_interface(...)` on
   `system.gro/top/ndx` and `layer_stack_manifest.json`; it is a geometry and
   charge sanity pass before relaxation.
@@ -138,10 +139,16 @@ semantic aliases such as `GRAPHITE`, `ELECTROLYTE`, `CMCNA`, and `MOBILE`.
   not a constant-potential electrode model and does not change MD charges.
 - `penetration_species` and `adsorption_species` filter moltype names; leaving
   them unset analyzes all non-graphite molecules.
+- `membrane_permeation(...)` applies to the CMCNA/separator-style examples. It
+  writes membrane entry events, residence, uptake/loading, translocation counts,
+  finite-slab flux, and apparent permeability diagnostics. These values are
+  trajectory-box estimates for comparing MD models, not direct macroscopic
+  pressure-gradient permeability constants.
 - The interface report includes z density, charge density, integrated charge,
   electrostatic potential diagnostics for fixed-charge graphite, double-layer
   species profiles, small-molecule penetration into CMC/polymer-rich regions,
-  graphite-near adsorption/residence and orientation proxies, cation
+  membrane uptake/permeation diagnostics, graphite-near adsorption/residence and
+  orientation proxies, cation
   coordination partitioning, and anisotropic MSD summaries when trajectories are
   present. Use `Dxy` as the in-plane interface mobility metric; treat `Dz` as
   confined-direction mobility.

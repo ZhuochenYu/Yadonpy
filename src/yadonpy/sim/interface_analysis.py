@@ -189,6 +189,16 @@ class InterfaceAnalysis:
         result = self._run(penetration_species=species, time_series_analysis=bool(time_series_analysis), **kwargs)
         return dict(result.get("penetration") or {})
 
+    def membrane_permeation(
+        self,
+        *,
+        species: Sequence[str] | None = None,
+        time_series_analysis: bool = False,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        result = self._run(penetration_species=species, time_series_analysis=bool(time_series_analysis), **kwargs)
+        return dict(result.get("membrane_permeation") or {})
+
     def graphite_adsorption(
         self,
         *,

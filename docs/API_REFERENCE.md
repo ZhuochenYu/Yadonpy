@@ -406,6 +406,7 @@ health = interface.geometry_health()
 z_profile = interface.z_profiles()
 edl = interface.edl_profiles(potential_reference="zero_mean", report_potential_drop=True)
 penetration = interface.penetration(species=("EC", "EMC", "DEC", "PF6"))
+membrane = interface.membrane_permeation(species=("EC", "EMC", "DEC", "PF6"))
 adsorption = interface.graphite_adsorption(species=("EC", "EMC", "DEC"))
 coordination = interface.coordination_by_region()
 transport = interface.region_transport()
@@ -438,6 +439,11 @@ Interface parameter semantics:
   change the MD charges.
 - `penetration_species` and `adsorption_species` filter molecule types by exact
   or substring match. Leave them as `None` to analyze all non-graphite molecules.
+- `membrane_permeation(...)` is the separator/membrane-specific facade method.
+  It reports CMC/polymer uptake, entry events, membrane residence,
+  translocation counts, finite-slab flux, and apparent permeability estimates.
+  These are reservoir-slab diagnostics, not direct pressure-gradient
+  macroscopic permeability constants.
 - `compute_transport=True` adds anisotropic MSD summaries when a trajectory is
   available. Treat `Dxy` as the in-plane interface mobility metric and `Dz` as
   confined-direction mobility, not a bulk diffusion coefficient.
@@ -453,6 +459,8 @@ Facade method semantics:
   electric field, and reference-shifted electrostatic potential diagnostics.
 - `penetration(...)` reports molecule COM residence in CMC/polymer-rich or mixed
   regions.
+- `membrane_permeation(...)` reports separator-style uptake, entry,
+  translocation, residence, finite-slab flux, and apparent permeability metrics.
 - `graphite_adsorption(...)` reports graphite-near residence, surface occupancy,
   and simple carbonyl/dipole orientation proxies.
 - `coordination_by_region()` partitions cation donor states by z region using

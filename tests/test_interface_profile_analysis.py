@@ -151,6 +151,9 @@ def test_interface_profile_extracts_phase_order_density_overlap_and_coordination
     assert out["geometry_health"]["phase_order_ok"] is True
     assert out["geometry_health"]["direct_graphite_electrolyte_contact"] is False
     assert out["region_summary"]["interpenetration"]["overlap_width_nm"] > 0.0
+    assert out["membrane_permeation"]["available"] is True
+    assert out["membrane_permeation"]["membrane_thickness_nm"] > 0.0
+    assert "SOLV" in out["membrane_permeation"]["summary_by_species"]
     assert out["coordination_by_region"]["available"] is True
     assert out["parameters"]["time_series_analysis"] is False
     assert out["manifest"]["available"] is True
@@ -159,6 +162,8 @@ def test_interface_profile_extracts_phase_order_density_overlap_and_coordination
     assert out["time_series"]["reason"] == "disabled"
     assert (tmp_path / "analysis" / "z_density_profiles.csv").exists()
     assert (tmp_path / "analysis" / "region_summary.json").exists()
+    assert (tmp_path / "analysis" / "membrane_permeation_summary.json").exists()
+    assert (tmp_path / "analysis" / "membrane_permeation_timeseries.csv").exists()
     assert (tmp_path / "analysis" / "coordination_by_region.json").exists()
 
 
@@ -222,6 +227,7 @@ def test_interface_facade_exposes_stepwise_outputs(tmp_path: Path):
     z_profiles = interface.z_profiles()
     edl = interface.edl_profiles(report_potential_drop=True)
     penetration = interface.penetration(species=("SOLV", "PF6"))
+    membrane = interface.membrane_permeation(species=("SOLV", "PF6"))
     adsorption = interface.graphite_adsorption(species=("SOLV",))
     coordination = interface.coordination_by_region()
     transport = interface.region_transport()
@@ -236,6 +242,8 @@ def test_interface_facade_exposes_stepwise_outputs(tmp_path: Path):
     assert "charge_potential" in edl
     assert penetration["available"] is True
     assert penetration["penetration_threshold_nm"] == 0.33
+    assert membrane["available"] is True
+    assert "summary_by_species" in membrane
     assert adsorption["available"] is True
     assert coordination["available"] is True
     assert transport["available"] is False
@@ -253,6 +261,8 @@ def test_interface_facade_exposes_stepwise_outputs(tmp_path: Path):
         "integrated_charge_csv",
         "electrostatic_potential_csv",
         "penetration_summary_json",
+        "membrane_permeation_summary_json",
+        "membrane_permeation_timeseries_csv",
         "adsorption_summary_json",
         "coordination_z_profile_csv",
     ):

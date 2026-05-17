@@ -410,6 +410,14 @@ interface = analy.interface(
 health = interface.geometry_health()
 z_profiles = interface.z_profiles(time_series_analysis=True)
 edl = interface.edl_profiles(time_series_analysis=True)
+penetration = interface.penetration(
+    species=("EC", "EMC", "DEC", "PF6", "Li"),
+    time_series_analysis=True,
+)
+membrane = interface.membrane_permeation(
+    species=("EC", "EMC", "DEC", "PF6", "Li"),
+    time_series_analysis=True,
+)
 adsorption = interface.graphite_adsorption(
     species=("EC", "EMC", "DEC"),
     time_series_analysis=True,

@@ -2485,6 +2485,7 @@ class AnalyzeResult:
             "report_potential_drop": bool(report_potential_drop),
             "penetration_species": None if penetration_species is None else [str(x) for x in penetration_species],
             "adsorption_species": None if adsorption_species is None else [str(x) for x in adsorption_species],
+            "membrane_permeation_analysis": True,
             "phase_groups": [str(x) for x in phase_groups],
             "compute_transport": bool(compute_transport),
             "time_series_analysis": bool(time_series_analysis),
