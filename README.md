@@ -505,11 +505,15 @@ umbrella_plan = prepare_solvated_ion_umbrella(
   post-processing call explicitly receives `time_series_analysis=True`.  When
   enabled, they sample up to ten equal trajectory windows by default and write
   slow MP4 overlays for molecule-COM z concentration, cation-centered RDF/CN,
-  and adsorbed orientation-angle distributions when the required trajectory and
-  species are available.  The same plotting frames are written as PNG images
-  under `time_series/frames/` before MP4 encoding.  MP4 writing uses the
-  pip-installed `imageio-ffmpeg` executable when available; CSV and PNG
-  artifacts are still written if the movie writer is unavailable.
+  graphite-EDL RDF/CN, and adsorbed orientation-angle distributions when the
+  required trajectory and species are available.  The EDL RDF/CN movie uses
+  only centers whose molecule COM lies inside the graphite EDL cutoff, chooses
+  one strongest opposite-charge site per target molecule, draws CN as dashed
+  curves on a 0-6 right axis, and labels the first RDF peak position.  The same
+  plotting frames are written as PNG images under `time_series/frames/` before
+  MP4 encoding.  MP4 writing uses the pip-installed `imageio-ffmpeg` executable
+  when available; CSV and PNG artifacts are still written if the movie writer is
+  unavailable.
 
 After all required analyses have completed, large trajectory streams can be
 removed while keeping auditable outputs:

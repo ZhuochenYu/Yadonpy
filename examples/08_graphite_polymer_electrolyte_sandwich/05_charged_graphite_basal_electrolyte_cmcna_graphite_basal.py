@@ -341,10 +341,11 @@ if __name__ == "__main__":  # 只在直接运行该脚本时执行主工作流�
             #   region_transport(): anisotropic MSD summaries; use Dxy for
             #     in-plane interface mobility and Dz only as confined mobility.
             #   time_series(): slow MP4 animations and CSV data sampled by
-            #     trajectory deciles. The RDF movie uses cation-centered
-            #     cation-polymer O, cation-solvent O, and cation-anion F pairs
-            #     when those sites exist, and always writes the paired CN(r)
-            #     curves plus first-shell CN versus time.
+            #     trajectory deciles. The RDF outputs include global
+            #     cation-centered RDF/CN plus graphite-EDL RDF/CN, where EDL
+            #     centers are inside the graphite cutoff, targets use one
+            #     strongest opposite-charge site, CN is dashed on a 0-6 axis,
+            #     and the first RDF peak is labeled.
             analy = relax.analyze()  # 设置中间变量或可调参数，供后续工作流使用。
             interface = analy.interface(  # 设置中间变量或可调参数，供后续工作流使用。
                 manifest_path=result.manifest_path,  # 指定 layer_stack_manifest.json 路径。

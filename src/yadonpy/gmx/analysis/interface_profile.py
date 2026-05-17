@@ -944,6 +944,382 @@ def _rdf_curve_from_frames(
     }
 
 
+def _representative_site(inst: dict[str, Any], sign: int) -> dict[str, Any] | None:
+    idx = np.asarray(inst.get("atom_indices_0"), dtype=int)
+    if idx.size == 0:
+        return None
+    charges = np.asarray(inst.get("charges"), dtype=float)
+    if charges.size != idx.size:
+        charges = np.zeros(idx.size, dtype=float)
+    atomnames = [str(x) for x in inst.get("atomnames") or []]
+    atomtypes = [str(x) for x in inst.get("atomtypes") or []]
+    if sign > 0:
+        local = int(np.argmax(charges)) if charges.size else 0
+        charge = float(charges[local]) if charges.size else 0.0
+        if charge <= 0.05 and idx.size > 1:
+            return None
+    else:
+        local = int(np.argmin(charges)) if charges.size else 0
+        charge = float(charges[local]) if charges.size else 0.0
+        if charge >= -0.05 and idx.size > 1:
+            return None
+    name = atomnames[local] if local < len(atomnames) else f"atom{local + 1}"
+    atype = atomtypes[local] if local < len(atomtypes) else ""
+    return {
+        "local_index": int(local),
+        "atom_name": str(name),
+        "atom_type": str(atype),
+        "charge_e": float(charge),
+    }
+
+
+def _edl_rdf_pair_specs(instances: Sequence[dict[str, Any]], *, max_pairs: int = 8) -> list[dict[str, Any]]:
+    by_moltype: dict[str, list[dict[str, Any]]] = {}
+    order: list[str] = []
+    for inst in instances:
+        if not _mobile_instance(dict(inst)):
+            continue
+        moltype = str(inst.get("moltype") or "")
+        if not moltype:
+            continue
+        if moltype not in by_moltype:
+            by_moltype[moltype] = []
+            order.append(moltype)
+        by_moltype[moltype].append(dict(inst))
+    order.sort(key=lambda name: (-len(by_moltype.get(name, [])), name))
+    site_info: dict[str, dict[str, Any]] = {}
+    positive: list[str] = []
+    negative: list[str] = []
+    for moltype in order:
+        inst = by_moltype[moltype][0]
+        pos = _representative_site(inst, +1)
+        neg = _representative_site(inst, -1)
+        formal = float(inst.get("formal_charge_e") or 0.0)
+        site_info[moltype] = {"positive": pos, "negative": neg, "formal_charge_e": formal}
+        label = f"{moltype} {inst.get('kind') or ''}".lower()
+        if pos is not None and (formal > 0.0 or "li" in label or "na" in label or len(by_moltype[moltype][0].get("atom_indices_0", [])) == 1):
+            positive.append(moltype)
+        if neg is not None:
+            negative.append(moltype)
+    specs: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, int, int]] = set()
+
+    def add_pair(center: str, target: str, center_sign: int, target_sign: int) -> None:
+        center_site = site_info.get(center, {}).get("positive" if center_sign > 0 else "negative")
+        target_site = site_info.get(target, {}).get("positive" if target_sign > 0 else "negative")
+        if center_site is None or target_site is None:
+            return
+        key = (center, target, int(center_site["local_index"]), int(target_site["local_index"]))
+        if key in seen:
+            return
+        seen.add(key)
+        specs.append(
+            {
+                "pair": f"{center}:{center_site['atom_name']}-{target}:{target_site['atom_name']}",
+                "center_moltype": center,
+                "target_moltype": target,
+                "center_local_index": int(center_site["local_index"]),
+                "target_local_index": int(target_site["local_index"]),
+                "center_atom_name": str(center_site["atom_name"]),
+                "target_atom_name": str(target_site["atom_name"]),
+                "center_site_charge_e": float(center_site["charge_e"]),
+                "target_site_charge_e": float(target_site["charge_e"]),
+            }
+        )
+
+    for center in positive:
+        for target in negative:
+            if target == center:
+                continue
+            add_pair(center, target, +1, -1)
+            if len(specs) >= int(max_pairs):
+                return specs
+    for center in negative:
+        for target in positive:
+            if target == center:
+                continue
+            add_pair(center, target, -1, +1)
+            if len(specs) >= int(max_pairs):
+                return specs
+    return specs
+
+
+def _edl_center_indices_for_frame(
+    *,
+    coords: np.ndarray,
+    instances: Sequence[dict[str, Any]],
+    moltype: str,
+    local_index: int,
+    surfaces: Sequence[dict[str, Any]],
+    cutoff_nm: float,
+) -> np.ndarray:
+    out: list[int] = []
+    for inst in instances:
+        if str(inst.get("moltype") or "") != str(moltype):
+            continue
+        idx = np.asarray(inst.get("atom_indices_0"), dtype=int)
+        local = int(local_index)
+        if local < 0 or local >= idx.size:
+            continue
+        com = _instance_com(coords, inst)
+        _surface, dist = _nearest_graphite_surface(float(com[2]), surfaces)
+        if dist is not None and float(dist) <= float(cutoff_nm):
+            out.append(int(idx[local]))
+    return np.asarray(sorted(set(out)), dtype=int)
+
+
+def _site_indices_for_moltype(
+    instances: Sequence[dict[str, Any]],
+    *,
+    moltype: str,
+    local_index: int,
+) -> np.ndarray:
+    out: list[int] = []
+    local = int(local_index)
+    for inst in instances:
+        if str(inst.get("moltype") or "") != str(moltype):
+            continue
+        idx = np.asarray(inst.get("atom_indices_0"), dtype=int)
+        if 0 <= local < idx.size:
+            out.append(int(idx[local]))
+    return np.asarray(sorted(set(out)), dtype=int)
+
+
+def _rdf_curve_from_dynamic_edl_frames(
+    *,
+    frames: Sequence[tuple[float, np.ndarray, tuple[float, float, float]]],
+    instances: Sequence[dict[str, Any]],
+    surfaces: Sequence[dict[str, Any]],
+    spec: dict[str, Any],
+    surface_distance_nm: float,
+    r_max_nm: float,
+    bin_nm: float,
+) -> dict[str, Any]:
+    nbins = max(8, int(np.ceil(float(r_max_nm) / float(bin_nm))))
+    edges = np.linspace(0.0, float(r_max_nm), nbins + 1)
+    r_mid = 0.5 * (edges[:-1] + edges[1:])
+    hist = np.zeros(nbins, dtype=float)
+    volume_samples: list[float] = []
+    effective_ref = 0.0
+    target_indices = _site_indices_for_moltype(
+        instances,
+        moltype=str(spec["target_moltype"]),
+        local_index=int(spec["target_local_index"]),
+    )
+    for _time_ps, coords, box in frames:
+        center_indices = _edl_center_indices_for_frame(
+            coords=coords,
+            instances=instances,
+            moltype=str(spec["center_moltype"]),
+            local_index=int(spec["center_local_index"]),
+            surfaces=surfaces,
+            cutoff_nm=float(surface_distance_nm),
+        )
+        if center_indices.size == 0 or target_indices.size == 0:
+            continue
+        volume_samples.append(float(box[0]) * float(box[1]) * float(box[2]))
+        c = np.asarray(coords[center_indices], dtype=float)
+        t = np.asarray(coords[target_indices], dtype=float)
+        delta = c[:, None, :] - t[None, :, :]
+        box_arr = np.asarray(box, dtype=float)
+        delta -= box_arr[None, None, :] * np.round(delta / np.maximum(box_arr[None, None, :], 1.0e-12))
+        pair_mask = center_indices[:, None] != target_indices[None, :]
+        if not np.any(pair_mask):
+            continue
+        dist = np.linalg.norm(delta[pair_mask], axis=1)
+        hist += np.histogram(dist, bins=edges)[0]
+        effective_ref += float(center_indices.size)
+    if effective_ref <= 0.0:
+        cn = np.zeros_like(r_mid)
+        return {
+            "r_nm": r_mid,
+            "g_r": cn.copy(),
+            "cn_curve": cn,
+            "edl_center_samples": 0,
+            "target_site_count": int(target_indices.size),
+            "shell": detect_first_shell(r_mid, cn, cn),
+        }
+    rho_target = float(target_indices.size) / max(float(np.mean(volume_samples)) if volume_samples else 0.0, 1.0e-12)
+    shell_vol = (4.0 / 3.0) * np.pi * (edges[1:] ** 3 - edges[:-1] ** 3)
+    denom = np.maximum(float(effective_ref) * max(rho_target, 1.0e-12) * shell_vol, 1.0e-12)
+    g_r = hist / denom
+    cn_curve = np.cumsum(hist) / max(float(effective_ref), 1.0e-12)
+    shell = detect_first_shell(r_mid, g_r, cn_curve)
+    return {
+        "r_nm": r_mid,
+        "g_r": g_r,
+        "cn_curve": cn_curve,
+        "rho_target_nm3": float(rho_target),
+        "edl_center_samples": int(effective_ref),
+        "target_site_count": int(target_indices.size),
+        "shell": shell,
+    }
+
+
+def _write_edl_rdf_cn_timeseries(
+    *,
+    out_dir: Path,
+    windows: Sequence[dict[str, Any]],
+    instances: Sequence[dict[str, Any]],
+    surfaces: Sequence[dict[str, Any]],
+    surface_distance_nm: float,
+    fps: float,
+    r_max_nm: float = 1.2,
+    bin_nm: float = 0.02,
+    max_pairs: int = 8,
+) -> dict[str, Any]:
+    pair_specs = _edl_rdf_pair_specs(instances, max_pairs=max_pairs)
+    if not windows or not surfaces or not pair_specs:
+        return _animation_result(path=None, reason="no_edl_rdf_pairs_or_surfaces")
+    curves: list[dict[str, Any]] = []
+    curve_rows: list[dict[str, Any]] = []
+    shell_rows: list[dict[str, Any]] = []
+    for win in windows:
+        win_curves: dict[str, dict[str, Any]] = {}
+        for spec in pair_specs:
+            pair_id = str(spec["pair"])
+            data = _rdf_curve_from_dynamic_edl_frames(
+                frames=list(win.get("frames") or []),
+                instances=instances,
+                surfaces=surfaces,
+                spec=spec,
+                surface_distance_nm=float(surface_distance_nm),
+                r_max_nm=float(r_max_nm),
+                bin_nm=float(bin_nm),
+            )
+            win_curves[pair_id] = data
+            r = np.asarray(data.get("r_nm"), dtype=float)
+            g = np.asarray(data.get("g_r"), dtype=float)
+            cn = np.asarray(data.get("cn_curve"), dtype=float)
+            for i in range(int(r.size)):
+                curve_rows.append(
+                    {
+                        "window_index": int(win["window_index"]),
+                        "time_start_ps": float(win["time_start_ps"]),
+                        "time_end_ps": float(win["time_end_ps"]),
+                        "pair": pair_id,
+                        "center_moltype": spec["center_moltype"],
+                        "target_moltype": spec["target_moltype"],
+                        "center_atom_name": spec["center_atom_name"],
+                        "target_atom_name": spec["target_atom_name"],
+                        "r_nm": float(r[i]),
+                        "g_r": float(g[i]),
+                        "coordination_number": float(cn[i]),
+                    }
+                )
+            shell = dict(data.get("shell") or {})
+            shell_rows.append(
+                {
+                    "window_index": int(win["window_index"]),
+                    "time_start_ps": float(win["time_start_ps"]),
+                    "time_end_ps": float(win["time_end_ps"]),
+                    "pair": pair_id,
+                    "center_moltype": spec["center_moltype"],
+                    "target_moltype": spec["target_moltype"],
+                    "center_atom_name": spec["center_atom_name"],
+                    "target_atom_name": spec["target_atom_name"],
+                    "edl_center_samples": data.get("edl_center_samples"),
+                    "target_site_count": data.get("target_site_count"),
+                    "r_peak_nm": shell.get("r_peak_nm"),
+                    "r_shell_nm": shell.get("r_shell_nm"),
+                    "cn_shell": shell.get("cn_shell"),
+                    "confidence": shell.get("confidence"),
+                    "status": shell.get("status"),
+                }
+            )
+        curves.append({"window": dict(win), "curves": win_curves})
+    curve_csv = out_dir / "time_series" / "edl_rdf_cn_curves_timeseries.csv"
+    shell_csv = out_dir / "time_series" / "edl_rdf_cn_shell_timeseries.csv"
+    _write_rows_csv(curve_csv, curve_rows)
+    _write_rows_csv(shell_csv, shell_rows)
+    try:
+        import matplotlib.pyplot as plt
+    except Exception:
+        return _animation_result(
+            path=None,
+            reason="matplotlib_unavailable",
+            extra={"curves_csv": str(curve_csv), "shell_csv": str(shell_csv), "sample_windows": len(curves)},
+        )
+    mp4_path = out_dir / "time_series" / "edl_rdf_cn_timeseries.mp4"
+    mp4_path.parent.mkdir(parents=True, exist_ok=True)
+    ymax_g = max([float(np.max(payload["curves"][spec["pair"]]["g_r"])) for payload in curves for spec in pair_specs] or [1.0])
+    fig, ax_g = plt.subplots(figsize=(7.2, 4.2))
+    ax_cn = ax_g.twinx()
+
+    def _update(frame_idx: int):
+        ax_g.clear()
+        ax_cn.clear()
+        payload = curves[int(frame_idx)]
+        win = payload["window"]
+        for spec in pair_specs:
+            pair_id = str(spec["pair"])
+            data = payload["curves"][pair_id]
+            r = np.asarray(data["r_nm"], dtype=float)
+            g = np.asarray(data["g_r"], dtype=float)
+            cn = np.asarray(data["cn_curve"], dtype=float)
+            line = ax_g.plot(r, g, lw=1.6, label=pair_id)[0]
+            ax_cn.plot(r, cn, lw=1.2, ls="--", color=line.get_color())
+            shell = dict(data.get("shell") or {})
+            r_peak = shell.get("r_peak_nm")
+            if r_peak is not None and np.isfinite(float(r_peak)):
+                y_peak = float(np.interp(float(r_peak), r, g)) if r.size else 0.0
+                ax_g.axvline(float(r_peak), color=line.get_color(), ls=":", lw=0.8, alpha=0.65)
+                ax_g.text(
+                    float(r_peak),
+                    y_peak,
+                    f"{float(r_peak):.2f}",
+                    color=line.get_color(),
+                    fontsize=7,
+                    rotation=90,
+                    va="bottom",
+                    ha="center",
+                )
+        ax_g.set_xlim(0.0, float(r_max_nm))
+        ax_g.set_ylim(0.0, max(1.0, ymax_g * 1.15))
+        ax_cn.set_ylim(0.0, 6.0)
+        ax_g.set_xlabel("r / nm")
+        ax_g.set_ylabel("EDL RDF g(r), solid")
+        ax_cn.set_ylabel("CN(r), dashed")
+        ax_g.set_title(
+            f"Graphite EDL RDF/CN, {float(win['time_start_ps']):.1f}-{float(win['time_end_ps']):.1f} ps"
+        )
+        ax_g.legend(loc="upper right", fontsize="x-small", ncols=2)
+        fig.tight_layout()
+
+    frame_meta = _save_animation_png_frames(
+        fig=fig,
+        update=_update,
+        frame_count=len(curves),
+        frame_dir=out_dir / "time_series" / "frames" / "edl_rdf_cn",
+    )
+    extra = {
+        "curves_csv": str(curve_csv),
+        "shell_csv": str(shell_csv),
+        "sample_windows": len(curves),
+        "pairs": [str(spec["pair"]) for spec in pair_specs],
+        "surface_distance_nm": float(surface_distance_nm),
+        "cn_axis_ylim": [0.0, 6.0],
+        **frame_meta,
+    }
+    writer = _mp4_writer(fps)
+    if writer is None:
+        plt.close(fig)
+        return _animation_result(path=None, reason="ffmpeg_writer_unavailable", extra=extra)
+    try:
+        from matplotlib.animation import FuncAnimation
+    except Exception:
+        plt.close(fig)
+        return _animation_result(path=None, reason="matplotlib_unavailable", extra=extra)
+    ani = FuncAnimation(fig, _update, frames=len(curves), interval=1000)
+    try:
+        ani.save(mp4_path, writer=writer)
+    except Exception as exc:
+        plt.close(fig)
+        return _animation_result(path=None, reason=f"mp4_write_failed:{exc.__class__.__name__}", extra=extra)
+    plt.close(fig)
+    return _animation_result(path=mp4_path, extra=extra)
+
+
 def _write_rdf_cn_timeseries(
     *,
     out_dir: Path,
@@ -1199,6 +1575,8 @@ def _time_series_animations(
     instances: Sequence[dict[str, Any]],
     categories: dict[str, np.ndarray],
     adsorption_rows: Sequence[dict[str, Any]],
+    graphite_surfaces: Sequence[dict[str, Any]],
+    surface_distance_nm: float,
     sample_count: int,
     fps: float,
     rdf_rmax_nm: float,
@@ -1238,6 +1616,16 @@ def _time_series_animations(
             out_dir=out_dir,
             windows=windows,
             categories=categories,
+            fps=float(fps),
+            r_max_nm=float(rdf_rmax_nm),
+            bin_nm=float(rdf_bin_nm),
+        )
+        outputs["edl_rdf_cn"] = _write_edl_rdf_cn_timeseries(
+            out_dir=out_dir,
+            windows=windows,
+            instances=instances,
+            surfaces=graphite_surfaces,
+            surface_distance_nm=float(surface_distance_nm),
             fps=float(fps),
             r_max_nm=float(rdf_rmax_nm),
             bin_nm=float(rdf_bin_nm),
@@ -2697,6 +3085,8 @@ def compute_interface_profile(
             instances=atom_payload["instances"],
             categories=atom_categories,
             adsorption_rows=adsorption.get("rows") or [],
+            graphite_surfaces=adsorption.get("surfaces") or [],
+            surface_distance_nm=float(surface_distance_nm),
             sample_count=int(time_series_options.sample_count),
             fps=float(time_series_options.fps),
             rdf_rmax_nm=float(time_series_options.rdf_rmax_nm),
@@ -2889,6 +3279,7 @@ def compute_interface_profile(
             "time_series_angles": bool(time_series_options.angles),
             "time_series_rdf_rmax_nm": float(time_series_options.rdf_rmax_nm),
             "time_series_rdf_bin_nm": float(time_series_options.rdf_bin_nm),
+            "edl_rdf_cn_time_series": True,
         },
         "inputs": {
             "gro_path": str(gro_path),

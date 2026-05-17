@@ -166,4 +166,8 @@ semantic aliases such as `GRAPHITE`, `ELECTROLYTE`, `CMCNA`, and `MOBILE`.
 - RDF time-series outputs are cation-centered when Li+/Na+ sites exist.  The
   same animation and CSV set includes CN(r) curves and first-shell CN values
   versus time, so RDF changes are interpreted together with coordination-number
-  changes.
+  changes.  A separate graphite-EDL RDF/CN time series is also written when
+  graphite surfaces are present: center molecules must lie inside the graphite
+  EDL cutoff, target molecules contribute only their strongest opposite-charge
+  polar site, CN curves are dashed on a fixed 0-6 axis, and the first RDF peak
+  position is annotated in each frame.

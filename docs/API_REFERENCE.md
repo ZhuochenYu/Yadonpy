@@ -464,6 +464,11 @@ Facade method semantics:
   translocation, residence, finite-slab flux, and apparent permeability metrics.
 - `graphite_adsorption(...)` reports graphite-near residence, surface occupancy,
   and EDL-layer carbonyl/dipole orientation angle distributions.
+- `time_series(time_series_analysis=True)` writes decile-sampled CSV/PNG/MP4
+  overlays, including graphite-EDL RDF/CN.  EDL RDF centers are restricted to
+  the graphite EDL cutoff, each target species contributes only its strongest
+  opposite-charge polar site, CN is plotted as dashed curves on a fixed 0-6
+  axis, and the first RDF peak position is annotated.
 - `coordination_by_region()` partitions cation donor states by z region using
   fallback O/F contact cutoffs.
 - `region_transport()` returns anisotropic MSD summaries when transport is

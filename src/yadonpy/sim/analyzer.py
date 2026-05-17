@@ -2496,6 +2496,7 @@ class AnalyzeResult:
             "time_series_angles": bool(time_series_angles),
             "time_series_rdf_rmax_nm": float(time_series_rdf_rmax_nm),
             "time_series_rdf_bin_nm": float(time_series_rdf_bin_nm),
+            "edl_rdf_cn_time_series": True,
         }
         expected_cache_meta.update(self._analysis_policy_cache_meta())
         summary_path = analysis_dir / "interface_profile_summary.json"

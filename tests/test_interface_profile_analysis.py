@@ -289,12 +289,25 @@ def test_interface_time_series_writes_decile_csv_artifacts(tmp_path: Path, monke
         for i, t in enumerate((0.0, 10.0, 20.0, 30.0))
     ]
     instances = [
-        {"moltype": "Li", "kind": "ion", "atom_indices_0": np.asarray([0]), "masses": np.asarray([6.94])},
+        {
+            "moltype": "Li",
+            "kind": "ion",
+            "formal_charge_e": 1.0,
+            "atom_indices_0": np.asarray([0]),
+            "masses": np.asarray([6.94]),
+            "charges": np.asarray([1.0]),
+            "atomnames": ["Li1"],
+            "atomtypes": ["Li"],
+        },
         {
             "moltype": "SOLV",
             "kind": "solvent",
+            "formal_charge_e": 0.0,
             "atom_indices_0": np.asarray([1, 2]),
             "masses": np.asarray([15.999, 15.999]),
+            "charges": np.asarray([0.3, -0.3]),
+            "atomnames": ["C1", "O2"],
+            "atomtypes": ["c", "o"],
         },
     ]
     categories = {
@@ -321,6 +334,8 @@ def test_interface_time_series_writes_decile_csv_artifacts(tmp_path: Path, monke
         instances=instances,
         categories=categories,
         adsorption_rows=adsorption_rows,
+        graphite_surfaces=[{"phase": "GRAPHITE", "side": "top", "z_nm": 0.50}],
+        surface_distance_nm=1.0,
         sample_count=2,
         fps=1.0,
         rdf_rmax_nm=1.0,
@@ -331,9 +346,13 @@ def test_interface_time_series_writes_decile_csv_artifacts(tmp_path: Path, monke
     assert (tmp_path / "time_series" / "z_concentration_timeseries.csv").exists()
     assert (tmp_path / "time_series" / "rdf_cn_curves_timeseries.csv").exists()
     assert (tmp_path / "time_series" / "rdf_cn_shell_timeseries.csv").exists()
+    assert (tmp_path / "time_series" / "edl_rdf_cn_curves_timeseries.csv").exists()
+    assert (tmp_path / "time_series" / "edl_rdf_cn_shell_timeseries.csv").exists()
     assert (tmp_path / "time_series" / "adsorbed_orientation_angle_timeseries.csv").exists()
     assert (tmp_path / "time_series" / "frames" / "z_concentration" / "frame_000.png").exists()
     assert (tmp_path / "time_series" / "frames" / "rdf_cn" / "frame_000.png").exists()
+    assert (tmp_path / "time_series" / "frames" / "edl_rdf_cn" / "frame_000.png").exists()
     assert (tmp_path / "time_series" / "frames" / "adsorbed_orientation_angle" / "frame_000.png").exists()
     assert out["outputs"]["z_concentration"]["frame_png_count"] == 2
     assert out["outputs"]["rdf_cn"]["shell_csv"].endswith("rdf_cn_shell_timeseries.csv")
+    assert out["outputs"]["edl_rdf_cn"]["cn_axis_ylim"] == [0.0, 6.0]
