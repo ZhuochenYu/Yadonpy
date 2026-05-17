@@ -2150,6 +2150,112 @@ def bond_angle_params_drih(
     import numpy as np
     from pathlib import Path
 
+    def _ax6_trans_pairs(indices, positions, center_position):
+        candidates = []
+        pos_map = {int(idx): np.asarray(pos, dtype=float) for idx, pos in zip(indices, positions)}
+        for a_pos, i in enumerate(indices):
+            vi = pos_map[int(i)] - center_position
+            ni = float(np.linalg.norm(vi))
+            if ni < 1.0e-8:
+                continue
+            for k in indices[a_pos + 1 :]:
+                vk = pos_map[int(k)] - center_position
+                nk = float(np.linalg.norm(vk))
+                if nk < 1.0e-8:
+                    continue
+                cosang = float(np.dot(vi, vk) / (ni * nk))
+                candidates.append((cosang, tuple(sorted((int(i), int(k))))))
+        pairs = []
+        used = set()
+        for _cosang, pair in sorted(candidates, key=lambda item: item[0]):
+            if pair[0] in used or pair[1] in used:
+                continue
+            pairs.append(pair)
+            used.update(pair)
+            if len(pairs) == 3:
+                break
+        return sorted(pairs)
+
+    def _pf6_drih_angle_terms(center: int, trans_pairs: list[tuple[int, int]]) -> tuple[list[dict], list[dict]]:
+        if len(trans_pairs) != 3:
+            raise ValueError("PF6 DRIH requires three opposite F-P-F ligand pairs.")
+
+        # Canonical labels follow the validated DRIH table supplied for PF6:
+        # trans axes are (1,5), (2,4), and (3,6).  Actual atom indices are
+        # mapped deterministically from the geometry-derived opposite pairs.
+        label_to_atom = {
+            1: int(trans_pairs[0][0]),
+            5: int(trans_pairs[0][1]),
+            2: int(trans_pairs[1][0]),
+            4: int(trans_pairs[1][1]),
+            3: int(trans_pairs[2][0]),
+            6: int(trans_pairs[2][1]),
+        }
+        harmonic_rows = [
+            (1, 2, 90.0, 5.242033e2),
+            (1, 3, 90.0, 5.242033e2),
+            (1, 4, 90.0, 5.391223e2),
+            (1, 5, 180.0, 2.490480e2),
+            (1, 6, 90.0, 5.391223e2),
+            (2, 3, 90.0, 5.391223e2),
+            (2, 4, 180.0, 2.490480e2),
+            (2, 5, 90.0, 5.391223e2),
+            (2, 6, 90.0, 5.242033e2),
+            (3, 4, 90.0, 5.242033e2),
+            (3, 5, 90.0, 5.391223e2),
+            (3, 6, 180.0, 2.490480e2),
+            (4, 5, 90.0, 5.242033e2),
+            (4, 6, 90.0, 5.391223e2),
+            (5, 6, 90.0, 5.242033e2),
+        ]
+        cross_rows = [
+            (1, 2, 1.996756e4),
+            (1, 3, 1.996756e4),
+            (1, 4, 1.996756e4),
+            (1, 5, -5.413693e2),
+            (1, 6, 1.996756e4),
+            (2, 3, 1.996756e4),
+            (2, 4, -5.413693e2),
+            (2, 5, 1.996756e4),
+            (2, 6, 1.996756e4),
+            (3, 4, 1.996756e4),
+            (3, 5, 1.996756e4),
+            (3, 6, -5.413693e2),
+            (4, 5, 1.996756e4),
+            (4, 6, 1.996756e4),
+            (5, 6, 1.996756e4),
+        ]
+
+        angles = []
+        for a, b, theta0, kk in harmonic_rows:
+            angles.append(
+                {
+                    "i": int(label_to_atom[a]),
+                    "j": int(center),
+                    "k": int(label_to_atom[b]),
+                    "theta0_deg": float(theta0),
+                    "k_kj_mol_rad2": float(kk),
+                    "funct": 1,
+                    "comment": "DRIH method",
+                }
+            )
+
+        cross_terms = []
+        for a, b, kk in cross_rows:
+            cross_terms.append(
+                {
+                    "i": int(label_to_atom[a]),
+                    "j": int(center),
+                    "k": int(label_to_atom[b]),
+                    "funct": 3,
+                    "r0_ij_nm": 0.164607,
+                    "r0_jk_nm": 0.164607,
+                    "k_kj_mol_nm2": float(kk),
+                    "comment": "DRIH method",
+                }
+            )
+        return angles, cross_terms
+
     task_dir = Path(work_dir) / "01_qm" / "07_bonded_params" / str(log_name)
     task_dir.mkdir(parents=True, exist_ok=True)
 
@@ -2216,6 +2322,9 @@ def bond_angle_params_drih(
 
     # Bonds: all center-ligand, symmetrized to the average radius.
     r0_nm = float(r0_avg_a) * 0.1  # Angstrom -> nm
+    is_pf6_drih = center_sym == "P" and ligand_sym == "F" and int(cn) == 6
+    if is_pf6_drih:
+        r0_nm = 0.164607
     bonds = [
         {"i": int(center_idx), "j": int(i), "r0_nm": float(r0_nm), "k_kj_mol_nm2": float(k_bond_eff)}
         for i in lig_idxs
@@ -2223,41 +2332,43 @@ def bond_angle_params_drih(
 
     # Angles: all ligand-center-ligand.
     angles = []
+    bond_bond_cross_terms = []
     n_cis = 0
     n_trans = 0
-    n_trans_skipped = 0
-    for a in range(len(lig_idxs)):
-        for b in range(a + 1, len(lig_idxs)):
-            i = int(lig_idxs[a])
-            k = int(lig_idxs[b])
-            v1 = lig_pos[a] - cpos
-            v2 = lig_pos[b] - cpos
-            n1 = np.linalg.norm(v1)
-            n2 = np.linalg.norm(v2)
-            if n1 < 1e-8 or n2 < 1e-8:
-                continue
-            cosang = float(np.dot(v1, v2) / (n1 * n2))
-            cosang = max(-1.0, min(1.0, cosang))
-            ang = float(np.degrees(np.arccos(cosang)))
-            if cn == 6:
-                if ang > 150.0:
-                    # Do not export exact 180 degree harmonic angles to
-                    # GROMACS.  The ordinary angle force has a sin(theta)
-                    # denominator and can become numerically singular at
-                    # perfectly linear geometries.  The 12 cis angles plus
-                    # six center-ligand bonds are sufficient to keep AX6 ions
-                    # octahedral without risking step-0 crashes.
-                    n_trans_skipped += 1
+
+    if is_pf6_drih:
+        trans_pairs = _ax6_trans_pairs(lig_idxs, lig_pos, cpos)
+        angles, bond_bond_cross_terms = _pf6_drih_angle_terms(int(center_idx), trans_pairs)
+        n_cis = sum(1 for item in angles if abs(float(item["theta0_deg"]) - 90.0) < 1.0e-6)
+        n_trans = sum(1 for item in angles if abs(float(item["theta0_deg"]) - 180.0) < 1.0e-6)
+    else:
+        for a in range(len(lig_idxs)):
+            for b in range(a + 1, len(lig_idxs)):
+                i = int(lig_idxs[a])
+                k = int(lig_idxs[b])
+                v1 = lig_pos[a] - cpos
+                v2 = lig_pos[b] - cpos
+                n1 = np.linalg.norm(v1)
+                n2 = np.linalg.norm(v2)
+                if n1 < 1e-8 or n2 < 1e-8:
                     continue
+                cosang = float(np.dot(v1, v2) / (n1 * n2))
+                cosang = max(-1.0, min(1.0, cosang))
+                ang = float(np.degrees(np.arccos(cosang)))
+                if cn == 6:
+                    if ang > 150.0:
+                        th0 = 180.0
+                        kk = float(k_trans_eff)
+                        n_trans += 1
+                    else:
+                        th0 = 90.0
+                        kk = float(k_cis_eff)
+                        n_cis += 1
                 else:
-                    th0 = 90.0
+                    th0 = 109.471
                     kk = float(k_cis_eff)
                     n_cis += 1
-            else:
-                th0 = 109.471
-                kk = float(k_cis_eff)
-                n_cis += 1
-            angles.append({"i": i, "j": int(center_idx), "k": k, "theta0_deg": float(th0), "k_kj_mol_rad2": float(kk)})
+                angles.append({"i": i, "j": int(center_idx), "k": k, "theta0_deg": float(th0), "k_kj_mol_rad2": float(kk), "funct": 1})
 
     params = {
         "meta": {
@@ -2276,11 +2387,11 @@ def bond_angle_params_drih(
             "k_angle_linear_kj_mol_rad2": float(k_trans_eff),
             "n_cis_angles": int(n_cis),
             "n_trans_angles": int(n_trans),
-            "n_trans_angles_skipped_for_gromacs": int(n_trans_skipped),
-            "linear_angle_policy": "skip_exact_180_harmonic_angles",
+            "angle_policy": "pf6_harmonic_angles_plus_bond_bond_cross_terms" if is_pf6_drih else "harmonic_ligand_center_ligand_angles",
         },
         "bonds": bonds,
         "angles": angles,
+        "bond_bond_cross_terms": bond_bond_cross_terms,
     }
 
     json_path = (task_dir / str(json_name)).resolve()

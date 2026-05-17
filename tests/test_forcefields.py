@@ -681,7 +681,7 @@ def test_oplsaa_preserves_resp_charges_when_auto_pf6_drih_uses_moldb():
     assert Path(assigned.GetProp("_yadonpy_bonded_itp")).is_file()
 
 
-def test_drih_patch_removes_exact_linear_angles_for_gromacs(tmp_path: Path):
+def test_drih_patch_keeps_trans_angles_for_pf6_drih(tmp_path: Path):
     itp = tmp_path / "PF6.itp"
     itp.write_text(
         "[ angles ]\n"
@@ -700,7 +700,7 @@ def test_drih_patch_removes_exact_linear_angles_for_gromacs(tmp_path: Path):
     assert _apply_bond_angle_patch_from_fragment(itp, fragment, method="DRIH") is True
     text = itp.read_text(encoding="utf-8")
 
-    assert "180.000" not in text
+    assert "180.000" in text
     assert "90.000" in text
 
 

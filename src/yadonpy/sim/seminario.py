@@ -468,14 +468,30 @@ def write_bond_angle_itp(
     angles = params.get("angles") or []
     if angles:
         lines.append("[ angles ]\n")
-        lines.append("; i  j  k  funct  theta0(deg)  k(kJ/mol/rad^2)\n")
+        lines.append("; atom_i  atom_j  atom_k  functype    a0 (Deg.)  k (kJ/mol/rad^2)\n")
         for a in angles:
             i = int(a["i"]) + 1
             j = int(a["j"]) + 1
             k = int(a["k"]) + 1
             th0 = float(a["theta0_deg"])
             kk = float(a["k_kj_mol_rad2"])
-            lines.append(f"{i:5d} {j:5d} {k:5d}  1  {th0: .3f}  {kk: .2f}\n")
+            suffix = f"     ; {a.get('comment')}" if str(a.get("comment", "")).strip() else ""
+            lines.append(f"{i:5d} {j:7d} {k:7d} {1:9d} {th0:13.3f} {kk:15.6E}{suffix}\n")
+        lines.append("\n")
+
+    cross_terms = params.get("bond_bond_cross_terms") or params.get("angle_cross_terms") or []
+    if cross_terms:
+        lines.append("[ angles ] ; bond-bond cross term\n")
+        lines.append("; atom_i  atom_j  atom_k  functype   r0_ij (nm)  r0_jk (nm)   k (kJ/mol/nm^2)\n")
+        for a in cross_terms:
+            i = int(a["i"]) + 1
+            j = int(a["j"]) + 1
+            k = int(a["k"]) + 1
+            r0_ij = float(a["r0_ij_nm"])
+            r0_jk = float(a["r0_jk_nm"])
+            kk = float(a["k_kj_mol_nm2"])
+            suffix = f"     ; {a.get('comment')}" if str(a.get("comment", "")).strip() else ""
+            lines.append(f"{i:5d} {j:7d} {k:7d} {3:9d} {r0_ij:11.6f} {r0_jk:11.6f} {kk:16.6E}{suffix}\n")
         lines.append("\n")
 
     out_itp.write_text("".join(lines), encoding="utf-8")

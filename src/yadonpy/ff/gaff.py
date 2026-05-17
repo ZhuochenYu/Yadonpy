@@ -269,11 +269,28 @@ class GAFF():
                     bonded_work_dir = (Path.cwd() / ".yadonpy_cache" / "bonded" / str(mol_name)).resolve()
                 bdir = Path(bonded_work_dir).expanduser().resolve()
 
-                # If patch already exists, just record the method and continue.
+                # If a valid patch already exists, just record the method and continue.
+                # Old PF6 DRIH patches are deliberately invalidated because they
+                # missed the bond-bond cross terms needed to keep PF6 octahedral.
                 try:
                     if b == "drih" and mol.HasProp("_yadonpy_bonded_itp"):
-                        mol.SetProp("_yadonpy_bonded_method", "DRIH")
-                        b = "done"
+                        _frag = Path(str(mol.GetProp("_yadonpy_bonded_itp")).strip())
+                        _reuse = _frag.is_file()
+                        if _reuse:
+                            try:
+                                from ..io.gromacs_molecule import itp_has_invalid_bond_parameters
+
+                                _reuse = not itp_has_invalid_bond_parameters(_frag)
+                            except Exception:
+                                _reuse = False
+                        if _reuse:
+                            mol.SetProp("_yadonpy_bonded_method", "DRIH")
+                            b = "done"
+                        else:
+                            try:
+                                mol.ClearProp("_yadonpy_bonded_itp")
+                            except Exception:
+                                pass
                     if b == "mseminario" and mol.HasProp("_yadonpy_mseminario_itp"):
                         mol.SetProp("_yadonpy_bonded_method", "mseminario")
                         b = "done"

@@ -101,7 +101,7 @@ def itp_has_invalid_bond_parameters(itp_path: Path) -> bool:
         text = Path(itp_path).read_text(encoding="utf-8", errors="replace")
     except Exception:
         return True
-    return bool(invalid_bond_parameter_lines(text))
+    return bool(invalid_bond_parameter_lines(text)) or itp_has_legacy_drih_ax6_angles(text)
 
 
 def _canon_angle_key(i: int, j: int, k: int) -> tuple[int, int, int]:
@@ -109,12 +109,19 @@ def _canon_angle_key(i: int, j: int, k: int) -> tuple[int, int, int]:
     return (min(i, k), j, max(i, k))
 
 
+def _parse_gromacs_section(raw_line: str) -> str | None:
+    line = str(raw_line or "").strip()
+    if not line.startswith("[") or "]" not in line:
+        return None
+    return line[1 : line.index("]")].strip().lower()
+
+
 def _parse_itp_bonds_angles(
     path: Path,
 ) -> tuple[
     dict[tuple[int, int], tuple[float, float]],
-    dict[tuple[int, int, int], tuple[float, float]],
-    set[tuple[int, int, int]],
+    dict[tuple[int, int, int], dict[str, float | int]],
+    list[dict[str, float | int]],
 ]:
     """Parse a small .itp fragment and extract bond/angle parameters.
 
@@ -123,18 +130,18 @@ def _parse_itp_bonds_angles(
 
     Returns:
         bond_map: (i,j) -> (r0_nm, k_kj_per_nm2)
-        angle_map: (i,j,k) -> (theta0_deg, k_kj_per_rad2)
-        linear_angle_keys: canonical angle keys with theta0 >= 179.5 deg
+        angle_map: (i,j,k) -> harmonic angle parameters.
+        cross_terms: GROMACS angle funct=3 bond-bond cross terms.
     """
 
     bond_map: dict[tuple[int, int], tuple[float, float]] = {}
-    angle_map: dict[tuple[int, int, int], tuple[float, float]] = {}
-    linear_angle_keys: set[tuple[int, int, int]] = set()
+    angle_map: dict[tuple[int, int, int], dict[str, float | int]] = {}
+    cross_terms: list[dict[str, float | int]] = []
 
     try:
         txt = path.read_text(encoding="utf-8", errors="ignore").splitlines()
     except Exception:
-        return bond_map, angle_map, linear_angle_keys
+        return bond_map, angle_map, cross_terms
 
     sec = None
     for raw in txt:
@@ -143,8 +150,9 @@ def _parse_itp_bonds_angles(
             continue
         if line.startswith(";"):
             continue
-        if line.startswith("[") and line.endswith("]"):
-            sec = line.strip("[]").strip().lower()
+        parsed_sec = _parse_gromacs_section(line)
+        if parsed_sec is not None:
+            sec = parsed_sec
             continue
 
         # Strip inline comments
@@ -170,16 +178,84 @@ def _parse_itp_bonds_angles(
                 i = int(toks[0])
                 j = int(toks[1])
                 kidx = int(toks[2])
-                theta0 = float(toks[4])
-                kk = float(toks[5])
+                funct = int(float(toks[3]))
                 key = _canon_angle_key(i, j, kidx)
-                angle_map[key] = (theta0, kk)
-                if theta0 >= 179.5:
-                    linear_angle_keys.add(key)
+                if funct == 3:
+                    cross_terms.append(
+                        {
+                            "i": int(i),
+                            "j": int(j),
+                            "k": int(kidx),
+                            "funct": 3,
+                            "r0_ij_nm": float(toks[4]),
+                            "r0_jk_nm": float(toks[5]),
+                            "k_kj_mol_nm2": float(toks[6]),
+                        }
+                    )
+                elif funct == 1:
+                    theta0 = float(toks[4])
+                    kk = float(toks[5])
+                    angle_map[key] = {
+                        "i": int(i),
+                        "j": int(j),
+                        "k": int(kidx),
+                        "funct": 1,
+                        "theta0_deg": float(theta0),
+                        "k_kj_mol_rad2": float(kk),
+                    }
             except Exception:
                 continue
 
-    return bond_map, angle_map, linear_angle_keys
+    return bond_map, angle_map, cross_terms
+
+
+def itp_has_legacy_drih_ax6_angles(itp_text: str) -> bool:
+    """Return True for old PF6/AX6 DRIH exports missing DRIH cross terms.
+
+    The PF6- DRIH topology must contain all 15 harmonic F-P-F angles plus the
+    matching 15 GROMACS funct=3 bond-bond cross terms.  Older exports either
+    dropped the trans angles during final ITP patching or lacked the cross terms,
+    which leaves the octahedron too soft during MD.
+    """
+
+    text = str(itp_text or "")
+    if "DRIH" not in text and "drih" not in text:
+        return False
+    section: str | None = None
+    bonds: list[tuple[int, int]] = []
+    angle_functors: list[tuple[int, int, int, int]] = []
+    for raw in text.splitlines():
+        line = raw.split(";", 1)[0].strip()
+        if not line:
+            continue
+        parsed_sec = _parse_gromacs_section(line)
+        if parsed_sec is not None:
+            section = parsed_sec
+            continue
+        toks = line.split()
+        if section == "bonds" and len(toks) >= 2:
+            try:
+                bonds.append((int(toks[0]), int(toks[1])))
+            except Exception:
+                pass
+        elif section == "angles" and len(toks) >= 4:
+            try:
+                angle_functors.append((int(toks[0]), int(toks[1]), int(toks[2]), int(float(toks[3]))))
+            except Exception:
+                pass
+    neighbors: dict[int, set[int]] = {}
+    for i, j in bonds:
+        neighbors.setdefault(i, set()).add(j)
+        neighbors.setdefault(j, set()).add(i)
+    ax6_centers = {idx for idx, vals in neighbors.items() if len(vals) == 6}
+    if not ax6_centers:
+        return False
+    for center in ax6_centers:
+        harmonic_count = sum(1 for _i, j, _k, funct in angle_functors if j == center and funct == 1)
+        cross_count = sum(1 for _i, j, _k, funct in angle_functors if j == center and funct == 3)
+        if harmonic_count < 15 or cross_count < 15:
+            return True
+    return False
 
 
 def _apply_bond_angle_patch_from_fragment(itp_path: Path, fragment_path: Path, *, method: str = "mseminario") -> bool:
@@ -190,10 +266,9 @@ def _apply_bond_angle_patch_from_fragment(itp_path: Path, fragment_path: Path, *
     force constants without duplicating bonds/angles.
     """
 
-    bond_map, angle_map, linear_angle_keys = _parse_itp_bonds_angles(fragment_path)
-    if not bond_map and not angle_map:
+    bond_map, angle_map, cross_terms = _parse_itp_bonds_angles(fragment_path)
+    if not bond_map and not angle_map and not cross_terms:
         return False
-    drop_linear_angles = str(method or "").strip().lower() == "drih"
 
     try:
         lines = itp_path.read_text(encoding="utf-8", errors="ignore").splitlines(True)
@@ -203,11 +278,13 @@ def _apply_bond_angle_patch_from_fragment(itp_path: Path, fragment_path: Path, *
     sec = None
     out: list[str] = []
     changed = False
+    seen_harmonic_angles: set[tuple[int, int, int]] = set()
 
     for raw in lines:
         stripped = raw.strip()
-        if stripped.startswith("[") and stripped.endswith("]"):
-            sec = stripped.strip("[]").strip().lower()
+        parsed_sec = _parse_gromacs_section(stripped)
+        if parsed_sec is not None:
+            sec = parsed_sec
             out.append(raw)
             continue
 
@@ -242,19 +319,16 @@ def _apply_bond_angle_patch_from_fragment(itp_path: Path, fragment_path: Path, *
                     i = int(toks[0])
                     j = int(toks[1])
                     kidx = int(toks[2])
+                    funct = int(float(toks[3]))
                     key = _canon_angle_key(i, j, kidx)
-                    current_theta0 = float(toks[4])
-                    if drop_linear_angles and (key in linear_angle_keys or current_theta0 >= 179.5):
-                        # GROMACS ordinary harmonic angles are singular at
-                        # exact 180 degrees.  DRIH AX6 patches retain
-                        # octahedral stiffness through center-ligand bonds and
-                        # cis angles; trans angles are deliberately removed.
-                        changed = True
-                        continue
-                    if key in angle_map:
-                        th0, kk = angle_map[key]
-                        toks[4] = f"{th0:.3f}"
-                        toks[5] = f"{kk:.2f}"
+                    if funct == 1 and key in angle_map:
+                        spec = angle_map[key]
+                        theta0 = float(spec.get("theta0_deg", toks[4]))
+                        k_theta = float(spec.get("k_kj_mol_rad2", toks[5]))
+                        toks[3] = "1"
+                        toks[4] = f"{theta0:.3f}"
+                        toks[5] = f"{k_theta:.6E}"
+                        seen_harmonic_angles.add(key)
                         changed = True
                         out.append(" ".join(toks) + ("  " if comment else "") + comment.rstrip("\n") + "\n")
                         continue
@@ -264,6 +338,37 @@ def _apply_bond_angle_patch_from_fragment(itp_path: Path, fragment_path: Path, *
             out.append(raw)
         else:
             out.append(raw)
+
+    missing_harmonic = [
+        (key, spec)
+        for key, spec in sorted(angle_map.items(), key=lambda item: item[0])
+        if key not in seen_harmonic_angles
+    ]
+    if missing_harmonic:
+        out.append("[ angles ]\n")
+        out.append("; atom_i  atom_j  atom_k  functype    a0 (Deg.)  k (kJ/mol/rad^2)\n")
+        for (_key, spec) in missing_harmonic:
+            i = int(spec.get("i", _key[0]))
+            j = int(spec.get("j", _key[1]))
+            kidx = int(spec.get("k", _key[2]))
+            out.append(
+                f"{i:5d} {j:7d} {kidx:7d} {1:9d} "
+                f"{float(spec['theta0_deg']):13.3f} {float(spec['k_kj_mol_rad2']):15.6E}     ; DRIH method\n"
+            )
+        out.append("\n")
+        changed = True
+
+    if cross_terms:
+        out.append("[ angles ] ; bond-bond cross term\n")
+        out.append("; atom_i  atom_j  atom_k  functype   r0_ij (nm)  r0_jk (nm)   k (kJ/mol/nm^2)\n")
+        for term in cross_terms:
+            out.append(
+                f"{int(term['i']):5d} {int(term['j']):7d} {int(term['k']):7d} {3:9d} "
+                f"{float(term['r0_ij_nm']):11.6f} {float(term['r0_jk_nm']):11.6f} "
+                f"{float(term['k_kj_mol_nm2']):16.6E}     ; DRIH method\n"
+            )
+        out.append("\n")
+        changed = True
 
     if changed:
         # Add a small marker comment at the top (non-invasive)
