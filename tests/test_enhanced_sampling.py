@@ -98,6 +98,7 @@ def test_prepare_solvated_ion_pull_selects_four_coordinate_li_and_writes_plumed(
     assert manifest["selected_center"]["target_ligand_count"] == 0
     assert manifest["ligand_atom_counts"] == {"solvent": 4, "target": 2, "anion": 1}
     text = plan.plumed_dat.read_text(encoding="utf-8")
+    assert "UNITS LENGTH=nm TIME=ps ENERGY=kj/mol" in text
     assert "MOVINGRESTRAINT" in text
     assert "cn_solvent: COORDINATION" in text
     assert "cn_target: COORDINATION" in text
@@ -137,6 +138,9 @@ def test_prepare_solvated_ion_umbrella_writes_windows_mdp_plumed_and_wham_lists(
     assert abs(plan.window_centers_nm[0] - plan.initial_offset_nm) < 1.0e-9
     assert abs(plan.window_centers_nm[-1] - 0.0) < 1.0e-9
     assert plan.umbrella_ndx_path.exists()
+    ndx_text = plan.umbrella_ndx_path.read_text(encoding="utf-8")
+    assert "[ System ]" in ndx_text
+    assert "[ PULL_REFERENCE_CMCNA ]" in ndx_text
     mdp = Path(plan.windows[0]["production_mdp"]).read_text(encoding="utf-8")
     assert "pull                      = yes" in mdp
     assert "pull-coord1-type          = umbrella" in mdp
@@ -145,6 +149,7 @@ def test_prepare_solvated_ion_umbrella_writes_windows_mdp_plumed_and_wham_lists(
     assert "pull-nstxout" in mdp
     assert "pull-nstfout" in mdp
     plumed = Path(plan.windows[0]["plumed_dat"]).read_text(encoding="utf-8")
+    assert "UNITS LENGTH=nm TIME=ps ENERGY=kj/mol" in plumed
     assert "cn_solvent: COORDINATION" in plumed
     assert "cn_target: COORDINATION" in plumed
     assert "cn_anion: COORDINATION" in plumed
@@ -241,6 +246,8 @@ def test_run_solvated_ion_umbrella_accepts_fake_runner(tmp_path: Path):
                 out.parent.mkdir(parents=True, exist_ok=True)
                 out.write_text("fake\n0\n   4.0   4.0   6.0\n", encoding="utf-8")
             elif args and args[0] == "wham":
+                assert "-ix" in args
+                assert "-if" not in args
                 out = Path(args[args.index("-o") + 1])
                 hist = Path(args[args.index("-hist") + 1])
                 out.parent.mkdir(parents=True, exist_ok=True)
