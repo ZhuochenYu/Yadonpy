@@ -14,6 +14,7 @@ from yadonpy import (
     ElectrodeChargeSpec,
     FixedChargeRegionSpec,
     GraphiteLayerSpec,
+    SolvatedIonPullSpec,
     IOAnalysisPolicy,
     InterfaceBuilder,
     InterfaceDynamics,
@@ -41,6 +42,7 @@ from yadonpy import (
     mol_from_smiles,
     parameterize_smiles,
     print_mechanics_result_summary,
+    prepare_solvated_ion_pull,
     qm,
     resolve_io_analysis_policy,
     resolve_prepared_system,
@@ -76,6 +78,7 @@ Package root exports include:
 - `IOAnalysisPolicy`
 - `resolve_io_analysis_policy`
 - `clean_md_trajectory_files`
+- `prepare_solvated_ion_pull`
 - `LayerStackSpec`
 - `LayerStackRelaxationSpec`
 - `GraphiteLayerSpec`
@@ -83,6 +86,7 @@ Package root exports include:
 - `VacuumLayerSpec`
 - `ElectrodeChargeSpec`
 - `FixedChargeRegionSpec`
+- `SolvatedIonPullSpec`
 - `ZCompressionAnnealSpec`
 - `LayerStackNvtResult`
 - `print_mechanics_result_summary`
@@ -1129,7 +1133,44 @@ Notes:
 - The generated `system.ndx` contains `LAYER_XX_NAME`, semantic phase groups
   such as `GRAPHITE`, `ELECTROLYTE`, `CMCNA`, and `MOBILE`.
 
-## 10. Layer-Stack Interface Scope
+## 10. Enhanced-Sampling Preparation
+
+`prepare_solvated_ion_pull(...)` writes PLUMED inputs for a future biased
+segment without launching MD.  The default use case is a solvated Li+ near a
+CMC-Na interface: select the Li whose initial solvent-oxygen coordination is
+closest to four, pull its z coordinate toward the CMCNA layer COM, and print
+coordination CVs for solvent O, CMC O, and anion F ligands.
+
+```python
+from yadonpy import SolvatedIonPullSpec, prepare_solvated_ion_pull
+
+pull_plan = prepare_solvated_ion_pull(
+    system_dir=result.system_gro.parent,
+    spec=SolvatedIonPullSpec(
+        target_group="CMCNA",
+        target_coordination_number=4,
+        initial_coordination_cutoff_nm=0.30,
+        step1=500_000,
+        kappa1_kj_mol_nm2=1000.0,
+        print_stride=100,
+    ),
+)
+```
+
+Returned `EnhancedSamplingPlan` fields:
+
+- `plumed_dat`: generated PLUMED input.
+- `ndx_path`: audit index groups for selected ion and ligand sets.
+- `manifest_path`: selected Li, candidate coordination counts, target group,
+  ligand counts, and generated file paths.
+- `mdrun_extra_args`: `("-plumed", ".../plumed.dat")`, ready for workflows that
+  expose `mdrun_extra_args`.
+
+The generated CV names are `d_ion_target.<axis>`, `cn_solvent`, `cn_target`,
+and `cn_anion`.  These CVs are a preparation layer for SMD, umbrella sampling,
+or metadynamics; they do not replace the unbiased interface analysis summary.
+
+## 11. Layer-Stack Interface Scope
 
 The generic layer-stack API is the public route for graphite/electrolyte,
 graphite/CMC-Na/electrolyte, graphite/electrolyte/graphite, vacuum stacks, and
@@ -1137,7 +1178,7 @@ fixed-charge electrode studies.  A single interface builder keeps geometry
 planning, layer manifests, and analysis semantics consistent across these
 systems.
 
-## 11. Internal Modules
+## 12. Internal Modules
 
 Modules under `yadonpy.core.*`, lower-level `yadonpy.gmx.*`, and utility-heavy helpers
 inside `yadonpy.interface.builder` are intentionally not the first dependency surface for

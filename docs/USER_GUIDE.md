@@ -504,6 +504,35 @@ Method meanings:
 - `coordination_by_region()` reports cation donor-state partitioning by z region.
 - `region_transport()` reports `Dxy`/`Dz` anisotropic MSD diagnostics.
 
+For future enhanced sampling, prepare the biased segment explicitly rather than
+editing PLUMED by hand.  The solvated-ion helper is designed for questions like
+"what happens to Li coordination when a four-coordinate solvated Li+ is pulled
+into CMC-Na?":
+
+```python
+from yadonpy import SolvatedIonPullSpec, prepare_solvated_ion_pull
+
+pull_plan = prepare_solvated_ion_pull(
+    system_dir=result.system_gro.parent,
+    spec=SolvatedIonPullSpec(
+        target_group="CMCNA",
+        target_coordination_number=4,
+        solvent_moltypes=("EC", "EMC", "DEC"),
+        anion_moltypes=("PF6",),
+        step1=500_000,
+        kappa1_kj_mol_nm2=1000.0,
+    ),
+)
+```
+
+The helper writes `plumed.dat`, `enhanced_sampling.ndx`, and
+`enhanced_sampling_manifest.json`.  The manifest records which Li atom was
+selected, all Li candidates and their initial solvent/CMC/anion coordination
+counts, the CMCNA target group, and `mdrun_extra_args=("-plumed",
+".../plumed.dat")`.  The generated PLUMED file pulls `d_ion_target.z` while
+printing `cn_solvent`, `cn_target`, and `cn_anion`, so the biased path can be
+read together with the ordinary `coordination_by_region()` analysis.
+
 Sandwich-specific interface builders are not part of the public workflow
 surface.  Use layer-stack specs for both simple two-layer contacts and
 multi-layer graphite/polymer/electrolyte systems.

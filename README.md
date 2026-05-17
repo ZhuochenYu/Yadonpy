@@ -382,6 +382,29 @@ time_series = interface.time_series(time_series_analysis=True)
 summary = interface.summary(time_series_analysis=True)
 ```
 
+Future enhanced-sampling setup can start from the relaxed layer-stack artifacts.
+For a CMC-Na interface, `prepare_solvated_ion_pull(...)` selects a Li+ whose
+initial solvent-oxygen coordination is closest to four, writes a PLUMED pulling
+file that moves that ion toward the `CMCNA` layer COM, and prints coordination
+CVs for solvent O, CMC O, and anion F ligands:
+
+```python
+from yadonpy.interface import SolvatedIonPullSpec, prepare_solvated_ion_pull
+
+pull_plan = prepare_solvated_ion_pull(
+    system_dir=result.system_gro.parent,
+    spec=SolvatedIonPullSpec(
+        target_group="CMCNA",
+        target_coordination_number=4,
+        step1=500_000,
+        kappa1_kj_mol_nm2=1000.0,
+        print_stride=100,
+    ),
+)
+# pass pull_plan.mdrun_extra_args to a biased GROMACS segment:
+# ("-plumed", ".../plumed.dat")
+```
+
 ## Simulation And Analysis Notes
 
 - Production presets use adaptive output cadence.  Production writes TRR

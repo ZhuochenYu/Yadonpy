@@ -35,6 +35,7 @@ from .bulk_resize import (
     recommend_electrolyte_alignment,
 )
 from .charge_audit import format_cell_charge_audit, format_charge_meta_audit, summarize_cell_charge, summarize_charge_meta
+from .enhanced_sampling import EnhancedSamplingPlan, SolvatedIonPullSpec, prepare_solvated_ion_pull
 from .layer_stack import (
     ElectrodeChargeSpec,
     FixedChargeRegionSpec,
@@ -95,12 +96,14 @@ __all__ = [
     "ElectrodeChargeSpec",
     "FixedChargeRegionSpec",
     "GraphiteLayerSpec",
+    "EnhancedSamplingPlan",
     "LayerStackNvtResult",
     "LayerStackRelaxationResult",
     "LayerStackRelaxationSpec",
     "LayerStackResult",
     "LayerStackSpec",
     "MolecularLayerSpec",
+    "SolvatedIonPullSpec",
     "VacuumLayerSpec",
     "ZCompressionAnnealSpec",
     "BulkSource",
@@ -130,6 +133,7 @@ __all__ = [
     "recommend_polymer_diffusion_interface_recipe",
     "format_cell_charge_audit",
     "format_charge_meta_audit",
+    "prepare_solvated_ion_pull",
     "fixed_xy_semiisotropic_npt_overrides",
     "InterfaceDynamics",
     "export_interface_group_catalog",

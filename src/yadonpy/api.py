@@ -75,6 +75,13 @@ def run_layer_stack_relaxation(*args, **kwargs):
     return _run_layer_stack_relaxation(*args, **kwargs)
 
 
+def prepare_solvated_ion_pull(*args, **kwargs):
+    """Prepare PLUMED inputs for pulling a solvated ion into an interface layer."""
+    from .interface import prepare_solvated_ion_pull as _prepare_solvated_ion_pull
+
+    return _prepare_solvated_ion_pull(*args, **kwargs)
+
+
 def clean_md_trajectory_files(*args, **kwargs):
     """Remove large trajectory streams after analysis has finished."""
     from .sim.cleanup import clean_md_trajectory_files as _clean_md_trajectory_files
@@ -299,6 +306,7 @@ __all__ = [
     'oplsaa_stability_preflight',
     'parameterize_smiles',
     'print_mechanics_result_summary',
+    'prepare_solvated_ion_pull',
     'resolve_prepared_system',
     'run_layer_stack_nvt',
     'run_layer_stack_relaxation',
