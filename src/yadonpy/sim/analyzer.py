@@ -2369,6 +2369,7 @@ class AnalyzeResult:
         time_series_rdf: bool = True,
         time_series_concentration: bool = True,
         time_series_angles: bool = True,
+        time_series_charge_potential: bool = True,
         time_series_rdf_rmax_nm: float = 1.2,
         time_series_rdf_bin_nm: float = 0.02,
         resume: bool = False,
@@ -2401,6 +2402,7 @@ class AnalyzeResult:
             time_series_rdf=time_series_rdf,
             time_series_concentration=time_series_concentration,
             time_series_angles=time_series_angles,
+            time_series_charge_potential=time_series_charge_potential,
             time_series_rdf_rmax_nm=time_series_rdf_rmax_nm,
             time_series_rdf_bin_nm=time_series_rdf_bin_nm,
             resume=resume,
@@ -2437,6 +2439,7 @@ class AnalyzeResult:
         time_series_rdf: bool = True,
         time_series_concentration: bool = True,
         time_series_angles: bool = True,
+        time_series_charge_potential: bool = True,
         time_series_rdf_rmax_nm: float = 1.2,
         time_series_rdf_bin_nm: float = 0.02,
         resume: bool = False,
@@ -2494,9 +2497,11 @@ class AnalyzeResult:
             "time_series_rdf": bool(time_series_rdf),
             "time_series_concentration": bool(time_series_concentration),
             "time_series_angles": bool(time_series_angles),
+            "time_series_charge_potential": bool(time_series_charge_potential),
             "time_series_rdf_rmax_nm": float(time_series_rdf_rmax_nm),
             "time_series_rdf_bin_nm": float(time_series_rdf_bin_nm),
             "edl_rdf_cn_time_series": True,
+            "charge_potential_time_series": True,
         }
         expected_cache_meta.update(self._analysis_policy_cache_meta())
         summary_path = analysis_dir / "interface_profile_summary.json"
@@ -2551,6 +2556,7 @@ class AnalyzeResult:
             time_series_rdf=bool(time_series_rdf),
             time_series_concentration=bool(time_series_concentration),
             time_series_angles=bool(time_series_angles),
+            time_series_charge_potential=bool(time_series_charge_potential),
             time_series_rdf_rmax_nm=float(time_series_rdf_rmax_nm),
             time_series_rdf_bin_nm=float(time_series_rdf_bin_nm),
             manifest_path=Path(manifest_path) if manifest_path is not None else None,

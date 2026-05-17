@@ -299,6 +299,12 @@ AnalyzeResult.interface(
     potential_reference: str = "zero_mean",
     split_electrodes: bool = False,
     report_potential_drop: bool = False,
+    time_series_sample_count: int = 10,
+    time_series_fps: float = 1.0,
+    time_series_rdf: bool = True,
+    time_series_concentration: bool = True,
+    time_series_angles: bool = True,
+    time_series_charge_potential: bool = True,
     penetration_species: Sequence[str] | None = None,
     adsorption_species: Sequence[str] | None = None,
     phase_groups: Sequence[str] | None = None,
@@ -317,6 +323,12 @@ AnalyzeResult.interface_profile(
     potential_reference: str = "zero_mean",
     split_electrodes: bool = False,
     report_potential_drop: bool = False,
+    time_series_sample_count: int = 10,
+    time_series_fps: float = 1.0,
+    time_series_rdf: bool = True,
+    time_series_concentration: bool = True,
+    time_series_angles: bool = True,
+    time_series_charge_potential: bool = True,
     penetration_species: Sequence[str] | None = None,
     adsorption_species: Sequence[str] | None = None,
     analysis_profile: str = "interface_fast",
@@ -401,6 +413,7 @@ interface = analy.interface(
     potential_reference="zero_mean",
     split_electrodes=True,
     report_potential_drop=True,
+    time_series_charge_potential=True,
 )
 health = interface.geometry_health()
 z_profile = interface.z_profiles()
@@ -465,10 +478,13 @@ Facade method semantics:
 - `graphite_adsorption(...)` reports graphite-near residence, surface occupancy,
   and EDL-layer carbonyl/dipole orientation angle distributions.
 - `time_series(time_series_analysis=True)` writes decile-sampled CSV/PNG/MP4
-  overlays, including graphite-EDL RDF/CN.  EDL RDF centers are restricted to
-  the graphite EDL cutoff, each target species contributes only its strongest
-  opposite-charge polar site, CN is plotted as dashed curves on a fixed 0-6
-  axis, and the first RDF peak position is annotated.
+  overlays, including graphite-EDL RDF/CN and graphite/EDL charge-potential
+  profiles.  The charge-potential movie plots total/phase charge density,
+  integrated charge per area, and the one-dimensional fixed-charge
+  electrostatic potential.  EDL RDF centers are restricted to the graphite EDL
+  cutoff, each target species contributes only its strongest opposite-charge
+  polar site, CN is plotted as dashed curves on a fixed 0-6 axis, and the first
+  RDF peak position is annotated.
 - `coordination_by_region()` partitions cation donor states by z region using
   fallback O/F contact cutoffs.
 - `region_transport()` returns anisotropic MSD summaries when transport is

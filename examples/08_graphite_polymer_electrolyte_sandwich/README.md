@@ -157,8 +157,11 @@ semantic aliases such as `GRAPHITE`, `ELECTROLYTE`, `CMCNA`, and `MOBILE`.
   `interface.z_profiles(...)`, `interface.graphite_adsorption(...)`,
   `interface.coordination_by_region(...)`, or `interface.time_series(...)` to
   write `time_series/` CSVs and slow MP4 overlays.  The default samples ten
-  equal time windows, so RDF/CN, molecule-COM z concentration, and
-  adsorbed-angle distributions can be inspected without creating a dense movie.
+  equal time windows, so RDF/CN, molecule-COM z concentration, graphite/EDL
+  charge-potential profiles, and adsorbed-angle distributions can be inspected
+  without creating a dense movie.  The charge-potential animation plots
+  total/phase charge density, integrated charge per area, and the
+  one-dimensional fixed-charge electrostatic potential.
   The plotting frames are also exported as PNG images under
   `time_series/frames/` before MP4 encoding.  MP4 output uses the
   pip-installed `imageio-ffmpeg` executable when available; CSV and PNG

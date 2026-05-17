@@ -242,6 +242,7 @@ def test_interface_facade_exposes_stepwise_outputs(tmp_path: Path):
     assert "z_density_profiles_csv" in z_profiles["outputs"]
     assert edl["available"] is True
     assert "charge_potential" in edl
+    assert str(edl["outputs"]["charge_potential_svg"]).endswith("charge_potential_profiles.svg")
     assert penetration["available"] is True
     assert penetration["penetration_threshold_nm"] == 0.33
     assert membrane["available"] is True
@@ -259,6 +260,7 @@ def test_interface_facade_exposes_stepwise_outputs(tmp_path: Path):
     for key in (
         "geometry_health_json",
         "charge_density_profiles_csv",
+        "charge_potential_svg",
         "edl_summary_json",
         "integrated_charge_csv",
         "electrostatic_potential_csv",
@@ -333,9 +335,19 @@ def test_interface_time_series_writes_decile_csv_artifacts(tmp_path: Path, monke
         bins=np.arange(0.0, 5.5, 0.5),
         instances=instances,
         categories=categories,
+        phase_masks={
+            "GRAPHITE": np.asarray([True, False, False, False]),
+            "POLYMER": np.asarray([False, True, False, False]),
+            "ELECTROLYTE": np.asarray([False, False, True, True]),
+        },
+        moltypes=np.asarray(["Li", "SOLV", "SOLV", "PF6"], dtype=object),
+        masses=np.asarray([6.94, 15.999, 15.999, 18.998], dtype=float),
+        charges=np.asarray([1.0, 0.3, -0.3, -1.0], dtype=float),
+        phase_groups=("GRAPHITE", "POLYMER", "ELECTROLYTE"),
         adsorption_rows=adsorption_rows,
         graphite_surfaces=[{"phase": "GRAPHITE", "side": "top", "z_nm": 0.50}],
         surface_distance_nm=1.0,
+        potential_reference="zero_mean",
         sample_count=2,
         fps=1.0,
         rdf_rmax_nm=1.0,
@@ -348,11 +360,15 @@ def test_interface_time_series_writes_decile_csv_artifacts(tmp_path: Path, monke
     assert (tmp_path / "time_series" / "rdf_cn_shell_timeseries.csv").exists()
     assert (tmp_path / "time_series" / "edl_rdf_cn_curves_timeseries.csv").exists()
     assert (tmp_path / "time_series" / "edl_rdf_cn_shell_timeseries.csv").exists()
+    assert (tmp_path / "time_series" / "charge_potential_timeseries.csv").exists()
+    assert (tmp_path / "time_series" / "charge_potential_phase_timeseries.csv").exists()
     assert (tmp_path / "time_series" / "adsorbed_orientation_angle_timeseries.csv").exists()
     assert (tmp_path / "time_series" / "frames" / "z_concentration" / "frame_000.png").exists()
+    assert (tmp_path / "time_series" / "frames" / "charge_potential" / "frame_000.png").exists()
     assert (tmp_path / "time_series" / "frames" / "rdf_cn" / "frame_000.png").exists()
     assert (tmp_path / "time_series" / "frames" / "edl_rdf_cn" / "frame_000.png").exists()
     assert (tmp_path / "time_series" / "frames" / "adsorbed_orientation_angle" / "frame_000.png").exists()
     assert out["outputs"]["z_concentration"]["frame_png_count"] == 2
+    assert out["outputs"]["charge_potential"]["phase_csv"].endswith("charge_potential_phase_timeseries.csv")
     assert out["outputs"]["rdf_cn"]["shell_csv"].endswith("rdf_cn_shell_timeseries.csv")
     assert out["outputs"]["edl_rdf_cn"]["cn_axis_ylim"] == [0.0, 6.0]

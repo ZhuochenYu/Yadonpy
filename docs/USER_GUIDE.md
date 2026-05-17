@@ -468,6 +468,7 @@ interface = analy.interface(
     potential_reference="zero_mean",
     split_electrodes=True,
     report_potential_drop=True,
+    time_series_charge_potential=True,
 )
 health = interface.geometry_health()
 z_profile = interface.z_profiles()
@@ -535,11 +536,13 @@ Method meanings:
   and simple orientation proxies.
 - `coordination_by_region()` reports cation donor-state partitioning by z region.
 - `region_transport()` reports `Dxy`/`Dz` anisotropic MSD diagnostics.
-- `time_series(time_series_analysis=True)` includes graphite-EDL RDF/CN when
-  graphite surfaces and polar species are present.  EDL RDF centers are inside
-  the graphite cutoff, targets use one strongest opposite-charge site per
-  molecule, CN is drawn as dashed curves on a fixed 0-6 axis, and the first RDF
-  peak is labeled.
+- `time_series(time_series_analysis=True)` includes graphite-EDL RDF/CN and
+  graphite/EDL charge-potential profiles when the required data are present.
+  The charge-potential movie plots total/phase charge density, integrated charge
+  per area, and the one-dimensional fixed-charge electrostatic potential.  EDL
+  RDF centers are inside the graphite cutoff, targets use one strongest
+  opposite-charge site per molecule, CN is drawn as dashed curves on a fixed
+  0-6 axis, and the first RDF peak is labeled.
 
 For future enhanced sampling, prepare the biased segment explicitly rather than
 editing PLUMED by hand.  The solvated-ion helper is designed for questions like

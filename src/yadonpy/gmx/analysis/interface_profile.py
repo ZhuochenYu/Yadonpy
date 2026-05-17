@@ -31,6 +31,7 @@ class InterfaceTimeSeriesOptions:
     rdf: bool = True
     concentration: bool = True
     angles: bool = True
+    charge_potential: bool = True
     rdf_rmax_nm: float = 1.2
     rdf_bin_nm: float = 0.02
 
@@ -44,6 +45,7 @@ class InterfaceTimeSeriesOptions:
         time_series_rdf: bool = True,
         time_series_concentration: bool = True,
         time_series_angles: bool = True,
+        time_series_charge_potential: bool = True,
         time_series_rdf_rmax_nm: float = 1.2,
         time_series_rdf_bin_nm: float = 0.02,
     ) -> "InterfaceTimeSeriesOptions":
@@ -54,6 +56,7 @@ class InterfaceTimeSeriesOptions:
             rdf=bool(time_series_rdf),
             concentration=bool(time_series_concentration),
             angles=bool(time_series_angles),
+            charge_potential=bool(time_series_charge_potential),
             rdf_rmax_nm=float(time_series_rdf_rmax_nm),
             rdf_bin_nm=float(time_series_rdf_bin_nm),
         )
@@ -407,6 +410,52 @@ def _write_z_profile_svg(path: Path, rows: Sequence[dict[str, Any]]) -> Path | N
     ax.set_ylabel("mass density / g cm$^{-3}$")
     ax.set_title("Layer-stack z density profiles")
     ax.legend(loc="best", fontsize="small")
+    fig.tight_layout()
+    fig.savefig(path)
+    plt.close(fig)
+    return path
+
+
+def _write_charge_potential_svg(
+    *,
+    path: Path,
+    potential_rows: Sequence[dict[str, Any]],
+    density_arrays: dict[str, dict[str, np.ndarray]],
+    phase_groups: Sequence[str],
+) -> Path | None:
+    try:
+        import matplotlib.pyplot as plt
+    except Exception:
+        return None
+    rows = [dict(row) for row in potential_rows]
+    if not rows:
+        return None
+    z = np.asarray([float(row.get("z_nm") or 0.0) for row in rows], dtype=float)
+    q_total = np.asarray([float(row.get("charge_density_e_nm3") or 0.0) for row in rows], dtype=float)
+    q_int = np.asarray([float(row.get("integrated_charge_e_nm2") or 0.0) for row in rows], dtype=float)
+    phi = np.asarray([float(row.get("electrostatic_potential_V") or 0.0) for row in rows], dtype=float)
+    if z.size == 0:
+        return None
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fig, axes = plt.subplots(3, 1, figsize=(7.0, 7.2), sharex=True)
+    axes[0].plot(z, q_total, color="black", lw=1.8, label="total")
+    for phase in phase_groups:
+        arr = density_arrays.get(f"phase:{phase}", {})
+        z_phase = np.asarray(arr.get("z_mid_nm", []), dtype=float)
+        q_phase = np.asarray(arr.get("charge_density_e_nm3", []), dtype=float)
+        if z_phase.size == q_phase.size and z_phase.size:
+            axes[0].plot(z_phase, q_phase, lw=1.0, alpha=0.75, label=str(phase))
+    axes[0].axhline(0.0, color="0.65", lw=0.8)
+    axes[0].set_ylabel("charge density / e nm$^{-3}$")
+    axes[0].legend(loc="best", fontsize="x-small", ncols=2)
+    axes[1].plot(z, q_int, color="tab:blue", lw=1.8)
+    axes[1].axhline(0.0, color="0.65", lw=0.8)
+    axes[1].set_ylabel("integrated charge / e nm$^{-2}$")
+    axes[2].plot(z, phi, color="tab:red", lw=1.8)
+    axes[2].axhline(0.0, color="0.65", lw=0.8)
+    axes[2].set_ylabel("potential / V")
+    axes[2].set_xlabel("z / nm")
+    axes[0].set_title("Graphite/EDL charge and electrostatic potential profiles")
     fig.tight_layout()
     fig.savefig(path)
     plt.close(fig)
@@ -892,6 +941,175 @@ def _write_concentration_timeseries(
             reason=f"mp4_write_failed:{exc.__class__.__name__}",
             extra=extra,
         )
+    plt.close(fig)
+    return _animation_result(path=mp4_path, extra=extra)
+
+
+def _write_charge_potential_timeseries(
+    *,
+    out_dir: Path,
+    windows: Sequence[dict[str, Any]],
+    bins: np.ndarray,
+    phase_masks: dict[str, np.ndarray],
+    moltypes: np.ndarray,
+    masses: np.ndarray,
+    charges: np.ndarray,
+    phase_groups: Sequence[str],
+    potential_reference: str,
+    fps: float,
+) -> dict[str, Any]:
+    if not windows or not phase_masks:
+        return _animation_result(path=None, reason="no_time_windows_or_phase_groups")
+    profiles: list[dict[str, Any]] = []
+    total_rows: list[dict[str, Any]] = []
+    phase_rows: list[dict[str, Any]] = []
+    for win in windows:
+        _profile_rows_unused, density_arrays = _profile_rows(
+            frames=list(win.get("frames") or []),
+            bins=bins,
+            phase_masks=phase_masks,
+            moltypes=moltypes,
+            masses=masses,
+            charges=charges,
+        )
+        potential = _charge_potential_profiles(
+            phase_groups=phase_groups,
+            density_arrays=density_arrays,
+            potential_reference=str(potential_reference),
+        )
+        if not bool(potential.get("available")):
+            continue
+        rows = list(potential.get("rows") or [])
+        for row in rows:
+            total_rows.append(
+                {
+                    "window_index": int(win["window_index"]),
+                    "time_start_ps": float(win["time_start_ps"]),
+                    "time_end_ps": float(win["time_end_ps"]),
+                    "z_nm": row.get("z_nm"),
+                    "charge_density_e_nm3": row.get("charge_density_e_nm3"),
+                    "integrated_charge_e_nm2": row.get("integrated_charge_e_nm2"),
+                    "electric_field_V_m": row.get("electric_field_V_m"),
+                    "electrostatic_potential_V": row.get("electrostatic_potential_V"),
+                }
+            )
+        for phase in phase_groups:
+            arr = density_arrays.get(f"phase:{phase}", {})
+            z_phase = np.asarray(arr.get("z_mid_nm", []), dtype=float)
+            q_phase = np.asarray(arr.get("charge_density_e_nm3", []), dtype=float)
+            for i in range(min(int(z_phase.size), int(q_phase.size))):
+                phase_rows.append(
+                    {
+                        "window_index": int(win["window_index"]),
+                        "time_start_ps": float(win["time_start_ps"]),
+                        "time_end_ps": float(win["time_end_ps"]),
+                        "phase": str(phase),
+                        "z_nm": float(z_phase[i]),
+                        "charge_density_e_nm3": float(q_phase[i]),
+                    }
+                )
+        profiles.append({"window": dict(win), "density_arrays": density_arrays, "potential_rows": rows})
+    total_csv = out_dir / "time_series" / "charge_potential_timeseries.csv"
+    phase_csv = out_dir / "time_series" / "charge_potential_phase_timeseries.csv"
+    _write_rows_csv(total_csv, total_rows)
+    _write_rows_csv(phase_csv, phase_rows)
+    if not profiles:
+        return _animation_result(
+            path=None,
+            reason="missing_charge_density",
+            extra={"csv": str(total_csv), "phase_csv": str(phase_csv)},
+        )
+    try:
+        import matplotlib.pyplot as plt
+    except Exception:
+        return _animation_result(
+            path=None,
+            reason="matplotlib_unavailable",
+            extra={"csv": str(total_csv), "phase_csv": str(phase_csv), "sample_windows": len(profiles)},
+        )
+    mp4_path = out_dir / "time_series" / "charge_potential_timeseries.mp4"
+    mp4_path.parent.mkdir(parents=True, exist_ok=True)
+
+    def _total_arrays(payload: dict[str, Any]) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        rows = [dict(row) for row in payload.get("potential_rows") or []]
+        return (
+            np.asarray([float(row.get("z_nm") or 0.0) for row in rows], dtype=float),
+            np.asarray([float(row.get("charge_density_e_nm3") or 0.0) for row in rows], dtype=float),
+            np.asarray([float(row.get("integrated_charge_e_nm2") or 0.0) for row in rows], dtype=float),
+            np.asarray([float(row.get("electrostatic_potential_V") or 0.0) for row in rows], dtype=float),
+        )
+
+    total_arrays = [_total_arrays(p) for p in profiles]
+    q_max = max([float(np.max(np.abs(arr[1]))) for arr in total_arrays if arr[1].size] or [1.0])
+    qint_max = max([float(np.max(np.abs(arr[2]))) for arr in total_arrays if arr[2].size] or [1.0])
+    phi_max = max([float(np.max(np.abs(arr[3]))) for arr in total_arrays if arr[3].size] or [1.0])
+    fig, axes = plt.subplots(3, 1, figsize=(7.0, 7.2), sharex=True)
+
+    def _lim(value: float) -> tuple[float, float]:
+        vmax = max(float(value) * 1.15, 1.0e-12)
+        return -vmax, vmax
+
+    def _update(frame_idx: int):
+        for ax in axes:
+            ax.clear()
+        payload = profiles[int(frame_idx)]
+        win = payload["window"]
+        z, q_total, q_int, phi = _total_arrays(payload)
+        if z.size:
+            axes[0].plot(z, q_total, color="black", lw=1.8, label="total")
+            axes[1].plot(z, q_int, color="tab:blue", lw=1.8)
+            axes[2].plot(z, phi, color="tab:red", lw=1.8)
+        for phase in phase_groups:
+            arr = payload["density_arrays"].get(f"phase:{phase}", {})
+            z_phase = np.asarray(arr.get("z_mid_nm", []), dtype=float)
+            q_phase = np.asarray(arr.get("charge_density_e_nm3", []), dtype=float)
+            if z_phase.size == q_phase.size and z_phase.size:
+                axes[0].plot(z_phase, q_phase, lw=1.0, alpha=0.75, label=str(phase))
+        axes[0].set_ylim(*_lim(q_max))
+        axes[1].set_ylim(*_lim(qint_max))
+        axes[2].set_ylim(*_lim(phi_max))
+        for ax in axes:
+            ax.axhline(0.0, color="0.65", lw=0.8)
+        if z.size:
+            axes[2].set_xlim(float(z[0]), float(z[-1]))
+        axes[0].set_ylabel("charge density / e nm$^{-3}$")
+        axes[1].set_ylabel("integrated charge / e nm$^{-2}$")
+        axes[2].set_ylabel("potential / V")
+        axes[2].set_xlabel("z / nm")
+        axes[0].set_title(
+            f"Graphite/EDL charge and potential, {float(win['time_start_ps']):.1f}-{float(win['time_end_ps']):.1f} ps"
+        )
+        axes[0].legend(loc="best", fontsize="x-small", ncols=2)
+        fig.tight_layout()
+
+    frame_meta = _save_animation_png_frames(
+        fig=fig,
+        update=_update,
+        frame_count=len(profiles),
+        frame_dir=out_dir / "time_series" / "frames" / "charge_potential",
+    )
+    extra = {
+        "csv": str(total_csv),
+        "phase_csv": str(phase_csv),
+        "sample_windows": len(profiles),
+        "potential_reference": str(potential_reference),
+        **frame_meta,
+    }
+    writer = _mp4_writer(fps)
+    if writer is None:
+        plt.close(fig)
+        return _animation_result(path=None, reason="ffmpeg_writer_unavailable", extra=extra)
+    try:
+        from matplotlib.animation import FuncAnimation
+    except Exception:
+        plt.close(fig)
+        return _animation_result(path=None, reason="matplotlib_unavailable", extra=extra)
+    ani = FuncAnimation(fig, _update, frames=len(profiles), interval=1000)
+    try:
+        ani.save(mp4_path, writer=writer)
+    except Exception as exc:
+        plt.close(fig)
+        return _animation_result(path=None, reason=f"mp4_write_failed:{exc.__class__.__name__}", extra=extra)
     plt.close(fig)
     return _animation_result(path=mp4_path, extra=extra)
 
@@ -1574,9 +1792,15 @@ def _time_series_animations(
     bins: np.ndarray,
     instances: Sequence[dict[str, Any]],
     categories: dict[str, np.ndarray],
+    phase_masks: dict[str, np.ndarray],
+    moltypes: np.ndarray,
+    masses: np.ndarray,
+    charges: np.ndarray,
+    phase_groups: Sequence[str],
     adsorption_rows: Sequence[dict[str, Any]],
     graphite_surfaces: Sequence[dict[str, Any]],
     surface_distance_nm: float,
+    potential_reference: str,
     sample_count: int,
     fps: float,
     rdf_rmax_nm: float,
@@ -1584,6 +1808,7 @@ def _time_series_animations(
     enable_rdf: bool = True,
     enable_concentration: bool = True,
     enable_angles: bool = True,
+    enable_charge_potential: bool = True,
 ) -> dict[str, Any]:
     windows = _time_windows(frames, sample_count=sample_count)
     ts_dir = Path(out_dir) / "time_series"
@@ -1609,6 +1834,19 @@ def _time_series_animations(
             windows=windows,
             bins=bins,
             instances=instances,
+            fps=float(fps),
+        )
+    if enable_charge_potential:
+        outputs["charge_potential"] = _write_charge_potential_timeseries(
+            out_dir=out_dir,
+            windows=windows,
+            bins=bins,
+            phase_masks=phase_masks,
+            moltypes=moltypes,
+            masses=masses,
+            charges=charges,
+            phase_groups=phase_groups,
+            potential_reference=str(potential_reference),
             fps=float(fps),
         )
     if enable_rdf:
@@ -2888,6 +3126,7 @@ def compute_interface_profile(
     time_series_rdf: bool = True,
     time_series_concentration: bool = True,
     time_series_angles: bool = True,
+    time_series_charge_potential: bool = True,
     time_series_rdf_rmax_nm: float = 1.2,
     time_series_rdf_bin_nm: float = 0.02,
     manifest_path: Path | None = None,
@@ -2903,6 +3142,7 @@ def compute_interface_profile(
         time_series_rdf=bool(time_series_rdf),
         time_series_concentration=bool(time_series_concentration),
         time_series_angles=bool(time_series_angles),
+        time_series_charge_potential=bool(time_series_charge_potential),
         time_series_rdf_rmax_nm=float(time_series_rdf_rmax_nm),
         time_series_rdf_bin_nm=float(time_series_rdf_bin_nm),
     )
@@ -3084,9 +3324,15 @@ def compute_interface_profile(
             bins=bins,
             instances=atom_payload["instances"],
             categories=atom_categories,
+            phase_masks=phase_masks,
+            moltypes=np.asarray(atom_payload["moltypes"], dtype=object),
+            masses=np.asarray(atom_payload["masses"], dtype=float),
+            charges=np.asarray(atom_payload["charges"], dtype=float),
+            phase_groups=phase_groups_norm,
             adsorption_rows=adsorption.get("rows") or [],
             graphite_surfaces=adsorption.get("surfaces") or [],
             surface_distance_nm=float(surface_distance_nm),
+            potential_reference=str(potential_reference),
             sample_count=int(time_series_options.sample_count),
             fps=float(time_series_options.fps),
             rdf_rmax_nm=float(time_series_options.rdf_rmax_nm),
@@ -3094,6 +3340,7 @@ def compute_interface_profile(
             enable_rdf=bool(time_series_options.rdf),
             enable_concentration=bool(time_series_options.concentration),
             enable_angles=bool(time_series_options.angles),
+            enable_charge_potential=bool(time_series_options.charge_potential),
         )
         if bool(time_series_options.enabled)
         else {"available": False, "reason": "disabled"}
@@ -3146,6 +3393,12 @@ def compute_interface_profile(
     potential_csv = out_dir / "electrostatic_potential.csv"
     _write_rows_csv(edl_species_csv, _edl_species_rows(profile_rows))
     potential_rows = list(potential.get("rows") or []) if isinstance(potential, dict) else []
+    charge_potential_svg = _write_charge_potential_svg(
+        path=out_dir / "charge_potential_profiles.svg",
+        potential_rows=potential_rows,
+        density_arrays=density_arrays,
+        phase_groups=phase_groups_norm,
+    )
     _write_rows_csv(
         integrated_charge_csv,
         [
@@ -3163,6 +3416,13 @@ def compute_interface_profile(
         potential_rows,
         fields=("z_nm", "charge_density_e_nm3", "integrated_charge_e_nm2", "electric_field_V_m", "electrostatic_potential_V"),
     )
+    edl["outputs"] = {
+        "edl_species_profiles_csv": str(edl_species_csv),
+        "integrated_charge_csv": str(integrated_charge_csv),
+        "electrostatic_potential_csv": str(potential_csv),
+        "charge_potential_svg": None if charge_potential_svg is None else str(charge_potential_svg),
+        "edl_summary_json": str(out_dir / "edl_summary.json"),
+    }
     _write_json(out_dir / "edl_summary.json", edl)
     _write_rows_csv(out_dir / "penetration_events.csv", penetration.get("rows") or [])
     _write_json(out_dir / "penetration_summary.json", {key: value for key, value in penetration.items() if key != "rows"})
@@ -3277,9 +3537,11 @@ def compute_interface_profile(
             "time_series_rdf": bool(time_series_options.rdf),
             "time_series_concentration": bool(time_series_options.concentration),
             "time_series_angles": bool(time_series_options.angles),
+            "time_series_charge_potential": bool(time_series_options.charge_potential),
             "time_series_rdf_rmax_nm": float(time_series_options.rdf_rmax_nm),
             "time_series_rdf_bin_nm": float(time_series_options.rdf_bin_nm),
             "edl_rdf_cn_time_series": True,
+            "charge_potential_time_series": True,
         },
         "inputs": {
             "gro_path": str(gro_path),
@@ -3311,6 +3573,7 @@ def compute_interface_profile(
             "edl_species_profiles_csv": str(edl_species_csv),
             "integrated_charge_csv": str(integrated_charge_csv),
             "electrostatic_potential_csv": str(potential_csv),
+            "charge_potential_svg": None if charge_potential_svg is None else str(charge_potential_svg),
             "edl_summary_json": str(out_dir / "edl_summary.json"),
             "penetration_events_csv": str(out_dir / "penetration_events.csv"),
             "penetration_summary_json": str(out_dir / "penetration_summary.json"),

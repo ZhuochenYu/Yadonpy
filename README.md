@@ -411,6 +411,7 @@ interface = analy.interface(
     surface_distance_nm=0.50,
     time_series_sample_count=10,
     time_series_fps=1.0,
+    time_series_charge_potential=True,
 )
 health = interface.geometry_health()
 z_profiles = interface.z_profiles(time_series_analysis=True)
@@ -505,8 +506,11 @@ umbrella_plan = prepare_solvated_ion_umbrella(
   post-processing call explicitly receives `time_series_analysis=True`.  When
   enabled, they sample up to ten equal trajectory windows by default and write
   slow MP4 overlays for molecule-COM z concentration, cation-centered RDF/CN,
-  graphite-EDL RDF/CN, and adsorbed orientation-angle distributions when the
-  required trajectory and species are available.  The EDL RDF/CN movie uses
+  graphite-EDL RDF/CN, graphite/EDL charge-potential profiles, and adsorbed
+  orientation-angle distributions when the required trajectory and species are
+  available.  The charge-potential movie plots total/phase charge density,
+  integrated charge per area, and the one-dimensional reference-shifted
+  electrostatic potential derived from the sampled fixed charges.  The EDL RDF/CN movie uses
   only centers whose molecule COM lies inside the graphite EDL cutoff, chooses
   one strongest opposite-charge site per target molecule, draws CN as dashed
   curves on a 0-6 right axis, and labels the first RDF peak position.  The same

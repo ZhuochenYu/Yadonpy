@@ -3803,6 +3803,7 @@ def analyze_layer_stack_interface(
     time_series_rdf: bool = True,
     time_series_concentration: bool = True,
     time_series_angles: bool = True,
+    time_series_charge_potential: bool = True,
     time_series_rdf_rmax_nm: float = 1.2,
     time_series_rdf_bin_nm: float = 0.02,
 ) -> dict[str, Any]:
@@ -3859,6 +3860,7 @@ def analyze_layer_stack_interface(
         time_series_rdf=bool(time_series_rdf),
         time_series_concentration=bool(time_series_concentration),
         time_series_angles=bool(time_series_angles),
+        time_series_charge_potential=bool(time_series_charge_potential),
         time_series_rdf_rmax_nm=float(time_series_rdf_rmax_nm),
         time_series_rdf_bin_nm=float(time_series_rdf_bin_nm),
     )
