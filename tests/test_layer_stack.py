@@ -107,6 +107,29 @@ def test_layer_stack_supports_vacuum_and_arbitrary_order(monkeypatch, tmp_path: 
     assert "ELECTROLYTE" in result.system_ndx.read_text(encoding="utf-8")
 
 
+def test_layer_stack_density_target_expands_z_not_graphite_xy_by_default():
+    water = utils.mol_from_smiles("O", name="WAT")
+    layer = MolecularLayerSpec(
+        name="DENSE_WATER",
+        species=(water,),
+        counts=(200,),
+        thickness_nm=0.2,
+        density_target_g_cm3=1.0,
+        layer_kind="electrolyte",
+    )
+    graphite = GraphiteLayerSpec(name="GRAPHITE", nx=2, ny=2, n_layers=1)
+
+    master_x, master_y, planning = layer_stack_mod._plan_master_xy(
+        (graphite, layer),
+        auto_expand_graphite=True,
+        molecular_packing_expand="z",
+    )
+
+    assert planning["reason"] == "fixed_graphite_xy_z_expanded_molecular_layers"
+    assert planning["graphite_dimensions"]["GRAPHITE"] == {"nx": 2, "ny": 2}
+    assert layer_stack_mod._required_thickness_nm(layer, master_x * master_y) > layer.thickness_nm
+
+
 def test_layer_stack_constant_charge_manifest(monkeypatch, tmp_path: Path):
     _patch_fake_export(monkeypatch)
     result = build_layer_stack(
@@ -589,4 +612,6 @@ def test_density_profile_flags_low_cmc_density(tmp_path: Path):
     assert gate["warning_floor_g_cm3"] == 0.90
     assert gate["severe_floor_g_cm3"] == 0.75
     assert gate["primary_phase"] == "CMCNA"
+    assert gate["primary_metric"] == "core_region_mean_g_cm3"
     assert gate["primary_density_g_cm3"] < 0.75
+    assert summary["phase_density_g_cm3"]["CMCNA"]["core_region_total_density_g_cm3"] > 1.0

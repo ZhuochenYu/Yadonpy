@@ -109,6 +109,7 @@ if __name__ == "__main__":
         pbc_mode="xyz",
         name="electrolyte_graphite_edge",
         default_gap_nm=0.35,
+        molecular_packing_expand="z",
     )
     relaxation = LayerStackRelaxationSpec(temperature_K=temp, sample_ns=sample_ns)
 

@@ -199,7 +199,9 @@ if __name__ == "__main__":
             species=(CMC, Na),
             counts=(cmc_chain_count, cmc_chain_count * cmc_dp),
             thickness_nm=1.8,
-            density_target_g_cm3=1.5,
+            # Initial packing target only: keep insertion looser than bulk
+            # CMC-Na (~1.5 g/cm3), then densify via compression annealing/z-NPT.
+            density_target_g_cm3=1.0,
             layer_kind="cmcna",
             charge_scale=(charge_scale, charge_scale),
             polyelectrolyte_mode=True,
@@ -210,6 +212,7 @@ if __name__ == "__main__":
             pbc_mode="xyz",
             name=f"charged_graphite_stack_{case_name}",
             default_gap_nm=0.35,
+            molecular_packing_expand="z",
         )
         relaxation = LayerStackRelaxationSpec(temperature_K=temp, sample_ns=sample_ns)
 

@@ -292,6 +292,7 @@ def test_example08_scripts_use_one_shot_builder_and_interface_summary_printer():
         assert 'LayerStackRelaxationSpec(' in text
         assert 'analysis_profile = "interface_fast"' in text
         assert 'interface_bin_nm = 0.05' in text
+        assert 'molecular_packing_expand="z"' in text
         assert 'graphite_adsorption_cutoff_nm = 0.50' in text
         assert 'penetration_species = ' in text
         assert 'adsorption_species = ' in text

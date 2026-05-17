@@ -306,6 +306,7 @@ stack = LayerStackSpec(
     ),
     order="bottom_to_top",
     pbc_mode="xyz",
+    molecular_packing_expand="z",
 )
 
 result = build_layer_stack(stack=stack, work_dir="./work_layer_stack")
@@ -325,10 +326,12 @@ For dense graphite/polymer/electrolyte sandwiches, `compression_anneal` adds
 small fixed-XY z-compression moves followed by hot/high-pressure z-only
 annealing before the final z-NPT.  In `auto` mode it skips explicit vacuum or
 open-z controls and enables the loop for closed graphite sandwich stacks.
-CMC-Na uses a bulk-density reference of about `1.5 g/cm3` for initial geometry.
-The layer model is not forced to end at exactly that value, but the relaxation
-summary flags CMCNA rich-region density below `0.90 g/cm3` as a warning and
-below `0.75 g/cm3` as severe.
+For CMC-Na, use a deliberately loose initial packing target, then let the
+fixed-XY compression anneal and z-NPT stages densify the confined layer.  The
+bulk CMC-Na density of about `1.5 g/cm3` is used only as a sanity reference,
+not as the insertion density.  The relaxation summary reports CMCNA phase
+density and the total mass density inside CMC-rich regions; it flags CMCNA core
+density below `0.90 g/cm3` as a warning and below `0.75 g/cm3` as severe.
 
 ```python
 relax = run_layer_stack_relaxation(

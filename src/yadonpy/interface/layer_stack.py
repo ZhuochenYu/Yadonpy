@@ -109,8 +109,10 @@ class MolecularLayerSpec:
     counts:
         Molecule counts aligned to ``species``.
     density_target_g_cm3:
-        Used only for XY-footprint planning when a target thickness is supplied.
-        Actual packing uses the explicit master XY and ``thickness_nm`` box.
+        Initial packing-density target.  For the default fixed-XY layer-stack
+        path this is used to expand the molecular layer in z when the requested
+        molecules would otherwise be too dense to insert under the graphite
+        footprint.  It is not a final confined-layer density constraint.
     charge_scale:
         Optional global or per-species charge scaling, propagated to the system
         export metadata.
@@ -208,6 +210,7 @@ class LayerStackSpec:
     bottom_padding_nm: float = 0.0
     top_padding_nm: float = 0.0
     auto_expand_graphite: bool = True
+    molecular_packing_expand: Literal["z", "xy"] = "z"
 
 
 @dataclass(frozen=True)
@@ -356,6 +359,16 @@ def _required_area_nm2(layer: LayerSpec) -> float:
     return max(float(area_cm2) * 1.0e14, 0.0)
 
 
+def _required_thickness_nm(layer: MolecularLayerSpec, area_nm2: float) -> float:
+    density = layer.density_target_g_cm3
+    if density is None or float(density) <= 0.0 or float(area_nm2) <= 0.0:
+        return float(layer.thickness_nm)
+    volume_cm3 = _molecular_mass_g(layer) / float(density)
+    area_cm2 = float(area_nm2) * 1.0e-14
+    thickness_cm = volume_cm3 / max(area_cm2, 1.0e-30)
+    return max(float(thickness_cm) * 1.0e7, float(layer.thickness_nm))
+
+
 def _graphite_periodic_xy(spec: GraphiteLayerSpec) -> bool:
     """Resolve the graphite XY periodicity default.
 
@@ -405,7 +418,15 @@ def _graphite_xy_nm(spec: GraphiteLayerSpec) -> tuple[float, float, Any]:
     return (float(result.box_nm[0]), float(result.box_nm[1]), result)
 
 
-def _plan_master_xy(layers: Sequence[LayerSpec], *, auto_expand_graphite: bool) -> tuple[float, float, dict[str, Any]]:
+def _plan_master_xy(
+    layers: Sequence[LayerSpec],
+    *,
+    auto_expand_graphite: bool,
+    molecular_packing_expand: str = "z",
+) -> tuple[float, float, dict[str, Any]]:
+    expand_axis = str(molecular_packing_expand or "z").strip().lower()
+    if expand_axis not in {"z", "xy"}:
+        raise ValueError("LayerStackSpec.molecular_packing_expand must be 'z' or 'xy'.")
     graphite_entries: list[tuple[GraphiteLayerSpec, float, float, Any]] = []
     required_area = 0.0
     for layer in layers:
@@ -420,7 +441,7 @@ def _plan_master_xy(layers: Sequence[LayerSpec], *, auto_expand_graphite: bool) 
         master_y = max(v[2] for v in graphite_entries)
         reason = "largest_graphite_footprint"
         area = master_x * master_y
-        if required_area > area + 1.0e-9:
+        if expand_axis == "xy" and required_area > area + 1.0e-9:
             if not auto_expand_graphite:
                 raise ValueError(
                     f"Molecular layers require {required_area:.3f} nm^2 but graphite footprint is {area:.3f} nm^2."
@@ -449,6 +470,8 @@ def _plan_master_xy(layers: Sequence[LayerSpec], *, auto_expand_graphite: bool) 
             master_x = max(v[0] for v in rebuilt_xy)
             master_y = max(v[1] for v in rebuilt_xy)
             reason = "expanded_from_molecular_density_targets"
+        elif expand_axis == "z" and required_area > area + 1.0e-9:
+            reason = "fixed_graphite_xy_z_expanded_molecular_layers"
     else:
         planned_dims = {}
         side = math.sqrt(max(required_area, 1.0))
@@ -465,6 +488,7 @@ def _plan_master_xy(layers: Sequence[LayerSpec], *, auto_expand_graphite: bool) 
             "reason": reason,
             "has_graphite": bool(graphite_entries),
             "graphite_dimensions": planned_dims,
+            "molecular_packing_expand": expand_axis,
         },
     )
 
@@ -655,6 +679,7 @@ def _prepare_molecular_layer(
     layer: MolecularLayerSpec,
     *,
     master_xy_nm: tuple[float, float],
+    molecular_packing_expand: str,
     work_dir: Path,
     restart: bool | None,
 ) -> tuple[Chem.Mol, list[dict[str, Any]], dict[str, Any]]:
@@ -664,7 +689,14 @@ def _prepare_molecular_layer(
         raise ValueError(f"MolecularLayerSpec {layer.name!r}: thickness_nm must be positive.")
     layer_work_dir = work_dir / _safe_name(layer.name).lower()
     layer_work_dir.mkdir(parents=True, exist_ok=True)
-    pack_cell = make_orthorhombic_pack_cell((float(master_xy_nm[0]), float(master_xy_nm[1]), float(layer.thickness_nm)))
+    target_thickness = float(layer.thickness_nm)
+    expand_axis = str(molecular_packing_expand or "z").strip().lower()
+    packing_thickness = (
+        _required_thickness_nm(layer, float(master_xy_nm[0]) * float(master_xy_nm[1]))
+        if expand_axis == "z"
+        else target_thickness
+    )
+    pack_cell = make_orthorhombic_pack_cell((float(master_xy_nm[0]), float(master_xy_nm[1]), float(packing_thickness)))
     pe_mode = (
         bool(layer.polyelectrolyte_mode)
         if layer.polyelectrolyte_mode is not None
@@ -697,8 +729,18 @@ def _prepare_molecular_layer(
         "kind": layer.layer_kind,
         "counts": [int(v) for v in layer.counts],
         "species_names": [_mol_name(m, f"M{i+1}") for i, m in enumerate(layer.species)],
-        "thickness_nm": float(layer.thickness_nm),
+        "thickness_nm": float(target_thickness),
+        "packing_thickness_nm": float(packing_thickness),
+        "packing_z_expansion_factor": (
+            float(packing_thickness) / float(target_thickness) if float(target_thickness) > 0.0 else None
+        ),
+        "molecular_packing_expand": expand_axis,
         "density_target_g_cm3": (float(layer.density_target_g_cm3) if layer.density_target_g_cm3 is not None else None),
+        "density_target_role": (
+            "initial_z_packing_density_at_fixed_xy"
+            if expand_axis == "z"
+            else "initial_xy_footprint_planning_density"
+        ),
         "charge_scale": layer.charge_scale,
         "polyelectrolyte_mode": bool(pe_mode),
         "work_dir": str(layer_work_dir),
@@ -1095,7 +1137,11 @@ def build_layer_stack(
     work_dir = Path(work_dir).expanduser().resolve()
     work_dir.mkdir(parents=True, exist_ok=True)
     ordered_layers = _layer_order(stack.layers, stack.order)
-    master_x_nm, master_y_nm, planning = _plan_master_xy(ordered_layers, auto_expand_graphite=stack.auto_expand_graphite)
+    master_x_nm, master_y_nm, planning = _plan_master_xy(
+        ordered_layers,
+        auto_expand_graphite=stack.auto_expand_graphite,
+        molecular_packing_expand=stack.molecular_packing_expand,
+    )
     master_xy_nm = (master_x_nm, master_y_nm)
 
     prepared: list[tuple[int, LayerSpec, Chem.Mol, list[dict[str, Any]], dict[str, Any]]] = []
@@ -1116,7 +1162,13 @@ def build_layer_stack(
                 work_dir=layer_dir,
             )
         elif isinstance(layer, MolecularLayerSpec):
-            block, species_entries, report = _prepare_molecular_layer(layer, master_xy_nm=master_xy_nm, work_dir=layer_dir, restart=restart)
+            block, species_entries, report = _prepare_molecular_layer(
+                layer,
+                master_xy_nm=master_xy_nm,
+                molecular_packing_expand=stack.molecular_packing_expand,
+                work_dir=layer_dir,
+                restart=restart,
+            )
         else:  # pragma: no cover - defensive for future spec classes.
             raise TypeError(f"Unsupported layer spec type: {type(layer)!r}")
         for entry in species_entries:
@@ -1195,6 +1247,7 @@ def build_layer_stack(
             bottom_padding_nm=stack.bottom_padding_nm,
             top_padding_nm=stack.top_padding_nm,
             auto_expand_graphite=stack.auto_expand_graphite,
+            molecular_packing_expand=stack.molecular_packing_expand,
         ),
         relaxation=relaxation,
         planning=planning,
@@ -1547,6 +1600,7 @@ def _summarize_density_profile(
 
     phase_values: dict[str, list[float]] = {}
     totals: dict[tuple[float, float], float] = {}
+    phase_by_bin: dict[tuple[float, float], dict[str, float]] = {}
     try:
         with profile_csv.open(newline="", encoding="utf-8") as fh:
             for row in csv.DictReader(fh):
@@ -1559,6 +1613,7 @@ def _summarize_density_profile(
                 phase_values.setdefault(entity, []).append(rho)
                 key = (z_lo, z_hi)
                 totals[key] = float(totals.get(key, 0.0) + rho)
+                phase_by_bin.setdefault(key, {})[entity] = rho
     except Exception as exc:
         return {"available": False, "reason": str(exc)}
 
@@ -1571,12 +1626,30 @@ def _summarize_density_profile(
         max_v = float(np.max(arr)) if arr.size else 0.0
         rich = arr[arr >= max(1.0e-6, 0.10 * max_v)] if max_v > 0.0 else np.asarray([], dtype=float)
         core = arr[arr >= max(1.0e-6, 0.50 * max_v)] if max_v > 0.0 else np.asarray([], dtype=float)
-        phase_density[phase] = {
+        payload: dict[str, float | None] = {
             "mean_nonzero_g_cm3": float(np.mean(positive)) if positive.size else None,
             "rich_region_mean_g_cm3": float(np.mean(rich)) if rich.size else None,
             "core_region_mean_g_cm3": float(np.mean(core)) if core.size else None,
             "max_g_cm3": max_v,
         }
+        if "CMC" in str(phase).upper() and max_v > 0.0:
+            cmc_bins = [
+                (key, values)
+                for key, values in phase_by_bin.items()
+                if float(values.get(phase, 0.0)) >= max(1.0e-6, 0.50 * max_v)
+            ]
+            cmc_rich_bins = [
+                (key, values)
+                for key, values in phase_by_bin.items()
+                if float(values.get(phase, 0.0)) >= max(1.0e-6, 0.10 * max_v)
+            ]
+            payload["core_region_total_density_g_cm3"] = (
+                float(np.mean([totals.get(key, 0.0) for key, _values in cmc_bins])) if cmc_bins else None
+            )
+            payload["rich_region_total_density_g_cm3"] = (
+                float(np.mean([totals.get(key, 0.0) for key, _values in cmc_rich_bins])) if cmc_rich_bins else None
+            )
+        phase_density[phase] = payload
 
     bins = sorted((zlo, zhi, rho) for (zlo, zhi), rho in totals.items())
     low = [item for item in bins if float(item[2]) < float(low_density_threshold_g_cm3)]
@@ -1625,7 +1698,7 @@ def _cmc_density_gate(
 ) -> dict[str, Any]:
     """Return a CMCNA density sanity gate without enforcing exact bulk density."""
 
-    metric_priority = ("rich_region_mean_g_cm3", "core_region_mean_g_cm3", "mean_nonzero_g_cm3", "max_g_cm3")
+    metric_priority = ("core_region_mean_g_cm3", "rich_region_mean_g_cm3", "mean_nonzero_g_cm3", "max_g_cm3")
     candidates: list[dict[str, Any]] = []
     for name, payload in phase_density.items():
         if "CMC" not in str(name).upper():

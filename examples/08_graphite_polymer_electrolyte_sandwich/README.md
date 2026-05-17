@@ -68,9 +68,14 @@ semantic aliases such as `GRAPHITE`, `ELECTROLYTE`, `CMCNA`, and `MOBILE`.
   repeated small fixed-XY z-compression geometry moves plus hot/high-pressure
   z-only annealing before final z-NPT.  This keeps graphite XY periodic bonding
   intact while letting an expanded-Z packing collapse gradually.
-- CMC-Na examples use `1.5 g/cm3` as the bulk-density reference for initial
-  geometry.  The final confined layer need not equal bulk density exactly, but
-  `relaxation_followup_summary.json` flags CMCNA rich-region density below
+- CMC-Na examples deliberately use a loose initial packing target below the
+  approximate `1.5 g/cm3` bulk reference.  With `molecular_packing_expand="z"`,
+  too many molecules under a fixed graphite footprint expand the initial z
+  length rather than silently expanding the graphite XY area; compression
+  annealing and z-NPT then collapse the stack toward a dense confined state.
+  The final layer need not equal bulk density exactly, but
+  `relaxation_followup_summary.json` reports both CMCNA phase density and total
+  mass density in CMC-rich regions, and flags CMCNA core density below
   `0.90 g/cm3` as a warning and below `0.75 g/cm3` as severe.
 - The z-NPT stage is controlled by `relax_z`. Use `relax_z=True` for confined
   graphite/polymer/electrolyte stacks such as graphite | electrolyte | CMC-Na |
