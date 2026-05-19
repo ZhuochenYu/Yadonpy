@@ -135,6 +135,7 @@ def test_top_level_api_exports_mechanics_helpers():
     assert 'doctor' in yadonpy.__all__
     assert hasattr(api, 'build_layer_stack')
     assert hasattr(api, 'analyze_layer_stack_interface')
+    assert hasattr(api, 'run_interface_analyses_parallel')
     assert hasattr(api, 'run_layer_stack_nvt')
     assert hasattr(api, 'run_layer_stack_relaxation')
     assert hasattr(api, 'prepare_solvated_ion_pull')
@@ -165,12 +166,16 @@ def test_top_level_api_exports_mechanics_helpers():
     assert hasattr(yadonpy, 'LayerStackNvtResult')
     assert hasattr(yadonpy, 'clean_md_trajectory_files')
     assert hasattr(yadonpy, 'InterfaceAnalysis')
+    assert hasattr(yadonpy, 'InterfaceAnalysisTask')
+    assert hasattr(yadonpy, 'InterfaceAnalysisTaskResult')
+    assert hasattr(yadonpy, 'InterfaceAnalysisBatchResult')
     assert 'run_layer_stack_nvt' in api.__all__
     assert 'run_layer_stack_relaxation' in api.__all__
     assert 'prepare_solvated_ion_pull' in api.__all__
     assert 'prepare_solvated_ion_umbrella' in api.__all__
     assert 'run_solvated_ion_umbrella' in api.__all__
     assert 'analyze_umbrella_pmf' in api.__all__
+    assert 'run_interface_analyses_parallel' in api.__all__
     assert 'clean_md_trajectory_files' in api.__all__
     assert 'ZCompressionAnnealSpec' in yadonpy.__all__
     assert 'SolvatedIonPullSpec' in yadonpy.__all__
@@ -181,6 +186,9 @@ def test_top_level_api_exports_mechanics_helpers():
     assert 'FixedChargeRegionSpec' in yadonpy.__all__
     assert 'GraphiteRestraintSpec' in yadonpy.__all__
     assert 'InterdiffusionStartSpec' in yadonpy.__all__
+    assert 'InterfaceAnalysisTask' in yadonpy.__all__
+    assert 'InterfaceAnalysisTaskResult' in yadonpy.__all__
+    assert 'InterfaceAnalysisBatchResult' in yadonpy.__all__
     assert 'XYSlabEquilibrationSpec' in yadonpy.__all__
 
 

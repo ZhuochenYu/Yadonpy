@@ -12,6 +12,7 @@ from . import qm
 from . import seminario
 from .analyzer import AnalyzeResult
 from .interface_analysis import InterfaceAnalysis
+from .parallel_postprocess import InterfaceAnalysisBatchResult, InterfaceAnalysisTask, InterfaceAnalysisTaskResult, run_interface_analyses_parallel
 from .performance import IOAnalysisPolicy, resolve_io_analysis_policy
 
 Psi4w = None
@@ -21,4 +22,16 @@ except Exception:
     # Keep import optional; user will get a clear message when calling RESP.
     Psi4w = None
 
-__all__ = ["qm", "seminario", "Psi4w", "AnalyzeResult", "InterfaceAnalysis", "IOAnalysisPolicy", "resolve_io_analysis_policy"]
+__all__ = [
+    "qm",
+    "seminario",
+    "Psi4w",
+    "AnalyzeResult",
+    "InterfaceAnalysis",
+    "InterfaceAnalysisBatchResult",
+    "InterfaceAnalysisTask",
+    "InterfaceAnalysisTaskResult",
+    "IOAnalysisPolicy",
+    "resolve_io_analysis_policy",
+    "run_interface_analyses_parallel",
+]

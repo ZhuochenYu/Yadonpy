@@ -26,6 +26,7 @@ from .sim import qm  # noqa: F401
 from .sim.analyzer import AnalyzeResult  # noqa: F401
 from .sim.cleanup import CleanupResult, clean_md_trajectory_files  # noqa: F401
 from .sim.interface_analysis import InterfaceAnalysis  # noqa: F401
+from .sim.parallel_postprocess import InterfaceAnalysisBatchResult, InterfaceAnalysisTask, InterfaceAnalysisTaskResult, run_interface_analyses_parallel  # noqa: F401
 from .sim.performance import IOAnalysisPolicy, resolve_io_analysis_policy  # noqa: F401
 from .sim.preset.eq import XYSlabEquilibrationSpec  # noqa: F401
 from .diagnostics import doctor  # noqa: F401
@@ -58,6 +59,7 @@ from .api import (  # noqa: F401
     prepare_solvated_ion_umbrella,
     resolve_prepared_system,
     run_elongation_gmx,
+    run_interface_analyses_parallel,
     run_layer_stack_nvt,
     run_layer_stack_relaxation,
     run_solvated_ion_umbrella,
@@ -90,6 +92,9 @@ __all__ = [
     'InterdiffusionStartSpec',
     'InterfaceBuilder',
     'InterfaceAnalysis',
+    'InterfaceAnalysisBatchResult',
+    'InterfaceAnalysisTask',
+    'InterfaceAnalysisTaskResult',
     'InterfaceDynamics',
     'InterfaceProtocol',
     'InterfaceRouteSpec',
@@ -117,6 +122,7 @@ __all__ = [
     'resolve_prepared_system',
     'resolve_io_analysis_policy',
     'run_elongation_gmx',
+    'run_interface_analyses_parallel',
     'run_layer_stack_nvt',
     'run_layer_stack_relaxation',
     'run_options',

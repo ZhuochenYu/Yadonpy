@@ -61,6 +61,13 @@ def analyze_layer_stack_interface(**kwargs):
     return _analyze_layer_stack_interface(**kwargs)
 
 
+def run_interface_analyses_parallel(*args, **kwargs):
+    """Run independent layer-stack interface post-processing tasks in parallel."""
+    from .sim.parallel_postprocess import run_interface_analyses_parallel as _run_parallel
+
+    return _run_parallel(*args, **kwargs)
+
+
 def run_layer_stack_nvt(*args, **kwargs):
     """Thin wrapper around :func:`yadonpy.interface.run_layer_stack_nvt`."""
     from .interface import run_layer_stack_nvt as _run_layer_stack_nvt
@@ -331,6 +338,7 @@ __all__ = [
     'prepare_solvated_ion_pull',
     'prepare_solvated_ion_umbrella',
     'resolve_prepared_system',
+    'run_interface_analyses_parallel',
     'run_layer_stack_nvt',
     'run_layer_stack_relaxation',
     'run_solvated_ion_umbrella',

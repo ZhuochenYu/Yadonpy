@@ -187,6 +187,12 @@ semantic aliases such as `GRAPHITE`, `ELECTROLYTE`, `CMCNA`, and `MOBILE`.
   `time_series/frames/` before MP4 encoding.  MP4 output uses the
   pip-installed `imageio-ffmpeg` executable when available; CSV and PNG
   artifacts are written even if the movie writer is unavailable.
+- For multi-charge or multi-seed sweeps, use
+  `InterfaceAnalysisTask` plus `run_interface_analyses_parallel(...)` from the
+  package root.  It runs independent case directories in separate processes and
+  caps BLAS/OpenMP helper threads inside each worker, which is the safest way to
+  speed up Eg08 post-processing without making matplotlib/ffmpeg share state
+  inside one trajectory analysis.
 - RDF time-series outputs are cation-centered when Li+/Na+ sites exist.  The
   same animation and CSV set includes CN(r) curves and first-shell CN values
   versus time, so RDF changes are interpreted together with coordination-number

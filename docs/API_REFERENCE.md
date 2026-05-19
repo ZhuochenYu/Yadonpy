@@ -41,6 +41,9 @@ from yadonpy import (
     clean_md_trajectory_files,
     conformation_search,
     get_ff,
+    InterfaceAnalysisBatchResult,
+    InterfaceAnalysisTask,
+    InterfaceAnalysisTaskResult,
     get_run_options,
     list_charge_methods,
     list_forcefields,
@@ -55,6 +58,7 @@ from yadonpy import (
     resolve_io_analysis_policy,
     resolve_prepared_system,
     run_elongation_gmx,
+    run_interface_analyses_parallel,
     run_layer_stack_nvt,
     run_layer_stack_relaxation,
     run_solvated_ion_umbrella,
@@ -75,6 +79,10 @@ Package root exports include:
 - `run_layer_stack_nvt`
 - `run_layer_stack_relaxation`
 - `analyze_layer_stack_interface`
+- `InterfaceAnalysisTask`
+- `InterfaceAnalysisTaskResult`
+- `InterfaceAnalysisBatchResult`
+- `run_interface_analyses_parallel`
 - `conformation_search`
 - `assign_charges`
 - `assign_forcefield`
@@ -147,6 +155,7 @@ run_layer_stack_relaxation(
     ...
 )
 analyze_layer_stack_interface(*, work_dir="./work_layer_stack", analysis_profile="interface_fast", ...)
+run_interface_analyses_parallel(tasks, *, workers="auto", thread_limit=1, fail_fast=False, ...)
 resolve_prepared_system(
     *,
     gro: str | Path | None = None,
@@ -493,6 +502,32 @@ Facade method semantics:
   fallback O/F contact cutoffs.
 - `region_transport()` returns anisotropic MSD summaries when transport is
   enabled and a trajectory is present.
+
+For charge sweeps and replicate trajectories, use `InterfaceAnalysisTask` with
+`run_interface_analyses_parallel(...)`:
+
+```python
+from yadonpy import InterfaceAnalysisTask, run_interface_analyses_parallel
+
+tasks = [
+    InterfaceAnalysisTask(
+        name="-18 uC/cm2",
+        work_dir="./charge_m18/03_relaxation_sampling",
+        manifest_path="./charge_m18/02_system/layer_stack_manifest.json",
+        split_electrodes=True,
+        report_potential_drop=True,
+        penetration_species=("EC", "EMC", "DEC", "PF6", "Li"),
+        adsorption_species=("EC", "EMC", "DEC"),
+        time_series_analysis=True,
+    ),
+]
+batch = run_interface_analyses_parallel(tasks, workers="auto", thread_limit=1)
+```
+
+`workers="auto"` uses conservative case-level process parallelism.  The
+`thread_limit` value is applied to common BLAS/OpenMP environment variables
+inside workers so a four-case sweep does not silently become four Python
+processes multiplied by many math-library threads.
 
 Production presets accept adaptive output cadence:
 

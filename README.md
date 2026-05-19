@@ -444,6 +444,30 @@ time_series = interface.time_series(time_series_analysis=True)
 summary = interface.summary(time_series_analysis=True)
 ```
 
+For charge sweeps or repeated Eg08 runs, use process-level post-processing
+parallelism instead of launching one analyzer after another.  Each worker owns a
+separate case directory and YadonPy caps BLAS/OpenMP helper threads inside the
+worker, which avoids the common "many Python jobs times many BLAS threads"
+oversubscription problem:
+
+```python
+from yadonpy import InterfaceAnalysisTask, run_interface_analyses_parallel
+
+tasks = [
+    InterfaceAnalysisTask(
+        name="-9 uC/cm2",
+        work_dir="work_dir/charge_m9_uC_cm2/03_relaxation_sampling",
+        manifest_path="work_dir/charge_m9_uC_cm2/02_system/layer_stack_manifest.json",
+        penetration_species=("EC", "EMC", "DEC", "PF6", "Li"),
+        adsorption_species=("EC", "EMC", "DEC"),
+        split_electrodes=True,
+        report_potential_drop=True,
+        time_series_analysis=True,
+    ),
+]
+batch = run_interface_analyses_parallel(tasks, workers="auto", thread_limit=1)
+```
+
 Future enhanced-sampling setup can start from the relaxed layer-stack artifacts.
 For a CMC-Na interface, `prepare_solvated_ion_pull(...)` selects a Li+ whose
 initial solvent-oxygen coordination is closest to four, writes a PLUMED pulling

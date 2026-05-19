@@ -604,6 +604,31 @@ Method meanings:
   opposite-charge site per molecule, CN is drawn as dashed curves on a fixed
   0-6 axis, and the first RDF peak is labeled.
 
+For charge sweeps or independent replicate trajectories, prefer case-level
+parallel post-processing:
+
+```python
+from yadonpy import InterfaceAnalysisTask, run_interface_analyses_parallel
+
+tasks = [
+    InterfaceAnalysisTask(
+        name="0 uC/cm2",
+        work_dir="./charge_0/03_relaxation_sampling",
+        manifest_path="./charge_0/02_system/layer_stack_manifest.json",
+        penetration_species=("EC", "EMC", "DEC", "PF6", "Li"),
+        adsorption_species=("EC", "EMC", "DEC"),
+        split_electrodes=True,
+        report_potential_drop=True,
+        time_series_analysis=True,
+    ),
+]
+batch = run_interface_analyses_parallel(tasks, workers="auto", thread_limit=1)
+```
+
+This parallelizes independent cases with one Python process per trajectory.  It
+does not split a single trajectory's matplotlib/ffmpeg work across threads,
+which keeps output deterministic and avoids unsafe plotting concurrency.
+
 For future enhanced sampling, prepare the biased segment explicitly rather than
 editing PLUMED by hand.  The solvated-ion helper is designed for questions like
 "what happens to Li coordination when a four-coordinate solvated Li+ is pulled
