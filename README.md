@@ -87,7 +87,7 @@ YadonPy currently focuses on these concrete workflows.
    Scripts cover basal graphite/electrolyte, edge graphite/electrolyte,
    graphite + CMC-Na + electrolyte, two-graphite stacks, and a fixed-charge
    graphite sweep.  Production templates include both graphite-footprint-first
-   and CMC-slab-footprint-first construction routes.  The interface workflow writes layer-aware
+   and prepared CMC/electrolyte-slab-footprint-first construction routes.  The interface workflow writes layer-aware
    `system.gro/top/ndx` files plus `layer_stack_manifest.json`, relaxes compact
    stacks with pre-minimization, short pre-NVT, fixed-XY z-NPT, and final NVT,
    then provides interface-specific post-processing for z profiles,
@@ -516,10 +516,14 @@ umbrella_plan = prepare_solvated_ion_umbrella(
 - Example 08-07 is the preferred template when a pre-relaxed CMC-Na membrane
   slab should define the lateral footprint.  It builds the CMC-Na slab with
   `periodicity="xy"` walls first, reads the relaxed slab XY box, selects matching
-  basal-graphite repeat counts, and then packs electrolyte under that same XY
-  footprint.  Temporary electrolyte/CMC phase gates remain active during
-  pre-release relaxation and are removed only for final NVT, so final NVT frame
-  0 is the interdiffusion `t=0`.
+  basal-graphite repeat counts, prepares an electrolyte `periodicity="xy"` slab
+  at the same XY and near-bulk density, and assembles both slabs through
+  `MolecularLayerSpec(prepared_slab_gro=...)`.  Prepared slabs must match the
+  final stack XY within `0.02 nm`; the manifest records XY deltas and lateral
+  occupancy diagnostics so side-channel voids are caught before production.
+  Temporary electrolyte/CMC phase gates remain active during pre-release
+  relaxation and are removed only for final NVT, so final NVT frame 0 is the
+  interdiffusion `t=0`.
 - Example 08 interface time-series animations are disabled unless an applicable
   post-processing call explicitly receives `time_series_analysis=True`.  When
   enabled, they sample up to ten equal trajectory windows by default and write
@@ -568,8 +572,8 @@ CSV tables, and plots.
 - `examples/08_graphite_polymer_electrolyte_sandwich`: generic graphite,
   electrolyte, and CMC-Na layer stacks with interface-specific post-processing,
   including large flat DP=20 CMC-Na graphite sandwich templates and a CMC-first
-  xy-slab route where graphite/electrolyte lateral dimensions are matched to the
-  relaxed CMC-Na slab.
+  xy-slab route where graphite and pre-relaxed electrolyte lateral dimensions
+  are matched to the relaxed CMC-Na slab.
 - `examples/09_oplsaa_assignment`: OPLS-AA assignment diagnostics.
 - `examples/10_migration_analysis`: migration-analysis workflow entry point.
 - `examples/11_segment_branch_polymer`: segment-first long-block and branched

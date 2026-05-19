@@ -143,7 +143,8 @@ def test_molecular_layer_can_use_prepared_slab_gro(monkeypatch, tmp_path: Path):
     gro = tmp_path / "prepared_slab.gro"
     lines = ["prepared slab", f"{nat:5d}"]
     for i in range(nat):
-        lines.append(f"{1:5d}{'WAT':<5}{'O':>5}{i+1:5d}{0.1*i:8.3f}{0.0:8.3f}{0.2+0.02*i:8.3f}")
+        resnr = i // int(water.GetNumAtoms()) + 1
+        lines.append(f"{resnr:5d}{'WAT':<5}{'O':>5}{i+1:5d}{0.1*i:8.3f}{0.0:8.3f}{0.2+0.02*i:8.3f}")
     lines.append(f"{2.00000:10.5f}{2.00000:10.5f}{1.50000:10.5f}")
     gro.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -166,7 +167,129 @@ def test_molecular_layer_can_use_prepared_slab_gro(monkeypatch, tmp_path: Path):
 
     assert result.layer_reports[0]["prepared_slab_mode"] is True
     assert result.layer_reports[0]["prepared_slab_gro"] == str(gro.resolve())
+    assert result.layer_reports[0]["prepared_box_xy_nm"] == [2.0, 2.0]
+    assert result.layer_reports[0]["xy_match_ok"] is True
+    assert result.layer_reports[0]["xy_match_delta_nm"] == [0.0, 0.0]
+    assert result.layer_reports[0]["prepared_slab_order_source"] == "gro_residue_order"
+    assert result.layer_reports[0]["active_z_extent_nm"] > 0.0
+    assert result.layer_reports[0]["lateral_occupancy"]["total_cell_count"] > 0
+    manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
+    assert manifest["planning"]["reason"] == "prepared_slab_xy_footprint"
+    assert manifest["planning"]["master_xy_nm"] == [2.0, 2.0]
     assert result.box_nm[2] > 0.0
+
+
+def test_prepared_slab_uses_gro_residue_order_not_species_order(monkeypatch, tmp_path: Path):
+    _patch_fake_export(monkeypatch)
+    water = utils.mol_from_smiles("O", name="WAT")
+    ethane = utils.mol_from_smiles("CC", name="ETH")
+    gro = tmp_path / "prepared_reordered.gro"
+    rows = []
+    atom_id = 1
+    for atom_idx in range(ethane.GetNumAtoms()):
+        rows.append(f"{1:5d}{'ETH':<5}{'C':>5}{atom_id:5d}{0.20 + 0.02 * atom_idx:8.3f}{0.20:8.3f}{0.20:8.3f}")
+        atom_id += 1
+    for atom_idx in range(water.GetNumAtoms()):
+        rows.append(f"{2:5d}{'WAT':<5}{'O':>5}{atom_id:5d}{0.60 + 0.02 * atom_idx:8.3f}{0.20:8.3f}{0.30:8.3f}")
+        atom_id += 1
+    gro.write_text("\n".join(["prepared slab", f"{len(rows):5d}", *rows, f"{2.00000:10.5f}{2.00000:10.5f}{1.50000:10.5f}"]) + "\n", encoding="utf-8")
+
+    result = build_layer_stack(
+        stack=LayerStackSpec(
+            layers=(
+                MolecularLayerSpec(
+                    name="PREPARED",
+                    species=(water, ethane),
+                    counts=(1, 1),
+                    thickness_nm=1.0,
+                    layer_kind="generic",
+                    prepared_slab_gro=gro,
+                ),
+            )
+        ),
+        work_dir=tmp_path / "stack_reordered",
+        restart=False,
+    )
+
+    order = result.layer_reports[0]["prepared_slab_molecule_order_preview"]
+    assert [row["resname"] for row in order] == ["ETH", "WAT"]
+    assert [row["species_name"] for row in order] == ["ETH", "WAT"]
+
+
+def test_polymer_prepared_slab_can_span_multiple_gro_residues(monkeypatch, tmp_path: Path):
+    _patch_fake_export(monkeypatch)
+    polymer = utils.mol_from_smiles("O", name="POLY")
+    gro = tmp_path / "prepared_polymer_split_residues.gro"
+    rows = [
+        f"{1:5d}{'YU0':<5}{'O':>5}{1:5d}{0.20:8.3f}{0.20:8.3f}{0.20:8.3f}",
+        f"{2:5d}{'YU0':<5}{'H':>5}{2:5d}{0.24:8.3f}{0.20:8.3f}{0.20:8.3f}",
+        f"{2:5d}{'YU0':<5}{'H':>5}{3:5d}{0.20:8.3f}{0.24:8.3f}{0.20:8.3f}",
+    ]
+    gro.write_text("\n".join(["prepared polymer slab", f"{len(rows):5d}", *rows, f"{2.00000:10.5f}{2.00000:10.5f}{1.50000:10.5f}"]) + "\n", encoding="utf-8")
+
+    result = build_layer_stack(
+        stack=LayerStackSpec(
+            layers=(
+                MolecularLayerSpec(
+                    name="POLYMER",
+                    species=(polymer,),
+                    counts=(1,),
+                    thickness_nm=1.0,
+                    layer_kind="polymer",
+                    prepared_slab_gro=gro,
+                ),
+            )
+        ),
+        work_dir=tmp_path / "stack_polymer_split",
+        restart=False,
+    )
+
+    assert result.layer_reports[0]["prepared_slab_order_source"] == "species_count_order_polymer_fallback"
+    assert "cannot map prepared_slab_gro residue" in result.layer_reports[0]["prepared_slab_order_warning"]
+    assert result.layer_reports[0]["prepared_slab_molecule_order_preview"] == []
+
+
+def test_molecular_layer_prepared_slab_rejects_xy_box_mismatch(monkeypatch, tmp_path: Path):
+    _patch_fake_export(monkeypatch)
+    water = utils.mol_from_smiles("O", name="WAT")
+
+    def write_gro(path: Path, box_x: float) -> Path:
+        nat = int(water.GetNumAtoms())
+        lines = ["prepared slab", f"{nat:5d}"]
+        for i in range(nat):
+            lines.append(f"{1:5d}{'WAT':<5}{'O':>5}{i+1:5d}{0.1:8.3f}{0.1:8.3f}{0.2:8.3f}")
+        lines.append(f"{box_x:10.5f}{2.00000:10.5f}{1.50000:10.5f}")
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return path
+
+    gro_a = write_gro(tmp_path / "prepared_a.gro", 2.00000)
+    gro_b = write_gro(tmp_path / "prepared_b.gro", 2.03050)
+
+    import pytest
+
+    with pytest.raises(ValueError, match="prepared_slab_gro XY box mismatch"):
+        build_layer_stack(
+            stack=LayerStackSpec(
+                layers=(
+                    MolecularLayerSpec(
+                        name="PREPARED_A",
+                        species=(water,),
+                        counts=(1,),
+                        thickness_nm=1.0,
+                        prepared_slab_gro=gro_a,
+                    ),
+                    MolecularLayerSpec(
+                        name="PREPARED_B",
+                        species=(water,),
+                        counts=(1,),
+                        thickness_nm=1.0,
+                        prepared_slab_gro=gro_b,
+                    ),
+                )
+            ),
+            work_dir=tmp_path / "stack_xy_bad",
+            restart=False,
+        )
 
 
 def test_molecular_layer_prepared_slab_rejects_atom_count_mismatch(monkeypatch, tmp_path: Path):

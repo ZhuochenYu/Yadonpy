@@ -1223,9 +1223,14 @@ compression; it is not a z-direction NPT ensemble.
 
 For a CMC-first layer stack, read the relaxed slab GRO box and choose basal
 graphite `nx/ny` values whose periodic box matches that XY before calling
-`build_layer_stack(...)`.  Example 08-07 shows this pattern and keeps temporary
-electrolyte/CMC phase gates until final NVT, so final NVT frame 0 is the
-interdiffusion `t=0`.
+`build_layer_stack(...)`.  Example 08-07 now prepares both the CMC-Na slab and
+the electrolyte slab with `periodicity="xy"` walls at this same XY footprint,
+then passes both through `MolecularLayerSpec(prepared_slab_gro=...)`.  Prepared
+slabs must match the stack master XY within `0.02 nm`; otherwise assembly fails
+instead of silently rescaling or repacking them.  The layer manifest records
+`prepared_box_xy_nm`, `xy_match_delta_nm`, `active_z_extent_nm`, and lateral
+occupancy diagnostics.  Temporary electrolyte/CMC phase gates stay active until
+final NVT, so final NVT frame 0 is the interdiffusion `t=0`.
 
 Main calls:
 

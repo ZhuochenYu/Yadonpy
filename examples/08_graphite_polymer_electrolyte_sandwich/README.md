@@ -14,7 +14,7 @@ Seven public scripts are kept in this folder:
 - `04_graphite_basal_electrolyte_cmcna_graphite_basal.py`: two basal graphite layers around electrolyte and CMC-Na.
 - `05_charged_graphite_basal_electrolyte_cmcna_graphite_basal.py`: the same four-layer stack with a fixed-charge sweep of `0, +2, -2, +5, -5 uC/cm2`.
 - `06_large_flat_charged_graphite_basal_electrolyte_cmcna_graphite_basal.py`: a production-style broad-XY, thin-z graphite sandwich with DP=20 CMC-Na, eight CMC chains, wall-confined `pbc=xy` CMC-Na slab pre-equilibration, fixed-charge regions, compression annealing, and 20 ns final NVT sampling.
-- `07_cmcna_xy_slab_matched_graphite_electrolyte_cmcna_graphite.py`: a CMC-first route that prepares a z-open CMC-Na slab, reads the relaxed slab XY box, chooses matching basal-graphite repeat counts, packs electrolyte under that same footprint, keeps temporary electrolyte/CMC phase gates during pre-release relaxation, and releases the gate at final-NVT `t=0`.
+- `07_cmcna_xy_slab_matched_graphite_electrolyte_cmcna_graphite.py`: a CMC-first route that prepares both CMC-Na and electrolyte as z-open `pbc=xy` slabs at the same relaxed XY footprint, chooses matching basal-graphite repeat counts, assembles the prepared slabs without fresh electrolyte packing, keeps temporary electrolyte/CMC phase gates during pre-release relaxation, and releases the gate at final-NVT `t=0`.
 
 All seven scripts use the same script-first style as Examples 02/05/07.  Examples
 08-01 through 08-05 are compact defaults; Examples 08-06 and 08-07 are
@@ -89,10 +89,17 @@ semantic aliases such as `GRAPHITE`, `ELECTROLYTE`, `CMCNA`, and `MOBILE`.
   between electrolyte and graphite.
 - Example 08-07 makes the prepared CMC-Na slab the lateral-size authority.  The
   nominal CMC slab XY is rounded up to a basal-graphite lattice-compatible
-  footprint, the wall-confined slab is relaxed at that fixed XY, the relaxed GRO
-  box is read back, and graphite/electrolyte layers are generated to match that
-  footprint.  This avoids reinterpreting an XY-periodic CMC slab in a different
-  final lateral box.
+  footprint, the wall-confined CMC-Na slab is relaxed at that fixed XY, the
+  relaxed GRO box is read back, and an electrolyte slab is then prepared by the
+  same `periodicity="xy"` wall protocol at the same XY footprint.  Both slabs
+  are passed through `MolecularLayerSpec(prepared_slab_gro=...)`, so final stack
+  assembly only translates them in z and never laterally rescales or repacks the
+  liquid.  This avoids reinterpreting an XY-periodic slab in a different lateral
+  box and removes fresh-packing side-channel voids before final-NVT `t=0`.
+- Prepared molecular slabs must match the stack master XY within `0.02 nm`.
+  Their `prepared_box_xy_nm`, `xy_match_delta_nm`, `active_z_extent_nm`, and a
+  coarse lateral occupancy / edge-void sanity report are written to
+  `layer_stack_manifest.json` and propagated into `geometry_health.json`.
 - CMC-Na examples deliberately use a loose initial packing target below the
   approximate `1.5 g/cm3` bulk reference.  With `molecular_packing_expand="z"`,
   too many molecules under a fixed graphite footprint expand the initial z

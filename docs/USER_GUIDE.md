@@ -479,9 +479,14 @@ a true z-direction NPT ensemble.
 When the CMC-Na membrane should define the final lateral footprint, use the
 Example 08-07 pattern: choose a nominal CMC slab XY, round it to a basal-graphite
 lattice-compatible XY before the slab EQ21 run, read the relaxed slab GRO box
-back, and use the matching graphite repeat counts for the final
-graphite/electrolyte/CMC stack.  This keeps the XY-periodic CMC slab and the
-periodic graphite bonds in the same lateral box.
+back, prepare the electrolyte as a second wall-confined `periodicity="xy"` slab
+at that same XY footprint, and use the matching graphite repeat counts for the
+final graphite/electrolyte/CMC stack.  Both molecular phases are inserted with
+`MolecularLayerSpec(prepared_slab_gro=...)`, so assembly translates slabs only
+along z and does not laterally rescale or repack the liquid.  Prepared slabs
+must match the final stack XY within `0.02 nm`; the manifest and
+`geometry_health.json` record the XY deltas plus a coarse lateral occupancy
+diagnostic to catch side-channel void risks before production.
 
 For electrolyte/CMCNA mutual-diffusion studies, use `run_layer_stack_relaxation`
 with `InterdiffusionStartSpec`.  The pre-release stages keep electrolyte and

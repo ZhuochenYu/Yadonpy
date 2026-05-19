@@ -36,6 +36,7 @@ from .prep import make_orthorhombic_pack_cell
 _AVOGADRO = 6.02214076e23
 _UCM2_TO_E_PER_NM2 = 0.06241509074460765
 _LAYER_META_PROP = "_yadonpy_layer_stack_metadata_json"
+_PREPARED_SLAB_XY_TOL_NM = 0.02
 
 
 @dataclass(frozen=True)
@@ -427,6 +428,14 @@ def _molecular_mass_g(spec: MolecularLayerSpec) -> float:
 def _required_area_nm2(layer: LayerSpec) -> float:
     if not isinstance(layer, MolecularLayerSpec):
         return 0.0
+    if layer.prepared_slab_gro is not None:
+        try:
+            _coords_ang, box_nm = _read_prepared_slab_gro(Path(layer.prepared_slab_gro).expanduser())
+            return max(float(box_nm[0]) * float(box_nm[1]), 0.0)
+        except Exception:
+            # Missing or malformed prepared slab files are reported with the
+            # layer name attached in _prepare_molecular_layer.
+            pass
     density = layer.density_target_g_cm3
     if density is None or float(density) <= 0.0:
         return 0.0
@@ -505,9 +514,23 @@ def _plan_master_xy(
     if expand_axis not in {"z", "xy"}:
         raise ValueError("LayerStackSpec.molecular_packing_expand must be 'z' or 'xy'.")
     graphite_entries: list[tuple[GraphiteLayerSpec, float, float, Any]] = []
+    prepared_xy_entries: list[dict[str, Any]] = []
     required_area = 0.0
     for layer in layers:
         required_area = max(required_area, _required_area_nm2(layer))
+        if isinstance(layer, MolecularLayerSpec) and layer.prepared_slab_gro is not None:
+            gro_path = Path(layer.prepared_slab_gro).expanduser()
+            try:
+                _coords_ang, box_nm = _read_prepared_slab_gro(gro_path)
+                prepared_xy_entries.append(
+                    {
+                        "name": str(layer.name),
+                        "prepared_slab_gro": str(gro_path),
+                        "box_xy_nm": [float(box_nm[0]), float(box_nm[1])],
+                    }
+                )
+            except Exception:
+                pass
         if isinstance(layer, GraphiteLayerSpec):
             gx, gy, graphite_result = _graphite_xy_nm(layer)
             graphite_entries.append((layer, gx, gy, graphite_result))
@@ -551,10 +574,15 @@ def _plan_master_xy(
             reason = "fixed_graphite_xy_z_expanded_molecular_layers"
     else:
         planned_dims = {}
-        side = math.sqrt(max(required_area, 1.0))
-        master_x = side
-        master_y = side
-        reason = "molecular_density_targets"
+        if prepared_xy_entries:
+            master_x = max(float(v["box_xy_nm"][0]) for v in prepared_xy_entries)
+            master_y = max(float(v["box_xy_nm"][1]) for v in prepared_xy_entries)
+            reason = "prepared_slab_xy_footprint"
+        else:
+            side = math.sqrt(max(required_area, 1.0))
+            master_x = side
+            master_y = side
+            reason = "molecular_density_targets"
 
     return (
         float(master_x),
@@ -565,6 +593,8 @@ def _plan_master_xy(
             "reason": reason,
             "has_graphite": bool(graphite_entries),
             "graphite_dimensions": planned_dims,
+            "prepared_slab_xy": prepared_xy_entries,
+            "prepared_slab_xy_tolerance_nm": float(_PREPARED_SLAB_XY_TOL_NM),
             "molecular_packing_expand": expand_axis,
         },
     )
@@ -1112,7 +1142,7 @@ def _fragment_species_sequence(species: Sequence[Chem.Mol], counts: Sequence[int
     return order
 
 
-def _read_prepared_slab_gro(gro_path: Path) -> tuple[np.ndarray, tuple[float, float, float]]:
+def _read_prepared_slab_gro_full(gro_path: Path) -> tuple[np.ndarray, tuple[float, float, float], list[dict[str, Any]]]:
     lines = Path(gro_path).read_text(encoding="utf-8", errors="replace").splitlines()
     if len(lines) < 3:
         raise ValueError(f"Invalid prepared slab GRO: {gro_path}")
@@ -1121,6 +1151,9 @@ def _read_prepared_slab_gro(gro_path: Path) -> tuple[np.ndarray, tuple[float, fl
     except Exception as exc:
         raise ValueError(f"Invalid prepared slab atom count in {gro_path}") from exc
     coords = np.zeros((nat, 3), dtype=float)
+    residue_groups: list[dict[str, Any]] = []
+    current_key: tuple[str, str] | None = None
+    current_start = 0
     for i, raw in enumerate(lines[2 : 2 + nat]):
         try:
             coords[i, 0] = float(raw[20:28]) * 10.0
@@ -1131,13 +1164,111 @@ def _read_prepared_slab_gro(gro_path: Path) -> tuple[np.ndarray, tuple[float, fl
             if len(parts) < 3:
                 raise ValueError(f"Cannot parse prepared slab GRO coordinate line: {raw!r}")
             coords[i, :] = [float(parts[-3]) * 10.0, float(parts[-2]) * 10.0, float(parts[-1]) * 10.0]
+        resnr = raw[:5].strip()
+        resname = raw[5:10].strip()
+        key = (resnr, resname)
+        if current_key is None:
+            current_key = key
+            current_start = i
+        elif key != current_key:
+            residue_groups.append(
+                {
+                    "resnr": current_key[0],
+                    "resname": current_key[1],
+                    "start_atom_index": int(current_start),
+                    "end_atom_index": int(i),
+                    "atom_count": int(i - current_start),
+                }
+            )
+            current_key = key
+            current_start = i
+    if current_key is not None:
+        residue_groups.append(
+            {
+                "resnr": current_key[0],
+                "resname": current_key[1],
+                "start_atom_index": int(current_start),
+                "end_atom_index": int(nat),
+                "atom_count": int(nat - current_start),
+            }
+        )
     try:
         box_vals = tuple(float(tok) for tok in lines[2 + nat].split()[:3])
     except Exception as exc:
         raise ValueError(f"Invalid prepared slab box line in {gro_path}") from exc
     if len(box_vals) != 3:
         raise ValueError(f"Prepared slab GRO box must contain x y z lengths: {gro_path}")
-    return coords, (float(box_vals[0]), float(box_vals[1]), float(box_vals[2]))
+    return coords, (float(box_vals[0]), float(box_vals[1]), float(box_vals[2])), residue_groups
+
+
+def _read_prepared_slab_gro(gro_path: Path) -> tuple[np.ndarray, tuple[float, float, float]]:
+    coords, box_nm, _groups = _read_prepared_slab_gro_full(gro_path)
+    return coords, box_nm
+
+
+def _prepared_slab_geometry_report(
+    *,
+    coords_ang: np.ndarray,
+    box_nm: tuple[float, float, float],
+    master_xy_nm: tuple[float, float] | None = None,
+    grid_nm: float = 0.50,
+) -> dict[str, Any]:
+    coords_nm = np.asarray(coords_ang, dtype=float) * 0.1
+    if coords_nm.size == 0:
+        mins = np.zeros(3, dtype=float)
+        maxs = np.zeros(3, dtype=float)
+    else:
+        mins = np.min(coords_nm, axis=0)
+        maxs = np.max(coords_nm, axis=0)
+    active_extent = np.maximum(maxs - mins, 0.0)
+    report: dict[str, Any] = {
+        "prepared_box_nm": [float(v) for v in box_nm],
+        "prepared_box_xy_nm": [float(box_nm[0]), float(box_nm[1])],
+        "active_extent_nm": [float(v) for v in active_extent],
+        "active_z_extent_nm": float(active_extent[2]),
+        "coord_min_nm": [float(v) for v in mins],
+        "coord_max_nm": [float(v) for v in maxs],
+    }
+    if master_xy_nm is not None:
+        delta = [abs(float(box_nm[0]) - float(master_xy_nm[0])), abs(float(box_nm[1]) - float(master_xy_nm[1]))]
+        report["master_xy_nm"] = [float(master_xy_nm[0]), float(master_xy_nm[1])]
+        report["xy_match_delta_nm"] = [float(v) for v in delta]
+        report["xy_match_tolerance_nm"] = float(_PREPARED_SLAB_XY_TOL_NM)
+        report["xy_match_ok"] = bool(max(delta) <= float(_PREPARED_SLAB_XY_TOL_NM))
+    box_x = max(float(box_nm[0]), 1.0e-9)
+    box_y = max(float(box_nm[1]), 1.0e-9)
+    grid = max(float(grid_nm), 1.0e-6)
+    nx = max(1, int(math.ceil(box_x / grid)))
+    ny = max(1, int(math.ceil(box_y / grid)))
+    occupied: set[tuple[int, int]] = set()
+    for xyz in coords_nm:
+        ix = min(nx - 1, max(0, int(math.floor((float(xyz[0]) % box_x) / box_x * nx))))
+        iy = min(ny - 1, max(0, int(math.floor((float(xyz[1]) % box_y) / box_y * ny))))
+        occupied.add((ix, iy))
+    total_cells = max(nx * ny, 1)
+    edge_cells = {
+        (ix, iy)
+        for ix in range(nx)
+        for iy in range(ny)
+        if ix == 0 or iy == 0 or ix == nx - 1 or iy == ny - 1
+    }
+    edge_total = max(len(edge_cells), 1)
+    edge_occupied = len(occupied.intersection(edge_cells))
+    occupied_fraction = float(len(occupied)) / float(total_cells)
+    edge_occupied_fraction = float(edge_occupied) / float(edge_total)
+    report["lateral_occupancy"] = {
+        "grid_nm": float(grid),
+        "grid_shape": [int(nx), int(ny)],
+        "occupied_cell_count": int(len(occupied)),
+        "total_cell_count": int(total_cells),
+        "occupied_cell_fraction": float(occupied_fraction),
+        "edge_cell_count": int(edge_total),
+        "edge_occupied_cell_count": int(edge_occupied),
+        "edge_occupied_cell_fraction": float(edge_occupied_fraction),
+        "empty_edge_cell_fraction": float(1.0 - edge_occupied_fraction),
+        "warning": bool(occupied_fraction < 0.10 or edge_occupied_fraction < 0.10),
+    }
+    return report
 
 
 def _molecular_layer_species_meta(layer: MolecularLayerSpec, *, pe_mode: bool) -> list[dict[str, Any]]:
@@ -1210,9 +1341,110 @@ def _molecular_layer_species_meta(layer: MolecularLayerSpec, *, pe_mode: bool) -
     return entries
 
 
+def _prepared_slab_name_key(value: object) -> str:
+    return re.sub(r"[^a-z0-9]+", "", str(value or "").strip().lower())
+
+
+def _species_sequence_from_prepared_gro_groups(
+    layer: MolecularLayerSpec,
+    groups: Sequence[Mapping[str, Any]],
+) -> tuple[list[int], str, list[dict[str, Any]]]:
+    """Infer the molecule order in a prepared GRO from contiguous residues."""
+
+    remaining = [int(v) for v in layer.counts]
+    atom_counts = [int(mol.GetNumAtoms()) for mol in layer.species]
+    names = [_mol_name(mol, f"M{i+1}") for i, mol in enumerate(layer.species)]
+    keys = [_prepared_slab_name_key(name) for name in names]
+    sequence: list[int] = []
+    group_rows: list[dict[str, Any]] = []
+    for group_idx, group in enumerate(groups):
+        atom_count = int(group.get("atom_count") or 0)
+        resname = str(group.get("resname") or "")
+        res_key = _prepared_slab_name_key(resname)
+        candidates = [
+            idx
+            for idx, (nat, left) in enumerate(zip(atom_counts, remaining))
+            if int(left) > 0 and int(nat) == atom_count
+        ]
+        name_candidates = [
+            idx
+            for idx in candidates
+            if res_key
+            and keys[idx]
+            and (
+                res_key == keys[idx]
+                or res_key.startswith(keys[idx])
+                or keys[idx].startswith(res_key)
+                or res_key == keys[idx][:5]
+                or keys[idx][:5] == res_key
+            )
+        ]
+        if len(name_candidates) == 1:
+            chosen = int(name_candidates[0])
+        elif len(candidates) == 1:
+            chosen = int(candidates[0])
+        elif len(name_candidates) > 1:
+            exact = [idx for idx in name_candidates if keys[idx] == res_key]
+            if len(exact) == 1:
+                chosen = int(exact[0])
+            else:
+                raise ValueError(
+                    f"MolecularLayerSpec {layer.name!r}: prepared_slab_gro residue {resname!r} "
+                    f"matches multiple species with {atom_count} atoms: {[names[i] for i in name_candidates]}."
+                )
+        else:
+            raise ValueError(
+                f"MolecularLayerSpec {layer.name!r}: cannot map prepared_slab_gro residue "
+                f"{resname!r} with {atom_count} atoms to species/counts. "
+                "Ensure the GRO residue names and atom counts match the supplied species."
+            )
+        remaining[chosen] -= 1
+        sequence.append(chosen)
+        group_rows.append(
+            {
+                "group_index": int(group_idx),
+                "resnr": group.get("resnr"),
+                "resname": resname,
+                "atom_count": int(atom_count),
+                "species_index": int(chosen),
+                "species_name": names[chosen],
+            }
+        )
+    if any(int(v) != 0 for v in remaining):
+        raise ValueError(
+            f"MolecularLayerSpec {layer.name!r}: prepared_slab_gro residue order maps to counts "
+            f"{[int(c) - int(r) for c, r in zip(layer.counts, remaining)]}, expected {[int(v) for v in layer.counts]}."
+        )
+    return sequence, "gro_residue_order", group_rows
+
+
+def _prepared_slab_polymer_fallback_allowed(layer: MolecularLayerSpec, *, pe_mode: bool) -> bool:
+    kind = str(layer.layer_kind or "").strip().lower()
+    return bool(pe_mode or layer.polyelectrolyte_mode or kind in {"cmcna", "polyelectrolyte", "polymer"})
+
+
 def _cell_from_prepared_slab_gro(layer: MolecularLayerSpec, *, gro_path: Path, pe_mode: bool) -> Chem.Mol:
-    coords_ang, box_nm = _read_prepared_slab_gro(gro_path)
-    sequence = _fragment_species_sequence(layer.species, layer.counts)
+    coords_ang, box_nm, residue_groups = _read_prepared_slab_gro_full(gro_path)
+    total_expected_atoms = int(
+        sum(int(mol.GetNumAtoms()) * int(count) for mol, count in zip(layer.species, layer.counts))
+    )
+    if int(coords_ang.shape[0]) != total_expected_atoms:
+        raise ValueError(
+            f"MolecularLayerSpec {layer.name!r}: prepared_slab_gro atom count mismatch. "
+            f"GRO has {int(coords_ang.shape[0])} atoms, but species/counts require {total_expected_atoms}."
+        )
+    order_warning: str | None = None
+    try:
+        sequence, order_source, prepared_group_rows = _species_sequence_from_prepared_gro_groups(layer, residue_groups)
+    except ValueError as exc:
+        fallback_sequence = _fragment_species_sequence(layer.species, layer.counts)
+        fallback_atoms = int(sum(int(layer.species[idx].GetNumAtoms()) for idx in fallback_sequence))
+        if not _prepared_slab_polymer_fallback_allowed(layer, pe_mode=pe_mode) or fallback_atoms != int(coords_ang.shape[0]):
+            raise
+        sequence = fallback_sequence
+        order_source = "species_count_order_polymer_fallback"
+        order_warning = str(exc)
+        prepared_group_rows = []
     expected_atoms = int(sum(int(layer.species[idx].GetNumAtoms()) for idx in sequence))
     if int(coords_ang.shape[0]) != expected_atoms:
         raise ValueError(
@@ -1232,12 +1464,19 @@ def _cell_from_prepared_slab_gro(layer: MolecularLayerSpec, *, gro_path: Path, p
         conf.SetAtomPosition(int(atom_idx), (float(xyz[0]), float(xyz[1]), float(xyz[2])))
     combined.AddConformer(conf, assignId=True)
     setattr(combined, "cell", utils.Cell(10.0 * box_nm[0], 0.0, 10.0 * box_nm[1], 0.0, 10.0 * box_nm[2], 0.0))
+    geometry_report = _prepared_slab_geometry_report(coords_ang=coords_ang, box_nm=box_nm)
     payload = {
         "density_g_cm3": None,
         "requested_density_g_cm3": layer.density_target_g_cm3,
         "species": _molecular_layer_species_meta(layer, pe_mode=pe_mode),
         "pack_mode": "prepared_xy_slab_gro",
         "prepared_slab_gro": str(gro_path),
+        "prepared_box_nm": geometry_report["prepared_box_nm"],
+        "prepared_box_xy_nm": geometry_report["prepared_box_xy_nm"],
+        "active_z_extent_nm": geometry_report["active_z_extent_nm"],
+        "prepared_slab_order_source": order_source,
+        "prepared_slab_order_warning": order_warning,
+        "prepared_slab_molecule_order": prepared_group_rows[:200],
         "target_atoms": int(expected_atoms),
         "polyelectrolyte_mode": bool(pe_mode),
     }
@@ -1448,9 +1687,25 @@ def _prepare_molecular_layer(
         else str(layer.layer_kind).lower() in {"cmcna", "polyelectrolyte"}
     )
     prepared_slab_path = Path(layer.prepared_slab_gro).expanduser().resolve() if layer.prepared_slab_gro is not None else None
+    prepared_geometry_report: dict[str, Any] | None = None
     if prepared_slab_path is not None:
         if not prepared_slab_path.is_file():
             raise FileNotFoundError(f"MolecularLayerSpec {layer.name!r}: prepared_slab_gro not found: {prepared_slab_path}")
+        prepared_coords_ang, prepared_box_nm = _read_prepared_slab_gro(prepared_slab_path)
+        prepared_geometry_report = _prepared_slab_geometry_report(
+            coords_ang=prepared_coords_ang,
+            box_nm=prepared_box_nm,
+            master_xy_nm=master_xy_nm,
+        )
+        if not bool(prepared_geometry_report.get("xy_match_ok")):
+            delta = prepared_geometry_report.get("xy_match_delta_nm")
+            raise ValueError(
+                f"MolecularLayerSpec {layer.name!r}: prepared_slab_gro XY box mismatch. "
+                f"Prepared XY={tuple(prepared_geometry_report.get('prepared_box_xy_nm', []))} nm, "
+                f"stack master XY={tuple(float(v) for v in master_xy_nm)} nm, "
+                f"delta={delta} nm exceeds tolerance {_PREPARED_SLAB_XY_TOL_NM:.3f} nm. "
+                "Regenerate the slab at the stack XY footprint instead of rescaling it during assembly."
+            )
         cell = _cell_from_prepared_slab_gro(layer, gro_path=prepared_slab_path, pe_mode=pe_mode)
         counterion_report = {"enabled": False, "reason": "prepared_slab_gro_preserves_pre_equilibrated_counterions"}
     else:
@@ -1490,6 +1745,17 @@ def _prepare_molecular_layer(
         "molecular_packing_expand": expand_axis,
         "prepared_slab_gro": (str(prepared_slab_path) if prepared_slab_path is not None else None),
         "prepared_slab_mode": bool(prepared_slab_path is not None),
+        "prepared_box_xy_nm": (prepared_geometry_report.get("prepared_box_xy_nm") if prepared_geometry_report else None),
+        "prepared_box_nm": (prepared_geometry_report.get("prepared_box_nm") if prepared_geometry_report else None),
+        "active_z_extent_nm": (prepared_geometry_report.get("active_z_extent_nm") if prepared_geometry_report else None),
+        "active_extent_nm": (prepared_geometry_report.get("active_extent_nm") if prepared_geometry_report else None),
+        "xy_match_delta_nm": (prepared_geometry_report.get("xy_match_delta_nm") if prepared_geometry_report else None),
+        "xy_match_tolerance_nm": (prepared_geometry_report.get("xy_match_tolerance_nm") if prepared_geometry_report else None),
+        "xy_match_ok": (prepared_geometry_report.get("xy_match_ok") if prepared_geometry_report else None),
+        "lateral_occupancy": (prepared_geometry_report.get("lateral_occupancy") if prepared_geometry_report else None),
+        "prepared_slab_order_source": meta.get("prepared_slab_order_source"),
+        "prepared_slab_order_warning": meta.get("prepared_slab_order_warning"),
+        "prepared_slab_molecule_order_preview": meta.get("prepared_slab_molecule_order", [])[:50],
         "density_target_g_cm3": (float(layer.density_target_g_cm3) if layer.density_target_g_cm3 is not None else None),
         "density_target_role": (
             "initial_z_packing_density_at_fixed_xy"

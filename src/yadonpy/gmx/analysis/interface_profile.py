@@ -533,7 +533,9 @@ def _write_membrane_timeseries_svg(path: Path, rows: Sequence[dict[str, Any]]) -
         return None
     by_species: dict[str, list[dict[str, Any]]] = {}
     for row in rows:
-        by_species.setdefault(str(row.get("moltype") or ""), []).append(dict(row))
+        label = str(row.get("species") or row.get("moltype") or "")
+        if label:
+            by_species.setdefault(label, []).append(dict(row))
     if not by_species:
         return None
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -567,9 +569,9 @@ def _write_penetration_depth_distribution(
 ) -> tuple[Path, Path | None]:
     by_species: dict[str, list[dict[str, Any]]] = {}
     for row in rows:
-        moltype = str(row.get("moltype") or "")
-        if moltype:
-            by_species.setdefault(moltype, []).append(dict(row))
+        label = str(row.get("species") or _species_label(str(row.get("moltype") or "")))
+        if label:
+            by_species.setdefault(label, []).append(dict(row))
     max_depth = max(
         [
             float(row.get("polymer_region_depth_nm") or 0.0)
@@ -601,6 +603,7 @@ def _write_penetration_depth_distribution(
             out_rows.append(
                 {
                     "moltype": moltype,
+                    "species": moltype,
                     "depth_lo_nm": float(edges[i]),
                     "depth_hi_nm": float(edges[i + 1]),
                     "depth_mid_nm": float(0.5 * (edges[i] + edges[i + 1])),
@@ -651,9 +654,13 @@ def _write_adsorbed_orientation_distribution(
         edges = np.append(edges, 180.0)
     angle_specs = (("carbonyl", "carbonyl_angle_deg"), ("dipole_proxy", "dipole_proxy_angle_deg"))
     out_rows: list[dict[str, Any]] = []
-    moltypes = sorted({str(row.get("moltype") or "") for row in selected if row.get("moltype")})
+    moltypes = sorted({str(row.get("species") or _species_label(str(row.get("moltype") or ""))) for row in selected if row.get("moltype")})
     for moltype in moltypes:
-        species_rows = [row for row in selected if str(row.get("moltype") or "") == moltype]
+        species_rows = [
+            row
+            for row in selected
+            if str(row.get("species") or _species_label(str(row.get("moltype") or ""))) == moltype
+        ]
         for angle_kind, key in angle_specs:
             angles = np.asarray(
                 [float(row[key]) for row in species_rows if row.get(key) is not None and np.isfinite(float(row[key]))],
@@ -665,6 +672,7 @@ def _write_adsorbed_orientation_distribution(
                 out_rows.append(
                     {
                         "moltype": moltype,
+                        "species": moltype,
                         "orientation_kind": angle_kind,
                         "angle_lo_deg": float(edges[i]),
                         "angle_hi_deg": float(edges[i + 1]),
@@ -748,14 +756,19 @@ def _save_animation_png_frames(
     frame_count: int,
     frame_dir: Path,
     dpi: int = 160,
+    save_svg: bool = True,
 ) -> dict[str, Any]:
     frame_dir.mkdir(parents=True, exist_ok=True)
     count = 0
+    svg_count = 0
     for frame_idx in range(max(0, int(frame_count))):
         update(int(frame_idx))
         fig.savefig(frame_dir / f"frame_{frame_idx:03d}.png", dpi=int(dpi))
+        if save_svg:
+            fig.savefig(frame_dir / f"frame_{frame_idx:03d}.svg")
+            svg_count += 1
         count += 1
-    return {"frames_dir": str(frame_dir), "frame_png_count": int(count)}
+    return {"frames_dir": str(frame_dir), "frame_png_count": int(count), "frame_svg_count": int(svg_count)}
 
 
 def _time_windows(
@@ -823,17 +836,34 @@ def _mobile_instance(inst: dict[str, Any]) -> bool:
     return bool(moltype) and not any(tok in label for tok in ("graph", "graphite", "substrate", "wall"))
 
 
+def _species_label(moltype: str) -> str:
+    """Collapse per-molecule names such as DEC_0003 into broad species labels."""
+
+    parts = [part for part in str(moltype or "").split("_") if part]
+    while len(parts) > 1 and parts[-1].isdigit():
+        parts.pop()
+    base = "_".join(parts) if parts else str(moltype or "")
+    upper = base.upper()
+    if upper in {"LI", "LITHIUM"}:
+        return "Li"
+    if upper in {"NA", "SODIUM"}:
+        return "Na"
+    if upper in {"EC", "EMC", "DEC", "PF6", "CMCNA"}:
+        return upper
+    return base
+
+
 def _selected_mobile_moltypes(instances: Sequence[dict[str, Any]], *, max_moltypes: int = 6) -> list[str]:
     counts: dict[str, int] = {}
     order: list[str] = []
     for inst in instances:
         if not _mobile_instance(dict(inst)):
             continue
-        moltype = str(inst.get("moltype") or "")
-        if moltype not in counts:
-            order.append(moltype)
-            counts[moltype] = 0
-        counts[moltype] += 1
+        label = _species_label(str(inst.get("moltype") or ""))
+        if label not in counts:
+            order.append(label)
+            counts[label] = 0
+        counts[label] += 1
     order.sort(key=lambda name: (-int(counts.get(name, 0)), name))
     return order[: max(1, int(max_moltypes))]
 
@@ -862,7 +892,10 @@ def _write_concentration_timeseries(
     widths = np.diff(bins)
     profiles: list[dict[str, Any]] = []
     rows: list[dict[str, Any]] = []
-    by_label = {label: [inst for inst in instances if str(inst.get("moltype") or "") == label] for label in labels}
+    by_label = {
+        label: [inst for inst in instances if _species_label(str(inst.get("moltype") or "")) == label]
+        for label in labels
+    }
     for win in windows:
         density: dict[str, np.ndarray] = {label: np.zeros(len(widths), dtype=float) for label in labels}
         volume = np.zeros(len(widths), dtype=float)
@@ -1197,7 +1230,7 @@ def _edl_rdf_pair_specs(instances: Sequence[dict[str, Any]], *, max_pairs: int =
     for inst in instances:
         if not _mobile_instance(dict(inst)):
             continue
-        moltype = str(inst.get("moltype") or "")
+        moltype = _species_label(str(inst.get("moltype") or ""))
         if not moltype:
             continue
         if moltype not in by_moltype:
@@ -1262,6 +1295,11 @@ def _edl_rdf_pair_specs(instances: Sequence[dict[str, Any]], *, max_pairs: int =
     return specs
 
 
+def _instance_matches_label(inst: dict[str, Any], label: str) -> bool:
+    moltype = str(inst.get("moltype") or "")
+    return moltype == str(label) or _species_label(moltype) == str(label)
+
+
 def _edl_center_indices_for_frame(
     *,
     coords: np.ndarray,
@@ -1273,7 +1311,7 @@ def _edl_center_indices_for_frame(
 ) -> np.ndarray:
     out: list[int] = []
     for inst in instances:
-        if str(inst.get("moltype") or "") != str(moltype):
+        if not _instance_matches_label(dict(inst), str(moltype)):
             continue
         idx = np.asarray(inst.get("atom_indices_0"), dtype=int)
         local = int(local_index)
@@ -1295,7 +1333,7 @@ def _site_indices_for_moltype(
     out: list[int] = []
     local = int(local_index)
     for inst in instances:
-        if str(inst.get("moltype") or "") != str(moltype):
+        if not _instance_matches_label(dict(inst), str(moltype)):
             continue
         idx = np.asarray(inst.get("atom_indices_0"), dtype=int)
         if 0 <= local < idx.size:
@@ -1461,6 +1499,11 @@ def _write_edl_rdf_cn_timeseries(
     mp4_path = out_dir / "time_series" / "edl_rdf_cn_timeseries.mp4"
     mp4_path.parent.mkdir(parents=True, exist_ok=True)
     ymax_g = max([float(np.max(payload["curves"][spec["pair"]]["g_r"])) for payload in curves for spec in pair_specs] or [1.0])
+    ymax_cn = max(
+        [float(np.max(payload["curves"][spec["pair"]]["cn_curve"])) for payload in curves for spec in pair_specs]
+        or [1.0]
+    )
+    cn_ylim = max(6.0, float(ymax_cn) * 1.15, 1.0)
     fig, ax_g = plt.subplots(figsize=(7.2, 4.2))
     ax_cn = ax_g.twinx()
 
@@ -1494,7 +1537,10 @@ def _write_edl_rdf_cn_timeseries(
                 )
         ax_g.set_xlim(0.0, float(r_max_nm))
         ax_g.set_ylim(0.0, max(1.0, ymax_g * 1.15))
-        ax_cn.set_ylim(0.0, 6.0)
+        ax_cn.set_ylim(0.0, cn_ylim)
+        if cn_ylim > 6.05:
+            ax_cn.axhspan(0.0, 6.0, color="0.92", alpha=0.35, zorder=0)
+            ax_cn.axhline(6.0, color="0.35", ls=":", lw=0.8, alpha=0.8)
         ax_g.set_xlabel("r / nm")
         ax_g.set_ylabel("EDL RDF g(r), solid")
         ax_cn.set_ylabel("CN(r), dashed")
@@ -1516,7 +1562,8 @@ def _write_edl_rdf_cn_timeseries(
         "sample_windows": len(curves),
         "pairs": [str(spec["pair"]) for spec in pair_specs],
         "surface_distance_nm": float(surface_distance_nm),
-        "cn_axis_ylim": [0.0, 6.0],
+        "cn_axis_ylim": [0.0, float(cn_ylim)],
+        "cn_reference_range": [0.0, 6.0],
         **frame_meta,
     }
     writer = _mp4_writer(fps)
@@ -1621,7 +1668,9 @@ def _write_rdf_cn_timeseries(
         [float(np.max(payload["curves"][pid]["cn_curve"])) for payload in curves for pid, *_rest in pair_specs]
         or [1.0]
     )
-    fig, (ax_g, ax_cn) = plt.subplots(2, 1, figsize=(6.2, 5.6), sharex=True)
+    cn_ylim = max(6.0, float(ymax_cn) * 1.15, 1.0)
+    fig, ax_g = plt.subplots(figsize=(7.2, 4.2))
+    ax_cn = ax_g.twinx()
 
     def _update(frame_idx: int):
         ax_g.clear()
@@ -1631,15 +1680,39 @@ def _write_rdf_cn_timeseries(
         for pair_id, _center_label, target_label, _target_idx in pair_specs:
             data = payload["curves"][pair_id]
             r = np.asarray(data["r_nm"], dtype=float)
-            ax_g.plot(r, np.asarray(data["g_r"], dtype=float), lw=1.8, label=target_label)
-            ax_cn.plot(r, np.asarray(data["cn_curve"], dtype=float), lw=1.8, label=target_label)
+            g = np.asarray(data["g_r"], dtype=float)
+            cn = np.asarray(data["cn_curve"], dtype=float)
+            line = ax_g.plot(r, g, lw=1.8, label=target_label)[0]
+            ax_cn.plot(r, cn, lw=1.4, ls="--", color=line.get_color())
+            shell = dict(data.get("shell") or {})
+            r_peak = shell.get("r_peak_nm")
+            cn_shell = shell.get("cn_shell")
+            if r_peak is not None and np.isfinite(float(r_peak)) and r.size:
+                y_peak = float(np.interp(float(r_peak), r, g))
+                ax_g.axvline(float(r_peak), color=line.get_color(), ls=":", lw=0.8, alpha=0.65)
+                label = f"{target_label}: {float(r_peak):.2f} nm"
+                if cn_shell is not None and np.isfinite(float(cn_shell)):
+                    label += f", CN {float(cn_shell):.1f}"
+                ax_g.text(
+                    float(r_peak),
+                    y_peak,
+                    label,
+                    color=line.get_color(),
+                    fontsize=7,
+                    rotation=90,
+                    va="bottom",
+                    ha="center",
+                )
         ax_g.set_ylim(0.0, max(1.0, ymax_g * 1.15))
-        ax_cn.set_ylim(0.0, max(1.0, ymax_cn * 1.15))
-        ax_cn.set_xlim(0.0, float(r_max_nm))
-        ax_g.set_ylabel("g(r)")
-        ax_cn.set_ylabel("CN(r)")
-        ax_cn.set_xlabel("r / nm")
-        ax_g.set_title(f"RDF/CN, {float(win['time_start_ps']):.1f}-{float(win['time_end_ps']):.1f} ps")
+        ax_cn.set_ylim(0.0, cn_ylim)
+        if cn_ylim > 6.05:
+            ax_cn.axhspan(0.0, 6.0, color="0.92", alpha=0.35, zorder=0)
+            ax_cn.axhline(6.0, color="0.35", ls=":", lw=0.8, alpha=0.8)
+        ax_g.set_xlim(0.0, float(r_max_nm))
+        ax_g.set_xlabel("r / nm")
+        ax_g.set_ylabel("RDF g(r), solid")
+        ax_cn.set_ylabel("CN(r), dashed")
+        ax_g.set_title(f"Li/cation RDF-CN, {float(win['time_start_ps']):.1f}-{float(win['time_end_ps']):.1f} ps")
         ax_g.legend(loc="best", fontsize="small", ncols=3)
         fig.tight_layout()
 
@@ -1654,6 +1727,8 @@ def _write_rdf_cn_timeseries(
         "shell_csv": str(shell_csv),
         "sample_windows": len(curves),
         "pairs": [p[0] for p in pair_specs],
+        "cn_axis_ylim": [0.0, float(cn_ylim)],
+        "cn_reference_range": [0.0, 6.0],
         **frame_meta,
     }
     writer = _mp4_writer(fps)
@@ -2266,7 +2341,7 @@ def _enrichment(
     }
     for _time_ps, coords, _box in frames:
         for inst in instances:
-            moltype = str(inst.get("moltype") or "")
+            moltype = _species_label(str(inst.get("moltype") or ""))
             region = _region_for_z(_instance_com_z(coords, inst), regions)
             if region is None:
                 continue
@@ -2295,7 +2370,14 @@ def _species_matches(moltype: str, species: Sequence[str] | None) -> bool:
     if species is None:
         return True
     label = str(moltype).lower()
-    return any(str(item).lower() == label or str(item).lower() in label for item in species)
+    coarse = _species_label(str(moltype)).lower()
+    return any(
+        str(item).lower() == label
+        or str(item).lower() == coarse
+        or str(item).lower() in label
+        or str(item).lower() in coarse
+        for item in species
+    )
 
 
 def _frame_interval_ps(frames: Sequence[tuple[float, np.ndarray, tuple[float, float, float]]]) -> float | None:
@@ -2324,6 +2406,7 @@ def _penetration_analysis(
     threshold = max(0.0, float(penetration_threshold_nm))
     for inst_id, inst in enumerate(instances):
         moltype = str(inst.get("moltype") or "")
+        species_label = _species_label(moltype)
         kind = str(inst.get("kind") or "").lower()
         if not moltype or "graph" in moltype.lower() or "substrate" in kind:
             continue
@@ -2359,6 +2442,7 @@ def _penetration_analysis(
                 {
                     "time_ps": float(time_ps),
                     "moltype": moltype,
+                    "species": species_label,
                     "instance_index": int(inst_id),
                     "com_z_nm": float(z),
                     "region": region,
@@ -2368,7 +2452,7 @@ def _penetration_analysis(
                 }
             )
         rec = summary.setdefault(
-            moltype,
+            species_label,
             {
                 "molecule_count": 0,
                 "polymer_frame_count": 0,
@@ -2502,6 +2586,7 @@ def _membrane_permeation_analysis(
     per_instance: list[dict[str, Any]] = []
     for inst_id, inst in selected:
         moltype = str(inst.get("moltype") or "")
+        species_label = _species_label(moltype)
         states: list[str] = []
         depths: list[float | None] = []
         z_values: list[float] = []
@@ -2535,6 +2620,7 @@ def _membrane_permeation_analysis(
         residence_ps = None if dt_ps is None else float(sum(1 for flag in membrane_flags if flag)) * float(dt_ps)
         event = {
             "moltype": moltype,
+            "species": species_label,
             "instance_index": int(inst_id),
             "initial_state": states[0] if states else None,
             "final_state": states[-1] if states else None,
@@ -2554,7 +2640,7 @@ def _membrane_permeation_analysis(
         event_rows.append(event)
         per_instance.append({**event, "states": states, "depths": depths})
         rec = species_records.setdefault(
-            moltype,
+            species_label,
             {
                 "molecule_count": 0,
                 "sample_frame_count": 0,
@@ -2591,8 +2677,8 @@ def _membrane_permeation_analysis(
     timeseries_rows: list[dict[str, Any]] = []
     species_names = sorted(species_records)
     for frame_idx, time_ps in enumerate(times):
-        for moltype in species_names:
-            relevant = [item for item in per_instance if str(item.get("moltype")) == moltype]
+        for species_name in species_names:
+            relevant = [item for item in per_instance if str(item.get("species") or item.get("moltype")) == species_name]
             feed_count = sum(1 for item in relevant if item["states"][frame_idx] == "feed")
             membrane_count = sum(1 for item in relevant if item["states"][frame_idx] == "membrane")
             permeate_count = sum(1 for item in relevant if item["states"][frame_idx] == "permeate")
@@ -2615,7 +2701,8 @@ def _membrane_permeation_analysis(
             timeseries_rows.append(
                 {
                     "time_ps": float(time_ps),
-                    "moltype": moltype,
+                    "moltype": species_name,
+                    "species": species_name,
                     "feed_count": int(feed_count),
                     "membrane_count": int(membrane_count),
                     "permeate_count": int(permeate_count),
@@ -2634,7 +2721,7 @@ def _membrane_permeation_analysis(
         initial_feed_count = sum(
             1
             for item in per_instance
-            if str(item.get("moltype")) == moltype and item["states"] and item["states"][0] == "feed"
+            if str(item.get("species") or item.get("moltype")) == moltype and item["states"] and item["states"][0] == "feed"
         )
         feed_density_nm3 = float(initial_feed_count) / feed_volume_nm3 if feed_volume_nm3 > 0.0 else None
         entry_flux = (
@@ -2819,6 +2906,7 @@ def _adsorption_analysis(
     grid_nm = max(float(surface_grid_nm), 1.0e-6)
     for inst_id, inst in enumerate(instances):
         moltype = str(inst.get("moltype") or "")
+        species_label = _species_label(moltype)
         kind = str(inst.get("kind") or "").lower()
         if not moltype or "graph" in moltype.lower() or "substrate" in kind:
             continue
@@ -2843,6 +2931,7 @@ def _adsorption_analysis(
                 {
                     "time_ps": float(time_ps),
                     "moltype": moltype,
+                    "species": species_label,
                     "instance_index": int(inst_id),
                     "com_x_nm": float(com[0]),
                     "com_y_nm": float(com[1]),
@@ -2856,7 +2945,7 @@ def _adsorption_analysis(
                     "dipole_proxy_angle_deg": dipole_angle,
                 }
             )
-        rec = summary.setdefault(moltype, {"molecule_count": 0, "sample_frame_count": 0, "adsorbed_frame_count": 0, "event_count": 0})
+        rec = summary.setdefault(species_label, {"molecule_count": 0, "sample_frame_count": 0, "adsorbed_frame_count": 0, "event_count": 0})
         rec["molecule_count"] += 1
         rec["sample_frame_count"] += int(len(adsorbed_series))
         rec["adsorbed_frame_count"] += int(sum(adsorbed_series))
@@ -3187,6 +3276,23 @@ def compute_interface_profile(
         "acceptance": manifest_payload.get("acceptance", {}) if manifest_payload else {},
         "z_compaction": manifest_payload.get("z_compaction", {}) if manifest_payload else {},
     }
+    prepared_lateral_occupancy = {}
+    prepared_lateral_warnings = []
+    if manifest_payload:
+        for layer in manifest_payload.get("layers") or []:
+            if not isinstance(layer, dict) or not bool(layer.get("prepared_slab_mode")):
+                continue
+            name = str(layer.get("name") or f"LAYER_{len(prepared_lateral_occupancy):02d}")
+            occupancy = layer.get("lateral_occupancy") or {}
+            prepared_lateral_occupancy[name] = {
+                "prepared_box_xy_nm": layer.get("prepared_box_xy_nm"),
+                "xy_match_delta_nm": layer.get("xy_match_delta_nm"),
+                "xy_match_ok": layer.get("xy_match_ok"),
+                "active_z_extent_nm": layer.get("active_z_extent_nm"),
+                "lateral_occupancy": occupancy,
+            }
+            if isinstance(occupancy, dict) and bool(occupancy.get("warning")):
+                prepared_lateral_warnings.append(name)
 
     phase_stats: dict[str, dict[str, Any]] = {}
     for phase, mask in phase_masks.items():
@@ -3376,6 +3482,8 @@ def compute_interface_profile(
         "box_nm": [float(x) for x in final_box],
         "frame_count_analyzed": int(len(frames)),
         "last_frame_time_ps": float(final_time),
+        "prepared_slab_lateral_occupancy": prepared_lateral_occupancy,
+        "prepared_slab_lateral_warning_layers": prepared_lateral_warnings,
     }
     _write_json(out_dir / "geometry_health.json", geometry_health)
     edl = _edl_diagnostics(phase_groups=phase_groups_norm, density_arrays=density_arrays, phase_stats=phase_stats)
