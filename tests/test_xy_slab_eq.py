@@ -14,6 +14,7 @@ from yadonpy.sim.preset.eq import (
     _active_density_rows_from_coords,
     _estimate_total_mass_amu_from_top,
     _export_xy_slab_prepared_gro,
+    _xy_slab_geometry_gate,
     _xy_slab_z_schedule,
     xy_slab_mdp_overrides,
 )
@@ -201,15 +202,63 @@ def test_xy_slab_active_density_wall_npt_gate_uses_plateau_not_target():
     assert gate["target_density_g_cm3"] is None
 
 
+def test_xy_slab_wall_gap_gate_can_use_density_floor_without_exact_target():
+    spec = XYSlabEquilibrationSpec(
+        density_mode="wall_gap_compression",
+        target_density_g_cm3=0.8,
+        active_density_min_g_cm3=0.8,
+        active_density_rel_std_max=0.05,
+        active_density_tail_fraction=0.5,
+    )
+    rows = [
+        {"time_ps": 0.0, "active_density_g_cm3": 0.40},
+        {"time_ps": 1.0, "active_density_g_cm3": 0.81},
+        {"time_ps": 2.0, "active_density_g_cm3": 0.82},
+        {"time_ps": 3.0, "active_density_g_cm3": 0.83},
+    ]
+
+    gate = _active_density_gate(rows, target_density_g_cm3=0.8, spec=spec)
+
+    assert gate["ok"] is True
+    assert gate["mode"] == "plateau_only"
+    assert gate["target_density_g_cm3"] == 0.8
+    assert gate["min_density_g_cm3"] == 0.8
+
+
+def test_xy_slab_geometry_gate_checks_lateral_occupancy_when_requested(tmp_path: Path):
+    gro = tmp_path / "membrane.gro"
+    rows = []
+    idx = 1
+    for x in (0.1, 0.6, 1.1, 1.6):
+        for y in (0.1, 0.6, 1.1, 1.6):
+            rows.append(f"{1:5d}{'CMC':<5}{'C':>5}{idx:5d}{x:8.3f}{y:8.3f}{1.000:8.3f}")
+            idx += 1
+    gro.write_text("\n".join(["wrapped membrane", f"{len(rows):5d}", *rows, f"{2.00000:10.5f}{2.00000:10.5f}{3.00000:10.5f}"]) + "\n", encoding="utf-8")
+    spec = XYSlabEquilibrationSpec(
+        lateral_occupancy_convergence=True,
+        lateral_occupancy_grid_nm=0.5,
+        min_lateral_occupancy_fraction=0.85,
+        min_edge_occupancy_fraction=0.80,
+    )
+
+    gate = _xy_slab_geometry_gate(gro, spec=spec)
+
+    assert gate["ok"] is True
+    assert gate["lateral_occupancy_ok"] is True
+    assert gate["z_open_ok"] is True
+
+
 def test_cmcna_relaxation_spec_maps_to_xy_slab_defaults():
     spec = CMCNAXYSlabRelaxationSpec()
     xy = spec.to_xy_slab_spec()
 
-    assert xy.density_mode == "wall_z_npt"
-    assert xy.target_density_g_cm3 is None
+    assert xy.density_mode == "wall_gap_compression"
+    assert xy.target_density_g_cm3 == 0.8
+    assert xy.active_density_min_g_cm3 == 0.8
     assert xy.pressure_axis_mode == "fixed_xy_z_npt"
     assert xy.active_density_convergence is True
     assert xy.rg_convergence is True
+    assert xy.lateral_occupancy_convergence is True
     assert xy.max_convergence_rounds == 8
 
 
@@ -264,5 +313,5 @@ def test_prepare_cmcna_xy_bulk_slab_uses_fixed_xy_and_writes_result(monkeypatch,
     assert calls["counts"] == (2, 6)
     assert calls["cell_lengths"][0:2] == (5.0, 7.0)
     assert calls["exec_kwargs"]["periodicity"] == "xy"
-    assert calls["exec_kwargs"]["xy_slab"].density_mode == "wall_z_npt"
-    assert calls["exec_kwargs"]["xy_slab"].target_density_g_cm3 is None
+    assert calls["exec_kwargs"]["xy_slab"].density_mode == "wall_gap_compression"
+    assert calls["exec_kwargs"]["xy_slab"].target_density_g_cm3 == 0.8

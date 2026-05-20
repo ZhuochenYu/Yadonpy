@@ -22,9 +22,12 @@ class CMCNAXYSlabRelaxationSpec:
     """Defaults for a reusable z-open CMC-Na slab prepared at fixed XY."""
 
     initial_density_g_cm3: float = 0.05
-    density_mode: str = "wall_z_npt"
+    density_mode: str = "wall_gap_compression"
     coordinate_export_policy: str = "wrapped_xy_z_open"
-    target_density_g_cm3: float | None = None
+    target_density_g_cm3: float | None = 0.80
+    target_active_z_nm: float | None = None
+    target_box_z_nm: float | None = None
+    active_density_min_g_cm3: float | None = 0.80
     wall_padding_nm: float = 0.40
     cycles: int | str = "auto"
     max_cycles: int = 40
@@ -42,16 +45,25 @@ class CMCNAXYSlabRelaxationSpec:
     extra_relax_ns_per_round: float = 0.50
     active_density_convergence: bool = True
     rg_convergence: bool = True
+    lateral_occupancy_convergence: bool = True
     active_density_tolerance_fraction: float = 0.08
     active_density_rel_std_max: float = 0.08
+    lateral_occupancy_grid_nm: float = 0.50
+    min_lateral_occupancy_fraction: float = 0.85
+    min_edge_occupancy_fraction: float = 0.80
     na_coo_contact_cutoff_nm: float = 0.35
     na_coo_contact_min_fraction: float = 0.75
+    write_compression_animation: bool = True
+    animation_fps: float = 1.0
 
     def to_xy_slab_spec(self) -> XYSlabEquilibrationSpec:
         return XYSlabEquilibrationSpec(
             density_mode=str(self.density_mode),  # type: ignore[arg-type]
             coordinate_export_policy=str(self.coordinate_export_policy),  # type: ignore[arg-type]
             target_density_g_cm3=(None if self.target_density_g_cm3 is None else float(self.target_density_g_cm3)),
+            target_active_z_nm=(None if self.target_active_z_nm is None else float(self.target_active_z_nm)),
+            target_box_z_nm=(None if self.target_box_z_nm is None else float(self.target_box_z_nm)),
+            active_density_min_g_cm3=(None if self.active_density_min_g_cm3 is None else float(self.active_density_min_g_cm3)),
             cycles=self.cycles,  # type: ignore[arg-type]
             max_cycles=int(self.max_cycles),
             max_z_shrink_per_cycle=float(self.max_z_shrink_per_cycle),
@@ -68,12 +80,18 @@ class CMCNAXYSlabRelaxationSpec:
             final_relax_ns=float(self.final_relax_ns),
             active_density_convergence=bool(self.active_density_convergence),
             rg_convergence=bool(self.rg_convergence),
+            lateral_occupancy_convergence=bool(self.lateral_occupancy_convergence),
             max_convergence_rounds=int(self.max_convergence_rounds),
             extra_relax_ns_per_round=float(self.extra_relax_ns_per_round),
             active_density_tolerance_fraction=float(self.active_density_tolerance_fraction),
             active_density_rel_std_max=float(self.active_density_rel_std_max),
+            lateral_occupancy_grid_nm=float(self.lateral_occupancy_grid_nm),
+            min_lateral_occupancy_fraction=float(self.min_lateral_occupancy_fraction),
+            min_edge_occupancy_fraction=float(self.min_edge_occupancy_fraction),
             na_coo_contact_cutoff_nm=float(self.na_coo_contact_cutoff_nm),
             na_coo_contact_min_fraction=float(self.na_coo_contact_min_fraction),
+            write_compression_animation=bool(self.write_compression_animation),
+            animation_fps=float(self.animation_fps),
         )
 
 
@@ -121,7 +139,7 @@ def prepare_cmcna_xy_bulk_slab(
     large_system_mode: str = "large",
     restart: bool | None = None,
 ) -> CMCNAXYBulkSlabResult:
-    """Prepare a fixed-XY, z-open CMC-Na slab with wall-z-NPT/Rg gates."""
+    """Prepare a fixed-XY, z-open CMC-Na slab with wall-gap compression gates."""
 
     spec = relaxation if relaxation is not None else CMCNAXYSlabRelaxationSpec()
     wd = Path(work_dir).expanduser().resolve()
@@ -202,8 +220,22 @@ def prepare_cmcna_xy_bulk_slab(
     )
 
 
+def prepare_cmcna_xy_membrane(**kwargs: Any) -> CMCNAXYBulkSlabResult:
+    """Prepare a stack-ready CMC-Na membrane with XY periodicity and z walls.
+
+    This is the membrane-focused public alias for
+    :func:`prepare_cmcna_xy_bulk_slab`.  Its default relaxation spec uses explicit
+    wall-gap/box-z compression plus wall-confined NVT relaxation; the older
+    wall-z-NPT route remains available only when users request it explicitly in
+    ``relaxation.density_mode``.
+    """
+
+    return prepare_cmcna_xy_bulk_slab(**kwargs)
+
+
 __all__ = [
     "CMCNAXYBulkSlabResult",
     "CMCNAXYSlabRelaxationSpec",
+    "prepare_cmcna_xy_membrane",
     "prepare_cmcna_xy_bulk_slab",
 ]

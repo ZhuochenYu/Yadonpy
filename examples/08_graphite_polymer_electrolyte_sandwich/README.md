@@ -89,12 +89,16 @@ semantic aliases such as `GRAPHITE`, `ELECTROLYTE`, `CMCNA`, and `MOBILE`.
   between electrolyte and graphite.
 - Example 08-07 makes the prepared CMC-Na slab the lateral-size authority.  The
   nominal CMC slab XY is rounded up to a basal-graphite lattice-compatible
-  footprint, `prepare_cmcna_xy_bulk_slab(...)` builds a dilute `0.05 g/cm3`
-  fixed-XY AC cell, and uses `pbc=xy` z walls plus fixed-XY/z-only NPT to let
-  the z-open slab thickness naturally converge.  This deliberately avoids the
+  footprint, `prepare_cmcna_xy_membrane(...)` builds a dilute `0.05 g/cm3`
+  fixed-XY AC cell, and uses `pbc=xy` z walls plus explicit wall-gap/box-z
+  compression to make the z-open slab compact.  Each compression step is
+  followed by hot/cool wall-confined NVT, so the workflow no longer depends on
+  a semi-isotropic barostat to change the wall-box height.  This deliberately avoids the
   `xyz -> unwrap -> slab` route, where chain segments can cross the z periodic
   image before a clean CMC boundary exists.  The workflow keeps adding
-  wall-confined NPT rounds until active density and CMC-chain Rg plateau.
+  wall-confined NVT rounds until active density, CMC-chain Rg, Na/COO contact,
+  and lateral occupancy pass the membrane gates, and writes a box-annotated
+  `cmcna_eq21_wall_compression.mp4` for visual inspection.
   The relaxed GRO box is then read back, and an electrolyte slab is prepared by
   the same `periodicity="xy"` wall protocol at the same XY footprint.  Both
   slabs are passed through `MolecularLayerSpec(prepared_slab_gro=...)`, so final
@@ -120,7 +124,7 @@ semantic aliases such as `GRAPHITE`, `ELECTROLYTE`, `CMCNA`, and `MOBILE`.
   slab density plateau rather than by forcing that reference value.  Directly
   packed CMCNA layers can still use `molecular_packing_expand="z"` plus
   compression annealing/z-NPT, but reusable slab preparation should prefer the
-  explicit `prepare_cmcna_xy_bulk_slab(...)` route and check
+  explicit `prepare_cmcna_xy_membrane(...)` route and check
   `cmcna_slab_convergence.json` before stacking.  The final confined layer need
   not equal bulk density exactly, but `relaxation_followup_summary.json` reports
   both CMCNA phase density and total mass density in CMC-rich regions, and flags

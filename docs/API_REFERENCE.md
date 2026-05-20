@@ -53,6 +53,7 @@ from yadonpy import (
     mol_from_smiles,
     parameterize_smiles,
     prepare_cmcna_xy_bulk_slab,
+    prepare_cmcna_xy_membrane,
     print_mechanics_result_summary,
     analyze_umbrella_pmf,
     prepare_solvated_ion_pull,
@@ -78,6 +79,7 @@ Package root exports include:
 - `list_charge_methods`
 - `mol_from_smiles`
 - `prepare_cmcna_xy_bulk_slab`
+- `prepare_cmcna_xy_membrane`
 - `build_graphite`
 - `build_layer_stack`
 - `run_layer_stack_nvt`
@@ -1228,9 +1230,9 @@ For a CMC-Na layer that should be pre-relaxed without z periodicity, prepare a
 wall-confined slab first and then pass its final GRO to the molecular layer:
 
 ```python
-from yadonpy import CMCNAXYSlabRelaxationSpec, prepare_cmcna_xy_bulk_slab
+from yadonpy import CMCNAXYSlabRelaxationSpec, prepare_cmcna_xy_membrane
 
-cmcna_slab = prepare_cmcna_xy_bulk_slab(
+cmcna_slab = prepare_cmcna_xy_membrane(
     cmc_chain_mol=CMC,
     na_mol=Na,
     chain_count=8,
@@ -1245,14 +1247,16 @@ cmcna_slab = prepare_cmcna_xy_bulk_slab(
     charge_scale=(0.7, 0.7),
     relaxation=CMCNAXYSlabRelaxationSpec(
         initial_density_g_cm3=0.05,
-        density_mode="wall_z_npt",
+        density_mode="wall_gap_compression",
         coordinate_export_policy="wrapped_xy_z_open",
-        target_density_g_cm3=None,
+        target_density_g_cm3=0.80,
+        active_density_min_g_cm3=0.80,
         tmax_K=450.0,
-        pmax_bar=2000.0,
         final_relax_ns=0.50,
         max_convergence_rounds=8,
         extra_relax_ns_per_round=0.50,
+        lateral_occupancy_convergence=True,
+        write_compression_animation=True,
     ),
 )
 
@@ -1266,16 +1270,19 @@ cmcna = MolecularLayerSpec(
 )
 ```
 
-`prepare_cmcna_xy_bulk_slab(...)` internally creates a dilute fixed-XY AC box
+`prepare_cmcna_xy_membrane(...)` internally creates a dilute fixed-XY AC box
 and runs EQ21 with `periodicity="xy"` (`pbc=xy`, z walls,
 `periodic-molecules=yes`, and `ewald-geometry=3dc`).  Its default
-`density_mode="wall_z_npt"` keeps x/y fixed and lets z-only wall-NPT compress
-the z-open slab naturally; it does not use `xyz -> unwrap -> slab`, and it does
-not require CMC-Na to hit a hard target density.  The active density is computed
-from `CMC-Na mass / (fixed XY area * active z extent)`, not from the total box
-density, because z-wall padding is not part of the physical CMC slab.
-`cmcna_slab_convergence.json` records `active_density_gate`, `rg_gate`,
-`na_coo_contact`, and `ready_for_layer_stack`.  `prepared_slab.gro` is exported
+`density_mode="wall_gap_compression"` explicitly shortens the wall gap/box-z in
+small steps and relaxes each step with hot/cool wall-confined NVT.  It does not
+use `xyz -> unwrap -> slab`, and it does not rely on z-pressure coupling to
+shrink the box.  The active density is computed from `CMC-Na mass / (fixed XY
+area * active z extent)`, not from the total box density, because z-wall padding
+is not part of the physical CMC slab.  `cmcna_slab_convergence.json` records
+`active_density_gate`, `rg_gate`, `na_coo_contact`, `geometry_gate`, and
+`ready_for_layer_stack`; `cmcna_membrane_quality.json` records whether box-z
+actually changed and where the compression MP4/PNG frames were written.
+`prepared_slab.gro` is exported
 with the default `coordinate_export_policy="wrapped_xy_z_open"`: x/y are wrapped
 into the primary periodic image, while z remains open/wall-confined.  The helper
 also writes `prepared_slab_whole.gro` and `prepared_slab_coordinate_report.json`

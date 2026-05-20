@@ -437,9 +437,9 @@ inside the final interface.  A more robust route is to pre-equilibrate CMC-Na as
 a z-open slab under the same XY footprint:
 
 ```python
-from yadonpy import CMCNAXYSlabRelaxationSpec, prepare_cmcna_xy_bulk_slab
+from yadonpy import CMCNAXYSlabRelaxationSpec, prepare_cmcna_xy_membrane
 
-cmcna_slab = prepare_cmcna_xy_bulk_slab(
+cmcna_slab = prepare_cmcna_xy_membrane(
     cmc_chain_mol=CMC,
     na_mol=Na,
     chain_count=8,
@@ -453,13 +453,15 @@ cmcna_slab = prepare_cmcna_xy_bulk_slab(
     charge_scale=(0.7, 0.7),
     relaxation=CMCNAXYSlabRelaxationSpec(
         initial_density_g_cm3=0.05,
-        density_mode="wall_z_npt",
+        density_mode="wall_gap_compression",
         coordinate_export_policy="wrapped_xy_z_open",
-        target_density_g_cm3=None,
+        target_density_g_cm3=0.80,
+        active_density_min_g_cm3=0.80,
         tmax_K=450.0,
-        pmax_bar=2000.0,
         final_relax_ns=0.50,
         max_convergence_rounds=8,
+        lateral_occupancy_convergence=True,
+        write_compression_animation=True,
     ),
 )
 
@@ -474,14 +476,17 @@ cmcna = MolecularLayerSpec(
 ```
 
 This workflow adds GROMACS z walls and `ewald-geometry=3dc`, keeps XY fixed, and
-uses z-only wall-NPT to let the slab thickness relax without allowing CMC chains
-to connect through the z periodic image.  It prepares a stackable z-open slab;
-it is not the old `xyz -> unwrap -> slab` route.  The reported density is the
-active slab density, `CMC-Na mass / (fixed XY area * active z extent)`, because
-the z-wall padding is not part of the CMC material.  This density is a plateau
-diagnostic rather than a hard target.  Check `cmcna_slab_convergence.json` for
-`active_density_gate`, `rg_gate`, `na_coo_contact`, and
-`ready_for_layer_stack` before using the slab in a layer-stack example.
+uses explicit wall-gap/box-z compression plus hot/cool wall-confined NVT to make
+the slab compact without allowing CMC chains to connect through the z periodic
+image.  It prepares a stackable z-open slab; it is not the old `xyz -> unwrap ->
+slab` route and it does not rely on z-pressure coupling to shrink the box.  The
+reported density is the active slab density, `CMC-Na mass / (fixed XY area *
+active z extent)`, because the z-wall padding is not part of the CMC material.
+The compression density is a construction target for choosing the wall gap; the
+convergence gate checks active-density plateau/minimum value, CMC Rg, Na/COO
+contact, lateral occupancy, and `ready_for_layer_stack` before using the slab in
+a layer-stack example.  The workflow also writes
+`cmcna_eq21_wall_compression.mp4` and PNG frames that display the box dimensions.
 The stack-facing `prepared_slab.gro` uses wrapped-XY/z-open coordinates:
 polymer atoms are imaged into the primary x/y box, while z remains the
 wall-confined open slab coordinate.  `prepared_slab_whole.gro` is kept only for

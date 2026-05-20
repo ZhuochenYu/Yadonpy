@@ -17,6 +17,7 @@ import json
 import math
 import os
 import shutil
+import subprocess
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Literal, Mapping, Optional, Sequence, Union
@@ -43,9 +44,12 @@ _AVOGADRO = 6.02214076e23
 class XYSlabEquilibrationSpec:
     """Wall-confined ``pbc=xy`` slab equilibration for stack-ready polymers."""
 
-    density_mode: Literal["target_active_density", "wall_z_npt"] = "target_active_density"
+    density_mode: Literal["target_active_density", "wall_gap_compression", "wall_z_npt"] = "target_active_density"
     coordinate_export_policy: Literal["wrapped_xy_z_open", "as_is"] = "wrapped_xy_z_open"
     target_density_g_cm3: float | None = 0.50
+    target_active_z_nm: float | None = None
+    target_box_z_nm: float | None = None
+    active_density_min_g_cm3: float | None = None
     cycles: int | Literal["auto"] = "auto"
     max_cycles: int = 30
     max_z_shrink_per_cycle: float = 0.10
@@ -67,6 +71,7 @@ class XYSlabEquilibrationSpec:
     final_relax_ns: float = 0.20
     active_density_convergence: bool = False
     rg_convergence: bool = False
+    lateral_occupancy_convergence: bool = False
     max_convergence_rounds: int = 0
     extra_relax_ns_per_round: float = 0.20
     active_density_tolerance_fraction: float = 0.08
@@ -74,9 +79,14 @@ class XYSlabEquilibrationSpec:
     active_density_tail_fraction: float = 0.50
     active_density_quantile_low: float = 0.02
     active_density_quantile_high: float = 0.98
+    lateral_occupancy_grid_nm: float = 0.50
+    min_lateral_occupancy_fraction: float = 0.85
+    min_edge_occupancy_fraction: float = 0.80
     na_coo_contact_cutoff_nm: float = 0.35
     na_coo_contact_min_fraction: float = 0.75
     rollback_on_failure: bool = True
+    write_compression_animation: bool = True
+    animation_fps: float = 1.0
 
 
 def _preset_log(message: str, *, level: int = 1) -> None:
@@ -710,32 +720,51 @@ def _target_xy_slab_box_z_nm(
     _lines, coords, box = _read_gro_lines_coords_box(gro_path)
     density0 = _read_cell_meta_density(ac)
     area_nm2 = max(float(box[0]) * float(box[1]), 1.0e-9)
-    if spec.target_density_g_cm3 is None:
-        raise ValueError("XYSlabEquilibrationSpec.target_density_g_cm3 is required for density_mode='target_active_density'.")
-    target_density = max(float(spec.target_density_g_cm3), 1.0e-6)
-    if density0 is not None and density0 > 0.0:
-        active_z = max(float(box[2]) * float(density0) / target_density, 0.10)
-        source = "cell_meta_density"
+    target_box = getattr(spec, "target_box_z_nm", None)
+    target_active = getattr(spec, "target_active_z_nm", None)
+    if target_box is not None and float(target_box) > 0.0:
+        target_box_z = max(float(target_box), 2.0 * float(spec.wall_padding_nm) + 0.10)
+        active_z = max(target_box_z - 2.0 * float(spec.wall_padding_nm), 0.10)
+        source = "explicit_target_box_z_nm"
+        target_density = None if spec.target_density_g_cm3 is None else float(spec.target_density_g_cm3)
+    elif target_active is not None and float(target_active) > 0.0:
+        active_z = max(float(target_active), 0.10)
+        target_box_z = float(active_z) + 2.0 * float(spec.wall_padding_nm)
+        source = "explicit_target_active_z_nm"
+        target_density = None if spec.target_density_g_cm3 is None else float(spec.target_density_g_cm3)
     else:
-        mass_amu = _estimate_total_mass_amu_from_top(top_path)
-        if mass_amu is None:
-            z_extent = float(np.max(coords[:, 2]) - np.min(coords[:, 2])) if coords.size else float(box[2])
-            active_z = max(z_extent, 0.10)
-            source = "coordinate_extent_fallback"
+        if spec.target_density_g_cm3 is None:
+            raise ValueError(
+                "XYSlabEquilibrationSpec needs one of target_box_z_nm, target_active_z_nm, "
+                "or target_density_g_cm3 for explicit wall-gap compression."
+            )
+        target_density = max(float(spec.target_density_g_cm3), 1.0e-6)
+        if density0 is not None and density0 > 0.0:
+            active_z = max(float(box[2]) * float(density0) / target_density, 0.10)
+            source = "cell_meta_density"
         else:
-            mass_g = float(mass_amu) / _AVOGADRO
-            vol_cm3 = mass_g / target_density
-            vol_nm3 = vol_cm3 * 1.0e21
-            active_z = max(vol_nm3 / area_nm2, 0.10)
-            source = "topology_mass"
-    target_box_z = float(active_z) + 2.0 * float(spec.wall_padding_nm)
+            mass_amu = _estimate_total_mass_amu_from_top(top_path)
+            if mass_amu is None:
+                z_extent = float(np.max(coords[:, 2]) - np.min(coords[:, 2])) if coords.size else float(box[2])
+                active_z = max(z_extent, 0.10)
+                source = "coordinate_extent_fallback"
+            else:
+                mass_g = float(mass_amu) / _AVOGADRO
+                vol_cm3 = mass_g / target_density
+                vol_nm3 = vol_cm3 * 1.0e21
+                active_z = max(vol_nm3 / area_nm2, 0.10)
+                source = "topology_mass"
+        target_box_z = float(active_z) + 2.0 * float(spec.wall_padding_nm)
     return target_box_z, {
         "source": source,
         "initial_box_nm": [float(box[0]), float(box[1]), float(box[2])],
-        "target_density_g_cm3": float(target_density),
+        "density_mode": str(spec.density_mode),
+        "target_density_g_cm3": None if target_density is None else float(target_density),
         "target_active_z_nm": float(active_z),
         "wall_padding_nm": float(spec.wall_padding_nm),
         "target_box_z_nm": float(target_box_z),
+        "target_active_z_nm_input": None if target_active is None else float(target_active),
+        "target_box_z_nm_input": None if target_box is None else float(target_box),
     }
 
 
@@ -2511,6 +2540,8 @@ def _active_density_gate(rows: Sequence[dict[str, float]], *, target_density_g_c
     rel_std = float(std / abs(mean)) if abs(mean) > 1.0e-12 else float("inf")
     target = None if target_density_g_cm3 is None else float(target_density_g_cm3)
     use_target = target is not None and target > 0.0 and str(getattr(spec, "density_mode", "target_active_density")) == "target_active_density"
+    min_density = getattr(spec, "active_density_min_g_cm3", None)
+    min_density_value = None if min_density is None else float(min_density)
     rel_error = float(abs(mean - float(target)) / float(target)) if use_target else None
     slope = 0.0
     if y.size >= 3 and float(np.max(t) - np.min(t)) > 1.0e-9:
@@ -2526,10 +2557,13 @@ def _active_density_gate(rows: Sequence[dict[str, float]], *, target_density_g_c
         )
     else:
         ok = bool(rel_std <= float(spec.active_density_rel_std_max))
+        if min_density_value is not None and min_density_value > 0.0:
+            ok = bool(ok and mean >= min_density_value)
     return {
         "ok": ok,
         "mode": "target_active_density" if use_target else "plateau_only",
         "target_density_g_cm3": target,
+        "min_density_g_cm3": min_density_value,
         "mean_g_cm3": mean,
         "std_g_cm3": std,
         "rel_std": rel_std,
@@ -2545,6 +2579,64 @@ def _active_density_gate(rows: Sequence[dict[str, float]], *, target_density_g_c
             "active_density_quantile_high": float(spec.active_density_quantile_high),
         },
         "recommended_action": "ready" if ok else "continue_wall_confined_nvt_or_rebuild_with_more_gentle_compression",
+    }
+
+
+def _xy_slab_geometry_gate(gro_path: Path, *, spec: XYSlabEquilibrationSpec) -> dict[str, Any]:
+    _lines, coords, box = _read_gro_lines_coords_box(Path(gro_path))
+    if coords.size:
+        wrapped = np.array(coords, copy=True)
+        wrapped[:, 0] = np.mod(wrapped[:, 0], max(float(box[0]), 1.0e-9))
+        wrapped[:, 1] = np.mod(wrapped[:, 1], max(float(box[1]), 1.0e-9))
+        outside_xy = int(
+            np.count_nonzero(
+                (coords[:, 0] < -1.0e-6)
+                | (coords[:, 0] >= float(box[0]) + 1.0e-6)
+                | (coords[:, 1] < -1.0e-6)
+                | (coords[:, 1] >= float(box[1]) + 1.0e-6)
+            )
+        )
+        z_min = float(np.min(coords[:, 2]))
+        z_max = float(np.max(coords[:, 2]))
+    else:
+        wrapped = coords
+        outside_xy = 0
+        z_min = z_max = 0.0
+    occupancy = _lateral_occupancy_report(
+        wrapped,
+        box,
+        grid_nm=float(getattr(spec, "lateral_occupancy_grid_nm", 0.50)),
+    )
+    xy_ok = bool(outside_xy == 0 or str(spec.coordinate_export_policy) == "wrapped_xy_z_open")
+    z_open_ok = bool(z_min >= -1.0e-5 and z_max <= float(box[2]) + 1.0e-5 and (z_max - z_min) < float(box[2]) - 1.0e-5)
+    lateral_ok = bool(
+        float(occupancy.get("occupied_cell_fraction", 0.0)) >= float(getattr(spec, "min_lateral_occupancy_fraction", 0.85))
+        and float(occupancy.get("edge_occupied_cell_fraction", 0.0)) >= float(getattr(spec, "min_edge_occupancy_fraction", 0.80))
+    )
+    enforce_lateral = bool(getattr(spec, "lateral_occupancy_convergence", False))
+    ok = bool(xy_ok and z_open_ok and (lateral_ok or not enforce_lateral))
+    return {
+        "ok": ok,
+        "xy_wrapped_ok_after_export": bool(xy_ok),
+        "z_open_ok": bool(z_open_ok),
+        "lateral_occupancy_ok": bool(lateral_ok),
+        "lateral_occupancy_enforced": bool(enforce_lateral),
+        "outside_xy_atom_count_before_wrap": int(outside_xy),
+        "box_nm": [float(v) for v in box],
+        "z_min_nm": float(z_min),
+        "z_max_nm": float(z_max),
+        "active_z_extent_nm": float(max(z_max - z_min, 0.0)),
+        "lateral_occupancy": occupancy,
+        "criteria": {
+            "min_lateral_occupancy_fraction": float(getattr(spec, "min_lateral_occupancy_fraction", 0.85)),
+            "min_edge_occupancy_fraction": float(getattr(spec, "min_edge_occupancy_fraction", 0.80)),
+            "grid_nm": float(getattr(spec, "lateral_occupancy_grid_nm", 0.50)),
+        },
+        "recommended_action": (
+            "ready"
+            if ok
+            else "increase_chain_count_reduce_xy_or_run_more_wall_gap_compression_before_stack_assembly"
+        ),
     }
 
 
@@ -2643,6 +2735,187 @@ def _write_z_density_profile_final(
     except Exception:
         svg_path.write_text("", encoding="utf-8")
     return {"csv": str(csv_path), "svg": str(svg_path)}
+
+
+def _write_xy_slab_compression_animation(
+    *,
+    run_dir: Path,
+    frames: Sequence[Mapping[str, Any]],
+    total_mass_amu: float,
+    spec: XYSlabEquilibrationSpec,
+) -> dict[str, Any]:
+    out_dir = Path(run_dir) / "cmcna_eq21_wall_compression_png_frames"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    frame_rows: list[dict[str, Any]] = []
+    if not bool(getattr(spec, "write_compression_animation", True)):
+        return {"available": False, "reason": "disabled"}
+    try:
+        import matplotlib.pyplot as plt
+        from mpl_toolkits.mplot3d.art3d import Line3DCollection
+    except Exception as exc:
+        return {"available": False, "reason": f"matplotlib_unavailable: {exc}"}
+
+    def _element_color(atom_name: str) -> str:
+        name = str(atom_name or "").strip().upper()
+        if name.startswith("NA"):
+            return "#7E3F98"
+        if name.startswith("O"):
+            return "#D62728"
+        if name.startswith("H"):
+            return "#C7C7C7"
+        if name.startswith("C"):
+            return "#2CA02C"
+        return "#1F77B4"
+
+    def _box_edges(box: tuple[float, float, float]) -> list[list[tuple[float, float, float]]]:
+        lx, ly, lz = (float(box[0]), float(box[1]), float(box[2]))
+        corners = [
+            (0.0, 0.0, 0.0),
+            (lx, 0.0, 0.0),
+            (lx, ly, 0.0),
+            (0.0, ly, 0.0),
+            (0.0, 0.0, lz),
+            (lx, 0.0, lz),
+            (lx, ly, lz),
+            (0.0, ly, lz),
+        ]
+        pairs = [(0, 1), (1, 2), (2, 3), (3, 0), (4, 5), (5, 6), (6, 7), (7, 4), (0, 4), (1, 5), (2, 6), (3, 7)]
+        return [[corners[i], corners[j]] for i, j in pairs]
+
+    png_paths: list[Path] = []
+    for frame_idx, rec in enumerate(frames):
+        gro_path = Path(str(rec.get("gro", "")))
+        if not gro_path.is_file():
+            continue
+        try:
+            atoms, box = _gro_atom_records(gro_path)
+        except Exception:
+            continue
+        if not atoms:
+            continue
+        coords = np.asarray([atom["xyz_nm"] for atom in atoms], dtype=float)
+        coords[:, 0] = np.mod(coords[:, 0], max(float(box[0]), 1.0e-9))
+        coords[:, 1] = np.mod(coords[:, 1], max(float(box[1]), 1.0e-9))
+        density_row = _active_density_rows_from_coords(
+            coords_nm=coords,
+            time_ps=[float(frame_idx)],
+            box_nm=np.asarray(box, dtype=float),
+            total_mass_amu=float(total_mass_amu),
+            q_low=float(spec.active_density_quantile_low),
+            q_high=float(spec.active_density_quantile_high),
+        )[0]
+        occupancy = _lateral_occupancy_report(
+            coords,
+            box,
+            grid_nm=float(getattr(spec, "lateral_occupancy_grid_nm", 0.50)),
+        )
+        n_atoms = coords.shape[0]
+        max_points = 6000
+        if n_atoms > max_points:
+            idx = np.linspace(0, n_atoms - 1, max_points).astype(int)
+            plot_coords = coords[idx]
+            plot_atoms = [atoms[int(i)] for i in idx]
+            point_size = 2.0
+        else:
+            plot_coords = coords
+            plot_atoms = atoms
+            point_size = 5.0 if n_atoms < 1500 else 2.5
+        colors = [_element_color(str(atom.get("atom"))) for atom in plot_atoms]
+        fig = plt.figure(figsize=(7.2, 5.6), dpi=130)
+        ax = fig.add_subplot(111, projection="3d")
+        ax.scatter(plot_coords[:, 0], plot_coords[:, 1], plot_coords[:, 2], c=colors, s=point_size, alpha=0.75, linewidths=0.0)
+        ax.add_collection3d(Line3DCollection(_box_edges(box), colors="#222222", linewidths=0.9, alpha=0.75))
+        ax.set_xlim(0.0, float(box[0]))
+        ax.set_ylim(0.0, float(box[1]))
+        ax.set_zlim(0.0, float(box[2]))
+        ax.set_xlabel("x / nm")
+        ax.set_ylabel("y / nm")
+        ax.set_zlabel("z / nm")
+        try:
+            ax.set_box_aspect((float(box[0]), float(box[1]), float(box[2])))
+        except Exception:
+            pass
+        ax.view_init(elev=22, azim=-135)
+        label = str(rec.get("label", f"frame {frame_idx:03d}"))
+        ax.set_title(
+            f"{label}\n"
+            f"L=({float(box[0]):.2f}, {float(box[1]):.2f}, {float(box[2]):.2f}) nm | "
+            f"rho_active={float(density_row['active_density_g_cm3']):.2f} g/cm3 | "
+            f"occ={float(occupancy['occupied_cell_fraction']):.2f}",
+            fontsize=10,
+        )
+        fig.tight_layout()
+        png_path = out_dir / f"frame_{len(png_paths):04d}.png"
+        fig.savefig(png_path)
+        plt.close(fig)
+        png_paths.append(png_path)
+        frame_rows.append(
+            {
+                "frame": int(len(png_paths) - 1),
+                "label": label,
+                "gro": str(gro_path),
+                "png": str(png_path),
+                "box_x_nm": float(box[0]),
+                "box_y_nm": float(box[1]),
+                "box_z_nm": float(box[2]),
+                "active_density_g_cm3": float(density_row["active_density_g_cm3"]),
+                "active_z_extent_nm": float(density_row["active_z_extent_nm"]),
+                "lateral_occupancy_fraction": float(occupancy["occupied_cell_fraction"]),
+                "edge_occupied_fraction": float(occupancy["edge_occupied_cell_fraction"]),
+            }
+        )
+    csv_path = Path(run_dir) / "cmcna_eq21_wall_compression_frames.csv"
+    if frame_rows:
+        with csv_path.open("w", newline="", encoding="utf-8") as fh:
+            writer = csv.DictWriter(fh, fieldnames=list(frame_rows[0].keys()))
+            writer.writeheader()
+            writer.writerows(frame_rows)
+    else:
+        csv_path.write_text("", encoding="utf-8")
+        return {"available": False, "reason": "no_renderable_frames", "frames_dir": str(out_dir), "frames_csv": str(csv_path)}
+    mp4_path = Path(run_dir) / "cmcna_eq21_wall_compression.mp4"
+    try:
+        import imageio_ffmpeg
+
+        ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
+        fps = max(float(getattr(spec, "animation_fps", 1.0)), 0.1)
+        cmd = [
+            str(ffmpeg),
+            "-y",
+            "-framerate",
+            f"{fps:.6g}",
+            "-i",
+            str(out_dir / "frame_%04d.png"),
+            "-vf",
+            "pad=ceil(iw/2)*2:ceil(ih/2)*2",
+            "-pix_fmt",
+            "yuv420p",
+            "-vcodec",
+            "libx264",
+            "-crf",
+            "24",
+            str(mp4_path),
+        ]
+        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False)
+        if proc.returncode != 0:
+            return {
+                "available": False,
+                "reason": "ffmpeg_failed",
+                "returncode": int(proc.returncode),
+                "stderr_tail": proc.stderr[-2000:],
+                "frames_dir": str(out_dir),
+                "frames_csv": str(csv_path),
+            }
+    except Exception as exc:
+        return {"available": False, "reason": str(exc), "frames_dir": str(out_dir), "frames_csv": str(csv_path)}
+    return {
+        "available": True,
+        "mp4": str(mp4_path),
+        "frames_dir": str(out_dir),
+        "frames_csv": str(csv_path),
+        "frame_count": int(len(frame_rows)),
+        "fps": float(max(float(getattr(spec, "animation_fps", 1.0)), 0.1)),
+    }
 
 
 def _na_coo_contact_report(gro_path: Path, *, cutoff_nm: float, min_fraction: float) -> dict[str, Any]:
@@ -2824,10 +3097,12 @@ def _xy_slab_convergence_report(
         cutoff_nm=float(spec.na_coo_contact_cutoff_nm),
         min_fraction=float(spec.na_coo_contact_min_fraction),
     )
+    geometry_gate = _xy_slab_geometry_gate(final_gro, spec=spec)
     ready = bool(
         (density_gate.get("ok") or not bool(spec.active_density_convergence))
         and (rg_gate.get("ok") or not bool(spec.rg_convergence))
         and (contact.get("ok") if contact.get("available") else True)
+        and bool(geometry_gate.get("ok"))
     )
     payload = {
         "schema_version": "0.9.25-cmcna-xy-slab-convergence-v2",
@@ -2842,6 +3117,7 @@ def _xy_slab_convergence_report(
         "z_density_profile_final": profile_artifacts,
         "rg_gate": rg_gate,
         "na_coo_contact": contact,
+        "geometry_gate": geometry_gate,
     }
     return payload
 
@@ -4441,6 +4717,7 @@ class EQ21step:
         final_dir = run_dir / "final"
         final_stage_dir = final_dir / "final_02_nvt_release"
         convergence_path = run_dir / "cmcna_slab_convergence.json"
+        membrane_quality_path = run_dir / "cmcna_membrane_quality.json"
         prepared_gro = run_dir / "prepared_slab.gro"
         prepared_whole_gro = run_dir / "prepared_slab_whole.gro"
         prepared_top = run_dir / "prepared_slab.top"
@@ -4629,6 +4906,7 @@ class EQ21step:
             final_stage_dir / "md.gro",
             summary_path,
             convergence_path,
+            membrane_quality_path,
             prepared_gro,
             prepared_whole_gro,
             prepared_top,
@@ -4654,7 +4932,8 @@ class EQ21step:
         )
         _preset_item("run_dir", run_dir)
         _preset_item("periodicity", "xy")
-        _preset_item("xy_slab_target_density_g_cm3", float(slab.target_density_g_cm3))
+        _preset_item("xy_slab_density_mode", str(slab.density_mode))
+        _preset_item("xy_slab_target_density_g_cm3", None if slab.target_density_g_cm3 is None else float(slab.target_density_g_cm3))
         _preset_item("xy_slab_target_box_z_nm", f"{float(target_box_z):.4f}")
         _preset_item("xy_slab_cycles", len(schedule))
         _preset_item("xy_slab_wall_overrides", wall_overrides)
@@ -4676,6 +4955,7 @@ class EQ21step:
             run_dir.mkdir(parents=True, exist_ok=True)
             current_gro = Path(exp.system_gro)
             cycle_reports: list[dict[str, object]] = []
+            animation_frames: list[dict[str, object]] = [{"label": "initial sparse AC", "gro": str(current_gro)}]
             for i, z_target in enumerate(schedule, start=1):
                 cycle_dir = run_dir / f"cycle_{i:02d}"
                 start_gro = cycle_dir / "00_geometry" / "start.gro"
@@ -4725,6 +5005,8 @@ class EQ21step:
                     )
                     retry_job.run(restart=False)
                     current_gro = retry_job.final_gro()
+                    animation_frames.append({"label": f"cycle {i:02d} geometry retry", "gro": str(retry_start)})
+                    animation_frames.append({"label": f"cycle {i:02d} relaxed retry", "gro": str(current_gro)})
                     cycle_reports.append(
                         {
                             "cycle": i,
@@ -4737,6 +5019,8 @@ class EQ21step:
                     )
                     continue
                 current_gro = job.final_gro()
+                animation_frames.append({"label": f"cycle {i:02d} geometry", "gro": str(start_gro)})
+                animation_frames.append({"label": f"cycle {i:02d} relaxed", "gro": str(current_gro)})
                 cycle_reports.append(
                     {
                         "cycle": i,
@@ -4770,6 +5054,8 @@ class EQ21step:
             )
             final_job.run(restart=False)
             current_job = final_job
+            animation_frames.append({"label": "final geometry", "gro": str(final_start)})
+            animation_frames.append({"label": "final wall NVT", "gro": str(current_job.final_gro())})
             convergence_reports: list[dict[str, Any]] = []
             report = _xy_slab_convergence_report(
                 job=current_job,
@@ -4812,6 +5098,7 @@ class EQ21step:
                 )
                 extra_job.run(restart=False)
                 current_job = extra_job
+                animation_frames.append({"label": f"convergence round {round_idx:02d}", "gro": str(current_job.final_gro())})
                 report = _xy_slab_convergence_report(
                     job=current_job,
                     exp=exp,
@@ -4831,10 +5118,34 @@ class EQ21step:
             coordinate_report["prepared_slab_whole_gro"] = str(prepared_whole_gro)
             coordinate_report_path.write_text(json.dumps(coordinate_report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
             shutil.copy2(exp.system_top, prepared_top)
+            total_mass_amu = _estimate_total_mass_amu_from_top(Path(exp.system_top)) or 0.0
+            animation_report = _write_xy_slab_compression_animation(
+                run_dir=run_dir,
+                frames=animation_frames,
+                total_mass_amu=float(total_mass_amu),
+                spec=slab,
+            )
             self._job = current_job
+            initial_box_z = float(initial_box[2])
+            final_box_z = float(_read_gro_lines_coords_box(current_job.final_gro())[2][2])
+            box_z_changed_ok = bool(abs(final_box_z - initial_box_z) > 1.0e-4)
+            membrane_quality = {
+                "schema_version": "0.9.27-cmcna-membrane-quality-v1",
+                "density_mode": str(slab.density_mode),
+                "box_z_changed_ok": bool(box_z_changed_ok),
+                "initial_box_z_nm": float(initial_box_z),
+                "final_box_z_nm": float(final_box_z),
+                "target_box_z_nm": float(target_box_z),
+                "box_z_change_fraction": float((final_box_z - initial_box_z) / initial_box_z) if initial_box_z > 0.0 else None,
+                "final_convergence": convergence_reports[-1] if convergence_reports else {},
+                "coordinate_export": coordinate_report,
+                "animation": animation_report,
+            }
+            membrane_quality_path.write_text(json.dumps(membrane_quality, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
             payload = {
-                "schema_version": "0.9.24-xy-slab-v2",
+                "schema_version": "0.9.27-xy-slab-wall-gap-compression-v1",
                 "periodicity": "xy",
+                "density_mode": str(slab.density_mode),
                 "target": target_report,
                 "spec": asdict(slab),
                 "wall_mdp_overrides": wall_overrides,
@@ -4846,6 +5157,9 @@ class EQ21step:
                 "prepared_slab_top": str(prepared_top),
                 "prepared_slab_coordinate_report": str(coordinate_report_path),
                 "coordinate_export": coordinate_report,
+                "membrane_quality": str(membrane_quality_path),
+                "box_z_changed_ok": bool(box_z_changed_ok),
+                "compression_animation": animation_report,
                 "convergence_summary": str(convergence_path),
                 "convergence_history": convergence_reports,
                 "ready_for_layer_stack": bool((convergence_reports[-1] or {}).get("ready_for_layer_stack")),

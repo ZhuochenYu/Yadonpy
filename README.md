@@ -351,21 +351,25 @@ the last density-relaxation step from applying a sudden large z scaling after
 the gentle compression cycles.
 For large CMC-Na layers, the preferred preparation route is an independent
 wall-confined slab before the final stack is assembled.  Use
-`prepare_cmcna_xy_bulk_slab(...)` to build a dilute fixed-XY CMC-Na amorphous
-cell at `0.05 g/cm3`, run `periodicity="xy"` EQ21 with z walls, and let
-fixed-XY/z-only wall-NPT compress the z-open slab naturally.  This avoids the
-`xyz -> unwrap -> slab` route, where CMC chain segments can cross the z periodic
-image before a clean slab boundary exists.  The observed density is reported as
+`prepare_cmcna_xy_membrane(...)` to build a dilute fixed-XY CMC-Na amorphous
+cell at `0.05 g/cm3`, run `periodicity="xy"` EQ21 with z walls, and explicitly
+shorten the wall gap/box-z in small EQ21 compression cycles.  Each compression
+move is followed by wall-confined hot/cool NVT, so the workflow does not rely on
+GROMACS z pressure coupling to shrink a wall system.  This avoids the `xyz ->
+unwrap -> slab` route, where CMC chain segments can cross the z periodic image
+before a clean slab boundary exists.  The observed density is reported as
 `CMC-Na mass / (fixed XY area * active z extent)`, not the total GROMACS box
 density, because wall padding would otherwise dilute the value.  Active density
-is a convergence diagnostic and not a hard target; Rg convergence is checked at
-the same time.  The exported `prepared_slab.gro` is deliberately
+is checked as a plateau/minimum diagnostic together with Rg, Na/COO contact, and
+lateral occupancy.  The exported `prepared_slab.gro` is deliberately
 `wrapped_xy_z_open`: x/y coordinates are wrapped back into the primary periodic
 image, while z coordinates keep the wall-confined open-slab boundary.  The
 whole-molecule handoff file, `prepared_slab_whole.gro`, is kept for diagnostics
 only and should not be used for layer-stack assembly.  Pass `prepared_slab_gro` to
 `MolecularLayerSpec(prepared_slab_gro=...)` only after
-`cmcna_slab_convergence.json` reports `ready_for_layer_stack=True`.  CMC-Na
+`cmcna_slab_convergence.json` reports `ready_for_layer_stack=True`; the same
+folder also contains `cmcna_eq21_wall_compression.mp4` and PNG frames with the
+box dimensions for visual inspection.  CMC-Na
 layers that are still packed directly can initialize Na+ as local carboxylate
 counterions with `counterion_contact_mode="carboxylate"`; prepared slabs
 preserve the pre-equilibrated Na+/COO- contacts.  The relaxation summary reports
@@ -548,9 +552,10 @@ umbrella_plan = prepare_solvated_ion_umbrella(
   part of the physical model and should not be barostat-compressed.
 - Example 08-07 is the preferred template when a pre-relaxed CMC-Na membrane
   slab should define the lateral footprint.  It builds the CMC-Na slab with
-  `periodicity="xy"` walls first, reads the relaxed slab XY box, selects matching
-  basal-graphite repeat counts, prepares an electrolyte `periodicity="xy"` slab
-  at the same XY and near-bulk density, and assembles both slabs through
+  `periodicity="xy"` walls and explicit wall-gap compression first, reads the
+  relaxed slab XY box, selects matching basal-graphite repeat counts, prepares
+  an electrolyte `periodicity="xy"` slab at the same XY and near-bulk density,
+  and assembles both slabs through
   `MolecularLayerSpec(prepared_slab_gro=...)`.  Prepared slabs must match the
   final stack XY within `0.02 nm`; the manifest records XY deltas and lateral
   occupancy diagnostics so side-channel voids are caught before production.
