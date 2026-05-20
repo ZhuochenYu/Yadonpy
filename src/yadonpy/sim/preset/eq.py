@@ -18,6 +18,7 @@ import math
 import os
 import shutil
 import subprocess
+from collections import deque
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Literal, Mapping, Optional, Sequence, Union
@@ -82,6 +83,14 @@ class XYSlabEquilibrationSpec:
     lateral_occupancy_grid_nm: float = 0.50
     min_lateral_occupancy_fraction: float = 0.85
     min_edge_occupancy_fraction: float = 0.80
+    surface_flatness_convergence: bool = False
+    surface_flatness_grid_nm: float = 0.50
+    max_surface_rms_nm: float = 0.35
+    max_surface_peak_to_peak_nm: float = 1.00
+    connected_void_convergence: bool = False
+    void_grid_nm: float = 0.35
+    void_atom_radius_nm: float = 0.22
+    max_connected_void_fraction: float = 0.20
     na_coo_contact_cutoff_nm: float = 0.35
     na_coo_contact_min_fraction: float = 0.75
     rollback_on_failure: bool = True
@@ -503,6 +512,153 @@ def _lateral_occupancy_report(coords_nm: np.ndarray, box_nm: tuple[float, float,
         "edge_occupied_cell_fraction": float(edge_occupied_fraction),
         "empty_edge_cell_fraction": float(1.0 - edge_occupied_fraction),
         "warning": bool(occupied_fraction < 0.85 or edge_occupied_fraction < 0.80),
+    }
+
+
+def _surface_flatness_report(coords_nm: np.ndarray, box_nm: tuple[float, float, float], *, grid_nm: float = 0.50) -> dict[str, Any]:
+    coords = np.asarray(coords_nm, dtype=float)
+    grid = max(float(grid_nm), 1.0e-6)
+    if coords.ndim != 2 or coords.shape[0] == 0:
+        return {
+            "available": False,
+            "reason": "no_coordinates",
+            "grid_nm": float(grid),
+            "occupied_cell_count": 0,
+            "bottom_surface_rms_nm": None,
+            "top_surface_rms_nm": None,
+            "max_surface_rms_nm": None,
+            "bottom_peak_to_peak_nm": None,
+            "top_peak_to_peak_nm": None,
+            "max_peak_to_peak_nm": None,
+        }
+    box_x = max(float(box_nm[0]), 1.0e-9)
+    box_y = max(float(box_nm[1]), 1.0e-9)
+    nx = max(1, int(math.ceil(box_x / grid)))
+    ny = max(1, int(math.ceil(box_y / grid)))
+    bottom: dict[tuple[int, int], float] = {}
+    top: dict[tuple[int, int], float] = {}
+    for xyz in coords:
+        ix = min(nx - 1, max(0, int(math.floor((float(xyz[0]) % box_x) / box_x * nx))))
+        iy = min(ny - 1, max(0, int(math.floor((float(xyz[1]) % box_y) / box_y * ny))))
+        key = (ix, iy)
+        z = float(xyz[2])
+        bottom[key] = min(bottom.get(key, z), z)
+        top[key] = max(top.get(key, z), z)
+    if not bottom or not top:
+        return {
+            "available": False,
+            "reason": "no_occupied_cells",
+            "grid_nm": float(grid),
+            "occupied_cell_count": 0,
+            "bottom_surface_rms_nm": None,
+            "top_surface_rms_nm": None,
+            "max_surface_rms_nm": None,
+            "bottom_peak_to_peak_nm": None,
+            "top_peak_to_peak_nm": None,
+            "max_peak_to_peak_nm": None,
+        }
+    bottom_values = np.asarray(list(bottom.values()), dtype=float)
+    top_values = np.asarray(list(top.values()), dtype=float)
+    bottom_rms = float(np.std(bottom_values))
+    top_rms = float(np.std(top_values))
+    bottom_p2p = float(np.max(bottom_values) - np.min(bottom_values)) if bottom_values.size else 0.0
+    top_p2p = float(np.max(top_values) - np.min(top_values)) if top_values.size else 0.0
+    return {
+        "available": True,
+        "grid_nm": float(grid),
+        "grid_shape": [int(nx), int(ny)],
+        "occupied_cell_count": int(len(bottom)),
+        "total_cell_count": int(nx * ny),
+        "bottom_surface_mean_nm": float(np.mean(bottom_values)),
+        "top_surface_mean_nm": float(np.mean(top_values)),
+        "bottom_surface_rms_nm": bottom_rms,
+        "top_surface_rms_nm": top_rms,
+        "max_surface_rms_nm": float(max(bottom_rms, top_rms)),
+        "bottom_peak_to_peak_nm": bottom_p2p,
+        "top_peak_to_peak_nm": top_p2p,
+        "max_peak_to_peak_nm": float(max(bottom_p2p, top_p2p)),
+    }
+
+
+def _connected_void_report(
+    coords_nm: np.ndarray,
+    box_nm: tuple[float, float, float],
+    *,
+    grid_nm: float = 0.35,
+    atom_radius_nm: float = 0.22,
+) -> dict[str, Any]:
+    coords = np.asarray(coords_nm, dtype=float)
+    grid = max(float(grid_nm), 1.0e-6)
+    if coords.ndim != 2 or coords.shape[0] == 0:
+        return {
+            "available": False,
+            "reason": "no_coordinates",
+            "grid_nm": float(grid),
+            "atom_radius_nm": float(atom_radius_nm),
+            "through_void": True,
+            "connected_void_fraction": 1.0,
+        }
+    box_x = max(float(box_nm[0]), 1.0e-9)
+    box_y = max(float(box_nm[1]), 1.0e-9)
+    z_min = float(np.min(coords[:, 2]))
+    z_max = float(np.max(coords[:, 2]))
+    active_z = max(z_max - z_min, grid)
+    nx = max(1, int(math.ceil(box_x / grid)))
+    ny = max(1, int(math.ceil(box_y / grid)))
+    nz = max(2, int(math.ceil(active_z / grid)))
+    occupied = np.zeros((nx, ny, nz), dtype=bool)
+    radius_cells = max(0, int(math.ceil(float(atom_radius_nm) / grid)))
+    for xyz in coords:
+        ix0 = min(nx - 1, max(0, int(math.floor((float(xyz[0]) % box_x) / box_x * nx))))
+        iy0 = min(ny - 1, max(0, int(math.floor((float(xyz[1]) % box_y) / box_y * ny))))
+        iz0 = min(nz - 1, max(0, int(math.floor((float(xyz[2]) - z_min) / active_z * nz))))
+        for dx in range(-radius_cells, radius_cells + 1):
+            for dy in range(-radius_cells, radius_cells + 1):
+                for dz in range(-radius_cells, radius_cells + 1):
+                    if dx * dx + dy * dy + dz * dz > radius_cells * radius_cells:
+                        continue
+                    iz = iz0 + dz
+                    if iz < 0 or iz >= nz:
+                        continue
+                    occupied[(ix0 + dx) % nx, (iy0 + dy) % ny, iz] = True
+    empty = ~occupied
+    visited = np.zeros_like(empty, dtype=bool)
+    q: deque[tuple[int, int, int]] = deque()
+    for ix in range(nx):
+        for iy in range(ny):
+            if empty[ix, iy, 0]:
+                visited[ix, iy, 0] = True
+                q.append((ix, iy, 0))
+    through = False
+    count = 0
+    while q:
+        ix, iy, iz = q.popleft()
+        count += 1
+        if iz == nz - 1:
+            through = True
+        for dx, dy, dz in ((1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1)):
+            jx = (ix + dx) % nx
+            jy = (iy + dy) % ny
+            jz = iz + dz
+            if jz < 0 or jz >= nz:
+                continue
+            if empty[jx, jy, jz] and not visited[jx, jy, jz]:
+                visited[jx, jy, jz] = True
+                q.append((jx, jy, jz))
+    total = max(nx * ny * nz, 1)
+    empty_count = int(np.count_nonzero(empty))
+    return {
+        "available": True,
+        "grid_nm": float(grid),
+        "atom_radius_nm": float(atom_radius_nm),
+        "grid_shape": [int(nx), int(ny), int(nz)],
+        "active_z_extent_nm": float(active_z),
+        "empty_cell_count": int(empty_count),
+        "total_cell_count": int(total),
+        "empty_cell_fraction": float(empty_count / total),
+        "bottom_connected_empty_cell_count": int(count),
+        "connected_void_fraction": float(count / total),
+        "through_void": bool(through),
     }
 
 
@@ -2607,6 +2763,17 @@ def _xy_slab_geometry_gate(gro_path: Path, *, spec: XYSlabEquilibrationSpec) -> 
         box,
         grid_nm=float(getattr(spec, "lateral_occupancy_grid_nm", 0.50)),
     )
+    flatness = _surface_flatness_report(
+        wrapped,
+        box,
+        grid_nm=float(getattr(spec, "surface_flatness_grid_nm", getattr(spec, "lateral_occupancy_grid_nm", 0.50))),
+    )
+    voids = _connected_void_report(
+        wrapped,
+        box,
+        grid_nm=float(getattr(spec, "void_grid_nm", 0.35)),
+        atom_radius_nm=float(getattr(spec, "void_atom_radius_nm", 0.22)),
+    )
     xy_ok = bool(outside_xy == 0 or str(spec.coordinate_export_policy) == "wrapped_xy_z_open")
     z_open_ok = bool(z_min >= -1.0e-5 and z_max <= float(box[2]) + 1.0e-5 and (z_max - z_min) < float(box[2]) - 1.0e-5)
     lateral_ok = bool(
@@ -2614,28 +2781,62 @@ def _xy_slab_geometry_gate(gro_path: Path, *, spec: XYSlabEquilibrationSpec) -> 
         and float(occupancy.get("edge_occupied_cell_fraction", 0.0)) >= float(getattr(spec, "min_edge_occupancy_fraction", 0.80))
     )
     enforce_lateral = bool(getattr(spec, "lateral_occupancy_convergence", False))
-    ok = bool(xy_ok and z_open_ok and (lateral_ok or not enforce_lateral))
+    flatness_rms = flatness.get("max_surface_rms_nm")
+    flatness_p2p = flatness.get("max_peak_to_peak_nm")
+    surface_ok = bool(
+        flatness.get("available")
+        and flatness_rms is not None
+        and flatness_p2p is not None
+        and float(flatness_rms) <= float(getattr(spec, "max_surface_rms_nm", 0.35))
+        and float(flatness_p2p) <= float(getattr(spec, "max_surface_peak_to_peak_nm", 1.00))
+    )
+    enforce_surface = bool(getattr(spec, "surface_flatness_convergence", False))
+    void_ok = bool(
+        voids.get("available")
+        and not bool(voids.get("through_void"))
+        and float(voids.get("connected_void_fraction", 1.0)) <= float(getattr(spec, "max_connected_void_fraction", 0.20))
+    )
+    enforce_void = bool(getattr(spec, "connected_void_convergence", False))
+    ok = bool(
+        xy_ok
+        and z_open_ok
+        and (lateral_ok or not enforce_lateral)
+        and (surface_ok or not enforce_surface)
+        and (void_ok or not enforce_void)
+    )
     return {
         "ok": ok,
         "xy_wrapped_ok_after_export": bool(xy_ok),
         "z_open_ok": bool(z_open_ok),
         "lateral_occupancy_ok": bool(lateral_ok),
         "lateral_occupancy_enforced": bool(enforce_lateral),
+        "surface_flatness_ok": bool(surface_ok),
+        "surface_flatness_enforced": bool(enforce_surface),
+        "connected_void_ok": bool(void_ok),
+        "connected_void_enforced": bool(enforce_void),
         "outside_xy_atom_count_before_wrap": int(outside_xy),
         "box_nm": [float(v) for v in box],
         "z_min_nm": float(z_min),
         "z_max_nm": float(z_max),
         "active_z_extent_nm": float(max(z_max - z_min, 0.0)),
         "lateral_occupancy": occupancy,
+        "surface_flatness": flatness,
+        "connected_void": voids,
         "criteria": {
             "min_lateral_occupancy_fraction": float(getattr(spec, "min_lateral_occupancy_fraction", 0.85)),
             "min_edge_occupancy_fraction": float(getattr(spec, "min_edge_occupancy_fraction", 0.80)),
-            "grid_nm": float(getattr(spec, "lateral_occupancy_grid_nm", 0.50)),
+            "lateral_occupancy_grid_nm": float(getattr(spec, "lateral_occupancy_grid_nm", 0.50)),
+            "max_surface_rms_nm": float(getattr(spec, "max_surface_rms_nm", 0.35)),
+            "max_surface_peak_to_peak_nm": float(getattr(spec, "max_surface_peak_to_peak_nm", 1.00)),
+            "surface_flatness_grid_nm": float(getattr(spec, "surface_flatness_grid_nm", 0.50)),
+            "void_grid_nm": float(getattr(spec, "void_grid_nm", 0.35)),
+            "void_atom_radius_nm": float(getattr(spec, "void_atom_radius_nm", 0.22)),
+            "max_connected_void_fraction": float(getattr(spec, "max_connected_void_fraction", 0.20)),
         },
         "recommended_action": (
             "ready"
             if ok
-            else "increase_chain_count_reduce_xy_or_run_more_wall_gap_compression_before_stack_assembly"
+            else "increase_chain_count_reduce_xy_run_graphite_mold_shaping_or_extend_wall_gap_relaxation_before_stack_assembly"
         ),
     }
 

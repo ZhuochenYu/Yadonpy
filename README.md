@@ -360,8 +360,11 @@ unwrap -> slab` route, where CMC chain segments can cross the z periodic image
 before a clean slab boundary exists.  The observed density is reported as
 `CMC-Na mass / (fixed XY area * active z extent)`, not the total GROMACS box
 density, because wall padding would otherwise dilute the value.  Active density
-is checked as a plateau/minimum diagnostic together with Rg, Na/COO contact, and
-lateral occupancy.  The exported `prepared_slab.gro` is deliberately
+is checked as a plateau/minimum diagnostic together with Rg, Na/COO contact,
+lateral occupancy, surface flatness, and connected-void diagnostics.  These
+last two gates catch the cases that look dense on average but still have rough
+interfaces or through-pores that would let electrolyte bypass the CMC membrane.
+The exported `prepared_slab.gro` is deliberately
 `wrapped_xy_z_open`: x/y coordinates are wrapped back into the primary periodic
 image, while z coordinates keep the wall-confined open-slab boundary.  The
 whole-molecule handoff file, `prepared_slab_whole.gro`, is kept for diagnostics

@@ -1280,7 +1280,9 @@ shrink the box.  The active density is computed from `CMC-Na mass / (fixed XY
 area * active z extent)`, not from the total box density, because z-wall padding
 is not part of the physical CMC slab.  `cmcna_slab_convergence.json` records
 `active_density_gate`, `rg_gate`, `na_coo_contact`, `geometry_gate`, and
-`ready_for_layer_stack`; `cmcna_membrane_quality.json` records whether box-z
+`ready_for_layer_stack`; the `geometry_gate` contains lateral occupancy,
+surface-flatness, and connected-void diagnostics so rough or through-pore CMC
+slabs are rejected before stack assembly. `cmcna_membrane_quality.json` records whether box-z
 actually changed and where the compression MP4/PNG frames were written.
 `prepared_slab.gro` is exported
 with the default `coordinate_export_policy="wrapped_xy_z_open"`: x/y are wrapped

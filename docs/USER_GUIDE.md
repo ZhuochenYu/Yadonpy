@@ -484,8 +484,11 @@ reported density is the active slab density, `CMC-Na mass / (fixed XY area *
 active z extent)`, because the z-wall padding is not part of the CMC material.
 The compression density is a construction target for choosing the wall gap; the
 convergence gate checks active-density plateau/minimum value, CMC Rg, Na/COO
-contact, lateral occupancy, and `ready_for_layer_stack` before using the slab in
-a layer-stack example.  The workflow also writes
+contact, lateral occupancy, surface flatness, connected voids, and
+`ready_for_layer_stack` before using the slab in a layer-stack example.  Surface
+flatness reports the grid-resolved top/bottom height RMS; connected-void
+analysis flood-fills empty grid cells from one z face to the other to catch
+through-pores.  The workflow also writes
 `cmcna_eq21_wall_compression.mp4` and PNG frames that display the box dimensions.
 The stack-facing `prepared_slab.gro` uses wrapped-XY/z-open coordinates:
 polymer atoms are imaged into the primary x/y box, while z remains the

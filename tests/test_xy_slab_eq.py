@@ -12,8 +12,10 @@ from yadonpy.sim.preset.eq import (
     XYSlabEquilibrationSpec,
     _active_density_gate,
     _active_density_rows_from_coords,
+    _connected_void_report,
     _estimate_total_mass_amu_from_top,
     _export_xy_slab_prepared_gro,
+    _surface_flatness_report,
     _xy_slab_geometry_gate,
     _xy_slab_z_schedule,
     xy_slab_mdp_overrides,
@@ -248,6 +250,85 @@ def test_xy_slab_geometry_gate_checks_lateral_occupancy_when_requested(tmp_path:
     assert gate["z_open_ok"] is True
 
 
+def test_xy_slab_geometry_gate_can_enforce_surface_flatness_and_voids(tmp_path: Path):
+    gro = tmp_path / "flat_dense_membrane.gro"
+    rows = []
+    idx = 1
+    for x in (0.1, 0.6, 1.1, 1.6):
+        for y in (0.1, 0.6, 1.1, 1.6):
+            rows.append(f"{1:5d}{'CMC':<5}{'C':>5}{idx:5d}{x:8.3f}{y:8.3f}{0.900:8.3f}")
+            idx += 1
+            rows.append(f"{1:5d}{'CMC':<5}{'O':>5}{idx:5d}{x:8.3f}{y:8.3f}{1.100:8.3f}")
+            idx += 1
+    gro.write_text("\n".join(["flat membrane", f"{len(rows):5d}", *rows, f"{2.00000:10.5f}{2.00000:10.5f}{2.00000:10.5f}"]) + "\n", encoding="utf-8")
+    spec = XYSlabEquilibrationSpec(
+        lateral_occupancy_convergence=True,
+        surface_flatness_convergence=True,
+        connected_void_convergence=True,
+        lateral_occupancy_grid_nm=0.5,
+        surface_flatness_grid_nm=0.5,
+        void_grid_nm=0.5,
+        void_atom_radius_nm=0.5,
+        max_surface_rms_nm=0.05,
+        max_surface_peak_to_peak_nm=0.10,
+        max_connected_void_fraction=0.05,
+    )
+
+    gate = _xy_slab_geometry_gate(gro, spec=spec)
+
+    assert gate["ok"] is True
+    assert gate["surface_flatness_ok"] is True
+    assert gate["connected_void_ok"] is True
+
+
+def test_xy_slab_geometry_gate_rejects_rough_surface_when_enforced(tmp_path: Path):
+    gro = tmp_path / "rough_membrane.gro"
+    rows = []
+    idx = 1
+    for n, x in enumerate((0.1, 0.6, 1.1, 1.6)):
+        for y in (0.1, 0.6, 1.1, 1.6):
+            z = 0.5 if n % 2 == 0 else 1.3
+            rows.append(f"{1:5d}{'CMC':<5}{'C':>5}{idx:5d}{x:8.3f}{y:8.3f}{z:8.3f}")
+            idx += 1
+    gro.write_text("\n".join(["rough membrane", f"{len(rows):5d}", *rows, f"{2.00000:10.5f}{2.00000:10.5f}{2.00000:10.5f}"]) + "\n", encoding="utf-8")
+    spec = XYSlabEquilibrationSpec(
+        lateral_occupancy_convergence=True,
+        surface_flatness_convergence=True,
+        connected_void_convergence=False,
+        lateral_occupancy_grid_nm=0.5,
+        surface_flatness_grid_nm=0.5,
+        max_surface_rms_nm=0.05,
+        max_surface_peak_to_peak_nm=0.10,
+    )
+
+    gate = _xy_slab_geometry_gate(gro, spec=spec)
+
+    assert gate["ok"] is False
+    assert gate["surface_flatness_ok"] is False
+
+
+def test_connected_void_report_detects_through_channel():
+    coords = []
+    for x in (0.25, 0.75, 1.25, 1.75):
+        for y in (0.25, 0.75, 1.25, 1.75):
+            if x < 0.6 and y < 0.6:
+                continue
+            coords.append([x, y, 0.5])
+            coords.append([x, y, 1.5])
+    report = _connected_void_report(np.asarray(coords, dtype=float), (2.0, 2.0, 2.0), grid_nm=0.5, atom_radius_nm=0.0)
+
+    assert report["available"] is True
+    assert report["through_void"] is True
+
+
+def test_surface_flatness_report_measures_surface_rms():
+    coords = np.asarray([[0.1, 0.1, 0.8], [0.6, 0.1, 0.8], [0.1, 0.6, 1.2], [0.6, 0.6, 1.2]], dtype=float)
+    report = _surface_flatness_report(coords, (1.0, 1.0, 2.0), grid_nm=0.5)
+
+    assert report["available"] is True
+    assert report["max_surface_rms_nm"] > 0.0
+
+
 def test_cmcna_relaxation_spec_maps_to_xy_slab_defaults():
     spec = CMCNAXYSlabRelaxationSpec()
     xy = spec.to_xy_slab_spec()
@@ -259,6 +340,8 @@ def test_cmcna_relaxation_spec_maps_to_xy_slab_defaults():
     assert xy.active_density_convergence is True
     assert xy.rg_convergence is True
     assert xy.lateral_occupancy_convergence is True
+    assert xy.surface_flatness_convergence is True
+    assert xy.connected_void_convergence is True
     assert xy.max_convergence_rounds == 8
 
 

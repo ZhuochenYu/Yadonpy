@@ -97,7 +97,8 @@ semantic aliases such as `GRAPHITE`, `ELECTROLYTE`, `CMCNA`, and `MOBILE`.
   `xyz -> unwrap -> slab` route, where chain segments can cross the z periodic
   image before a clean CMC boundary exists.  The workflow keeps adding
   wall-confined NVT rounds until active density, CMC-chain Rg, Na/COO contact,
-  and lateral occupancy pass the membrane gates, and writes a box-annotated
+  lateral occupancy, surface flatness, and connected-void checks pass the
+  membrane gates, and writes a box-annotated
   `cmcna_eq21_wall_compression.mp4` for visual inspection.
   The relaxed GRO box is then read back, and an electrolyte slab is prepared by
   the same `periodicity="xy"` wall protocol at the same XY footprint.  Both
