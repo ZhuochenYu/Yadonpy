@@ -1235,7 +1235,7 @@ from yadonpy import CMCNAXYSlabRelaxationSpec, prepare_cmcna_xy_membrane
 cmcna_slab = prepare_cmcna_xy_membrane(
     cmc_chain_mol=CMC,
     na_mol=Na,
-    chain_count=8,
+    chain_count=16,
     dp=20,
     xy_nm=(graphite_x_nm, graphite_y_nm),
     work_dir="./work_cmcna_xy_slab",
@@ -1252,6 +1252,12 @@ cmcna_slab = prepare_cmcna_xy_membrane(
         target_density_g_cm3=1.20,
         active_density_min_g_cm3=1.00,
         tmax_K=450.0,
+        xy_compaction_npt=True,
+        xy_compaction_pressure_bar=3000.0,
+        xy_compaction_npt_ns=0.10,
+        surface_mold_nvt=True,
+        surface_mold_cycles=4,
+        surface_mold_z_shrink_per_cycle=0.03,
         final_relax_ns=0.50,
         max_convergence_rounds=8,
         extra_relax_ns_per_round=0.50,
@@ -1278,16 +1284,22 @@ small steps and relaxes each step with hot/cool wall-confined NVT.  The default
 construction target is `target_density_g_cm3=1.20` with
 `active_density_min_g_cm3=1.00`; these are membrane-quality gates rather than a
 claim that every interfacial CMC layer must equilibrate to exactly that density.
-It does not
-use `xyz -> unwrap -> slab`, and it does not rely on z-pressure coupling to
-shrink the box.  The active density is computed from `CMC-Na mass / (fixed XY
-area * active z extent)`, not from the total box density, because z-wall padding
-is not part of the physical CMC slab.  `cmcna_slab_convergence.json` records
-`active_density_gate`, `rg_gate`, `na_coo_contact`, `geometry_gate`, and
-`ready_for_layer_stack`; the `geometry_gate` contains lateral occupancy,
-surface-flatness, and connected-void diagnostics so rough or through-pore CMC
-slabs are rejected before stack assembly. `cmcna_membrane_quality.json` records whether box-z
-actually changed and where the compression MP4/PNG frames were written.
+After the z slab is flattened, `xy_compaction_npt=True` runs a short
+wall-confined XY-NPT step by setting `xy_area_mode="xy_npt"`,
+`compressibility="4.5e-05 0"`, and a high temporary pressure.  This stage is
+intended to remove lateral voids that z-only flattening cannot close; it may
+change the prepared slab XY box, so downstream graphite/electrolyte layers must
+be matched to the resulting GRO box.  It does not use `xyz -> unwrap -> slab`,
+and it does not rely on z-pressure coupling to shrink the box.  The active
+density is computed from `CMC-Na mass / (current XY area * active z extent)`,
+not from the total box density, because z-wall padding is not part of the
+physical CMC slab.  `cmcna_slab_convergence.json` records `active_density_gate`,
+`rg_gate`, `na_coo_contact`, `geometry_gate`, and `ready_for_layer_stack`; the
+`geometry_gate` contains lateral occupancy, surface-flatness, and connected-void
+diagnostics so rough or through-pore CMC slabs are rejected before stack
+assembly. `cmcna_membrane_quality.json` records whether box-z actually changed,
+whether XY compaction was used, and where the compression MP4/PNG frames were
+written.
 `prepared_slab.gro` is exported
 with the default `coordinate_export_policy="wrapped_xy_z_open"`: x/y are wrapped
 into the primary periodic image, while z remains open/wall-confined.  The helper

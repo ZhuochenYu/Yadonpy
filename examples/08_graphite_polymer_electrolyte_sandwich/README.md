@@ -95,7 +95,13 @@ semantic aliases such as `GRAPHITE`, `ELECTROLYTE`, `CMCNA`, and `MOBILE`.
   target is now `1.20 g/cm3` with a `1.00 g/cm3` active-density floor, because
   lower exploratory targets can leave through-pores.  Each compression step is
   followed by hot/cool wall-confined NVT, so the workflow no longer depends on
-  a semi-isotropic barostat to change the wall-box height.  This deliberately avoids the
+  a semi-isotropic barostat to change the wall-box height.  After the z slab is
+  flattened, the CMC helper can run a short wall-confined XY-NPT compaction step
+  (`xy_compaction_pressure_bar=3000` by default for CMC-Na) to squeeze out
+  lateral voids that z-only flattening cannot remove.  If the slab is laterally
+  filled but the surfaces are still too rough for direct graphite contact, short
+  `surface_mold_nvt` cycles slightly shorten the z wall gap and anneal the
+  surfaces under walls.  This deliberately avoids the
   `xyz -> unwrap -> slab` route, where chain segments can cross the z periodic
   image before a clean CMC boundary exists.  The workflow keeps adding
   wall-confined NVT rounds until active density, CMC-chain Rg, Na/COO contact,
@@ -117,8 +123,9 @@ semantic aliases such as `GRAPHITE`, `ELECTROLYTE`, `CMCNA`, and `MOBILE`.
   raises an error instead of centering an unwrapped polymer envelope.  Prepared
   CMCNA slabs additionally require a high lateral occupancy (`>=0.85` overall
   and `>=0.80` at the edges on the default grid); otherwise the workflow stops
-  and asks for more chains, a smaller XY footprint, longer wall-confined
-  relaxation, or a graphite-confined CMC film-shaping stage.
+  and asks for more chains, longer chains, stronger/longer XY compaction,
+  smaller XY footprint, longer wall-confined relaxation, or a graphite-confined
+  CMC film-shaping stage.
   Their `prepared_box_xy_nm`, `xy_match_delta_nm`, `active_z_extent_nm`, and a
   coarse lateral occupancy / edge-void sanity report are written to
   `layer_stack_manifest.json` and propagated into `geometry_health.json`.

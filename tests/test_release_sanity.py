@@ -296,12 +296,12 @@ def test_example08_scripts_use_one_shot_builder_and_interface_summary_printer():
             'electrolyte_target_slab_density_g_cm3 = 1.15',
             'InterdiffusionStartSpec(',
             'phase_gate_layers=("ELECTROLYTE", "CMCNA")',
-            'surface_charge_uC_cm2 = 0.0',
-            'cmc_dp = 20',
-            'cmc_chain_count = 8',
-            'sample_ns = 60.0',
-            'build_layer_stack(',
-        ),
+                'surface_charge_uC_cm2 = 0.0',
+                'cmc_dp = 20',
+                'cmc_chain_count = 16',
+                'sample_ns = 60.0',
+                'build_layer_stack(',
+            ),
     }
 
     for rel, required_calls in expected.items():

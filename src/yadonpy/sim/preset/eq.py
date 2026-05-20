@@ -19,7 +19,7 @@ import os
 import shutil
 import subprocess
 from collections import deque
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any, Literal, Mapping, Optional, Sequence, Union
 
@@ -70,6 +70,8 @@ class XYSlabEquilibrationSpec:
     hot_nvt_ns: float = 0.01
     cool_nvt_ns: float = 0.01
     final_relax_ns: float = 0.20
+    minimize_nsteps: int = 5000
+    final_minimize_nsteps: int = 10000
     active_density_convergence: bool = False
     rg_convergence: bool = False
     lateral_occupancy_convergence: bool = False
@@ -91,6 +93,21 @@ class XYSlabEquilibrationSpec:
     void_grid_nm: float = 0.35
     void_atom_radius_nm: float = 0.22
     max_connected_void_fraction: float = 0.20
+    xy_compaction_npt: bool = False
+    xy_compaction_pressure_bar: float = 1000.0
+    xy_compaction_temp_K: float | None = None
+    xy_compaction_npt_ns: float = 0.05
+    xy_compaction_final_npt_ns: float = 0.02
+    xy_compaction_tau_p_ps: float = 5.0
+    xy_compaction_compressibility_bar_inv: float = 4.5e-5
+    surface_mold_nvt: bool = False
+    surface_mold_cycles: int = 0
+    surface_mold_z_shrink_per_cycle: float = 0.03
+    surface_mold_hot_temp_K: float | None = 420.0
+    surface_mold_hot_nvt_ns: float = 0.02
+    surface_mold_cool_nvt_ns: float = 0.02
+    surface_mold_max_active_density_g_cm3: float | None = 1.80
+    surface_mold_stop_when_flat: bool = True
     na_coo_contact_cutoff_nm: float = 0.35
     na_coo_contact_min_fraction: float = 0.75
     rollback_on_failure: bool = True
@@ -276,6 +293,7 @@ def xy_slab_mdp_overrides(
                 {
                     "pcoupl": "C-rescale",
                     "pcoupltype": "semiisotropic",
+                    "tau_p": float(slab.tau_p_ps),
                     "ref_p": f"{p:.6g} {p:.6g}",
                     "compressibility": f"{float(slab.xy_compressibility_bar_inv):.6g} 0",
                 }
@@ -2361,7 +2379,7 @@ def _build_xy_slab_wall_z_npt_initial_stages(
                 {
                     **default_mdp_params(),
                     **dict(base_wall),
-                    "nsteps": 50000,
+                    "nsteps": int(spec.minimize_nsteps),
                     "emtol": 500.0,
                     "emstep": 0.001,
                 },
@@ -2480,7 +2498,7 @@ def _build_xy_slab_cycle_stages(
                 {
                     **default_mdp_params(),
                     **dict(wall_overrides),
-                    "nsteps": 50000,
+                    "nsteps": int(spec.minimize_nsteps),
                     "emtol": 500.0,
                     "emstep": 0.001,
                 },
@@ -2537,7 +2555,7 @@ def _build_xy_slab_final_stages(
                 {
                     **default_mdp_params(),
                     **dict(wall_overrides),
-                    "nsteps": 50000,
+                    "nsteps": int(spec.final_minimize_nsteps),
                     "emtol": 250.0,
                     "emstep": 0.001,
                 },
@@ -2552,6 +2570,128 @@ def _build_xy_slab_final_stages(
                     temp=float(temp),
                     dt_ps=float(dt_ps),
                     nsteps=_ns_to_steps_for_dt(float(spec.final_relax_ns), float(dt_ps)),
+                    gen_vel="no",
+                    continuation="yes",
+                    wall_overrides=wall_overrides,
+                ),
+            ),
+        ),
+    ]
+
+
+def _build_xy_slab_xy_compaction_stages(
+    *,
+    temp: float,
+    normal_pressure_bar: float,
+    dt_ps: float,
+    spec: XYSlabEquilibrationSpec,
+    hot_wall_overrides: dict[str, object],
+    final_wall_overrides: dict[str, object],
+) -> list[EqStage]:
+    from ...gmx.mdp_templates import MINIM_STEEP_MDP, NPT_NO_CONSTRAINTS_MDP, MdpSpec, default_mdp_params
+
+    hot_temp = float(spec.xy_compaction_temp_K) if spec.xy_compaction_temp_K is not None else float(temp)
+    return [
+        EqStage(
+            "xy_compaction_01_minimize",
+            "minim",
+            MdpSpec(
+                MINIM_STEEP_MDP,
+                {
+                    **default_mdp_params(),
+                    **dict(hot_wall_overrides),
+                    "nsteps": int(spec.final_minimize_nsteps),
+                    "emtol": 250.0,
+                    "emstep": 0.001,
+                },
+            ),
+        ),
+        EqStage(
+            "xy_compaction_02_hot_xy_npt",
+            "npt",
+            MdpSpec(
+                NPT_NO_CONSTRAINTS_MDP,
+                _xy_slab_wall_npt_params(
+                    temp=hot_temp,
+                    pressure_bar=float(spec.xy_compaction_pressure_bar),
+                    dt_ps=float(dt_ps),
+                    nsteps=_ns_to_steps_for_dt(float(spec.xy_compaction_npt_ns), float(dt_ps)),
+                    gen_vel="no",
+                    continuation="yes",
+                    wall_overrides=hot_wall_overrides,
+                ),
+            ),
+        ),
+        EqStage(
+            "xy_compaction_03_normal_xy_npt",
+            "npt",
+            MdpSpec(
+                NPT_NO_CONSTRAINTS_MDP,
+                _xy_slab_wall_npt_params(
+                    temp=float(temp),
+                    pressure_bar=float(normal_pressure_bar),
+                    dt_ps=float(dt_ps),
+                    nsteps=_ns_to_steps_for_dt(float(spec.xy_compaction_final_npt_ns), float(dt_ps)),
+                    gen_vel="no",
+                    continuation="yes",
+                    wall_overrides=final_wall_overrides,
+                ),
+            ),
+        ),
+    ]
+
+
+def _build_xy_slab_surface_mold_stages(
+    *,
+    temp: float,
+    dt_ps: float,
+    spec: XYSlabEquilibrationSpec,
+    wall_overrides: dict[str, object],
+    cycle: int,
+) -> list[EqStage]:
+    from ...gmx.mdp_templates import MINIM_STEEP_MDP, NVT_NO_CONSTRAINTS_MDP, MdpSpec, default_mdp_params
+
+    hot_temp = float(spec.surface_mold_hot_temp_K) if spec.surface_mold_hot_temp_K is not None else float(temp)
+    prefix = f"surface_mold_{int(cycle):02d}"
+    return [
+        EqStage(
+            f"{prefix}_01_minimize",
+            "minim",
+            MdpSpec(
+                MINIM_STEEP_MDP,
+                {
+                    **default_mdp_params(),
+                    **dict(wall_overrides),
+                    "nsteps": int(spec.final_minimize_nsteps),
+                    "emtol": 250.0,
+                    "emstep": 0.001,
+                },
+            ),
+        ),
+        EqStage(
+            f"{prefix}_02_hot_nvt",
+            "nvt",
+            MdpSpec(
+                NVT_NO_CONSTRAINTS_MDP,
+                _xy_slab_nvt_params(
+                    temp=hot_temp,
+                    dt_ps=float(dt_ps),
+                    nsteps=_ns_to_steps_for_dt(float(spec.surface_mold_hot_nvt_ns), float(dt_ps)),
+                    gen_vel="no",
+                    continuation="yes",
+                    wall_overrides=wall_overrides,
+                ),
+            ),
+        ),
+        EqStage(
+            f"{prefix}_03_cool_nvt",
+            "nvt",
+            MdpSpec(
+                NVT_NO_CONSTRAINTS_MDP,
+                _xy_slab_nvt_params(
+                    temp=float(temp),
+                    dt_ps=float(dt_ps),
+                    nsteps=_ns_to_steps_for_dt(float(spec.surface_mold_cool_nvt_ns), float(dt_ps)),
                     gen_vel="no",
                     continuation="yes",
                     wall_overrides=wall_overrides,
@@ -2632,6 +2772,26 @@ def _active_density_rows_from_coords(
             }
         )
     return rows
+
+
+def _active_density_row_from_gro(
+    gro_path: Path,
+    *,
+    total_mass_amu: float,
+    spec: XYSlabEquilibrationSpec,
+) -> dict[str, float] | None:
+    if float(total_mass_amu) <= 0.0:
+        return None
+    _lines, coords, box = _read_gro_lines_coords_box(Path(gro_path))
+    rows = _active_density_rows_from_coords(
+        coords_nm=coords,
+        time_ps=[0.0],
+        box_nm=np.asarray(box, dtype=float),
+        total_mass_amu=float(total_mass_amu),
+        q_low=float(spec.active_density_quantile_low),
+        q_high=float(spec.active_density_quantile_high),
+    )
+    return rows[0] if rows else None
 
 
 def _active_density_series(
@@ -5233,11 +5393,198 @@ class EQ21step:
                     }
                 )
 
+            xy_compaction_report: dict[str, Any] | None = None
+            if bool(getattr(slab, "xy_compaction_npt", False)):
+                compaction_dir = run_dir / "xy_compaction"
+                compaction_spec = replace(
+                    slab,
+                    xy_area_mode="xy_npt",
+                    pressure_axis_mode="xy_npt",
+                    tau_p_ps=float(getattr(slab, "xy_compaction_tau_p_ps", slab.tau_p_ps)),
+                    xy_compressibility_bar_inv=float(
+                        getattr(slab, "xy_compaction_compressibility_bar_inv", slab.xy_compressibility_bar_inv)
+                    ),
+                )
+                hot_xy_wall = xy_slab_mdp_overrides(
+                    top_path=exp.system_top,
+                    spec=compaction_spec,
+                    pressure_bar=float(slab.xy_compaction_pressure_bar),
+                    npt_like=True,
+                )
+                final_xy_wall = xy_slab_mdp_overrides(
+                    top_path=exp.system_top,
+                    spec=compaction_spec,
+                    pressure_bar=float(press),
+                    npt_like=True,
+                )
+                box_before = _read_gro_lines_coords_box(current_gro)[2]
+                xy_job = EquilibrationJob(
+                    gro=current_gro,
+                    top=exp.system_top,
+                    provenance_ndx=exp.system_ndx,
+                    out_dir=compaction_dir,
+                    stages=_build_xy_slab_xy_compaction_stages(
+                        temp=float(temp),
+                        normal_pressure_bar=float(press),
+                        dt_ps=float(eq21_dt_ps),
+                        spec=compaction_spec,
+                        hot_wall_overrides=hot_xy_wall,
+                        final_wall_overrides=final_xy_wall,
+                    ),
+                    resources=res,
+                )
+                xy_job.run(restart=False)
+                current_gro = xy_job.final_gro()
+                box_after = _read_gro_lines_coords_box(current_gro)[2]
+                animation_frames.append({"label": "xy compaction NPT", "gro": str(current_gro)})
+                area_before = max(float(box_before[0]) * float(box_before[1]), 1.0e-9)
+                area_after = max(float(box_after[0]) * float(box_after[1]), 1.0e-9)
+                xy_compaction_report = {
+                    "enabled": True,
+                    "pressure_bar": float(slab.xy_compaction_pressure_bar),
+                    "normal_pressure_bar": float(press),
+                    "temperature_K": (
+                        float(slab.xy_compaction_temp_K)
+                        if slab.xy_compaction_temp_K is not None
+                        else float(temp)
+                    ),
+                    "npt_ns": float(slab.xy_compaction_npt_ns),
+                    "final_npt_ns": float(slab.xy_compaction_final_npt_ns),
+                    "tau_p_ps": float(compaction_spec.tau_p_ps),
+                    "compressibility_bar_inv": float(compaction_spec.xy_compressibility_bar_inv),
+                    "box_before_nm": [float(v) for v in box_before],
+                    "box_after_nm": [float(v) for v in box_after],
+                    "xy_area_before_nm2": float(area_before),
+                    "xy_area_after_nm2": float(area_after),
+                    "xy_area_scale": float(area_after / area_before),
+                    "final_gro": str(current_gro),
+                    "wall_mdp_overrides_hot": hot_xy_wall,
+                    "wall_mdp_overrides_final": final_xy_wall,
+                }
+            else:
+                xy_compaction_report = {"enabled": False}
+
+            surface_mold_report: dict[str, Any] = {"enabled": False}
+            surface_mold_applied = False
+            if bool(getattr(slab, "surface_mold_nvt", False)) and int(getattr(slab, "surface_mold_cycles", 0)) > 0:
+                mold_reports: list[dict[str, Any]] = []
+                mold_dir = run_dir / "surface_mold"
+                total_mass_amu = _estimate_total_mass_amu_from_top(Path(exp.system_top)) or 0.0
+                max_density = getattr(slab, "surface_mold_max_active_density_g_cm3", None)
+                max_density_value = None if max_density is None else float(max_density)
+                for mold_idx in range(1, int(slab.surface_mold_cycles) + 1):
+                    gate_before = _xy_slab_geometry_gate(current_gro, spec=slab)
+                    density_before = _active_density_row_from_gro(
+                        current_gro,
+                        total_mass_amu=float(total_mass_amu),
+                        spec=slab,
+                    )
+                    if bool(getattr(slab, "surface_mold_stop_when_flat", True)) and bool(gate_before.get("surface_flatness_ok")):
+                        mold_reports.append(
+                            {
+                                "cycle": int(mold_idx),
+                                "skipped": True,
+                                "reason": "surface_flatness_already_ok",
+                                "geometry_gate_before": gate_before,
+                                "active_density_before": density_before,
+                            }
+                        )
+                        break
+                    if (
+                        max_density_value is not None
+                        and density_before is not None
+                        and float(density_before.get("active_density_g_cm3", 0.0)) >= max_density_value
+                    ):
+                        mold_reports.append(
+                            {
+                                "cycle": int(mold_idx),
+                                "skipped": True,
+                                "reason": "surface_mold_max_active_density_reached",
+                                "geometry_gate_before": gate_before,
+                                "active_density_before": density_before,
+                                "max_active_density_g_cm3": float(max_density_value),
+                            }
+                        )
+                        break
+                    box_before = _read_gro_lines_coords_box(current_gro)[2]
+                    shrink = min(max(float(slab.surface_mold_z_shrink_per_cycle), 0.0), 0.25)
+                    target_z = max(
+                        float(box_before[2]) * (1.0 - shrink),
+                        2.0 * float(slab.wall_padding_nm) + 0.15,
+                    )
+                    cycle_dir = mold_dir / f"cycle_{mold_idx:02d}"
+                    start_gro = cycle_dir / "00_geometry" / "start.gro"
+                    geom = _write_z_rescaled_gro(
+                        current_gro,
+                        start_gro,
+                        target_box_z_nm=float(target_z),
+                        wall_padding_nm=float(slab.wall_padding_nm),
+                    )
+                    mold_job = EquilibrationJob(
+                        gro=start_gro,
+                        top=exp.system_top,
+                        provenance_ndx=exp.system_ndx,
+                        out_dir=cycle_dir,
+                        stages=_build_xy_slab_surface_mold_stages(
+                            temp=float(temp),
+                            dt_ps=float(eq21_dt_ps),
+                            spec=slab,
+                            wall_overrides=wall_overrides,
+                            cycle=mold_idx,
+                        ),
+                        resources=res,
+                    )
+                    mold_job.run(restart=False)
+                    current_gro = mold_job.final_gro()
+                    surface_mold_applied = True
+                    animation_frames.append({"label": f"surface mold {mold_idx:02d}", "gro": str(current_gro)})
+                    gate_after = _xy_slab_geometry_gate(current_gro, spec=slab)
+                    density_after = _active_density_row_from_gro(
+                        current_gro,
+                        total_mass_amu=float(total_mass_amu),
+                        spec=slab,
+                    )
+                    mold_reports.append(
+                        {
+                            "cycle": int(mold_idx),
+                            "skipped": False,
+                            "target_box_z_nm": float(target_z),
+                            "geometry": geom,
+                            "active_density_before": density_before,
+                            "active_density_after": density_after,
+                            "geometry_gate_before": gate_before,
+                            "geometry_gate_after": gate_after,
+                            "final_gro": str(current_gro),
+                        }
+                    )
+                    if bool(getattr(slab, "surface_mold_stop_when_flat", True)) and bool(gate_after.get("surface_flatness_ok")):
+                        break
+                surface_mold_report = {
+                    "enabled": True,
+                    "cycles_requested": int(slab.surface_mold_cycles),
+                    "z_shrink_per_cycle": float(slab.surface_mold_z_shrink_per_cycle),
+                    "hot_temp_K": (
+                        float(slab.surface_mold_hot_temp_K)
+                        if slab.surface_mold_hot_temp_K is not None
+                        else float(temp)
+                    ),
+                    "hot_nvt_ns": float(slab.surface_mold_hot_nvt_ns),
+                    "cool_nvt_ns": float(slab.surface_mold_cool_nvt_ns),
+                    "max_active_density_g_cm3": max_density_value,
+                    "cycles": mold_reports,
+                    "applied": bool(surface_mold_applied),
+                }
+
             final_start = final_dir / "00_geometry" / "start.gro"
+            final_target_box_z = (
+                float(_read_gro_lines_coords_box(current_gro)[2][2])
+                if surface_mold_applied
+                else float(target_box_z)
+            )
             final_geom = _write_z_rescaled_gro(
                 current_gro,
                 final_start,
-                target_box_z_nm=float(target_box_z),
+                target_box_z_nm=float(final_target_box_z),
                 wall_padding_nm=float(slab.wall_padding_nm),
             )
             final_job = EquilibrationJob(
@@ -5341,6 +5688,8 @@ class EQ21step:
                 "final_convergence": convergence_reports[-1] if convergence_reports else {},
                 "coordinate_export": coordinate_report,
                 "animation": animation_report,
+                "xy_compaction": xy_compaction_report,
+                "surface_mold": surface_mold_report,
             }
             membrane_quality_path.write_text(json.dumps(membrane_quality, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
             payload = {
@@ -5361,6 +5710,8 @@ class EQ21step:
                 "membrane_quality": str(membrane_quality_path),
                 "box_z_changed_ok": bool(box_z_changed_ok),
                 "compression_animation": animation_report,
+                "xy_compaction": xy_compaction_report,
+                "surface_mold": surface_mold_report,
                 "convergence_summary": str(convergence_path),
                 "convergence_history": convergence_reports,
                 "ready_for_layer_stack": bool((convergence_reports[-1] or {}).get("ready_for_layer_stack")),

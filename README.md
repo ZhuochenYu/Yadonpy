@@ -351,22 +351,35 @@ the last density-relaxation step from applying a sudden large z scaling after
 the gentle compression cycles.
 For large CMC-Na layers, the preferred preparation route is an independent
 wall-confined slab before the final stack is assembled.  Use
-`prepare_cmcna_xy_membrane(...)` to build a dilute fixed-XY CMC-Na amorphous
-cell at `0.05 g/cm3`, run `periodicity="xy"` EQ21 with z walls, and explicitly
-shorten the wall gap/box-z in small EQ21 compression cycles.  The current CMC
-membrane default uses a `1.20 g/cm3` construction-density target and a
-`1.00 g/cm3` active-density floor, because remote DP5/8-chain tests showed that
-the older `0.8 g/cm3` target could leave through-voids and rough surfaces.  Each compression
-move is followed by wall-confined hot/cool NVT, so the workflow does not rely on
-GROMACS z pressure coupling to shrink a wall system.  This avoids the `xyz ->
-unwrap -> slab` route, where CMC chain segments can cross the z periodic image
-before a clean slab boundary exists.  The observed density is reported as
-`CMC-Na mass / (fixed XY area * active z extent)`, not the total GROMACS box
-density, because wall padding would otherwise dilute the value.  Active density
-is checked as a plateau/minimum diagnostic together with Rg, Na/COO contact,
-lateral occupancy, surface flatness, and connected-void diagnostics.  These
-last two gates catch the cases that look dense on average but still have rough
-interfaces or through-pores that would let electrolyte bypass the CMC membrane.
+`prepare_cmcna_xy_membrane(...)` to build a dilute CMC-Na amorphous cell at
+`0.05 g/cm3`, run `periodicity="xy"` EQ21 with z walls, explicitly shorten the
+wall gap/box-z in small EQ21 compression cycles, and then optionally release
+XY pressure coupling for a short high-pressure compaction step.  The current CMC
+membrane default uses a `1.20 g/cm3` z-compression construction target, a
+`1.00 g/cm3` active-density floor, and an XY compaction step
+(`xy_compaction_pressure_bar=3000`, `xy_compaction_npt_ns=0.10`) because
+remote tests showed that z-only flattening can leave lateral voids.  Each z
+compression move is followed by wall-confined hot/cool NVT, so the workflow does
+not rely on GROMACS z pressure coupling to shrink a wall system.  The later
+XY-NPT step is only for lateral densification after the z slab is already flat.
+If the lateral occupancy is good but the two slab surfaces remain rough, the
+CMC helper runs short surface-mold cycles (`surface_mold_nvt=True`), each of
+which slightly shortens the z wall gap and performs hot/cool wall-confined NVT.
+That last step targets a rectangular, graphite-stackable membrane rather than a
+free rough polymer surface.
+The per-cycle steep minimization is capped at a short cleanup limit
+(`minimize_nsteps=5000` by default) because these stages only remove bad
+contacts introduced by geometry moves; long polymer membranes should spend the
+time in hot/cool NVT and surface-mold relaxation instead.
+This avoids the `xyz -> unwrap -> slab` route, where CMC chain segments can
+cross the z periodic image before a clean slab boundary exists.  The observed
+density is reported as `CMC-Na mass / (current XY area * active z extent)`, not
+the total GROMACS box density, because wall padding would otherwise dilute the
+value.  Active density is checked as a plateau/minimum diagnostic together with
+Rg, Na/COO contact, lateral occupancy, surface flatness, and connected-void
+diagnostics.  These last two gates catch the cases that look dense on average
+but still have rough interfaces or through-pores that would let electrolyte
+bypass the CMC membrane.
 The exported `prepared_slab.gro` is deliberately
 `wrapped_xy_z_open`: x/y coordinates are wrapped back into the primary periodic
 image, while z coordinates keep the wall-confined open-slab boundary.  The

@@ -52,11 +52,12 @@ def test_xy_slab_auto_schedule_respects_max_shrink():
 def test_xy_slab_xy_npt_mode_only_couples_xy_area(tmp_path: Path):
     top = tmp_path / "system.top"
     top.write_text("[ atomtypes ]\nC  6 12.011 0 A 0.3 0.5\n", encoding="utf-8")
-    spec = XYSlabEquilibrationSpec(xy_area_mode="xy_npt")
+    spec = XYSlabEquilibrationSpec(xy_area_mode="xy_npt", tau_p_ps=7.0)
 
     overrides = xy_slab_mdp_overrides(top_path=top, spec=spec, pressure_bar=1.0, npt_like=True)
 
     assert overrides["pcoupltype"] == "semiisotropic"
+    assert overrides["tau_p"] == 7.0
     assert overrides["ref_p"] == "1 1"
     assert overrides["compressibility"] == "4.5e-05 0"
 
@@ -342,6 +343,15 @@ def test_cmcna_relaxation_spec_maps_to_xy_slab_defaults():
     assert xy.lateral_occupancy_convergence is True
     assert xy.surface_flatness_convergence is True
     assert xy.connected_void_convergence is True
+    assert xy.xy_compaction_npt is True
+    assert xy.xy_compaction_pressure_bar == 3000.0
+    assert xy.xy_compaction_npt_ns == 0.10
+    assert xy.xy_compaction_final_npt_ns == 0.05
+    assert xy.surface_mold_nvt is True
+    assert xy.surface_mold_cycles == 4
+    assert xy.surface_mold_z_shrink_per_cycle == 0.03
+    assert xy.minimize_nsteps == 5000
+    assert xy.final_minimize_nsteps == 10000
     assert xy.max_convergence_rounds == 8
 
 
@@ -398,3 +408,5 @@ def test_prepare_cmcna_xy_bulk_slab_uses_fixed_xy_and_writes_result(monkeypatch,
     assert calls["exec_kwargs"]["periodicity"] == "xy"
     assert calls["exec_kwargs"]["xy_slab"].density_mode == "wall_gap_compression"
     assert calls["exec_kwargs"]["xy_slab"].target_density_g_cm3 == 1.2
+    assert calls["exec_kwargs"]["xy_slab"].xy_compaction_npt is True
+    assert calls["exec_kwargs"]["xy_slab"].surface_mold_nvt is True

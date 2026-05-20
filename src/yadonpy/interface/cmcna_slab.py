@@ -1,4 +1,4 @@
-"""CMC-Na z-open slab preparation helpers."""
+"""CMC-Na z-open membrane preparation helpers."""
 
 from __future__ import annotations
 
@@ -19,7 +19,12 @@ _AVOGADRO = 6.02214076e23
 
 @dataclass(frozen=True)
 class CMCNAXYSlabRelaxationSpec:
-    """Defaults for a reusable z-open CMC-Na slab prepared at fixed XY."""
+    """Defaults for a reusable z-open CMC-Na membrane.
+
+    The membrane is first flattened by explicit wall-gap/box-z compression.
+    Optional XY-NPT compaction can then change the prepared slab x/y box, so the
+    final GRO box should be treated as the downstream lateral footprint.
+    """
 
     initial_density_g_cm3: float = 0.05
     density_mode: str = "wall_gap_compression"
@@ -41,6 +46,8 @@ class CMCNAXYSlabRelaxationSpec:
     hot_nvt_ns: float = 0.01
     cool_nvt_ns: float = 0.01
     final_relax_ns: float = 0.50
+    minimize_nsteps: int = 5000
+    final_minimize_nsteps: int = 10000
     max_convergence_rounds: int = 8
     extra_relax_ns_per_round: float = 0.50
     active_density_convergence: bool = True
@@ -59,6 +66,21 @@ class CMCNAXYSlabRelaxationSpec:
     void_grid_nm: float = 0.35
     void_atom_radius_nm: float = 0.22
     max_connected_void_fraction: float = 0.20
+    xy_compaction_npt: bool = True
+    xy_compaction_pressure_bar: float = 3000.0
+    xy_compaction_temp_K: float | None = 380.0
+    xy_compaction_npt_ns: float = 0.10
+    xy_compaction_final_npt_ns: float = 0.05
+    xy_compaction_tau_p_ps: float = 5.0
+    xy_compaction_compressibility_bar_inv: float = 4.5e-5
+    surface_mold_nvt: bool = True
+    surface_mold_cycles: int = 4
+    surface_mold_z_shrink_per_cycle: float = 0.03
+    surface_mold_hot_temp_K: float | None = 420.0
+    surface_mold_hot_nvt_ns: float = 0.02
+    surface_mold_cool_nvt_ns: float = 0.02
+    surface_mold_max_active_density_g_cm3: float | None = 1.80
+    surface_mold_stop_when_flat: bool = True
     na_coo_contact_cutoff_nm: float = 0.35
     na_coo_contact_min_fraction: float = 0.75
     write_compression_animation: bool = True
@@ -86,6 +108,8 @@ class CMCNAXYSlabRelaxationSpec:
             hot_nvt_ns=float(self.hot_nvt_ns),
             cool_nvt_ns=float(self.cool_nvt_ns),
             final_relax_ns=float(self.final_relax_ns),
+            minimize_nsteps=int(self.minimize_nsteps),
+            final_minimize_nsteps=int(self.final_minimize_nsteps),
             active_density_convergence=bool(self.active_density_convergence),
             rg_convergence=bool(self.rg_convergence),
             lateral_occupancy_convergence=bool(self.lateral_occupancy_convergence),
@@ -104,6 +128,23 @@ class CMCNAXYSlabRelaxationSpec:
             void_grid_nm=float(self.void_grid_nm),
             void_atom_radius_nm=float(self.void_atom_radius_nm),
             max_connected_void_fraction=float(self.max_connected_void_fraction),
+            xy_compaction_npt=bool(self.xy_compaction_npt),
+            xy_compaction_pressure_bar=float(self.xy_compaction_pressure_bar),
+            xy_compaction_temp_K=(None if self.xy_compaction_temp_K is None else float(self.xy_compaction_temp_K)),
+            xy_compaction_npt_ns=float(self.xy_compaction_npt_ns),
+            xy_compaction_final_npt_ns=float(self.xy_compaction_final_npt_ns),
+            xy_compaction_tau_p_ps=float(self.xy_compaction_tau_p_ps),
+            xy_compaction_compressibility_bar_inv=float(self.xy_compaction_compressibility_bar_inv),
+            surface_mold_nvt=bool(self.surface_mold_nvt),
+            surface_mold_cycles=int(self.surface_mold_cycles),
+            surface_mold_z_shrink_per_cycle=float(self.surface_mold_z_shrink_per_cycle),
+            surface_mold_hot_temp_K=(None if self.surface_mold_hot_temp_K is None else float(self.surface_mold_hot_temp_K)),
+            surface_mold_hot_nvt_ns=float(self.surface_mold_hot_nvt_ns),
+            surface_mold_cool_nvt_ns=float(self.surface_mold_cool_nvt_ns),
+            surface_mold_max_active_density_g_cm3=(
+                None if self.surface_mold_max_active_density_g_cm3 is None else float(self.surface_mold_max_active_density_g_cm3)
+            ),
+            surface_mold_stop_when_flat=bool(self.surface_mold_stop_when_flat),
             na_coo_contact_cutoff_nm=float(self.na_coo_contact_cutoff_nm),
             na_coo_contact_min_fraction=float(self.na_coo_contact_min_fraction),
             write_compression_animation=bool(self.write_compression_animation),
@@ -133,6 +174,17 @@ def _mol_mass_amu(mol: Chem.Mol) -> float:
     return float(sum(float(atom.GetMass()) for atom in mol.GetAtoms()))
 
 
+def _read_prepared_gro_xy_nm(path: Path, fallback: tuple[float, float]) -> tuple[float, float]:
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        parts = lines[-1].split() if lines else []
+        if len(parts) >= 2:
+            return (float(parts[0]), float(parts[1]))
+    except Exception:
+        pass
+    return fallback
+
+
 def prepare_cmcna_xy_bulk_slab(
     *,
     cmc_chain_mol: Chem.Mol,
@@ -155,7 +207,7 @@ def prepare_cmcna_xy_bulk_slab(
     large_system_mode: str = "large",
     restart: bool | None = None,
 ) -> CMCNAXYBulkSlabResult:
-    """Prepare a fixed-XY, z-open CMC-Na slab with wall-gap compression gates."""
+    """Prepare a z-open CMC-Na slab with wall-gap and optional XY compaction gates."""
 
     spec = relaxation if relaxation is not None else CMCNAXYSlabRelaxationSpec()
     wd = Path(work_dir).expanduser().resolve()
@@ -220,6 +272,7 @@ def prepare_cmcna_xy_bulk_slab(
         except Exception:
             summary = {}
     ready = bool(summary.get("ready_for_layer_stack")) if summary else False
+    prepared_xy = _read_prepared_gro_xy_nm(prepared_gro, xy)
     return CMCNAXYBulkSlabResult(
         work_dir=wd,
         prepared_slab_gro=prepared_gro,
@@ -230,7 +283,7 @@ def prepare_cmcna_xy_bulk_slab(
         coordinate_summary=coordinate_path,
         ready_for_layer_stack=ready,
         target_density_g_cm3=(None if spec.target_density_g_cm3 is None else float(spec.target_density_g_cm3)),
-        xy_nm=xy,
+        xy_nm=prepared_xy,
         initial_z_nm=float(initial_z_nm),
         summary=summary,
     )

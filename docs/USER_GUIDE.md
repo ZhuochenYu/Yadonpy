@@ -442,7 +442,7 @@ from yadonpy import CMCNAXYSlabRelaxationSpec, prepare_cmcna_xy_membrane
 cmcna_slab = prepare_cmcna_xy_membrane(
     cmc_chain_mol=CMC,
     na_mol=Na,
-    chain_count=8,
+    chain_count=16,
     dp=20,
     xy_nm=(graphite_x_nm, graphite_y_nm),
     work_dir="./work_cmcna_xy_slab",
@@ -458,6 +458,12 @@ cmcna_slab = prepare_cmcna_xy_membrane(
         target_density_g_cm3=1.20,
         active_density_min_g_cm3=1.00,
         tmax_K=450.0,
+        xy_compaction_npt=True,
+        xy_compaction_pressure_bar=3000.0,
+        xy_compaction_npt_ns=0.10,
+        surface_mold_nvt=True,
+        surface_mold_cycles=4,
+        surface_mold_z_shrink_per_cycle=0.03,
         final_relax_ns=0.50,
         max_convergence_rounds=8,
         lateral_occupancy_convergence=True,
@@ -475,23 +481,27 @@ cmcna = MolecularLayerSpec(
 )
 ```
 
-This workflow adds GROMACS z walls and `ewald-geometry=3dc`, keeps XY fixed, and
-uses explicit wall-gap/box-z compression plus hot/cool wall-confined NVT to make
-the slab compact without allowing CMC chains to connect through the z periodic
-image.  It prepares a stackable z-open slab; it is not the old `xyz -> unwrap ->
-slab` route and it does not rely on z-pressure coupling to shrink the box.  The
-reported density is the active slab density, `CMC-Na mass / (fixed XY area *
-active z extent)`, because the z-wall padding is not part of the CMC material.
+This workflow adds GROMACS z walls and `ewald-geometry=3dc`, uses explicit
+wall-gap/box-z compression plus hot/cool wall-confined NVT to make the slab
+flat in z, and then can run a short high-pressure XY-NPT compaction step to
+remove lateral voids.  It prepares a stackable z-open slab; it is not the old
+`xyz -> unwrap -> slab` route and it does not rely on z-pressure coupling to
+shrink the box.  The reported density is the active slab density,
+`CMC-Na mass / (current XY area * active z extent)`, because the z-wall padding
+is not part of the CMC material.
 The compression density is a construction target for choosing the wall gap; the
 convergence gate checks active-density plateau/minimum value, CMC Rg, Na/COO
 contact, lateral occupancy, surface flatness, connected voids, and
 `ready_for_layer_stack` before using the slab in a layer-stack example.  Surface
 flatness reports the grid-resolved top/bottom height RMS; connected-void
 analysis flood-fills empty grid cells from one z face to the other to catch
-through-pores.  The default construction target is `1.20 g/cm3`, with a
-`1.00 g/cm3` active-density floor; lower targets are useful for exploratory
-loose films but should not be trusted for a graphite-ready membrane unless the
-void and flatness gates pass.  The workflow also writes
+through-pores.  The default z-compression construction target is `1.20 g/cm3`,
+with a `1.00 g/cm3` active-density floor; lower targets are useful for
+exploratory loose films but should not be trusted for a graphite-ready membrane
+unless the void and flatness gates pass.  If z-only compression leaves lateral
+voids, increase CMC chain count/DP first, then raise
+`xy_compaction_pressure_bar` or `xy_compaction_npt_ns` while checking that the
+final XY box can still be matched by graphite repeats.  The workflow also writes
 `cmcna_eq21_wall_compression.mp4` and PNG frames that display the box dimensions.
 The stack-facing `prepared_slab.gro` uses wrapped-XY/z-open coordinates:
 polymer atoms are imaged into the primary x/y box, while z remains the
