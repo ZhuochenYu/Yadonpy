@@ -1249,8 +1249,8 @@ cmcna_slab = prepare_cmcna_xy_membrane(
         initial_density_g_cm3=0.05,
         density_mode="wall_gap_compression",
         coordinate_export_policy="wrapped_xy_z_open",
-        target_density_g_cm3=0.80,
-        active_density_min_g_cm3=0.80,
+        target_density_g_cm3=1.20,
+        active_density_min_g_cm3=1.00,
         tmax_K=450.0,
         final_relax_ns=0.50,
         max_convergence_rounds=8,
@@ -1274,7 +1274,11 @@ cmcna = MolecularLayerSpec(
 and runs EQ21 with `periodicity="xy"` (`pbc=xy`, z walls,
 `periodic-molecules=yes`, and `ewald-geometry=3dc`).  Its default
 `density_mode="wall_gap_compression"` explicitly shortens the wall gap/box-z in
-small steps and relaxes each step with hot/cool wall-confined NVT.  It does not
+small steps and relaxes each step with hot/cool wall-confined NVT.  The default
+construction target is `target_density_g_cm3=1.20` with
+`active_density_min_g_cm3=1.00`; these are membrane-quality gates rather than a
+claim that every interfacial CMC layer must equilibrate to exactly that density.
+It does not
 use `xyz -> unwrap -> slab`, and it does not rely on z-pressure coupling to
 shrink the box.  The active density is computed from `CMC-Na mass / (fixed XY
 area * active z extent)`, not from the total box density, because z-wall padding

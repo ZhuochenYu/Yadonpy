@@ -334,8 +334,8 @@ def test_cmcna_relaxation_spec_maps_to_xy_slab_defaults():
     xy = spec.to_xy_slab_spec()
 
     assert xy.density_mode == "wall_gap_compression"
-    assert xy.target_density_g_cm3 == 0.8
-    assert xy.active_density_min_g_cm3 == 0.8
+    assert xy.target_density_g_cm3 == 1.2
+    assert xy.active_density_min_g_cm3 == 1.0
     assert xy.pressure_axis_mode == "fixed_xy_z_npt"
     assert xy.active_density_convergence is True
     assert xy.rg_convergence is True
@@ -397,4 +397,4 @@ def test_prepare_cmcna_xy_bulk_slab_uses_fixed_xy_and_writes_result(monkeypatch,
     assert calls["cell_lengths"][0:2] == (5.0, 7.0)
     assert calls["exec_kwargs"]["periodicity"] == "xy"
     assert calls["exec_kwargs"]["xy_slab"].density_mode == "wall_gap_compression"
-    assert calls["exec_kwargs"]["xy_slab"].target_density_g_cm3 == 0.8
+    assert calls["exec_kwargs"]["xy_slab"].target_density_g_cm3 == 1.2

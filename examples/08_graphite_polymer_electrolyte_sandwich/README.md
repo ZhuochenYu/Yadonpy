@@ -91,7 +91,9 @@ semantic aliases such as `GRAPHITE`, `ELECTROLYTE`, `CMCNA`, and `MOBILE`.
   nominal CMC slab XY is rounded up to a basal-graphite lattice-compatible
   footprint, `prepare_cmcna_xy_membrane(...)` builds a dilute `0.05 g/cm3`
   fixed-XY AC cell, and uses `pbc=xy` z walls plus explicit wall-gap/box-z
-  compression to make the z-open slab compact.  Each compression step is
+  compression to make the z-open slab compact.  The default CMC construction
+  target is now `1.20 g/cm3` with a `1.00 g/cm3` active-density floor, because
+  lower exploratory targets can leave through-pores.  Each compression step is
   followed by hot/cool wall-confined NVT, so the workflow no longer depends on
   a semi-isotropic barostat to change the wall-box height.  This deliberately avoids the
   `xyz -> unwrap -> slab` route, where chain segments can cross the z periodic

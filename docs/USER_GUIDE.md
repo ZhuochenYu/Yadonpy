@@ -455,8 +455,8 @@ cmcna_slab = prepare_cmcna_xy_membrane(
         initial_density_g_cm3=0.05,
         density_mode="wall_gap_compression",
         coordinate_export_policy="wrapped_xy_z_open",
-        target_density_g_cm3=0.80,
-        active_density_min_g_cm3=0.80,
+        target_density_g_cm3=1.20,
+        active_density_min_g_cm3=1.00,
         tmax_K=450.0,
         final_relax_ns=0.50,
         max_convergence_rounds=8,
@@ -488,7 +488,10 @@ contact, lateral occupancy, surface flatness, connected voids, and
 `ready_for_layer_stack` before using the slab in a layer-stack example.  Surface
 flatness reports the grid-resolved top/bottom height RMS; connected-void
 analysis flood-fills empty grid cells from one z face to the other to catch
-through-pores.  The workflow also writes
+through-pores.  The default construction target is `1.20 g/cm3`, with a
+`1.00 g/cm3` active-density floor; lower targets are useful for exploratory
+loose films but should not be trusted for a graphite-ready membrane unless the
+void and flatness gates pass.  The workflow also writes
 `cmcna_eq21_wall_compression.mp4` and PNG frames that display the box dimensions.
 The stack-facing `prepared_slab.gro` uses wrapped-XY/z-open coordinates:
 polymer atoms are imaged into the primary x/y box, while z remains the

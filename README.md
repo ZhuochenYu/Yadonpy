@@ -353,7 +353,10 @@ For large CMC-Na layers, the preferred preparation route is an independent
 wall-confined slab before the final stack is assembled.  Use
 `prepare_cmcna_xy_membrane(...)` to build a dilute fixed-XY CMC-Na amorphous
 cell at `0.05 g/cm3`, run `periodicity="xy"` EQ21 with z walls, and explicitly
-shorten the wall gap/box-z in small EQ21 compression cycles.  Each compression
+shorten the wall gap/box-z in small EQ21 compression cycles.  The current CMC
+membrane default uses a `1.20 g/cm3` construction-density target and a
+`1.00 g/cm3` active-density floor, because remote DP5/8-chain tests showed that
+the older `0.8 g/cm3` target could leave through-voids and rough surfaces.  Each compression
 move is followed by wall-confined hot/cool NVT, so the workflow does not rely on
 GROMACS z pressure coupling to shrink a wall system.  This avoids the `xyz ->
 unwrap -> slab` route, where CMC chain segments can cross the z periodic image
