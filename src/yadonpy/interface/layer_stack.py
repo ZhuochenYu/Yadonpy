@@ -37,6 +37,8 @@ _AVOGADRO = 6.02214076e23
 _UCM2_TO_E_PER_NM2 = 0.06241509074460765
 _LAYER_META_PROP = "_yadonpy_layer_stack_metadata_json"
 _PREPARED_SLAB_XY_TOL_NM = 0.02
+_PREPARED_CMCNA_MIN_LATERAL_OCCUPANCY = 0.85
+_PREPARED_CMCNA_MIN_EDGE_OCCUPANCY = 0.80
 
 
 @dataclass(frozen=True)
@@ -1206,6 +1208,21 @@ def _read_prepared_slab_gro(gro_path: Path) -> tuple[np.ndarray, tuple[float, fl
     return coords, box_nm
 
 
+def _prepared_slab_coordinate_report_path(gro_path: Path) -> Path:
+    return Path(gro_path).with_name("prepared_slab_coordinate_report.json")
+
+
+def _load_prepared_slab_coordinate_report(gro_path: Path) -> dict[str, Any]:
+    path = _prepared_slab_coordinate_report_path(Path(gro_path))
+    if not path.is_file():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
 def _prepared_slab_geometry_report(
     *,
     coords_ang: np.ndarray,
@@ -1229,14 +1246,47 @@ def _prepared_slab_geometry_report(
         "coord_min_nm": [float(v) for v in mins],
         "coord_max_nm": [float(v) for v in maxs],
     }
+    box_x = max(float(box_nm[0]), 1.0e-9)
+    box_y = max(float(box_nm[1]), 1.0e-9)
+    if coords_nm.size == 0:
+        outside_xy = 0
+        xy_wrapped_ok = True
+    else:
+        outside_xy = int(
+            np.count_nonzero(
+                (coords_nm[:, 0] < -1.0e-6)
+                | (coords_nm[:, 0] >= box_x + 1.0e-6)
+                | (coords_nm[:, 1] < -1.0e-6)
+                | (coords_nm[:, 1] >= box_y + 1.0e-6)
+            )
+        )
+        xy_wrapped_ok = bool(outside_xy == 0)
+    wrapped_coords_nm = np.array(coords_nm, copy=True)
+    if wrapped_coords_nm.size:
+        wrapped_coords_nm[:, 0] = np.mod(wrapped_coords_nm[:, 0], box_x)
+        wrapped_coords_nm[:, 1] = np.mod(wrapped_coords_nm[:, 1], box_y)
+        wrapped_mins = np.min(wrapped_coords_nm, axis=0)
+        wrapped_maxs = np.max(wrapped_coords_nm, axis=0)
+    else:
+        wrapped_mins = np.zeros(3, dtype=float)
+        wrapped_maxs = np.zeros(3, dtype=float)
+    wrapped_extent = np.maximum(wrapped_maxs - wrapped_mins, 0.0)
+    report.update(
+        {
+            "outside_xy_atom_count": int(outside_xy),
+            "xy_wrapped_ok": bool(xy_wrapped_ok),
+            "wrapped_coord_min_nm": [float(v) for v in wrapped_mins],
+            "wrapped_coord_max_nm": [float(v) for v in wrapped_maxs],
+            "wrapped_active_extent_nm": [float(v) for v in wrapped_extent],
+            "wrapped_active_z_extent_nm": float(wrapped_extent[2]),
+        }
+    )
     if master_xy_nm is not None:
         delta = [abs(float(box_nm[0]) - float(master_xy_nm[0])), abs(float(box_nm[1]) - float(master_xy_nm[1]))]
         report["master_xy_nm"] = [float(master_xy_nm[0]), float(master_xy_nm[1])]
         report["xy_match_delta_nm"] = [float(v) for v in delta]
         report["xy_match_tolerance_nm"] = float(_PREPARED_SLAB_XY_TOL_NM)
         report["xy_match_ok"] = bool(max(delta) <= float(_PREPARED_SLAB_XY_TOL_NM))
-    box_x = max(float(box_nm[0]), 1.0e-9)
-    box_y = max(float(box_nm[1]), 1.0e-9)
     grid = max(float(grid_nm), 1.0e-6)
     nx = max(1, int(math.ceil(box_x / grid)))
     ny = max(1, int(math.ceil(box_y / grid)))
@@ -1269,6 +1319,32 @@ def _prepared_slab_geometry_report(
         "warning": bool(occupied_fraction < 0.10 or edge_occupied_fraction < 0.10),
     }
     return report
+
+
+def _enforce_prepared_cmcna_lateral_gate(layer: MolecularLayerSpec, geometry_report: Mapping[str, Any]) -> None:
+    kind = str(layer.layer_kind or "").strip().lower()
+    name = str(layer.name or "").strip().lower()
+    if kind not in {"cmcna", "cmc-na"} and "cmc" not in name:
+        return
+    occupancy = geometry_report.get("lateral_occupancy")
+    if not isinstance(occupancy, Mapping):
+        return
+    occupied_fraction = float(occupancy.get("occupied_cell_fraction") or 0.0)
+    edge_fraction = float(occupancy.get("edge_occupied_cell_fraction") or 0.0)
+    if (
+        occupied_fraction >= float(_PREPARED_CMCNA_MIN_LATERAL_OCCUPANCY)
+        and edge_fraction >= float(_PREPARED_CMCNA_MIN_EDGE_OCCUPANCY)
+    ):
+        return
+    raise ValueError(
+        f"MolecularLayerSpec {layer.name!r}: prepared CMCNA slab lateral occupancy is too low "
+        f"(occupied={occupied_fraction:.3f}, edge={edge_fraction:.3f}; "
+        f"required >= {_PREPARED_CMCNA_MIN_LATERAL_OCCUPANCY:.2f} and "
+        f">= {_PREPARED_CMCNA_MIN_EDGE_OCCUPANCY:.2f}). "
+        "The slab is wrapped in XY, but it is not yet a laterally filled rectangular membrane. "
+        "Increase CMC chain count, reduce the XY footprint, extend wall-confined relaxation, or run a "
+        "graphite-confined CMC film-shaping stage before final electrolyte/graphite assembly."
+    )
 
 
 def _molecular_layer_species_meta(layer: MolecularLayerSpec, *, pe_mode: bool) -> list[dict[str, Any]]:
@@ -1465,15 +1541,32 @@ def _cell_from_prepared_slab_gro(layer: MolecularLayerSpec, *, gro_path: Path, p
     combined.AddConformer(conf, assignId=True)
     setattr(combined, "cell", utils.Cell(10.0 * box_nm[0], 0.0, 10.0 * box_nm[1], 0.0, 10.0 * box_nm[2], 0.0))
     geometry_report = _prepared_slab_geometry_report(coords_ang=coords_ang, box_nm=box_nm)
+    coordinate_report = _load_prepared_slab_coordinate_report(gro_path)
+    coordinate_policy = str(
+        coordinate_report.get("coordinate_export_policy")
+        or coordinate_report.get("policy")
+        or ("wrapped_xy_z_open" if bool(geometry_report.get("xy_wrapped_ok")) else "unknown")
+    )
+    preserve_xy = bool(coordinate_policy == "wrapped_xy_z_open" and geometry_report.get("xy_wrapped_ok"))
+    if preserve_xy:
+        combined.SetProp("_yadonpy_preserve_prepared_xy", "1")
+        combined.SetProp("_yadonpy_prepared_coordinate_export_policy", coordinate_policy)
     payload = {
         "density_g_cm3": None,
         "requested_density_g_cm3": layer.density_target_g_cm3,
         "species": _molecular_layer_species_meta(layer, pe_mode=pe_mode),
         "pack_mode": "prepared_xy_slab_gro",
         "prepared_slab_gro": str(gro_path),
+        "prepared_slab_coordinate_report": str(_prepared_slab_coordinate_report_path(gro_path)) if coordinate_report else None,
+        "coordinate_export_policy": coordinate_policy,
+        "preserve_prepared_xy": bool(preserve_xy),
         "prepared_box_nm": geometry_report["prepared_box_nm"],
         "prepared_box_xy_nm": geometry_report["prepared_box_xy_nm"],
         "active_z_extent_nm": geometry_report["active_z_extent_nm"],
+        "wrapped_active_extent_nm": geometry_report.get("wrapped_active_extent_nm"),
+        "outside_xy_atom_count": geometry_report.get("outside_xy_atom_count"),
+        "xy_wrapped_ok": geometry_report.get("xy_wrapped_ok"),
+        "coordinate_export": coordinate_report or None,
         "prepared_slab_order_source": order_source,
         "prepared_slab_order_warning": order_warning,
         "prepared_slab_molecule_order": prepared_group_rows[:200],
@@ -1688,6 +1781,7 @@ def _prepare_molecular_layer(
     )
     prepared_slab_path = Path(layer.prepared_slab_gro).expanduser().resolve() if layer.prepared_slab_gro is not None else None
     prepared_geometry_report: dict[str, Any] | None = None
+    prepared_coordinate_report: dict[str, Any] = {}
     if prepared_slab_path is not None:
         if not prepared_slab_path.is_file():
             raise FileNotFoundError(f"MolecularLayerSpec {layer.name!r}: prepared_slab_gro not found: {prepared_slab_path}")
@@ -1697,6 +1791,7 @@ def _prepare_molecular_layer(
             box_nm=prepared_box_nm,
             master_xy_nm=master_xy_nm,
         )
+        prepared_coordinate_report = _load_prepared_slab_coordinate_report(prepared_slab_path)
         if not bool(prepared_geometry_report.get("xy_match_ok")):
             delta = prepared_geometry_report.get("xy_match_delta_nm")
             raise ValueError(
@@ -1706,6 +1801,13 @@ def _prepare_molecular_layer(
                 f"delta={delta} nm exceeds tolerance {_PREPARED_SLAB_XY_TOL_NM:.3f} nm. "
                 "Regenerate the slab at the stack XY footprint instead of rescaling it during assembly."
             )
+        if not bool(prepared_geometry_report.get("xy_wrapped_ok")):
+            raise ValueError(
+                f"MolecularLayerSpec {layer.name!r}: prepared_slab_gro has "
+                f"{prepared_geometry_report.get('outside_xy_atom_count')} atoms outside the primary XY box. "
+                "Export the slab with coordinate_export_policy='wrapped_xy_z_open' before layer-stack assembly."
+            )
+        _enforce_prepared_cmcna_lateral_gate(layer, prepared_geometry_report)
         cell = _cell_from_prepared_slab_gro(layer, gro_path=prepared_slab_path, pe_mode=pe_mode)
         counterion_report = {"enabled": False, "reason": "prepared_slab_gro_preserves_pre_equilibrated_counterions"}
     else:
@@ -1745,14 +1847,45 @@ def _prepare_molecular_layer(
         "molecular_packing_expand": expand_axis,
         "prepared_slab_gro": (str(prepared_slab_path) if prepared_slab_path is not None else None),
         "prepared_slab_mode": bool(prepared_slab_path is not None),
+        "prepared_slab_coordinate_report": (
+            str(_prepared_slab_coordinate_report_path(prepared_slab_path))
+            if prepared_slab_path is not None and prepared_coordinate_report
+            else None
+        ),
+        "coordinate_export_policy": (
+            prepared_coordinate_report.get("coordinate_export_policy")
+            if prepared_coordinate_report
+            else (("wrapped_xy_z_open" if prepared_geometry_report.get("xy_wrapped_ok") else "unknown") if prepared_geometry_report else None)
+        ),
         "prepared_box_xy_nm": (prepared_geometry_report.get("prepared_box_xy_nm") if prepared_geometry_report else None),
         "prepared_box_nm": (prepared_geometry_report.get("prepared_box_nm") if prepared_geometry_report else None),
         "active_z_extent_nm": (prepared_geometry_report.get("active_z_extent_nm") if prepared_geometry_report else None),
         "active_extent_nm": (prepared_geometry_report.get("active_extent_nm") if prepared_geometry_report else None),
+        "raw_active_extent_nm": (
+            prepared_coordinate_report.get("raw_active_extent_nm")
+            if prepared_coordinate_report
+            else (prepared_geometry_report.get("active_extent_nm") if prepared_geometry_report else None)
+        ),
+        "wrapped_active_extent_nm": (
+            prepared_coordinate_report.get("wrapped_active_extent_nm")
+            if prepared_coordinate_report
+            else (prepared_geometry_report.get("wrapped_active_extent_nm") if prepared_geometry_report else None)
+        ),
+        "outside_xy_atom_count_before_wrap": (
+            prepared_coordinate_report.get("outside_xy_atom_count_before_wrap")
+            if prepared_coordinate_report
+            else (prepared_geometry_report.get("outside_xy_atom_count") if prepared_geometry_report else None)
+        ),
+        "xy_wrapped_ok": (prepared_geometry_report.get("xy_wrapped_ok") if prepared_geometry_report else None),
         "xy_match_delta_nm": (prepared_geometry_report.get("xy_match_delta_nm") if prepared_geometry_report else None),
         "xy_match_tolerance_nm": (prepared_geometry_report.get("xy_match_tolerance_nm") if prepared_geometry_report else None),
         "xy_match_ok": (prepared_geometry_report.get("xy_match_ok") if prepared_geometry_report else None),
         "lateral_occupancy": (prepared_geometry_report.get("lateral_occupancy") if prepared_geometry_report else None),
+        "lateral_occupancy_after_wrap": (
+            prepared_coordinate_report.get("lateral_occupancy_after_wrap")
+            if prepared_coordinate_report
+            else (prepared_geometry_report.get("lateral_occupancy") if prepared_geometry_report else None)
+        ),
         "prepared_slab_order_source": meta.get("prepared_slab_order_source"),
         "prepared_slab_order_warning": meta.get("prepared_slab_order_warning"),
         "prepared_slab_molecule_order_preview": meta.get("prepared_slab_molecule_order", [])[:50],

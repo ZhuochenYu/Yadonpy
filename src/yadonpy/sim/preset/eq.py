@@ -25,7 +25,7 @@ import numpy as np
 
 from ...core import utils
 from ...gmx.mdp_templates import MdpSpec
-from ...gmx.workflows._util import RunResources
+from ...gmx.workflows._util import RunResources, _GroAtomRecord, _GroFrameRecord, _read_gro_frame, _write_gro_frame
 from ...gmx.workflows.eq import EqStage, EquilibrationJob, StageLincsRetryPolicy
 from ...io.gromacs_system import SystemExportResult, export_system_from_cell_meta, validate_exported_system_dir
 from ...runtime import resolve_restart
@@ -44,6 +44,7 @@ class XYSlabEquilibrationSpec:
     """Wall-confined ``pbc=xy`` slab equilibration for stack-ready polymers."""
 
     density_mode: Literal["target_active_density", "wall_z_npt"] = "target_active_density"
+    coordinate_export_policy: Literal["wrapped_xy_z_open", "as_is"] = "wrapped_xy_z_open"
     target_density_g_cm3: float | None = 0.50
     cycles: int | Literal["auto"] = "auto"
     max_cycles: int = 30
@@ -443,6 +444,146 @@ def _read_gro_lines_coords_box(gro_path: Path) -> tuple[list[str], np.ndarray, t
     if len(raw_box) < 3:
         raise ValueError(f"GRO box line must contain at least 3 values in {gro_path}")
     return lines, coords, (float(raw_box[0]), float(raw_box[1]), float(raw_box[2]))
+
+
+def _lateral_occupancy_report(coords_nm: np.ndarray, box_nm: tuple[float, float, float], *, grid_nm: float = 0.50) -> dict[str, Any]:
+    coords = np.asarray(coords_nm, dtype=float)
+    if coords.ndim != 2 or coords.shape[0] == 0:
+        return {
+            "grid_nm": float(grid_nm),
+            "grid_shape": [0, 0],
+            "occupied_cell_count": 0,
+            "total_cell_count": 0,
+            "occupied_cell_fraction": 0.0,
+            "edge_cell_count": 0,
+            "edge_occupied_cell_count": 0,
+            "edge_occupied_cell_fraction": 0.0,
+            "empty_edge_cell_fraction": 1.0,
+            "warning": True,
+        }
+    box_x = max(float(box_nm[0]), 1.0e-9)
+    box_y = max(float(box_nm[1]), 1.0e-9)
+    grid = max(float(grid_nm), 1.0e-6)
+    nx = max(1, int(math.ceil(box_x / grid)))
+    ny = max(1, int(math.ceil(box_y / grid)))
+    occupied: set[tuple[int, int]] = set()
+    for xyz in coords:
+        ix = min(nx - 1, max(0, int(math.floor((float(xyz[0]) % box_x) / box_x * nx))))
+        iy = min(ny - 1, max(0, int(math.floor((float(xyz[1]) % box_y) / box_y * ny))))
+        occupied.add((ix, iy))
+    edge_cells = {
+        (ix, iy)
+        for ix in range(nx)
+        for iy in range(ny)
+        if ix == 0 or iy == 0 or ix == nx - 1 or iy == ny - 1
+    }
+    total = max(nx * ny, 1)
+    edge_total = max(len(edge_cells), 1)
+    edge_occupied = len(occupied.intersection(edge_cells))
+    occupied_fraction = float(len(occupied)) / float(total)
+    edge_occupied_fraction = float(edge_occupied) / float(edge_total)
+    return {
+        "grid_nm": float(grid),
+        "grid_shape": [int(nx), int(ny)],
+        "occupied_cell_count": int(len(occupied)),
+        "total_cell_count": int(total),
+        "occupied_cell_fraction": float(occupied_fraction),
+        "edge_cell_count": int(edge_total),
+        "edge_occupied_cell_count": int(edge_occupied),
+        "edge_occupied_cell_fraction": float(edge_occupied_fraction),
+        "empty_edge_cell_fraction": float(1.0 - edge_occupied_fraction),
+        "warning": bool(occupied_fraction < 0.85 or edge_occupied_fraction < 0.80),
+    }
+
+
+def _coord_extent_report(coords_nm: np.ndarray) -> dict[str, Any]:
+    coords = np.asarray(coords_nm, dtype=float)
+    if coords.ndim != 2 or coords.shape[0] == 0:
+        mins = np.zeros(3, dtype=float)
+        maxs = np.zeros(3, dtype=float)
+    else:
+        mins = np.min(coords, axis=0)
+        maxs = np.max(coords, axis=0)
+    extent = np.maximum(maxs - mins, 0.0)
+    return {
+        "coord_min_nm": [float(v) for v in mins],
+        "coord_max_nm": [float(v) for v in maxs],
+        "active_extent_nm": [float(v) for v in extent],
+        "active_z_extent_nm": float(extent[2]),
+    }
+
+
+def _export_xy_slab_prepared_gro(src_gro: Path, prepared_gro: Path, *, policy: str) -> dict[str, Any]:
+    """Write the stack-facing prepared slab GRO.
+
+    Stage handoff structures can be whole-molecule canonicalized, which is useful
+    for continuing MD but leaves long polymers outside the primary XY image.  A
+    stack-facing slab should instead preserve the periodic XY footprint and keep
+    only z open, so wrap x/y into the primary box while leaving z untouched.
+    """
+
+    frame = _read_gro_frame(Path(src_gro))
+    coords = np.asarray([atom.xyz_nm for atom in frame.atoms], dtype=float)
+    raw_extent = _coord_extent_report(coords)
+    box = tuple(float(v) for v in frame.box_nm)
+    outside_xy = int(
+        np.count_nonzero(
+            (coords[:, 0] < -1.0e-6)
+            | (coords[:, 0] >= float(box[0]) + 1.0e-6)
+            | (coords[:, 1] < -1.0e-6)
+            | (coords[:, 1] >= float(box[1]) + 1.0e-6)
+        )
+    )
+    normalized = str(policy or "wrapped_xy_z_open").strip().lower()
+    if normalized not in {"wrapped_xy_z_open", "as_is"}:
+        raise ValueError("XYSlabEquilibrationSpec.coordinate_export_policy must be 'wrapped_xy_z_open' or 'as_is'.")
+    new_atoms: list[_GroAtomRecord] = []
+    if normalized == "wrapped_xy_z_open":
+        wrapped_coords = np.array(coords, copy=True)
+        wrapped_coords[:, 0] = np.mod(wrapped_coords[:, 0], max(float(box[0]), 1.0e-9))
+        wrapped_coords[:, 1] = np.mod(wrapped_coords[:, 1], max(float(box[1]), 1.0e-9))
+        title = f"{frame.title[:55]} | yadonpy_wrapped_xy_z_open"
+    else:
+        wrapped_coords = np.array(coords, copy=True)
+        title = frame.title
+    for atom, xyz in zip(frame.atoms, wrapped_coords):
+        new_atoms.append(
+            _GroAtomRecord(
+                resnr=atom.resnr,
+                resname=atom.resname,
+                atomname=atom.atomname,
+                atomnr=atom.atomnr,
+                xyz_nm=(float(xyz[0]), float(xyz[1]), float(xyz[2])),
+                vxyz_nm_ps=atom.vxyz_nm_ps,
+            )
+        )
+    _write_gro_frame(Path(prepared_gro), _GroFrameRecord(title=title, atoms=new_atoms, box_nm=box))
+    wrapped_extent = _coord_extent_report(wrapped_coords)
+    xy_wrapped_ok = bool(
+        np.all(wrapped_coords[:, 0] >= -1.0e-6)
+        and np.all(wrapped_coords[:, 0] < float(box[0]) + 1.0e-6)
+        and np.all(wrapped_coords[:, 1] >= -1.0e-6)
+        and np.all(wrapped_coords[:, 1] < float(box[1]) + 1.0e-6)
+    )
+    report = {
+        "coordinate_export_policy": normalized,
+        "source_gro": str(Path(src_gro)),
+        "prepared_slab_gro": str(Path(prepared_gro)),
+        "box_nm": [float(v) for v in box],
+        "outside_xy_atom_count_before_wrap": int(outside_xy),
+        "xy_wrapped_ok": bool(xy_wrapped_ok),
+        "z_open_ok": True,
+        "raw_active_extent_nm": raw_extent.get("active_extent_nm"),
+        "raw_active_z_extent_nm": raw_extent.get("active_z_extent_nm"),
+        "wrapped_active_extent_nm": wrapped_extent.get("active_extent_nm"),
+        "wrapped_active_z_extent_nm": wrapped_extent.get("active_z_extent_nm"),
+        "raw_coord_min_nm": raw_extent.get("coord_min_nm"),
+        "raw_coord_max_nm": raw_extent.get("coord_max_nm"),
+        "wrapped_coord_min_nm": wrapped_extent.get("coord_min_nm"),
+        "wrapped_coord_max_nm": wrapped_extent.get("coord_max_nm"),
+        "lateral_occupancy_after_wrap": _lateral_occupancy_report(wrapped_coords, box),
+    }
+    return report
 
 
 def _write_z_rescaled_gro(
@@ -4301,7 +4442,9 @@ class EQ21step:
         final_stage_dir = final_dir / "final_02_nvt_release"
         convergence_path = run_dir / "cmcna_slab_convergence.json"
         prepared_gro = run_dir / "prepared_slab.gro"
+        prepared_whole_gro = run_dir / "prepared_slab_whole.gro"
         prepared_top = run_dir / "prepared_slab.top"
+        coordinate_report_path = run_dir / "prepared_slab_coordinate_report.json"
         if str(slab.density_mode) == "wall_z_npt":
             wall_dir = run_dir / "wall_z_npt"
             final_stage_dir = wall_dir / "04_final_wall_z_npt"
@@ -4314,7 +4457,16 @@ class EQ21step:
                 spec=slab,
                 top_path=exp.system_top,
             )
-            outputs = [final_stage_dir / "md.tpr", final_stage_dir / "md.gro", summary_path, convergence_path, prepared_gro, prepared_top]
+            outputs = [
+                final_stage_dir / "md.tpr",
+                final_stage_dir / "md.gro",
+                summary_path,
+                convergence_path,
+                prepared_gro,
+                prepared_whole_gro,
+                prepared_top,
+                coordinate_report_path,
+            ]
             xy_spec = StepSpec(
                 name="equilibration_eq21_xy_slab_wall_z_npt",
                 outputs=outputs,
@@ -4413,7 +4565,14 @@ class EQ21step:
                     report["round"] = int(round_idx)
                     convergence_reports.append(report)
                     convergence_path.write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-                shutil.copy2(current_job.final_gro(), prepared_gro)
+                shutil.copy2(current_job.final_gro(), prepared_whole_gro)
+                coordinate_report = _export_xy_slab_prepared_gro(
+                    current_job.final_gro(),
+                    prepared_gro,
+                    policy=str(slab.coordinate_export_policy),
+                )
+                coordinate_report["prepared_slab_whole_gro"] = str(prepared_whole_gro)
+                coordinate_report_path.write_text(json.dumps(coordinate_report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
                 shutil.copy2(exp.system_top, prepared_top)
                 self._job = current_job
                 payload = {
@@ -4424,7 +4583,10 @@ class EQ21step:
                     "wall_z_npt_schedule": schedule_rows,
                     "final_gro": str(current_job.final_gro()),
                     "prepared_slab_gro": str(prepared_gro),
+                    "prepared_slab_whole_gro": str(prepared_whole_gro),
                     "prepared_slab_top": str(prepared_top),
+                    "prepared_slab_coordinate_report": str(coordinate_report_path),
+                    "coordinate_export": coordinate_report,
                     "convergence_summary": str(convergence_path),
                     "convergence_history": convergence_reports,
                     "ready_for_layer_stack": bool((convergence_reports[-1] or {}).get("ready_for_layer_stack")),
@@ -4462,7 +4624,16 @@ class EQ21step:
         schedule = _xy_slab_z_schedule(float(initial_box[2]), float(target_box_z), slab)
         wall_overrides = xy_slab_mdp_overrides(top_path=exp.system_top, spec=slab, pressure_bar=float(press), npt_like=False)
         summary_path = run_dir / "xy_slab_summary.json"
-        outputs = [final_stage_dir / "md.tpr", final_stage_dir / "md.gro", summary_path, convergence_path, prepared_gro, prepared_top]
+        outputs = [
+            final_stage_dir / "md.tpr",
+            final_stage_dir / "md.gro",
+            summary_path,
+            convergence_path,
+            prepared_gro,
+            prepared_whole_gro,
+            prepared_top,
+            coordinate_report_path,
+        ]
         xy_spec = StepSpec(
             name="equilibration_eq21_xy_slab",
             outputs=outputs,
@@ -4651,7 +4822,14 @@ class EQ21step:
                 report["round"] = int(round_idx)
                 convergence_reports.append(report)
                 convergence_path.write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-            shutil.copy2(current_job.final_gro(), prepared_gro)
+            shutil.copy2(current_job.final_gro(), prepared_whole_gro)
+            coordinate_report = _export_xy_slab_prepared_gro(
+                current_job.final_gro(),
+                prepared_gro,
+                policy=str(slab.coordinate_export_policy),
+            )
+            coordinate_report["prepared_slab_whole_gro"] = str(prepared_whole_gro)
+            coordinate_report_path.write_text(json.dumps(coordinate_report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
             shutil.copy2(exp.system_top, prepared_top)
             self._job = current_job
             payload = {
@@ -4664,7 +4842,10 @@ class EQ21step:
                 "final_geometry": final_geom,
                 "final_gro": str(current_job.final_gro()),
                 "prepared_slab_gro": str(prepared_gro),
+                "prepared_slab_whole_gro": str(prepared_whole_gro),
                 "prepared_slab_top": str(prepared_top),
+                "prepared_slab_coordinate_report": str(coordinate_report_path),
+                "coordinate_export": coordinate_report,
                 "convergence_summary": str(convergence_path),
                 "convergence_history": convergence_reports,
                 "ready_for_layer_stack": bool((convergence_reports[-1] or {}).get("ready_for_layer_stack")),

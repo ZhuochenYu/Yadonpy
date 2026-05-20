@@ -454,6 +454,7 @@ cmcna_slab = prepare_cmcna_xy_bulk_slab(
     relaxation=CMCNAXYSlabRelaxationSpec(
         initial_density_g_cm3=0.05,
         density_mode="wall_z_npt",
+        coordinate_export_policy="wrapped_xy_z_open",
         target_density_g_cm3=None,
         tmax_K=450.0,
         pmax_bar=2000.0,
@@ -481,6 +482,11 @@ the z-wall padding is not part of the CMC material.  This density is a plateau
 diagnostic rather than a hard target.  Check `cmcna_slab_convergence.json` for
 `active_density_gate`, `rg_gate`, `na_coo_contact`, and
 `ready_for_layer_stack` before using the slab in a layer-stack example.
+The stack-facing `prepared_slab.gro` uses wrapped-XY/z-open coordinates:
+polymer atoms are imaged into the primary x/y box, while z remains the
+wall-confined open slab coordinate.  `prepared_slab_whole.gro` is kept only for
+diagnostics and visualization of whole chains; using it for assembly can produce
+a non-rectangular polymer envelope and artificial side voids.
 
 When the CMC-Na membrane should define the final lateral footprint, use the
 Example 08-07 pattern: choose a nominal CMC slab XY, round it to a basal-graphite
@@ -490,9 +496,14 @@ at that same XY footprint, and use the matching graphite repeat counts for the
 final graphite/electrolyte/CMC stack.  Both molecular phases are inserted with
 `MolecularLayerSpec(prepared_slab_gro=...)`, so assembly translates slabs only
 along z and does not laterally rescale or repack the liquid.  Prepared slabs
-must match the final stack XY within `0.02 nm`; the manifest and
-`geometry_health.json` record the XY deltas plus a coarse lateral occupancy
-diagnostic to catch side-channel void risks before production.
+must match the final stack XY within `0.02 nm` and all x/y coordinates must
+already be inside the primary periodic image; the manifest and
+`geometry_health.json` record the XY deltas, wrap policy, raw/wrapped extents,
+and coarse lateral occupancy diagnostics to catch side-channel void risks
+before production.  For CMCNA prepared slabs this occupancy check is a hard
+gate: at the default grid, at least 85% of lateral cells and 80% of edge cells
+must be occupied.  A lower value means the slab is only a sparse periodic
+polymer aggregate, not a stack-ready rectangular membrane.
 
 For electrolyte/CMCNA mutual-diffusion studies, use `run_layer_stack_relaxation`
 with `InterdiffusionStartSpec`.  The pre-release stages keep electrolyte and

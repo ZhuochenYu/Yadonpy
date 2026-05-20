@@ -1246,6 +1246,7 @@ cmcna_slab = prepare_cmcna_xy_bulk_slab(
     relaxation=CMCNAXYSlabRelaxationSpec(
         initial_density_g_cm3=0.05,
         density_mode="wall_z_npt",
+        coordinate_export_policy="wrapped_xy_z_open",
         target_density_g_cm3=None,
         tmax_K=450.0,
         pmax_bar=2000.0,
@@ -1274,7 +1275,11 @@ not require CMC-Na to hit a hard target density.  The active density is computed
 from `CMC-Na mass / (fixed XY area * active z extent)`, not from the total box
 density, because z-wall padding is not part of the physical CMC slab.
 `cmcna_slab_convergence.json` records `active_density_gate`, `rg_gate`,
-`na_coo_contact`, and `ready_for_layer_stack`.
+`na_coo_contact`, and `ready_for_layer_stack`.  `prepared_slab.gro` is exported
+with the default `coordinate_export_policy="wrapped_xy_z_open"`: x/y are wrapped
+into the primary periodic image, while z remains open/wall-confined.  The helper
+also writes `prepared_slab_whole.gro` and `prepared_slab_coordinate_report.json`
+for diagnostics; the whole-molecule file should not be used for stack assembly.
 
 For a CMC-first layer stack, read the relaxed slab GRO box and choose basal
 graphite `nx/ny` values whose periodic box matches that XY before calling
@@ -1282,10 +1287,16 @@ graphite `nx/ny` values whose periodic box matches that XY before calling
 the electrolyte slab with `periodicity="xy"` walls at this same XY footprint,
 then passes both through `MolecularLayerSpec(prepared_slab_gro=...)`.  Prepared
 slabs must match the stack master XY within `0.02 nm`; otherwise assembly fails
-instead of silently rescaling or repacking them.  The layer manifest records
-`prepared_box_xy_nm`, `xy_match_delta_nm`, `active_z_extent_nm`, and lateral
-occupancy diagnostics.  Temporary electrolyte/CMC phase gates stay active until
-final NVT, so final NVT frame 0 is the interdiffusion `t=0`.
+instead of silently rescaling or repacking them.  If a prepared slab still has
+atoms outside the primary x/y image, assembly also fails and asks for a
+`wrapped_xy_z_open` export.  The layer manifest records `prepared_box_xy_nm`,
+`xy_match_delta_nm`, `coordinate_export_policy`, raw/wrapped extents,
+`active_z_extent_nm`, and lateral occupancy diagnostics.  CMCNA prepared slabs
+must additionally satisfy the membrane occupancy gate (`occupied_cell_fraction
+>= 0.85` and `edge_occupied_cell_fraction >= 0.80` on the default grid), or
+assembly stops with a remediation message.  Temporary electrolyte/CMC phase
+gates stay active until final NVT, so final NVT frame 0 is the interdiffusion
+`t=0`.
 
 Main calls:
 

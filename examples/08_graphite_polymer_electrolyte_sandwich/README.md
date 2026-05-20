@@ -99,10 +99,19 @@ semantic aliases such as `GRAPHITE`, `ELECTROLYTE`, `CMCNA`, and `MOBILE`.
   the same `periodicity="xy"` wall protocol at the same XY footprint.  Both
   slabs are passed through `MolecularLayerSpec(prepared_slab_gro=...)`, so final
   stack assembly only translates them in z and never laterally rescales or
-  repacks the liquid.  This avoids reinterpreting an XY-periodic slab in a
+  repacks the liquid.  The stack-facing `prepared_slab.gro` is exported as
+  wrapped-XY/z-open coordinates: x/y are in the primary periodic image, z keeps
+  the wall-confined open boundary, and `prepared_slab_whole.gro` is retained
+  only for diagnostics.  This avoids reinterpreting an XY-periodic slab in a
   different lateral box and removes fresh-packing side-channel voids before
   final-NVT `t=0`.
 - Prepared molecular slabs must match the stack master XY within `0.02 nm`.
+  They must also be wrapped in XY before assembly; otherwise the layer builder
+  raises an error instead of centering an unwrapped polymer envelope.  Prepared
+  CMCNA slabs additionally require a high lateral occupancy (`>=0.85` overall
+  and `>=0.80` at the edges on the default grid); otherwise the workflow stops
+  and asks for more chains, a smaller XY footprint, longer wall-confined
+  relaxation, or a graphite-confined CMC film-shaping stage.
   Their `prepared_box_xy_nm`, `xy_match_delta_nm`, `active_z_extent_nm`, and a
   coarse lateral occupancy / edge-void sanity report are written to
   `layer_stack_manifest.json` and propagated into `geometry_health.json`.

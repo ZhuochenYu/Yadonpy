@@ -13,6 +13,7 @@ from yadonpy.sim.preset.eq import (
     _active_density_gate,
     _active_density_rows_from_coords,
     _estimate_total_mass_amu_from_top,
+    _export_xy_slab_prepared_gro,
     _xy_slab_z_schedule,
     xy_slab_mdp_overrides,
 )
@@ -68,6 +69,29 @@ def test_xy_slab_fixed_xy_z_npt_mode_only_couples_z(tmp_path: Path):
     assert overrides["pcoupltype"] == "semiisotropic"
     assert overrides["ref_p"] == "1 1"
     assert overrides["compressibility"] == "0 4.5e-05"
+
+
+def test_xy_slab_prepared_export_wraps_xy_but_keeps_z_open(tmp_path: Path):
+    src = tmp_path / "whole.gro"
+    dst = tmp_path / "prepared_slab.gro"
+    rows = [
+        f"{1:5d}{'POL':<5}{'C':>5}{1:5d}{-0.200:8.3f}{0.100:8.3f}{-0.400:8.3f}",
+        f"{1:5d}{'POL':<5}{'O':>5}{2:5d}{2.200:8.3f}{2.100:8.3f}{1.200:8.3f}",
+        f"{1:5d}{'POL':<5}{'H':>5}{3:5d}{1.000:8.3f}{-0.300:8.3f}{3.000:8.3f}",
+    ]
+    src.write_text("\n".join(["whole slab", f"{len(rows):5d}", *rows, f"{2.00000:10.5f}{2.00000:10.5f}{4.00000:10.5f}"]) + "\n", encoding="utf-8")
+
+    report = _export_xy_slab_prepared_gro(src, dst, policy="wrapped_xy_z_open")
+    coords = []
+    lines = dst.read_text(encoding="utf-8").splitlines()
+    for line in lines[2:5]:
+        coords.append((float(line[20:28]), float(line[28:36]), float(line[36:44])))
+
+    assert report["coordinate_export_policy"] == "wrapped_xy_z_open"
+    assert report["outside_xy_atom_count_before_wrap"] == 3
+    assert report["xy_wrapped_ok"] is True
+    assert all(0.0 <= xyz[0] < 2.0 and 0.0 <= xyz[1] < 2.0 for xyz in coords)
+    assert [round(xyz[2], 3) for xyz in coords] == [-0.4, 1.2, 3.0]
 
 
 def test_xy_slab_wall_atomtype_falls_back_to_molecule_atoms(tmp_path: Path):

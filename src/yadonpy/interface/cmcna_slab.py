@@ -23,6 +23,7 @@ class CMCNAXYSlabRelaxationSpec:
 
     initial_density_g_cm3: float = 0.05
     density_mode: str = "wall_z_npt"
+    coordinate_export_policy: str = "wrapped_xy_z_open"
     target_density_g_cm3: float | None = None
     wall_padding_nm: float = 0.40
     cycles: int | str = "auto"
@@ -49,6 +50,7 @@ class CMCNAXYSlabRelaxationSpec:
     def to_xy_slab_spec(self) -> XYSlabEquilibrationSpec:
         return XYSlabEquilibrationSpec(
             density_mode=str(self.density_mode),  # type: ignore[arg-type]
+            coordinate_export_policy=str(self.coordinate_export_policy),  # type: ignore[arg-type]
             target_density_g_cm3=(None if self.target_density_g_cm3 is None else float(self.target_density_g_cm3)),
             cycles=self.cycles,  # type: ignore[arg-type]
             max_cycles=int(self.max_cycles),
@@ -81,9 +83,11 @@ class CMCNAXYBulkSlabResult:
 
     work_dir: Path
     prepared_slab_gro: Path
+    prepared_slab_whole_gro: Path
     prepared_slab_top: Path
     xy_slab_summary: Path
     convergence_summary: Path
+    coordinate_summary: Path
     ready_for_layer_stack: bool
     target_density_g_cm3: float | None
     xy_nm: tuple[float, float]
@@ -172,7 +176,9 @@ def prepare_cmcna_xy_bulk_slab(
     summary_path = run_dir / "xy_slab_summary.json"
     convergence_path = run_dir / "cmcna_slab_convergence.json"
     prepared_gro = run_dir / "prepared_slab.gro"
+    prepared_whole_gro = run_dir / "prepared_slab_whole.gro"
     prepared_top = run_dir / "prepared_slab.top"
+    coordinate_path = run_dir / "prepared_slab_coordinate_report.json"
     summary: dict[str, Any] = {}
     if convergence_path.is_file():
         try:
@@ -183,9 +189,11 @@ def prepare_cmcna_xy_bulk_slab(
     return CMCNAXYBulkSlabResult(
         work_dir=wd,
         prepared_slab_gro=prepared_gro,
+        prepared_slab_whole_gro=prepared_whole_gro,
         prepared_slab_top=prepared_top,
         xy_slab_summary=summary_path,
         convergence_summary=convergence_path,
+        coordinate_summary=coordinate_path,
         ready_for_layer_stack=ready,
         target_density_g_cm3=(None if spec.target_density_g_cm3 is None else float(spec.target_density_g_cm3)),
         xy_nm=xy,

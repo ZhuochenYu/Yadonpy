@@ -172,11 +172,133 @@ def test_molecular_layer_can_use_prepared_slab_gro(monkeypatch, tmp_path: Path):
     assert result.layer_reports[0]["xy_match_delta_nm"] == [0.0, 0.0]
     assert result.layer_reports[0]["prepared_slab_order_source"] == "gro_residue_order"
     assert result.layer_reports[0]["active_z_extent_nm"] > 0.0
+    assert result.layer_reports[0]["coordinate_export_policy"] == "wrapped_xy_z_open"
+    assert result.layer_reports[0]["xy_wrapped_ok"] is True
+    assert result.layer_reports[0]["outside_xy_atom_count_before_wrap"] == 0
     assert result.layer_reports[0]["lateral_occupancy"]["total_cell_count"] > 0
     manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
     assert manifest["planning"]["reason"] == "prepared_slab_xy_footprint"
     assert manifest["planning"]["master_xy_nm"] == [2.0, 2.0]
     assert result.box_nm[2] > 0.0
+
+
+def test_prepared_slab_rejects_unwrapped_xy_coordinates(monkeypatch, tmp_path: Path):
+    _patch_fake_export(monkeypatch)
+    water = utils.mol_from_smiles("O", name="WAT")
+    gro = tmp_path / "prepared_unwrapped_xy.gro"
+    gro.write_text(
+        "\n".join(
+            [
+                "prepared slab with unwrapped xy",
+                "    1",
+                "    1WAT      O    1   2.100   0.100   0.200",
+                "   2.00000   2.00000   1.50000",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    import pytest
+
+    with pytest.raises(ValueError, match="outside the primary XY box"):
+        build_layer_stack(
+            stack=LayerStackSpec(
+                layers=(
+                    MolecularLayerSpec(
+                        name="PREPARED",
+                        species=(water,),
+                        counts=(1,),
+                        thickness_nm=1.0,
+                        layer_kind="generic",
+                        prepared_slab_gro=gro,
+                    ),
+                )
+            ),
+            work_dir=tmp_path / "stack_reject_unwrapped",
+            restart=False,
+        )
+
+
+def test_prepared_slab_preserves_wrapped_xy_during_stack(monkeypatch, tmp_path: Path):
+    _patch_fake_export(monkeypatch)
+    water = utils.mol_from_smiles("O", name="WAT")
+    gro = tmp_path / "prepared_wrapped_xy.gro"
+    nat = int(water.GetNumAtoms()) * 2
+    rows = []
+    for i in range(nat):
+        resnr = i // int(water.GetNumAtoms()) + 1
+        x = 0.100 + 0.020 * i
+        y = 0.200 + 0.020 * i
+        z = 0.200 + 0.010 * i
+        rows.append(f"{resnr:5d}{'WAT':<5}{'O':>5}{i+1:5d}{x:8.3f}{y:8.3f}{z:8.3f}")
+    gro.write_text(
+        "\n".join(["prepared wrapped xy slab", f"{nat:5d}", *rows, f"{2.00000:10.5f}{2.00000:10.5f}{1.50000:10.5f}"])
+        + "\n",
+        encoding="utf-8",
+    )
+
+    result = build_layer_stack(
+        stack=LayerStackSpec(
+            layers=(
+                MolecularLayerSpec(
+                    name="PREPARED",
+                    species=(water,),
+                    counts=(2,),
+                    thickness_nm=1.0,
+                    layer_kind="generic",
+                    prepared_slab_gro=gro,
+                ),
+            )
+        ),
+        work_dir=tmp_path / "stack_preserve_wrapped_xy",
+        restart=False,
+    )
+
+    coords = []
+    for line in result.system_gro.read_text(encoding="utf-8").splitlines()[2 : 2 + nat]:
+        coords.append((float(line[20:28]), float(line[28:36]), float(line[36:44])))
+
+    assert [round(xyz[0], 3) for xyz in coords] == [round(0.100 + 0.020 * i, 3) for i in range(nat)]
+    assert [round(xyz[1], 3) for xyz in coords] == [round(0.200 + 0.020 * i, 3) for i in range(nat)]
+    assert result.layer_reports[0]["coordinate_export_policy"] == "wrapped_xy_z_open"
+    assert result.layer_reports[0]["xy_wrapped_ok"] is True
+
+
+def test_prepared_cmcna_slab_rejects_low_lateral_occupancy(monkeypatch, tmp_path: Path):
+    _patch_fake_export(monkeypatch)
+    water = utils.mol_from_smiles("O", name="WAT")
+    gro = tmp_path / "prepared_sparse_cmcna.gro"
+    nat = int(water.GetNumAtoms())
+    rows = [
+        f"{1:5d}{'CMC':<5}{'O':>5}{i+1:5d}{0.100 + 0.010 * i:8.3f}{0.100 + 0.010 * i:8.3f}{0.200:8.3f}"
+        for i in range(nat)
+    ]
+    gro.write_text(
+        "\n".join(["prepared sparse cmcna slab", f"{nat:5d}", *rows, f"{4.00000:10.5f}{4.00000:10.5f}{1.50000:10.5f}"])
+        + "\n",
+        encoding="utf-8",
+    )
+
+    import pytest
+
+    with pytest.raises(ValueError, match="lateral occupancy is too low"):
+        build_layer_stack(
+            stack=LayerStackSpec(
+                layers=(
+                    MolecularLayerSpec(
+                        name="CMCNA",
+                        species=(water,),
+                        counts=(1,),
+                        thickness_nm=1.0,
+                        layer_kind="cmcna",
+                        prepared_slab_gro=gro,
+                    ),
+                )
+            ),
+            work_dir=tmp_path / "stack_reject_sparse_cmcna",
+            restart=False,
+        )
 
 
 def test_prepared_slab_uses_gro_residue_order_not_species_order(monkeypatch, tmp_path: Path):

@@ -359,7 +359,11 @@ image before a clean slab boundary exists.  The observed density is reported as
 `CMC-Na mass / (fixed XY area * active z extent)`, not the total GROMACS box
 density, because wall padding would otherwise dilute the value.  Active density
 is a convergence diagnostic and not a hard target; Rg convergence is checked at
-the same time.  Pass `prepared_slab_gro` to
+the same time.  The exported `prepared_slab.gro` is deliberately
+`wrapped_xy_z_open`: x/y coordinates are wrapped back into the primary periodic
+image, while z coordinates keep the wall-confined open-slab boundary.  The
+whole-molecule handoff file, `prepared_slab_whole.gro`, is kept for diagnostics
+only and should not be used for layer-stack assembly.  Pass `prepared_slab_gro` to
 `MolecularLayerSpec(prepared_slab_gro=...)` only after
 `cmcna_slab_convergence.json` reports `ready_for_layer_stack=True`.  CMC-Na
 layers that are still packed directly can initialize Na+ as local carboxylate
@@ -550,6 +554,12 @@ umbrella_plan = prepare_solvated_ion_umbrella(
   `MolecularLayerSpec(prepared_slab_gro=...)`.  Prepared slabs must match the
   final stack XY within `0.02 nm`; the manifest records XY deltas and lateral
   occupancy diagnostics so side-channel voids are caught before production.
+  The stack-facing prepared slabs are wrapped in XY and open in z; chain pieces
+  may appear split at the box edge in a single image, which is the correct
+  periodic-film representation rather than a broken CMC chain.  CMCNA prepared
+  slabs also have a hard lateral-occupancy gate (`>=0.85` total cells and
+  `>=0.80` edge cells at the default grid), so a sparse wrapped slab fails fast
+  instead of being silently treated as a dense membrane.
   Temporary electrolyte/CMC phase gates remain active during pre-release
   relaxation and are removed only for final NVT, so final NVT frame 0 is the
   interdiffusion `t=0`.

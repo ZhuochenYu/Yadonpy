@@ -613,10 +613,16 @@ def stack_cell_blocks(
 
     combined = None
     for idx, (block, coord, (mins, maxs)) in enumerate(zip(dup_blocks, coords, extents)):
+        preserve_prepared_xy = bool(
+            fixed_xy_ang is not None
+            and hasattr(block, "HasProp")
+            and block.HasProp("_yadonpy_preserve_prepared_xy")
+            and str(block.GetProp("_yadonpy_preserve_prepared_xy")).strip().lower() in {"1", "true", "yes", "on"}
+        )
         shift = np.array(
             [
-                x_center - 0.5 * float(mins[0] + maxs[0]),
-                y_center - 0.5 * float(mins[1] + maxs[1]),
+                0.0 if preserve_prepared_xy else x_center - 0.5 * float(mins[0] + maxs[0]),
+                0.0 if preserve_prepared_xy else y_center - 0.5 * float(mins[1] + maxs[1]),
                 z_cursor - float(mins[2]),
             ],
             dtype=float,
