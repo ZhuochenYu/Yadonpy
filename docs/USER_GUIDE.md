@@ -437,29 +437,27 @@ inside the final interface.  A more robust route is to pre-equilibrate CMC-Na as
 a z-open slab under the same XY footprint:
 
 ```python
-from yadonpy import XYSlabEquilibrationSpec
-from yadonpy.interface import make_orthorhombic_pack_cell
-from yadonpy.sim.preset import eq
+from yadonpy import CMCNAXYSlabRelaxationSpec, prepare_cmcna_xy_bulk_slab
 
-cmcna_initial_cell = make_orthorhombic_pack_cell((graphite_x_nm, graphite_y_nm, dilute_z_nm))
-cmcna_ac = poly.amorphous_cell(
-    [CMC, Na],
-    [8, 160],
-    cell=cmcna_initial_cell,
-    density=None,
-    polyelectrolyte_mode=True,
-    large_system_mode="large",
-)
-
-cmcna_slab_eq = eq.EQ21step(cmcna_ac, work_dir="./work_cmcna_xy_slab")
-cmcna_slab_eq.exec(
+cmcna_slab = prepare_cmcna_xy_bulk_slab(
+    cmc_chain_mol=CMC,
+    na_mol=Na,
+    chain_count=8,
+    dp=20,
+    xy_nm=(graphite_x_nm, graphite_y_nm),
+    work_dir="./work_cmcna_xy_slab",
     temp=318.15,
-    press=1.0,
     omp=14,
     gpu=1,
     gpu_id=0,
-    periodicity="xy",
-    xy_slab=XYSlabEquilibrationSpec(target_density_g_cm3=0.50),
+    charge_scale=(0.7, 0.7),
+    relaxation=CMCNAXYSlabRelaxationSpec(
+        initial_density_g_cm3=0.05,
+        target_density_g_cm3=1.50,
+        tmax_K=450.0,
+        final_relax_ns=0.50,
+        max_convergence_rounds=8,
+    ),
 )
 
 cmcna = MolecularLayerSpec(
@@ -468,13 +466,17 @@ cmcna = MolecularLayerSpec(
     counts=(8, 160),
     thickness_nm=2.6,
     layer_kind="cmcna",
-    prepared_slab_gro=cmcna_slab_eq.final_gro(),
+    prepared_slab_gro=cmcna_slab.prepared_slab_gro,
 )
 ```
 
 This workflow adds GROMACS z walls and `ewald-geometry=3dc`, compresses the wall
 gap in small steps, and keeps XY fixed.  It prepares a stackable slab; it is not
-a true z-direction NPT ensemble.
+a true z-direction NPT ensemble.  The convergence density is the active slab
+density, `CMC-Na mass / (fixed XY area * active z extent)`, because the z-wall
+padding is not part of the CMC material.  Check `cmcna_slab_convergence.json`
+for `active_density_gate`, `rg_gate`, `na_coo_contact`, and
+`ready_for_layer_stack` before using the slab in a layer-stack example.
 
 When the CMC-Na membrane should define the final lateral footprint, use the
 Example 08-07 pattern: choose a nominal CMC slab XY, round it to a basal-graphite

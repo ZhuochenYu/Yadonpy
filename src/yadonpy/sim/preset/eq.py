@@ -14,11 +14,12 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
+import math
 import os
 import shutil
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Literal, Optional, Sequence, Union
+from typing import Any, Literal, Mapping, Optional, Sequence, Union
 
 import numpy as np
 
@@ -61,6 +62,17 @@ class XYSlabEquilibrationSpec:
     hot_nvt_ns: float = 0.01
     cool_nvt_ns: float = 0.01
     final_relax_ns: float = 0.20
+    active_density_convergence: bool = False
+    rg_convergence: bool = False
+    max_convergence_rounds: int = 0
+    extra_relax_ns_per_round: float = 0.20
+    active_density_tolerance_fraction: float = 0.08
+    active_density_rel_std_max: float = 0.08
+    active_density_tail_fraction: float = 0.50
+    active_density_quantile_low: float = 0.02
+    active_density_quantile_high: float = 0.98
+    na_coo_contact_cutoff_nm: float = 0.35
+    na_coo_contact_min_fraction: float = 0.75
     rollback_on_failure: bool = True
 
 
@@ -2035,6 +2047,462 @@ def _ns_to_steps_for_dt(ns: float, dt_ps: float) -> int:
     return max(int(round((float(ns) * 1000.0) / float(dt_ps))), 1)
 
 
+def _gro_atom_records(gro_path: Path) -> tuple[list[dict[str, Any]], tuple[float, float, float]]:
+    lines, coords, box = _read_gro_lines_coords_box(Path(gro_path))
+    records: list[dict[str, Any]] = []
+    for idx, raw in enumerate(lines[2 : 2 + coords.shape[0]], start=1):
+        records.append(
+            {
+                "index": int(idx),
+                "resid": raw[:5].strip(),
+                "resname": raw[5:10].strip(),
+                "atom": raw[10:15].strip(),
+                "atomnr": raw[15:20].strip(),
+                "xyz_nm": coords[idx - 1].copy(),
+            }
+        )
+    return records, box
+
+
+def _active_density_rows_from_coords(
+    *,
+    coords_nm: np.ndarray,
+    time_ps: Sequence[float],
+    box_nm: np.ndarray,
+    total_mass_amu: float,
+    q_low: float,
+    q_high: float,
+) -> list[dict[str, float]]:
+    qlo = min(max(float(q_low), 0.0), 0.49)
+    qhi = max(min(float(q_high), 1.0), 0.51)
+    if qhi <= qlo:
+        qlo, qhi = 0.02, 0.98
+    coords = np.asarray(coords_nm, dtype=float)
+    if coords.ndim == 2:
+        coords = coords.reshape((1, coords.shape[0], coords.shape[1]))
+    boxes = np.asarray(box_nm, dtype=float)
+    if boxes.ndim == 1:
+        boxes = np.tile(boxes.reshape((1, 3)), (coords.shape[0], 1))
+    mass_g = float(total_mass_amu) / _AVOGADRO
+    rows: list[dict[str, float]] = []
+    for frame_idx in range(int(coords.shape[0])):
+        xyz = coords[frame_idx]
+        box = boxes[min(frame_idx, boxes.shape[0] - 1)]
+        z = np.asarray(xyz[:, 2], dtype=float)
+        if z.size:
+            z_lo = float(np.quantile(z, qlo))
+            z_hi = float(np.quantile(z, qhi))
+            z_min = float(np.min(z))
+            z_max = float(np.max(z))
+        else:
+            z_lo = z_hi = z_min = z_max = 0.0
+        active_z = max(float(z_hi - z_lo), 1.0e-9)
+        area = max(float(box[0]) * float(box[1]), 1.0e-9)
+        density = mass_g / (area * active_z * 1.0e-21)
+        rows.append(
+            {
+                "time_ps": float(time_ps[frame_idx] if frame_idx < len(time_ps) else frame_idx),
+                "box_x_nm": float(box[0]),
+                "box_y_nm": float(box[1]),
+                "box_z_nm": float(box[2]),
+                "z_min_nm": z_min,
+                "z_max_nm": z_max,
+                "z_q_low_nm": z_lo,
+                "z_q_high_nm": z_hi,
+                "active_z_extent_nm": float(active_z),
+                "active_density_g_cm3": float(density),
+            }
+        )
+    return rows
+
+
+def _active_density_series(
+    *,
+    gro_path: Path,
+    trajectory_path: Path | None,
+    total_mass_amu: float,
+    spec: XYSlabEquilibrationSpec,
+) -> tuple[list[dict[str, float]], str]:
+    if trajectory_path is not None and Path(trajectory_path).is_file():
+        try:
+            import mdtraj as md
+
+            traj = md.load(str(trajectory_path), top=str(gro_path))
+            boxes = traj.unitcell_lengths
+            if boxes is None:
+                _lines, _coords0, box = _read_gro_lines_coords_box(Path(gro_path))
+                boxes = np.tile(np.asarray(box, dtype=float).reshape((1, 3)), (traj.n_frames, 1))
+            times = np.asarray(traj.time, dtype=float)
+            rows = _active_density_rows_from_coords(
+                coords_nm=np.asarray(traj.xyz, dtype=float),
+                time_ps=times.tolist(),
+                box_nm=np.asarray(boxes, dtype=float),
+                total_mass_amu=float(total_mass_amu),
+                q_low=float(spec.active_density_quantile_low),
+                q_high=float(spec.active_density_quantile_high),
+            )
+            if rows:
+                return rows, "trajectory"
+        except Exception:
+            pass
+    _lines, coords, box = _read_gro_lines_coords_box(Path(gro_path))
+    rows = _active_density_rows_from_coords(
+        coords_nm=np.asarray(coords, dtype=float),
+        time_ps=[0.0],
+        box_nm=np.asarray(box, dtype=float),
+        total_mass_amu=float(total_mass_amu),
+        q_low=float(spec.active_density_quantile_low),
+        q_high=float(spec.active_density_quantile_high),
+    )
+    return rows, "final_gro"
+
+
+def _active_density_gate(rows: Sequence[dict[str, float]], *, target_density_g_cm3: float, spec: XYSlabEquilibrationSpec) -> dict[str, Any]:
+    values = np.asarray([float(row.get("active_density_g_cm3", float("nan"))) for row in rows], dtype=float)
+    times = np.asarray([float(row.get("time_ps", idx)) for idx, row in enumerate(rows)], dtype=float)
+    mask = np.isfinite(values)
+    values = values[mask]
+    times = times[mask]
+    if values.size == 0:
+        return {
+            "ok": False,
+            "reason": "no_active_density_values",
+            "target_density_g_cm3": float(target_density_g_cm3),
+        }
+    tail_fraction = min(max(float(spec.active_density_tail_fraction), 0.05), 1.0)
+    tail_n = max(1, int(math.ceil(float(values.size) * tail_fraction)))
+    y = values[-tail_n:]
+    t = times[-tail_n:]
+    mean = float(np.mean(y))
+    std = float(np.std(y))
+    rel_std = float(std / abs(mean)) if abs(mean) > 1.0e-12 else float("inf")
+    target = float(target_density_g_cm3)
+    rel_error = float(abs(mean - target) / target) if target > 0.0 else float("inf")
+    slope = 0.0
+    if y.size >= 3 and float(np.max(t) - np.min(t)) > 1.0e-9:
+        try:
+            slope = float(np.polyfit(t, y, 1)[0])
+        except Exception:
+            slope = 0.0
+    ok = bool(
+        rel_error <= float(spec.active_density_tolerance_fraction)
+        and rel_std <= float(spec.active_density_rel_std_max)
+    )
+    return {
+        "ok": ok,
+        "target_density_g_cm3": target,
+        "mean_g_cm3": mean,
+        "std_g_cm3": std,
+        "rel_std": rel_std,
+        "rel_error": rel_error,
+        "slope_g_cm3_per_ps": slope,
+        "tail_frame_count": int(y.size),
+        "frame_count": int(values.size),
+        "criteria": {
+            "active_density_tolerance_fraction": float(spec.active_density_tolerance_fraction),
+            "active_density_rel_std_max": float(spec.active_density_rel_std_max),
+            "active_density_tail_fraction": float(spec.active_density_tail_fraction),
+            "active_density_quantile_low": float(spec.active_density_quantile_low),
+            "active_density_quantile_high": float(spec.active_density_quantile_high),
+        },
+        "recommended_action": "ready" if ok else "continue_wall_confined_nvt_or_rebuild_with_more_gentle_compression",
+    }
+
+
+def _write_active_density_artifacts(
+    *,
+    out_dir: Path,
+    rows: Sequence[dict[str, float]],
+    gate: Mapping[str, Any],
+) -> dict[str, str]:
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    csv_path = out_dir / "active_density_timeseries.csv"
+    fields = [
+        "time_ps",
+        "box_x_nm",
+        "box_y_nm",
+        "box_z_nm",
+        "z_min_nm",
+        "z_max_nm",
+        "z_q_low_nm",
+        "z_q_high_nm",
+        "active_z_extent_nm",
+        "active_density_g_cm3",
+    ]
+    with csv_path.open("w", newline="", encoding="utf-8") as fh:
+        writer = csv.DictWriter(fh, fieldnames=fields)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({key: row.get(key) for key in fields})
+    svg_path = out_dir / "active_density_timeseries.svg"
+    try:
+        import matplotlib.pyplot as plt
+
+        t = [float(row["time_ps"]) for row in rows]
+        y = [float(row["active_density_g_cm3"]) for row in rows]
+        fig, ax = plt.subplots(figsize=(6.0, 3.4))
+        ax.plot(t, y, color="#1f77b4", linewidth=1.5, marker="o" if len(rows) <= 8 else None)
+        target = gate.get("target_density_g_cm3")
+        if target is not None:
+            ax.axhline(float(target), color="#333333", linestyle="--", linewidth=1.0, label="target")
+        ax.set_xlabel("time / ps")
+        ax.set_ylabel("active density / g cm$^{-3}$")
+        ax.set_title("CMC-Na active slab density")
+        ax.grid(True, alpha=0.25)
+        if target is not None:
+            ax.legend(frameon=False)
+        fig.tight_layout()
+        fig.savefig(svg_path)
+        plt.close(fig)
+    except Exception:
+        svg_path.write_text("", encoding="utf-8")
+    return {"csv": str(csv_path), "svg": str(svg_path)}
+
+
+def _write_z_density_profile_final(
+    *,
+    out_dir: Path,
+    gro_path: Path,
+    total_mass_amu: float,
+    bin_nm: float = 0.05,
+) -> dict[str, str]:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    _lines, coords, box = _read_gro_lines_coords_box(Path(gro_path))
+    z = np.asarray(coords[:, 2], dtype=float) if coords.size else np.asarray([], dtype=float)
+    z_min = 0.0
+    z_max = float(box[2])
+    bins = np.arange(z_min, z_max + float(bin_nm), float(bin_nm))
+    if bins.size < 2:
+        bins = np.asarray([0.0, max(float(box[2]), float(bin_nm))], dtype=float)
+    counts, edges = np.histogram(z, bins=bins)
+    mass_per_atom_amu = float(total_mass_amu) / max(int(coords.shape[0]), 1)
+    area = max(float(box[0]) * float(box[1]), 1.0e-9)
+    rows = []
+    for count, lo, hi in zip(counts, edges[:-1], edges[1:]):
+        volume_nm3 = area * max(float(hi - lo), 1.0e-9)
+        density = (float(count) * mass_per_atom_amu / _AVOGADRO) / (volume_nm3 * 1.0e-21)
+        rows.append({"z_mid_nm": 0.5 * float(lo + hi), "mass_density_g_cm3": density, "atom_count": int(count)})
+    csv_path = out_dir / "z_density_profile_final.csv"
+    with csv_path.open("w", newline="", encoding="utf-8") as fh:
+        writer = csv.DictWriter(fh, fieldnames=["z_mid_nm", "mass_density_g_cm3", "atom_count"])
+        writer.writeheader()
+        writer.writerows(rows)
+    svg_path = out_dir / "z_density_profile_final.svg"
+    try:
+        import matplotlib.pyplot as plt
+
+        fig, ax = plt.subplots(figsize=(6.0, 3.4))
+        ax.plot([r["z_mid_nm"] for r in rows], [r["mass_density_g_cm3"] for r in rows], color="#2ca02c", linewidth=1.4)
+        ax.set_xlabel("z / nm")
+        ax.set_ylabel("mass density / g cm$^{-3}$")
+        ax.set_title("Final CMC-Na z-density profile")
+        ax.grid(True, alpha=0.25)
+        fig.tight_layout()
+        fig.savefig(svg_path)
+        plt.close(fig)
+    except Exception:
+        svg_path.write_text("", encoding="utf-8")
+    return {"csv": str(csv_path), "svg": str(svg_path)}
+
+
+def _na_coo_contact_report(gro_path: Path, *, cutoff_nm: float, min_fraction: float) -> dict[str, Any]:
+    records, box = _gro_atom_records(Path(gro_path))
+    na = []
+    oxy = []
+    for rec in records:
+        atom = str(rec.get("atom") or "").strip().upper()
+        res = str(rec.get("resname") or "").strip().upper()
+        if atom in {"NA", "NA+"} or res in {"NA", "SOD", "YU1"} or atom.startswith("NA"):
+            na.append(rec)
+        elif atom.startswith("O"):
+            oxy.append(rec)
+    if not na:
+        return {"available": False, "ok": False, "reason": "no_na_atoms_found"}
+    if not oxy:
+        return {"available": False, "ok": False, "reason": "no_oxygen_atoms_found", "na_count": len(na)}
+    box_arr = np.asarray(box, dtype=float)
+    oxy_xyz = np.asarray([rec["xyz_nm"] for rec in oxy], dtype=float)
+    contacts = 0
+    min_distances: list[float] = []
+    for rec in na:
+        delta = oxy_xyz - np.asarray(rec["xyz_nm"], dtype=float).reshape((1, 3))
+        for dim in (0, 1):
+            length = float(box_arr[dim])
+            if length > 0.0:
+                delta[:, dim] -= np.rint(delta[:, dim] / length) * length
+        # z is intentionally nonperiodic for an xy slab.
+        dist = np.linalg.norm(delta, axis=1)
+        nearest = float(np.min(dist)) if dist.size else float("inf")
+        min_distances.append(nearest)
+        if nearest <= float(cutoff_nm):
+            contacts += 1
+    fraction = float(contacts) / float(max(len(na), 1))
+    return {
+        "available": True,
+        "ok": bool(fraction >= float(min_fraction)),
+        "mode": "na_to_polymer_oxygen_best_effort",
+        "cutoff_nm": float(cutoff_nm),
+        "min_fraction": float(min_fraction),
+        "na_count": int(len(na)),
+        "oxygen_candidate_count": int(len(oxy)),
+        "contact_count": int(contacts),
+        "contact_fraction": fraction,
+        "min_distance_mean_nm": float(np.mean(min_distances)) if min_distances else None,
+        "min_distance_min_nm": float(np.min(min_distances)) if min_distances else None,
+        "min_distance_max_nm": float(np.max(min_distances)) if min_distances else None,
+    }
+
+
+def _rg_convergence_report_for_job(
+    *,
+    job: EquilibrationJob,
+    exp: SystemExportResult,
+    out_dir: Path,
+    omp: int,
+    required: bool,
+) -> dict[str, Any]:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    if not bool(required):
+        return {"requested": False, "ok": True, "reason": "disabled"}
+    try:
+        from ..analyzer import AnalyzeResult
+        from ...gmx.analysis.rg_convergence import find_rg_convergence, plot_rg_convergence_svg
+
+        tpr, xtc, edr = job.final_outputs()
+        trr = None
+        try:
+            trr = job.final_trr()
+        except Exception:
+            trr = None
+        analy = AnalyzeResult(
+            work_dir=Path(out_dir),
+            tpr=tpr,
+            xtc=xtc,
+            trr=trr,
+            edr=edr,
+            top=Path(exp.system_top),
+            ndx=Path(exp.system_ndx),
+            omp=int(omp),
+        )
+        series = analy._rg_series()
+        if series is None:
+            return {"requested": True, "ok": False, "reason": "rg_series_unavailable"}
+        t = np.asarray(series["t_ps"], dtype=float)
+        rg = np.asarray(series["rg_nm"], dtype=float)
+        comps = series.get("rg_components_nm")
+        res = find_rg_convergence(t, rg, comps)
+        csv_path = out_dir / "rg_convergence.csv"
+        with csv_path.open("w", newline="", encoding="utf-8") as fh:
+            writer = csv.writer(fh)
+            header = ["time_ps", "rg_nm"]
+            arrs = [t, rg]
+            if comps is not None:
+                comp_arr = np.asarray(comps, dtype=float)
+                if comp_arr.ndim == 2 and comp_arr.shape[1] >= 3:
+                    header.extend(["rg_x_nm", "rg_y_nm", "rg_z_nm"])
+                    arrs.extend([comp_arr[:, 0], comp_arr[:, 1], comp_arr[:, 2]])
+            writer.writerow(header)
+            for i in range(len(t)):
+                writer.writerow([float(arr[i]) for arr in arrs])
+        svg_path = out_dir / "rg_convergence.svg"
+        try:
+            plot_rg_convergence_svg(t=t, rg=rg, rg_components=comps, res=res, out_svg=svg_path)
+        except Exception:
+            svg_path.write_text("", encoding="utf-8")
+        return {
+            "requested": True,
+            "ok": bool(res.ok),
+            "converged_by": str(res.converged_by),
+            "plateau_start_time_ps": float(res.plateau_start_time),
+            "mean_nm": float(res.mean),
+            "std_nm": float(res.std),
+            "rel_std": float(res.rel_std),
+            "slope_per_ps": float(res.slope),
+            "group": str(series.get("group")),
+            "csv": str(csv_path),
+            "svg": str(svg_path),
+        }
+    except Exception as exc:
+        return {"requested": True, "ok": False, "reason": str(exc)}
+
+
+def _xy_slab_convergence_report(
+    *,
+    job: EquilibrationJob,
+    exp: SystemExportResult,
+    run_dir: Path,
+    spec: XYSlabEquilibrationSpec,
+    omp: int,
+) -> dict[str, Any]:
+    analysis_dir = Path(run_dir) / "convergence_analysis"
+    analysis_dir.mkdir(parents=True, exist_ok=True)
+    total_mass_amu = _estimate_total_mass_amu_from_top(Path(exp.system_top))
+    if total_mass_amu is None:
+        total_mass_amu = 0.0
+    final_gro = job.final_gro()
+    try:
+        _tpr, traj, _edr = job.final_outputs()
+    except Exception:
+        traj = None
+    if total_mass_amu > 0.0:
+        rows, source = _active_density_series(
+            gro_path=final_gro,
+            trajectory_path=traj,
+            total_mass_amu=float(total_mass_amu),
+            spec=spec,
+        )
+        density_gate = _active_density_gate(rows, target_density_g_cm3=float(spec.target_density_g_cm3), spec=spec)
+        density_artifacts = _write_active_density_artifacts(out_dir=analysis_dir, rows=rows, gate=density_gate)
+        profile_artifacts = _write_z_density_profile_final(
+            out_dir=analysis_dir,
+            gro_path=final_gro,
+            total_mass_amu=float(total_mass_amu),
+        )
+    else:
+        rows = []
+        source = "unavailable"
+        density_gate = {
+            "ok": not bool(spec.active_density_convergence),
+            "reason": "topology_mass_unavailable",
+            "target_density_g_cm3": float(spec.target_density_g_cm3),
+        }
+        density_artifacts = {}
+        profile_artifacts = {}
+    rg_gate = _rg_convergence_report_for_job(
+        job=job,
+        exp=exp,
+        out_dir=analysis_dir,
+        omp=int(omp),
+        required=bool(spec.rg_convergence),
+    )
+    contact = _na_coo_contact_report(
+        final_gro,
+        cutoff_nm=float(spec.na_coo_contact_cutoff_nm),
+        min_fraction=float(spec.na_coo_contact_min_fraction),
+    )
+    ready = bool(
+        (density_gate.get("ok") or not bool(spec.active_density_convergence))
+        and (rg_gate.get("ok") or not bool(spec.rg_convergence))
+        and (contact.get("ok") if contact.get("available") else True)
+    )
+    payload = {
+        "schema_version": "0.9.24-cmcna-xy-slab-convergence-v1",
+        "ready_for_layer_stack": ready,
+        "final_gro": str(final_gro),
+        "final_top": str(exp.system_top),
+        "trajectory": str(traj) if traj is not None else None,
+        "total_mass_amu": float(total_mass_amu),
+        "timeseries_source": source,
+        "active_density_gate": density_gate,
+        "active_density_artifacts": density_artifacts,
+        "z_density_profile_final": profile_artifacts,
+        "rg_gate": rg_gate,
+        "na_coo_contact": contact,
+    }
+    return payload
+
+
 def _liquid_cooling_temperatures(target_temp: float, hot_temp: float) -> list[float]:
     """Default CEMP-like cooling ladder for simple liquids."""
 
@@ -3629,6 +4097,9 @@ class EQ21step:
         run_dir = self.work_dir / "03_EQ21_XY_SLAB"
         final_dir = run_dir / "final"
         final_stage_dir = final_dir / "final_02_nvt_release"
+        convergence_path = run_dir / "cmcna_slab_convergence.json"
+        prepared_gro = run_dir / "prepared_slab.gro"
+        prepared_top = run_dir / "prepared_slab.top"
         target_box_z, target_report = _target_xy_slab_box_z_nm(
             ac=self.ac,
             top_path=exp.system_top,
@@ -3639,7 +4110,7 @@ class EQ21step:
         schedule = _xy_slab_z_schedule(float(initial_box[2]), float(target_box_z), slab)
         wall_overrides = xy_slab_mdp_overrides(top_path=exp.system_top, spec=slab, pressure_bar=float(press), npt_like=False)
         summary_path = run_dir / "xy_slab_summary.json"
-        outputs = [final_stage_dir / "md.tpr", final_stage_dir / "md.gro", summary_path]
+        outputs = [final_stage_dir / "md.tpr", final_stage_dir / "md.gro", summary_path, convergence_path, prepared_gro, prepared_top]
         xy_spec = StepSpec(
             name="equilibration_eq21_xy_slab",
             outputs=outputs,
@@ -3675,6 +4146,8 @@ class EQ21step:
         )
 
         def _run() -> Path:
+            from ...gmx.mdp_templates import NVT_NO_CONSTRAINTS_MDP
+
             if run_dir.exists():
                 shutil.rmtree(run_dir, ignore_errors=True)
             run_dir.mkdir(parents=True, exist_ok=True)
@@ -3773,16 +4246,76 @@ class EQ21step:
                 resources=res,
             )
             final_job.run(restart=False)
-            self._job = final_job
+            current_job = final_job
+            convergence_reports: list[dict[str, Any]] = []
+            report = _xy_slab_convergence_report(
+                job=current_job,
+                exp=exp,
+                run_dir=run_dir,
+                spec=slab,
+                omp=int(omp),
+            )
+            report["round"] = 0
+            convergence_reports.append(report)
+            convergence_path.write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+            for round_idx in range(1, max(int(slab.max_convergence_rounds), 0) + 1):
+                if bool(report.get("ready_for_layer_stack")):
+                    break
+                round_dir = run_dir / f"convergence_round_{round_idx:02d}"
+                stages = [
+                    EqStage(
+                        f"round_{round_idx:02d}_nvt",
+                        "nvt",
+                        MdpSpec(
+                            NVT_NO_CONSTRAINTS_MDP,
+                            _xy_slab_nvt_params(
+                                temp=float(temp),
+                                dt_ps=float(eq21_dt_ps),
+                                nsteps=_ns_to_steps_for_dt(float(slab.extra_relax_ns_per_round), float(eq21_dt_ps)),
+                                gen_vel="no",
+                                continuation="yes",
+                                wall_overrides=wall_overrides,
+                            ),
+                        ),
+                    )
+                ]
+                extra_job = EquilibrationJob(
+                    gro=current_job.final_gro(),
+                    top=exp.system_top,
+                    provenance_ndx=exp.system_ndx,
+                    out_dir=round_dir,
+                    stages=stages,
+                    resources=res,
+                )
+                extra_job.run(restart=False)
+                current_job = extra_job
+                report = _xy_slab_convergence_report(
+                    job=current_job,
+                    exp=exp,
+                    run_dir=run_dir,
+                    spec=slab,
+                    omp=int(omp),
+                )
+                report["round"] = int(round_idx)
+                convergence_reports.append(report)
+                convergence_path.write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+            shutil.copy2(current_job.final_gro(), prepared_gro)
+            shutil.copy2(exp.system_top, prepared_top)
+            self._job = current_job
             payload = {
-                "schema_version": "0.9.21-xy-slab-v1",
+                "schema_version": "0.9.24-xy-slab-v2",
                 "periodicity": "xy",
                 "target": target_report,
                 "spec": asdict(slab),
                 "wall_mdp_overrides": wall_overrides,
                 "cycles": cycle_reports,
                 "final_geometry": final_geom,
-                "final_gro": str(final_job.final_gro()),
+                "final_gro": str(current_job.final_gro()),
+                "prepared_slab_gro": str(prepared_gro),
+                "prepared_slab_top": str(prepared_top),
+                "convergence_summary": str(convergence_path),
+                "convergence_history": convergence_reports,
+                "ready_for_layer_stack": bool((convergence_reports[-1] or {}).get("ready_for_layer_stack")),
             }
             summary_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
             return summary_path
@@ -4098,6 +4631,9 @@ class EQ21step:
     def final_gro(self) -> Path:
         """Return the final coordinate file from the most recent preset run."""
 
+        prepared = self.work_dir / "03_EQ21_XY_SLAB" / "prepared_slab.gro"
+        if prepared.is_file():
+            return prepared
         if self._job is None:
             raise RuntimeError("exec() must be called before final_gro().")
         return self._job.final_gro()

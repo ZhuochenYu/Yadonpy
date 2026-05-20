@@ -11,6 +11,8 @@ For QM-derived charges, the supported environment is Psi4 plus `psiresp-base`.
 ```python
 from yadonpy import (
     AnalyzeResult,
+    CMCNAXYBulkSlabResult,
+    CMCNAXYSlabRelaxationSpec,
     ElectrodeChargeSpec,
     FixedChargeRegionSpec,
     GraphiteLayerSpec,
@@ -50,6 +52,7 @@ from yadonpy import (
     load_from_moldb,
     mol_from_smiles,
     parameterize_smiles,
+    prepare_cmcna_xy_bulk_slab,
     print_mechanics_result_summary,
     analyze_umbrella_pmf,
     prepare_solvated_ion_pull,
@@ -74,6 +77,7 @@ Package root exports include:
 - `list_forcefields`
 - `list_charge_methods`
 - `mol_from_smiles`
+- `prepare_cmcna_xy_bulk_slab`
 - `build_graphite`
 - `build_layer_stack`
 - `run_layer_stack_nvt`
@@ -105,6 +109,8 @@ Package root exports include:
 - `GraphiteRestraintSpec`
 - `InterdiffusionStartSpec`
 - `MolecularLayerSpec`
+- `CMCNAXYSlabRelaxationSpec`
+- `CMCNAXYBulkSlabResult`
 - `XYSlabEquilibrationSpec`
 - `VacuumLayerSpec`
 - `ElectrodeChargeSpec`
@@ -1222,23 +1228,28 @@ For a CMC-Na layer that should be pre-relaxed without z periodicity, prepare a
 wall-confined slab first and then pass its final GRO to the molecular layer:
 
 ```python
-from yadonpy import XYSlabEquilibrationSpec
-from yadonpy.sim.preset import eq
+from yadonpy import CMCNAXYSlabRelaxationSpec, prepare_cmcna_xy_bulk_slab
 
-cmcna_slab_eq = eq.EQ21step(cmcna_ac, work_dir=cmcna_slab_dir)
-cmcna_slab_eq.exec(
+cmcna_slab = prepare_cmcna_xy_bulk_slab(
+    cmc_chain_mol=CMC,
+    na_mol=Na,
+    chain_count=8,
+    dp=20,
+    xy_nm=(graphite_x_nm, graphite_y_nm),
+    work_dir="./work_cmcna_xy_slab",
     temp=318.15,
-    press=1.0,
     mpi=1,
     omp=14,
     gpu=1,
     gpu_id=0,
-    periodicity="xy",
-    xy_slab=XYSlabEquilibrationSpec(
-        target_density_g_cm3=0.50,
-        cycles="auto",
-        max_z_shrink_per_cycle=0.10,
-        xy_area_mode="fixed",
+    charge_scale=(0.7, 0.7),
+    relaxation=CMCNAXYSlabRelaxationSpec(
+        initial_density_g_cm3=0.05,
+        target_density_g_cm3=1.50,
+        tmax_K=450.0,
+        final_relax_ns=0.50,
+        max_convergence_rounds=8,
+        extra_relax_ns_per_round=0.50,
     ),
 )
 
@@ -1248,13 +1259,19 @@ cmcna = MolecularLayerSpec(
     counts=(8, 160),
     thickness_nm=2.6,
     layer_kind="cmcna",
-    prepared_slab_gro=cmcna_slab_eq.final_gro(),
+    prepared_slab_gro=cmcna_slab.prepared_slab_gro,
 )
 ```
 
-`periodicity="xy"` emits `pbc=xy`, z walls, `periodic-molecules=yes`, and
-`ewald-geometry=3dc`.  The z density is controlled by staged wall/box-height
-compression; it is not a z-direction NPT ensemble.
+`prepare_cmcna_xy_bulk_slab(...)` internally creates a dilute fixed-XY AC box,
+runs EQ21 with `periodicity="xy"` (`pbc=xy`, z walls,
+`periodic-molecules=yes`, and `ewald-geometry=3dc`), compresses the active slab
+toward the requested density, and appends wall-confined NVT rounds until the
+active density and Rg gates are satisfied.  The active density is computed from
+`CMC-Na mass / (fixed XY area * active z extent)`, not from the total box
+density, because z-wall padding is not part of the physical CMC slab.
+`cmcna_slab_convergence.json` records `active_density_gate`, `rg_gate`,
+`na_coo_contact`, and `ready_for_layer_stack`.
 
 For a CMC-first layer stack, read the relaxed slab GRO box and choose basal
 graphite `nx/ny` values whose periodic box matches that XY before calling

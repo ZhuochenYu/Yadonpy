@@ -82,6 +82,13 @@ def run_layer_stack_relaxation(*args, **kwargs):
     return _run_layer_stack_relaxation(*args, **kwargs)
 
 
+def prepare_cmcna_xy_bulk_slab(*args, **kwargs):
+    """Prepare a fixed-XY, z-open CMC-Na slab for later layer-stack assembly."""
+    from .interface import prepare_cmcna_xy_bulk_slab as _prepare_cmcna_xy_bulk_slab
+
+    return _prepare_cmcna_xy_bulk_slab(*args, **kwargs)
+
+
 def prepare_solvated_ion_pull(*args, **kwargs):
     """Prepare PLUMED inputs for pulling a solvated ion into an interface layer."""
     from .interface import prepare_solvated_ion_pull as _prepare_solvated_ion_pull
@@ -335,6 +342,7 @@ __all__ = [
     'oplsaa_stability_preflight',
     'parameterize_smiles',
     'print_mechanics_result_summary',
+    'prepare_cmcna_xy_bulk_slab',
     'prepare_solvated_ion_pull',
     'prepare_solvated_ion_umbrella',
     'resolve_prepared_system',

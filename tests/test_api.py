@@ -140,6 +140,7 @@ def test_top_level_api_exports_mechanics_helpers():
     assert hasattr(api, 'run_layer_stack_relaxation')
     assert hasattr(api, 'prepare_solvated_ion_pull')
     assert hasattr(api, 'prepare_solvated_ion_umbrella')
+    assert hasattr(api, 'prepare_cmcna_xy_bulk_slab')
     assert hasattr(api, 'run_solvated_ion_umbrella')
     assert hasattr(api, 'analyze_umbrella_pmf')
     assert hasattr(yadonpy, 'ZCompressionAnnealSpec')
@@ -158,6 +159,9 @@ def test_top_level_api_exports_mechanics_helpers():
     assert hasattr(yadonpy, 'LayerStackSpec')
     assert hasattr(yadonpy, 'GraphiteLayerSpec')
     assert hasattr(yadonpy, 'GraphiteRestraintSpec')
+    assert hasattr(yadonpy, 'CMCNAXYSlabRelaxationSpec')
+    assert hasattr(yadonpy, 'CMCNAXYBulkSlabResult')
+    assert hasattr(yadonpy, 'prepare_cmcna_xy_bulk_slab')
     assert hasattr(yadonpy, 'InterdiffusionStartSpec')
     assert hasattr(yadonpy, 'MolecularLayerSpec')
     assert hasattr(yadonpy, 'VacuumLayerSpec')
@@ -173,6 +177,7 @@ def test_top_level_api_exports_mechanics_helpers():
     assert 'run_layer_stack_relaxation' in api.__all__
     assert 'prepare_solvated_ion_pull' in api.__all__
     assert 'prepare_solvated_ion_umbrella' in api.__all__
+    assert 'prepare_cmcna_xy_bulk_slab' in api.__all__
     assert 'run_solvated_ion_umbrella' in api.__all__
     assert 'analyze_umbrella_pmf' in api.__all__
     assert 'run_interface_analyses_parallel' in api.__all__
@@ -185,6 +190,9 @@ def test_top_level_api_exports_mechanics_helpers():
     assert 'UmbrellaPmfResult' in yadonpy.__all__
     assert 'FixedChargeRegionSpec' in yadonpy.__all__
     assert 'GraphiteRestraintSpec' in yadonpy.__all__
+    assert 'CMCNAXYSlabRelaxationSpec' in yadonpy.__all__
+    assert 'CMCNAXYBulkSlabResult' in yadonpy.__all__
+    assert 'prepare_cmcna_xy_bulk_slab' in yadonpy.__all__
     assert 'InterdiffusionStartSpec' in yadonpy.__all__
     assert 'InterfaceAnalysisTask' in yadonpy.__all__
     assert 'InterfaceAnalysisTaskResult' in yadonpy.__all__

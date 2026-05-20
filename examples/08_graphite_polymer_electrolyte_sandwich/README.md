@@ -89,26 +89,31 @@ semantic aliases such as `GRAPHITE`, `ELECTROLYTE`, `CMCNA`, and `MOBILE`.
   between electrolyte and graphite.
 - Example 08-07 makes the prepared CMC-Na slab the lateral-size authority.  The
   nominal CMC slab XY is rounded up to a basal-graphite lattice-compatible
-  footprint, the wall-confined CMC-Na slab is relaxed at that fixed XY, the
-  relaxed GRO box is read back, and an electrolyte slab is then prepared by the
-  same `periodicity="xy"` wall protocol at the same XY footprint.  Both slabs
-  are passed through `MolecularLayerSpec(prepared_slab_gro=...)`, so final stack
-  assembly only translates them in z and never laterally rescales or repacks the
-  liquid.  This avoids reinterpreting an XY-periodic slab in a different lateral
-  box and removes fresh-packing side-channel voids before final-NVT `t=0`.
+  footprint, `prepare_cmcna_xy_bulk_slab(...)` builds a dilute `0.05 g/cm3`
+  fixed-XY AC cell, compresses the z-open active slab to `1.5 g/cm3`, and keeps
+  adding wall-confined NVT rounds until active density and CMC-chain Rg converge.
+  The relaxed GRO box is then read back, and an electrolyte slab is prepared by
+  the same `periodicity="xy"` wall protocol at the same XY footprint.  Both
+  slabs are passed through `MolecularLayerSpec(prepared_slab_gro=...)`, so final
+  stack assembly only translates them in z and never laterally rescales or
+  repacks the liquid.  This avoids reinterpreting an XY-periodic slab in a
+  different lateral box and removes fresh-packing side-channel voids before
+  final-NVT `t=0`.
 - Prepared molecular slabs must match the stack master XY within `0.02 nm`.
   Their `prepared_box_xy_nm`, `xy_match_delta_nm`, `active_z_extent_nm`, and a
   coarse lateral occupancy / edge-void sanity report are written to
   `layer_stack_manifest.json` and propagated into `geometry_health.json`.
-- CMC-Na examples deliberately use a loose initial packing target below the
-  approximate `1.5 g/cm3` bulk reference.  With `molecular_packing_expand="z"`,
-  too many molecules under a fixed graphite footprint expand the initial z
-  length rather than silently expanding the graphite XY area; compression
-  annealing and z-NPT then collapse the stack toward a dense confined state.
-  The final layer need not equal bulk density exactly, but
-  `relaxation_followup_summary.json` reports both CMCNA phase density and total
-  mass density in CMC-rich regions, and flags CMCNA core density below
-  `0.90 g/cm3` as a warning and below `0.75 g/cm3` as severe.
+- CMC-Na prepared slabs deliberately use a loose initial packing target below
+  the approximate `1.5 g/cm3` bulk reference, then judge convergence with active
+  slab density rather than total wall-padded box density.  Directly packed CMCNA
+  layers can still use `molecular_packing_expand="z"` plus compression
+  annealing/z-NPT, but reusable slab preparation should prefer the explicit
+  `prepare_cmcna_xy_bulk_slab(...)` route and check
+  `cmcna_slab_convergence.json` before stacking.  The final confined layer need
+  not equal bulk density exactly, but `relaxation_followup_summary.json` reports
+  both CMCNA phase density and total mass density in CMC-rich regions, and flags
+  CMCNA core density below `0.90 g/cm3` as a warning and below `0.75 g/cm3` as
+  severe.
 - Example 08-06 is intentionally a flat large-cell template: it increases the
   graphite XY footprint instead of forcing high initial CMC density.  Its
   default neutral fixed-charge setting (`0 uC/cm2`) is meant for the first

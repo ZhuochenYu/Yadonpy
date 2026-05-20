@@ -350,18 +350,21 @@ with `z_compressibility_bar_inv=4.5e-6` and `z_npt_tau_p_ps=20.0`; this keeps
 the last density-relaxation step from applying a sudden large z scaling after
 the gentle compression cycles.
 For large CMC-Na layers, the preferred preparation route is an independent
-wall-confined slab before the final stack is assembled.  Build a very dilute
-fixed-XY CMC-Na amorphous cell, run EQ21 with `periodicity="xy"` and
-`XYSlabEquilibrationSpec(target_density_g_cm3=0.50)`, then pass the resulting
-`final_gro()` to `MolecularLayerSpec(prepared_slab_gro=...)`.  This keeps CMC
-from connecting through the z periodic image during bulk-like pre-relaxation,
-while preserving the graphite XY footprint needed for direct stacking.  The
-target `0.50 g/cm3` is a slab-construction density, not a final interface
-constraint.  CMC-Na layers that are still packed directly can initialize Na+ as
-local carboxylate counterions with `counterion_contact_mode="carboxylate"`;
-prepared slabs preserve the pre-equilibrated Na+/COO- contacts.  The relaxation
-summary reports CMCNA phase density and total mass density inside CMC-rich
-regions after stacking.
+wall-confined slab before the final stack is assembled.  Use
+`prepare_cmcna_xy_bulk_slab(...)` to build a dilute fixed-XY CMC-Na amorphous
+cell at `0.05 g/cm3`, run `periodicity="xy"` EQ21 with z walls, compress the
+active slab toward `1.5 g/cm3`, and then append wall-confined NVT rounds until
+both active density and CMC-chain Rg pass their convergence gates.  The density
+used for this gate is `CMC-Na mass / (fixed XY area * active z extent)`, not the
+total GROMACS box density, because wall padding would otherwise dilute the
+reported value.  Pass `prepared_slab_gro` to
+`MolecularLayerSpec(prepared_slab_gro=...)` only after
+`cmcna_slab_convergence.json` reports `ready_for_layer_stack=True`.  CMC-Na
+layers that are still packed directly can initialize Na+ as local carboxylate
+counterions with `counterion_contact_mode="carboxylate"`; prepared slabs
+preserve the pre-equilibrated Na+/COO- contacts.  The relaxation summary reports
+CMCNA phase density and total mass density inside CMC-rich regions after
+stacking.
 When the observable is electrolyte/CMCNA interdiffusion, use
 `InterdiffusionStartSpec`: pre-release minimization/NVT/z-NPT applies temporary
 z-only phase gates to the two soft phases, and the gates are removed only for

@@ -35,6 +35,11 @@ from .bulk_resize import (
     recommend_electrolyte_alignment,
 )
 from .charge_audit import format_cell_charge_audit, format_charge_meta_audit, summarize_cell_charge, summarize_charge_meta
+from .cmcna_slab import (
+    CMCNAXYBulkSlabResult,
+    CMCNAXYSlabRelaxationSpec,
+    prepare_cmcna_xy_bulk_slab,
+)
 from .enhanced_sampling import (
     EnhancedSamplingPlan,
     SolvatedIonPullSpec,
@@ -94,6 +99,8 @@ __all__ = [
     "BulkEquilibriumProfile",
     "BulkRescalePlan",
     "BulkEq21Outcome",
+    "CMCNAXYBulkSlabResult",
+    "CMCNAXYSlabRelaxationSpec",
     "DirectPolymerMatchedInterfacePreparation",
     "DirectElectrolytePlan",
     "ElectrolyteAlignmentPlan",
@@ -133,6 +140,7 @@ __all__ = [
     "build_interface",
     "build_interface_from_workdirs",
     "build_layer_stack",
+    "prepare_cmcna_xy_bulk_slab",
     "analyze_layer_stack_interface",
     "run_layer_stack_nvt",
     "run_layer_stack_relaxation",
