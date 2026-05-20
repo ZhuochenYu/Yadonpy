@@ -54,7 +54,20 @@ def test_xy_slab_xy_npt_mode_only_couples_xy_area(tmp_path: Path):
 
     assert overrides["pcoupltype"] == "semiisotropic"
     assert overrides["ref_p"] == "1 1"
-    assert overrides["compressibility"] == "4.5e-5 0"
+    assert overrides["compressibility"] == "4.5e-05 0"
+
+
+def test_xy_slab_fixed_xy_z_npt_mode_only_couples_z(tmp_path: Path):
+    top = tmp_path / "system.top"
+    top.write_text("[ atomtypes ]\nC  6 12.011 0 A 0.3 0.5\n", encoding="utf-8")
+    spec = XYSlabEquilibrationSpec(density_mode="wall_z_npt", pressure_axis_mode="fixed_xy_z_npt")
+
+    overrides = xy_slab_mdp_overrides(top_path=top, spec=spec, pressure_bar=1.0, npt_like=True)
+
+    assert overrides["pbc"] == "xy"
+    assert overrides["pcoupltype"] == "semiisotropic"
+    assert overrides["ref_p"] == "1 1"
+    assert overrides["compressibility"] == "0 4.5e-05"
 
 
 def test_xy_slab_wall_atomtype_falls_back_to_molecule_atoms(tmp_path: Path):
@@ -143,12 +156,34 @@ def test_xy_slab_active_density_gate_accepts_stable_tail():
     assert gate["mean_g_cm3"] == 1.505
 
 
+def test_xy_slab_active_density_wall_npt_gate_uses_plateau_not_target():
+    spec = XYSlabEquilibrationSpec(
+        density_mode="wall_z_npt",
+        target_density_g_cm3=None,
+        active_density_rel_std_max=0.03,
+        active_density_tail_fraction=0.5,
+    )
+    rows = [
+        {"time_ps": 0.0, "active_density_g_cm3": 0.80},
+        {"time_ps": 1.0, "active_density_g_cm3": 0.91},
+        {"time_ps": 2.0, "active_density_g_cm3": 0.90},
+        {"time_ps": 3.0, "active_density_g_cm3": 0.92},
+    ]
+
+    gate = _active_density_gate(rows, target_density_g_cm3=None, spec=spec)
+
+    assert gate["ok"] is True
+    assert gate["mode"] == "plateau_only"
+    assert gate["target_density_g_cm3"] is None
+
+
 def test_cmcna_relaxation_spec_maps_to_xy_slab_defaults():
     spec = CMCNAXYSlabRelaxationSpec()
     xy = spec.to_xy_slab_spec()
 
-    assert xy.target_density_g_cm3 == 1.5
-    assert xy.max_z_shrink_per_cycle == 0.06
+    assert xy.density_mode == "wall_z_npt"
+    assert xy.target_density_g_cm3 is None
+    assert xy.pressure_axis_mode == "fixed_xy_z_npt"
     assert xy.active_density_convergence is True
     assert xy.rg_convergence is True
     assert xy.max_convergence_rounds == 8
@@ -205,4 +240,5 @@ def test_prepare_cmcna_xy_bulk_slab_uses_fixed_xy_and_writes_result(monkeypatch,
     assert calls["counts"] == (2, 6)
     assert calls["cell_lengths"][0:2] == (5.0, 7.0)
     assert calls["exec_kwargs"]["periodicity"] == "xy"
-    assert calls["exec_kwargs"]["xy_slab"].target_density_g_cm3 == 1.5
+    assert calls["exec_kwargs"]["xy_slab"].density_mode == "wall_z_npt"
+    assert calls["exec_kwargs"]["xy_slab"].target_density_g_cm3 is None

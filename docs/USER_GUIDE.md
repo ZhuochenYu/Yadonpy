@@ -453,8 +453,10 @@ cmcna_slab = prepare_cmcna_xy_bulk_slab(
     charge_scale=(0.7, 0.7),
     relaxation=CMCNAXYSlabRelaxationSpec(
         initial_density_g_cm3=0.05,
-        target_density_g_cm3=1.50,
+        density_mode="wall_z_npt",
+        target_density_g_cm3=None,
         tmax_K=450.0,
+        pmax_bar=2000.0,
         final_relax_ns=0.50,
         max_convergence_rounds=8,
     ),
@@ -470,12 +472,14 @@ cmcna = MolecularLayerSpec(
 )
 ```
 
-This workflow adds GROMACS z walls and `ewald-geometry=3dc`, compresses the wall
-gap in small steps, and keeps XY fixed.  It prepares a stackable slab; it is not
-a true z-direction NPT ensemble.  The convergence density is the active slab
-density, `CMC-Na mass / (fixed XY area * active z extent)`, because the z-wall
-padding is not part of the CMC material.  Check `cmcna_slab_convergence.json`
-for `active_density_gate`, `rg_gate`, `na_coo_contact`, and
+This workflow adds GROMACS z walls and `ewald-geometry=3dc`, keeps XY fixed, and
+uses z-only wall-NPT to let the slab thickness relax without allowing CMC chains
+to connect through the z periodic image.  It prepares a stackable z-open slab;
+it is not the old `xyz -> unwrap -> slab` route.  The reported density is the
+active slab density, `CMC-Na mass / (fixed XY area * active z extent)`, because
+the z-wall padding is not part of the CMC material.  This density is a plateau
+diagnostic rather than a hard target.  Check `cmcna_slab_convergence.json` for
+`active_density_gate`, `rg_gate`, `na_coo_contact`, and
 `ready_for_layer_stack` before using the slab in a layer-stack example.
 
 When the CMC-Na membrane should define the final lateral footprint, use the

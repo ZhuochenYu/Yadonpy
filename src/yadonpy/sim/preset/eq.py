@@ -41,15 +41,10 @@ _AVOGADRO = 6.02214076e23
 
 @dataclass(frozen=True)
 class XYSlabEquilibrationSpec:
-    """Wall-confined ``pbc=xy`` slab equilibration for stack-ready polymers.
+    """Wall-confined ``pbc=xy`` slab equilibration for stack-ready polymers."""
 
-    This spec is intentionally geometry-driven: the z density is set by the wall
-    gap/box height, while MD only relaxes local packing strain.  It is therefore
-    suitable for preparing a CMC-Na slab that should not connect through the z
-    periodic image before it is inserted into a layer stack.
-    """
-
-    target_density_g_cm3: float = 0.50
+    density_mode: Literal["target_active_density", "wall_z_npt"] = "target_active_density"
+    target_density_g_cm3: float | None = 0.50
     cycles: int | Literal["auto"] = "auto"
     max_cycles: int = 30
     max_z_shrink_per_cycle: float = 0.10
@@ -59,6 +54,13 @@ class XYSlabEquilibrationSpec:
     wall_r_linpot_nm: float = 0.05
     ewald_geometry: str = "3dc"
     xy_area_mode: Literal["fixed", "xy_npt"] = "fixed"
+    pressure_axis_mode: Literal["fixed_xy_z_npt", "xy_npt", "off"] = "fixed_xy_z_npt"
+    tau_p_ps: float = 5.0
+    z_compressibility_bar_inv: float = 4.5e-5
+    xy_compressibility_bar_inv: float = 4.5e-5
+    pmax_bar: float = 2000.0
+    pre_nvt_ns: float = 0.01
+    wall_npt_ns: float = 0.05
     hot_nvt_ns: float = 0.01
     cool_nvt_ns: float = 0.01
     final_relax_ns: float = 0.20
@@ -245,14 +247,28 @@ def xy_slab_mdp_overrides(
         "wall_mdp": "\n".join(wall_lines) + "\n",
     }
     if npt_like:
+        axis_mode = str(getattr(slab, "pressure_axis_mode", "fixed_xy_z_npt")).strip().lower()
         if str(slab.xy_area_mode).lower() == "xy_npt":
+            axis_mode = "xy_npt"
+        if axis_mode == "xy_npt":
             p = float(pressure_bar)
             overrides.update(
                 {
                     "pcoupl": "C-rescale",
                     "pcoupltype": "semiisotropic",
                     "ref_p": f"{p:.6g} {p:.6g}",
-                    "compressibility": "4.5e-5 0",
+                    "compressibility": f"{float(slab.xy_compressibility_bar_inv):.6g} 0",
+                }
+            )
+        elif axis_mode == "fixed_xy_z_npt":
+            p = float(pressure_bar)
+            overrides.update(
+                {
+                    "pcoupl": "C-rescale",
+                    "pcoupltype": "semiisotropic",
+                    "tau_p": float(slab.tau_p_ps),
+                    "ref_p": f"{p:.6g} {p:.6g}",
+                    "compressibility": f"0 {float(slab.z_compressibility_bar_inv):.6g}",
                 }
             )
         else:
@@ -553,6 +569,8 @@ def _target_xy_slab_box_z_nm(
     _lines, coords, box = _read_gro_lines_coords_box(gro_path)
     density0 = _read_cell_meta_density(ac)
     area_nm2 = max(float(box[0]) * float(box[1]), 1.0e-9)
+    if spec.target_density_g_cm3 is None:
+        raise ValueError("XYSlabEquilibrationSpec.target_density_g_cm3 is required for density_mode='target_active_density'.")
     target_density = max(float(spec.target_density_g_cm3), 1.0e-6)
     if density0 is not None and density0 > 0.0:
         active_z = max(float(box[2]) * float(density0) / target_density, 0.10)
@@ -1939,6 +1957,180 @@ def _xy_slab_nvt_params(
     return p
 
 
+def _xy_slab_wall_npt_params(
+    *,
+    temp: float,
+    pressure_bar: float,
+    dt_ps: float,
+    nsteps: int,
+    gen_vel: str,
+    continuation: str,
+    wall_overrides: dict[str, object],
+) -> dict[str, object]:
+    from ...gmx.mdp_templates import default_mdp_params
+
+    p = {
+        **default_mdp_params(),
+        **dict(wall_overrides),
+        "dt": float(dt_ps),
+        "nsteps": int(nsteps),
+        "ref_t": float(temp),
+        "tau_t": 0.1,
+        "tcoupl": "V-rescale",
+        "gen_vel": str(gen_vel),
+        "gen_temp": float(temp),
+        "gen_seed": -1,
+        "continuation": str(continuation),
+        "ref_p": f"{float(pressure_bar):.6g} {float(pressure_bar):.6g}",
+        "nstenergy": 1000,
+        "nstlog": 1000,
+        "nstxout": 10000,
+        "nstxout_trr": 10000,
+        "nstvout": 10000,
+    }
+    return p
+
+
+def _wall_z_npt_cycle_count(spec: XYSlabEquilibrationSpec) -> int:
+    if spec.cycles == "auto":
+        return max(1, min(int(spec.max_cycles), 6))
+    return max(1, min(int(spec.cycles), int(spec.max_cycles)))
+
+
+def _wall_z_npt_schedule(
+    *,
+    temp: float,
+    hot_temp: float,
+    press: float,
+    spec: XYSlabEquilibrationSpec,
+) -> list[dict[str, float]]:
+    n = _wall_z_npt_cycle_count(spec)
+    out: list[dict[str, float]] = []
+    for idx in range(n):
+        frac = 0.0 if n <= 1 else float(idx) / float(n - 1)
+        stage_temp = float(temp) + (float(hot_temp) - float(temp)) * (1.0 - frac)
+        stage_press = float(press) + (float(spec.pmax_bar) - float(press)) * (1.0 - frac)
+        out.append({"cycle": float(idx + 1), "temperature_K": stage_temp, "pressure_bar": stage_press})
+    return out
+
+
+def _build_xy_slab_wall_z_npt_initial_stages(
+    *,
+    temp: float,
+    press: float,
+    hot_temp: float,
+    dt_ps: float,
+    spec: XYSlabEquilibrationSpec,
+    top_path: Path,
+) -> tuple[list[EqStage], list[dict[str, float]]]:
+    from ...gmx.mdp_templates import MINIM_STEEP_MDP, NPT_NO_CONSTRAINTS_MDP, NVT_NO_CONSTRAINTS_MDP, MdpSpec, default_mdp_params
+
+    base_wall = xy_slab_mdp_overrides(top_path=top_path, spec=spec, pressure_bar=float(press), npt_like=False)
+    stages: list[EqStage] = [
+        EqStage(
+            "01_minimize",
+            "minim",
+            MdpSpec(
+                MINIM_STEEP_MDP,
+                {
+                    **default_mdp_params(),
+                    **dict(base_wall),
+                    "nsteps": 50000,
+                    "emtol": 500.0,
+                    "emstep": 0.001,
+                },
+            ),
+        ),
+        EqStage(
+            "02_pre_nvt",
+            "nvt",
+            MdpSpec(
+                NVT_NO_CONSTRAINTS_MDP,
+                _xy_slab_nvt_params(
+                    temp=float(temp),
+                    dt_ps=float(dt_ps),
+                    nsteps=_ns_to_steps_for_dt(float(spec.pre_nvt_ns), float(dt_ps)),
+                    gen_vel="yes",
+                    continuation="no",
+                    wall_overrides=base_wall,
+                ),
+            ),
+        ),
+    ]
+    schedule = _wall_z_npt_schedule(temp=float(temp), hot_temp=float(hot_temp), press=float(press), spec=spec)
+    for rec in schedule:
+        idx = int(rec["cycle"])
+        wall_npt = xy_slab_mdp_overrides(top_path=top_path, spec=spec, pressure_bar=float(rec["pressure_bar"]), npt_like=True)
+        stages.append(
+            EqStage(
+                f"03_wall_z_npt_c{idx:02d}",
+                "npt",
+                MdpSpec(
+                    NPT_NO_CONSTRAINTS_MDP,
+                    _xy_slab_wall_npt_params(
+                        temp=float(rec["temperature_K"]),
+                        pressure_bar=float(rec["pressure_bar"]),
+                        dt_ps=float(dt_ps),
+                        nsteps=_ns_to_steps_for_dt(float(spec.wall_npt_ns), float(dt_ps)),
+                        gen_vel="no",
+                        continuation="yes",
+                        wall_overrides=wall_npt,
+                    ),
+                ),
+            )
+        )
+    final_wall = xy_slab_mdp_overrides(top_path=top_path, spec=spec, pressure_bar=float(press), npt_like=True)
+    stages.append(
+        EqStage(
+            "04_final_wall_z_npt",
+            "npt",
+            MdpSpec(
+                NPT_NO_CONSTRAINTS_MDP,
+                _xy_slab_wall_npt_params(
+                    temp=float(temp),
+                    pressure_bar=float(press),
+                    dt_ps=float(dt_ps),
+                    nsteps=_ns_to_steps_for_dt(float(spec.final_relax_ns), float(dt_ps)),
+                    gen_vel="no",
+                    continuation="yes",
+                    wall_overrides=final_wall,
+                ),
+            ),
+        )
+    )
+    return stages, schedule
+
+
+def _build_xy_slab_wall_z_npt_convergence_stage(
+    *,
+    temp: float,
+    press: float,
+    dt_ps: float,
+    spec: XYSlabEquilibrationSpec,
+    top_path: Path,
+    round_idx: int,
+) -> EqStage:
+    from ...gmx.mdp_templates import NPT_NO_CONSTRAINTS_MDP, MdpSpec
+
+    wall_npt = xy_slab_mdp_overrides(top_path=top_path, spec=spec, pressure_bar=float(press), npt_like=True)
+    return EqStage(
+        f"round_{int(round_idx):02d}_wall_z_npt",
+        "npt",
+        MdpSpec(
+            NPT_NO_CONSTRAINTS_MDP,
+            _xy_slab_wall_npt_params(
+                temp=float(temp),
+                pressure_bar=float(press),
+                dt_ps=float(dt_ps),
+                nsteps=_ns_to_steps_for_dt(float(spec.extra_relax_ns_per_round), float(dt_ps)),
+                gen_vel="no",
+                continuation="yes",
+                wall_overrides=wall_npt,
+            ),
+        ),
+    )
+
+
 def _build_xy_slab_cycle_stages(
     *,
     temp: float,
@@ -2157,7 +2349,7 @@ def _active_density_series(
     return rows, "final_gro"
 
 
-def _active_density_gate(rows: Sequence[dict[str, float]], *, target_density_g_cm3: float, spec: XYSlabEquilibrationSpec) -> dict[str, Any]:
+def _active_density_gate(rows: Sequence[dict[str, float]], *, target_density_g_cm3: float | None, spec: XYSlabEquilibrationSpec) -> dict[str, Any]:
     values = np.asarray([float(row.get("active_density_g_cm3", float("nan"))) for row in rows], dtype=float)
     times = np.asarray([float(row.get("time_ps", idx)) for idx, row in enumerate(rows)], dtype=float)
     mask = np.isfinite(values)
@@ -2167,7 +2359,7 @@ def _active_density_gate(rows: Sequence[dict[str, float]], *, target_density_g_c
         return {
             "ok": False,
             "reason": "no_active_density_values",
-            "target_density_g_cm3": float(target_density_g_cm3),
+            "target_density_g_cm3": None if target_density_g_cm3 is None else float(target_density_g_cm3),
         }
     tail_fraction = min(max(float(spec.active_density_tail_fraction), 0.05), 1.0)
     tail_n = max(1, int(math.ceil(float(values.size) * tail_fraction)))
@@ -2176,20 +2368,26 @@ def _active_density_gate(rows: Sequence[dict[str, float]], *, target_density_g_c
     mean = float(np.mean(y))
     std = float(np.std(y))
     rel_std = float(std / abs(mean)) if abs(mean) > 1.0e-12 else float("inf")
-    target = float(target_density_g_cm3)
-    rel_error = float(abs(mean - target) / target) if target > 0.0 else float("inf")
+    target = None if target_density_g_cm3 is None else float(target_density_g_cm3)
+    use_target = target is not None and target > 0.0 and str(getattr(spec, "density_mode", "target_active_density")) == "target_active_density"
+    rel_error = float(abs(mean - float(target)) / float(target)) if use_target else None
     slope = 0.0
     if y.size >= 3 and float(np.max(t) - np.min(t)) > 1.0e-9:
         try:
             slope = float(np.polyfit(t, y, 1)[0])
         except Exception:
             slope = 0.0
-    ok = bool(
-        rel_error <= float(spec.active_density_tolerance_fraction)
-        and rel_std <= float(spec.active_density_rel_std_max)
-    )
+    if use_target:
+        ok = bool(
+            rel_error is not None
+            and rel_error <= float(spec.active_density_tolerance_fraction)
+            and rel_std <= float(spec.active_density_rel_std_max)
+        )
+    else:
+        ok = bool(rel_std <= float(spec.active_density_rel_std_max))
     return {
         "ok": ok,
+        "mode": "target_active_density" if use_target else "plateau_only",
         "target_density_g_cm3": target,
         "mean_g_cm3": mean,
         "std_g_cm3": std,
@@ -2452,7 +2650,11 @@ def _xy_slab_convergence_report(
             total_mass_amu=float(total_mass_amu),
             spec=spec,
         )
-        density_gate = _active_density_gate(rows, target_density_g_cm3=float(spec.target_density_g_cm3), spec=spec)
+        density_gate = _active_density_gate(
+            rows,
+            target_density_g_cm3=(None if spec.target_density_g_cm3 is None else float(spec.target_density_g_cm3)),
+            spec=spec,
+        )
         density_artifacts = _write_active_density_artifacts(out_dir=analysis_dir, rows=rows, gate=density_gate)
         profile_artifacts = _write_z_density_profile_final(
             out_dir=analysis_dir,
@@ -2465,7 +2667,7 @@ def _xy_slab_convergence_report(
         density_gate = {
             "ok": not bool(spec.active_density_convergence),
             "reason": "topology_mass_unavailable",
-            "target_density_g_cm3": float(spec.target_density_g_cm3),
+            "target_density_g_cm3": None if spec.target_density_g_cm3 is None else float(spec.target_density_g_cm3),
         }
         density_artifacts = {}
         profile_artifacts = {}
@@ -2487,7 +2689,7 @@ def _xy_slab_convergence_report(
         and (contact.get("ok") if contact.get("available") else True)
     )
     payload = {
-        "schema_version": "0.9.24-cmcna-xy-slab-convergence-v1",
+        "schema_version": "0.9.25-cmcna-xy-slab-convergence-v2",
         "ready_for_layer_stack": ready,
         "final_gro": str(final_gro),
         "final_top": str(exp.system_top),
@@ -4100,6 +4302,156 @@ class EQ21step:
         convergence_path = run_dir / "cmcna_slab_convergence.json"
         prepared_gro = run_dir / "prepared_slab.gro"
         prepared_top = run_dir / "prepared_slab.top"
+        if str(slab.density_mode) == "wall_z_npt":
+            wall_dir = run_dir / "wall_z_npt"
+            final_stage_dir = wall_dir / "04_final_wall_z_npt"
+            summary_path = run_dir / "xy_slab_summary.json"
+            _, schedule = _build_xy_slab_wall_z_npt_initial_stages(
+                temp=float(temp),
+                press=float(press),
+                hot_temp=float(eq21_tmax),
+                dt_ps=float(eq21_dt_ps),
+                spec=slab,
+                top_path=exp.system_top,
+            )
+            outputs = [final_stage_dir / "md.tpr", final_stage_dir / "md.gro", summary_path, convergence_path, prepared_gro, prepared_top]
+            xy_spec = StepSpec(
+                name="equilibration_eq21_xy_slab_wall_z_npt",
+                outputs=outputs,
+                inputs={
+                    "input_gro_sig": file_signature(exp.system_gro),
+                    "input_top_sig": file_signature(exp.system_top),
+                    "input_ndx_sig": file_signature(exp.system_ndx),
+                    "temp": float(temp),
+                    "press": float(press),
+                    "eq21_tmax": float(eq21_tmax),
+                    "eq21_dt_ps": float(eq21_dt_ps),
+                    "xy_slab": json.dumps(asdict(slab), sort_keys=True, default=str),
+                    "wall_z_npt_schedule": schedule,
+                    "gpu_offload_mode": str(gpu_offload_mode),
+                },
+                description="Wall-confined pbc=xy fixed-XY/z-only NPT CMC/polymer slab equilibration",
+            )
+            _preset_item("run_dir", run_dir)
+            _preset_item("periodicity", "xy")
+            _preset_item("xy_slab_density_mode", "wall_z_npt")
+            _preset_item("xy_slab_pressure_axis_mode", str(slab.pressure_axis_mode))
+            _preset_item("xy_slab_wall_z_npt_cycles", len(schedule))
+
+            use_gpu, gid = _parse_gpu_args(gpu, gpu_id)
+            res = RunResources(
+                ntmpi=int(mpi),
+                ntomp=int(omp),
+                use_gpu=use_gpu,
+                gpu_id=gid,
+                gpu_offload_mode=_normalize_gpu_offload_mode(gpu_offload_mode),
+            )
+
+            def _run_wall_z_npt() -> Path:
+                if run_dir.exists():
+                    shutil.rmtree(run_dir, ignore_errors=True)
+                run_dir.mkdir(parents=True, exist_ok=True)
+                stages, schedule_rows = _build_xy_slab_wall_z_npt_initial_stages(
+                    temp=float(temp),
+                    press=float(press),
+                    hot_temp=float(eq21_tmax),
+                    dt_ps=float(eq21_dt_ps),
+                    spec=slab,
+                    top_path=exp.system_top,
+                )
+                job = EquilibrationJob(
+                    gro=exp.system_gro,
+                    top=exp.system_top,
+                    provenance_ndx=exp.system_ndx,
+                    out_dir=wall_dir,
+                    stages=stages,
+                    resources=res,
+                )
+                job.run(restart=False)
+                current_job = job
+                convergence_reports: list[dict[str, Any]] = []
+                report = _xy_slab_convergence_report(
+                    job=current_job,
+                    exp=exp,
+                    run_dir=run_dir,
+                    spec=slab,
+                    omp=int(omp),
+                )
+                report["round"] = 0
+                convergence_reports.append(report)
+                convergence_path.write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+                for round_idx in range(1, max(int(slab.max_convergence_rounds), 0) + 1):
+                    if bool(report.get("ready_for_layer_stack")):
+                        break
+                    round_dir = run_dir / f"convergence_round_{round_idx:02d}"
+                    extra_job = EquilibrationJob(
+                        gro=current_job.final_gro(),
+                        top=exp.system_top,
+                        provenance_ndx=exp.system_ndx,
+                        out_dir=round_dir,
+                        stages=[
+                            _build_xy_slab_wall_z_npt_convergence_stage(
+                                temp=float(temp),
+                                press=float(press),
+                                dt_ps=float(eq21_dt_ps),
+                                spec=slab,
+                                top_path=exp.system_top,
+                                round_idx=round_idx,
+                            )
+                        ],
+                        resources=res,
+                    )
+                    extra_job.run(restart=False)
+                    current_job = extra_job
+                    report = _xy_slab_convergence_report(
+                        job=current_job,
+                        exp=exp,
+                        run_dir=run_dir,
+                        spec=slab,
+                        omp=int(omp),
+                    )
+                    report["round"] = int(round_idx)
+                    convergence_reports.append(report)
+                    convergence_path.write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+                shutil.copy2(current_job.final_gro(), prepared_gro)
+                shutil.copy2(exp.system_top, prepared_top)
+                self._job = current_job
+                payload = {
+                    "schema_version": "0.9.25-xy-slab-wall-z-npt-v1",
+                    "periodicity": "xy",
+                    "density_mode": "wall_z_npt",
+                    "spec": asdict(slab),
+                    "wall_z_npt_schedule": schedule_rows,
+                    "final_gro": str(current_job.final_gro()),
+                    "prepared_slab_gro": str(prepared_gro),
+                    "prepared_slab_top": str(prepared_top),
+                    "convergence_summary": str(convergence_path),
+                    "convergence_history": convergence_reports,
+                    "ready_for_layer_stack": bool((convergence_reports[-1] or {}).get("ready_for_layer_stack")),
+                }
+                summary_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+                return summary_path
+
+            expected_gro_sig = file_signature(exp.system_gro)
+            expected_top_sig = file_signature(exp.system_top)
+            expected_ndx_sig = file_signature(exp.system_ndx)
+            if self._resume.is_done(xy_spec) and not summary_path.exists():
+                self._resume.mark_failed(xy_spec, error="missing xy_slab_summary.json", meta={"auto_rebuild": True})
+            if not bool(restart) and run_dir.exists():
+                shutil.rmtree(run_dir, ignore_errors=True)
+            self._resume.run(xy_spec, _run_wall_z_npt)
+            _recover_completed_workflow_step(
+                self._resume,
+                xy_spec,
+                summary_path=summary_path,
+                input_gro_sig=expected_gro_sig,
+                input_top_sig=expected_top_sig,
+                input_ndx_sig=expected_ndx_sig,
+                label="EQ21 xy slab wall-z-NPT workflow",
+                fallback_markers=(final_stage_dir / "summary.json",),
+            )
+            return self.ac
+
         target_box_z, target_report = _target_xy_slab_box_z_nm(
             ac=self.ac,
             top_path=exp.system_top,

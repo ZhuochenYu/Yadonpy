@@ -22,12 +22,18 @@ class CMCNAXYSlabRelaxationSpec:
     """Defaults for a reusable z-open CMC-Na slab prepared at fixed XY."""
 
     initial_density_g_cm3: float = 0.05
-    target_density_g_cm3: float = 1.50
+    density_mode: str = "wall_z_npt"
+    target_density_g_cm3: float | None = None
     wall_padding_nm: float = 0.40
     cycles: int | str = "auto"
     max_cycles: int = 40
     max_z_shrink_per_cycle: float = 0.06
     tmax_K: float = 450.0
+    pmax_bar: float = 2000.0
+    tau_p_ps: float = 5.0
+    z_compressibility_bar_inv: float = 4.5e-5
+    pre_nvt_ns: float = 0.01
+    wall_npt_ns: float = 0.05
     hot_nvt_ns: float = 0.01
     cool_nvt_ns: float = 0.01
     final_relax_ns: float = 0.50
@@ -42,12 +48,19 @@ class CMCNAXYSlabRelaxationSpec:
 
     def to_xy_slab_spec(self) -> XYSlabEquilibrationSpec:
         return XYSlabEquilibrationSpec(
-            target_density_g_cm3=float(self.target_density_g_cm3),
+            density_mode=str(self.density_mode),  # type: ignore[arg-type]
+            target_density_g_cm3=(None if self.target_density_g_cm3 is None else float(self.target_density_g_cm3)),
             cycles=self.cycles,  # type: ignore[arg-type]
             max_cycles=int(self.max_cycles),
             max_z_shrink_per_cycle=float(self.max_z_shrink_per_cycle),
             wall_padding_nm=float(self.wall_padding_nm),
             xy_area_mode="fixed",
+            pressure_axis_mode="fixed_xy_z_npt",
+            tau_p_ps=float(self.tau_p_ps),
+            z_compressibility_bar_inv=float(self.z_compressibility_bar_inv),
+            pmax_bar=float(self.pmax_bar),
+            pre_nvt_ns=float(self.pre_nvt_ns),
+            wall_npt_ns=float(self.wall_npt_ns),
             hot_nvt_ns=float(self.hot_nvt_ns),
             cool_nvt_ns=float(self.cool_nvt_ns),
             final_relax_ns=float(self.final_relax_ns),
@@ -72,7 +85,7 @@ class CMCNAXYBulkSlabResult:
     xy_slab_summary: Path
     convergence_summary: Path
     ready_for_layer_stack: bool
-    target_density_g_cm3: float
+    target_density_g_cm3: float | None
     xy_nm: tuple[float, float]
     initial_z_nm: float
     summary: dict[str, Any]
@@ -104,7 +117,7 @@ def prepare_cmcna_xy_bulk_slab(
     large_system_mode: str = "large",
     restart: bool | None = None,
 ) -> CMCNAXYBulkSlabResult:
-    """Prepare a fixed-XY, z-open CMC-Na slab with density/Rg convergence gates."""
+    """Prepare a fixed-XY, z-open CMC-Na slab with wall-z-NPT/Rg gates."""
 
     spec = relaxation if relaxation is not None else CMCNAXYSlabRelaxationSpec()
     wd = Path(work_dir).expanduser().resolve()
@@ -174,7 +187,7 @@ def prepare_cmcna_xy_bulk_slab(
         xy_slab_summary=summary_path,
         convergence_summary=convergence_path,
         ready_for_layer_stack=ready,
-        target_density_g_cm3=float(spec.target_density_g_cm3),
+        target_density_g_cm3=(None if spec.target_density_g_cm3 is None else float(spec.target_density_g_cm3)),
         xy_nm=xy,
         initial_z_nm=float(initial_z_nm),
         summary=summary,

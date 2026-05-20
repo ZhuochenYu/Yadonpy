@@ -1245,8 +1245,10 @@ cmcna_slab = prepare_cmcna_xy_bulk_slab(
     charge_scale=(0.7, 0.7),
     relaxation=CMCNAXYSlabRelaxationSpec(
         initial_density_g_cm3=0.05,
-        target_density_g_cm3=1.50,
+        density_mode="wall_z_npt",
+        target_density_g_cm3=None,
         tmax_K=450.0,
+        pmax_bar=2000.0,
         final_relax_ns=0.50,
         max_convergence_rounds=8,
         extra_relax_ns_per_round=0.50,
@@ -1263,12 +1265,13 @@ cmcna = MolecularLayerSpec(
 )
 ```
 
-`prepare_cmcna_xy_bulk_slab(...)` internally creates a dilute fixed-XY AC box,
-runs EQ21 with `periodicity="xy"` (`pbc=xy`, z walls,
-`periodic-molecules=yes`, and `ewald-geometry=3dc`), compresses the active slab
-toward the requested density, and appends wall-confined NVT rounds until the
-active density and Rg gates are satisfied.  The active density is computed from
-`CMC-Na mass / (fixed XY area * active z extent)`, not from the total box
+`prepare_cmcna_xy_bulk_slab(...)` internally creates a dilute fixed-XY AC box
+and runs EQ21 with `periodicity="xy"` (`pbc=xy`, z walls,
+`periodic-molecules=yes`, and `ewald-geometry=3dc`).  Its default
+`density_mode="wall_z_npt"` keeps x/y fixed and lets z-only wall-NPT compress
+the z-open slab naturally; it does not use `xyz -> unwrap -> slab`, and it does
+not require CMC-Na to hit a hard target density.  The active density is computed
+from `CMC-Na mass / (fixed XY area * active z extent)`, not from the total box
 density, because z-wall padding is not part of the physical CMC slab.
 `cmcna_slab_convergence.json` records `active_density_gate`, `rg_gate`,
 `na_coo_contact`, and `ready_for_layer_stack`.

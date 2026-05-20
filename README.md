@@ -352,12 +352,14 @@ the gentle compression cycles.
 For large CMC-Na layers, the preferred preparation route is an independent
 wall-confined slab before the final stack is assembled.  Use
 `prepare_cmcna_xy_bulk_slab(...)` to build a dilute fixed-XY CMC-Na amorphous
-cell at `0.05 g/cm3`, run `periodicity="xy"` EQ21 with z walls, compress the
-active slab toward `1.5 g/cm3`, and then append wall-confined NVT rounds until
-both active density and CMC-chain Rg pass their convergence gates.  The density
-used for this gate is `CMC-Na mass / (fixed XY area * active z extent)`, not the
-total GROMACS box density, because wall padding would otherwise dilute the
-reported value.  Pass `prepared_slab_gro` to
+cell at `0.05 g/cm3`, run `periodicity="xy"` EQ21 with z walls, and let
+fixed-XY/z-only wall-NPT compress the z-open slab naturally.  This avoids the
+`xyz -> unwrap -> slab` route, where CMC chain segments can cross the z periodic
+image before a clean slab boundary exists.  The observed density is reported as
+`CMC-Na mass / (fixed XY area * active z extent)`, not the total GROMACS box
+density, because wall padding would otherwise dilute the value.  Active density
+is a convergence diagnostic and not a hard target; Rg convergence is checked at
+the same time.  Pass `prepared_slab_gro` to
 `MolecularLayerSpec(prepared_slab_gro=...)` only after
 `cmcna_slab_convergence.json` reports `ready_for_layer_stack=True`.  CMC-Na
 layers that are still packed directly can initialize Na+ as local carboxylate
