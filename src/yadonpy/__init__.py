@@ -31,7 +31,7 @@ from .sim.performance import IOAnalysisPolicy, resolve_io_analysis_policy  # noq
 from .sim.preset.eq import XYSlabEquilibrationSpec  # noqa: F401
 from .diagnostics import doctor  # noqa: F401
 from .interface import InterfaceBuilder, InterfaceDynamics, InterfaceProtocol, InterfaceRouteSpec, build_interface, build_interface_from_workdirs  # noqa: F401
-from .interface import CMCNAXYBulkSlabResult, CMCNAXYSlabRelaxationSpec, ElectrodeChargeSpec, EnhancedSamplingPlan, FixedChargeRegionSpec, GraphiteLayerSpec, GraphiteRestraintSpec, InterdiffusionStartSpec, LayerStackNvtResult, LayerStackRelaxationResult, LayerStackRelaxationSpec, LayerStackResult, LayerStackSpec, MolecularLayerSpec, SolvatedIonPullSpec, SolvatedIonUmbrellaSpec, UmbrellaPmfResult, UmbrellaSamplingPlan, VacuumLayerSpec, ZCompressionAnnealSpec, analyze_layer_stack_interface, analyze_umbrella_pmf, build_layer_stack, prepare_cmcna_xy_bulk_slab, prepare_cmcna_xy_membrane, prepare_solvated_ion_pull, prepare_solvated_ion_umbrella, run_layer_stack_nvt, run_layer_stack_relaxation, run_solvated_ion_umbrella  # noqa: F401
+from .interface import CMCNAXYBulkSlabResult, CMCNAXYSlabRelaxationSpec, ElectrodeChargeSpec, EnhancedSamplingPlan, FixedChargeRegionSpec, GraphiteLayerSpec, GraphiteRestraintSpec, InterdiffusionStartSpec, LayerStackNvtResult, LayerStackRelaxationResult, LayerStackRelaxationSpec, LayerStackResult, LayerStackSpec, MolecularLayerSpec, SolvatedIonPullSpec, SolvatedIonUmbrellaSpec, UmbrellaPmfResult, UmbrellaSamplingPlan, VacuumLayerSpec, ZCompressionAnnealSpec, analyze_layer_stack_interface, analyze_umbrella_pmf, build_layer_stack, prepare_cmcna_xy_bulk_slab, prepare_cmcna_xy_membrane, prepare_solvated_ion_pull, prepare_solvated_ion_umbrella, retarget_prepared_slab_xy, run_layer_stack_nvt, run_layer_stack_relaxation, run_solvated_ion_umbrella  # noqa: F401
 from .runtime import get_run_options, set_run_options, run_options  # noqa: F401
 from .api import (  # noqa: F401
     audit_default_moldb_sync,
@@ -59,6 +59,7 @@ from .api import (  # noqa: F401
     prepare_solvated_ion_umbrella,
     prepare_cmcna_xy_bulk_slab,
     prepare_cmcna_xy_membrane,
+    retarget_prepared_slab_xy,
     resolve_prepared_system,
     run_elongation_gmx,
     run_interface_analyses_parallel,
@@ -124,6 +125,7 @@ __all__ = [
     'prepare_solvated_ion_umbrella',
     'prepare_cmcna_xy_bulk_slab',
     'prepare_cmcna_xy_membrane',
+    'retarget_prepared_slab_xy',
     'qm',
     'resolve_prepared_system',
     'resolve_io_analysis_policy',

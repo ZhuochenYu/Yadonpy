@@ -149,6 +149,13 @@ run_layer_stack_relaxation(
     *,
     time_ns=2.0,
     temp=318.15,
+    dt_ps=0.001,
+    constraints="none",
+    final_dt_ps=0.002,
+    final_constraints="h-bonds",
+    final_traj_ps="auto",
+    final_energy_ps="auto",
+    final_log_ps="auto",
     relax_z=True,
     z_compressibility_bar_inv=4.5e-6,
     z_npt_tau_p_ps=20.0,
@@ -217,6 +224,13 @@ Key points:
   `SMILES -> charges -> ff_assign`.
 - `resolve_prepared_system(...)` resolves a reusable `gro/top` pair from explicit
   paths or from a standard YadonPy equilibration `work_dir`.
+- `run_layer_stack_relaxation(...)` separates early relaxation controls from
+  final production controls.  Use `dt_ps=0.001, constraints="none"` for
+  minimization/pre-release/z-NPT/annealing robustness, then use
+  `final_dt_ps=0.002, final_constraints="h-bonds"` for long final NVT sampling.
+  `final_traj_ps="auto"`, `final_energy_ps="auto"`, and `final_log_ps="auto"`
+  cap long final NVT outputs near 5000 XTC frames and 10000 energy/log points;
+  the resolved cadence is written to `relaxation_followup_summary.json`.
 - `run_tg_scan_gmx(...)` and `run_elongation_gmx(...)` are the preferred high-level
   study entry points for properties of already equilibrated systems.
 
@@ -535,7 +549,33 @@ batch = run_interface_analyses_parallel(tasks, workers="auto", thread_limit=1)
 `workers="auto"` uses conservative case-level process parallelism.  The
 `thread_limit` value is applied to common BLAS/OpenMP environment variables
 inside workers so a four-case sweep does not silently become four Python
-processes multiplied by many math-library threads.
+processes multiplied by many math-library threads.  For Eg08 folders that use
+the standard charge-sweep naming convention, the example helper
+`examples/08_graphite_polymer_electrolyte_sandwich/postprocess_charge_sweep_parallel.py`
+constructs these tasks from `EG08_SWEEP_ROOT` and runs them concurrently.
+
+The `interface_fast` profile is intended for long interface trajectories.  It
+uses an adaptive effective-frame budget and RDF/CN cutoff-neighbor search when
+SciPy is available.  Increase `MAX_INTERFACE_PROFILE_FRAMES` only when a
+forensic, denser reanalysis is worth the extra wall time.
+
+The Eg08.07 sweep report generator
+`examples/08_graphite_polymer_electrolyte_sandwich/make_charge_sweep_report_ppt.py`
+adds a depth-resolved Li solvation analysis on top of the per-case interface
+outputs.  For Li+ sites inside the CMCNA membrane it bins the penetration depth
+from the electrolyte-side CMC boundary and averages coordination to solvent
+representative O, CMC oxygen-like sites, and PF6 F within `EG08_LI_SOLVATION_CUTOFF_NM`
+(default `0.32 nm`).  The depth-bin size is controlled by
+`EG08_LI_SOLVATION_DEPTH_BIN_NM` (default `0.10 nm`), and the CSV output is
+`99_report/ppt_figures/li_solvation_by_cmc_depth.csv`.
+
+The combined Eg08.07 finish helper
+`examples/08_graphite_polymer_electrolyte_sandwich/run_eg08_07_charge_sweep_and_report.py`
+waits for the standard four case directories, launches the parallel
+postprocessor, then builds the PPT and writes
+`99_report/charge_sweep_full_ppt_paths.json`.  Set `EG08_SWEEP_ROOT` and leave
+`EG08_POSTPROCESS_WORKERS=auto` for one worker per charge case on a typical
+four-case sweep.
 
 Production presets accept adaptive output cadence:
 
@@ -554,6 +594,11 @@ eq.NPT(...).exec(
 production length and system size, then records the resolved cadence and analysis
 policy in `05_*_production/summary.json`. Explicit numeric `traj_ps`,
 `energy_ps`, `log_ps`, `trr_ps`, or `velocity_ps` always override the policy.
+
+Layer-stack final production uses the same idea through
+`run_layer_stack_relaxation(..., final_traj_ps="auto", final_energy_ps="auto",
+final_log_ps="auto")`.  The early relaxation output cadence remains controlled
+by `traj_ps/energy_ps/log_ps`; the `final_*` cadence applies only to final NVT.
 
 The default production coordinate stream is adaptive TRR-only so collective
 conductivity analysis can call `gmx current` directly. Set
@@ -1330,6 +1375,13 @@ build_layer_stack(stack=LayerStackSpec(...), work_dir="./work")
 run_layer_stack_nvt(result, time_ns=2.0, temp=318.15, omp=14, gpu_id=0)
 run_layer_stack_relaxation(
     result,
+    dt_ps=0.001,
+    constraints="none",
+    final_dt_ps=0.002,
+    final_constraints="h-bonds",
+    final_traj_ps="auto",
+    final_energy_ps="auto",
+    final_log_ps="auto",
     relax_z=True,
     z_compressibility_bar_inv=4.5e-6,
     z_npt_tau_p_ps=20.0,

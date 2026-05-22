@@ -7,7 +7,7 @@ import json
 import numpy as np
 from rdkit import Chem
 
-from yadonpy.interface.cmcna_slab import CMCNAXYSlabRelaxationSpec, prepare_cmcna_xy_bulk_slab
+from yadonpy.interface.cmcna_slab import CMCNAXYSlabRelaxationSpec, prepare_cmcna_xy_bulk_slab, retarget_prepared_slab_xy
 from yadonpy.sim.preset.eq import (
     XYSlabEquilibrationSpec,
     _active_density_gate,
@@ -96,6 +96,33 @@ def test_xy_slab_prepared_export_wraps_xy_but_keeps_z_open(tmp_path: Path):
     assert report["xy_wrapped_ok"] is True
     assert all(0.0 <= xyz[0] < 2.0 and 0.0 <= xyz[1] < 2.0 for xyz in coords)
     assert [round(xyz[2], 3) for xyz in coords] == [-0.4, 1.2, 3.0]
+
+
+def test_retarget_prepared_slab_xy_scales_xy_and_keeps_z_open(tmp_path: Path):
+    src = tmp_path / "prepared.gro"
+    src.write_text(
+        "slab\n"
+        "2\n"
+        "    1AAA      C    1   0.500   0.500   0.200\n"
+        "    1AAA      C    2   4.900   6.900   1.700\n"
+        "   5.00000   7.00000   2.10000\n",
+        encoding="utf-8",
+    )
+    dst = tmp_path / "retargeted.gro"
+
+    report = retarget_prepared_slab_xy(src, (5.1, 7.14), out_gro=dst, max_abs_strain=0.03)
+
+    lines = dst.read_text(encoding="utf-8").splitlines()
+    box = tuple(float(v) for v in lines[-1].split()[:3])
+    coords = np.array([[float(line[20:28]), float(line[28:36]), float(line[36:44])] for line in lines[2:4]])
+    assert box == (5.1, 7.14, 2.1)
+    assert np.all(coords[:, 0] >= 0.0)
+    assert np.all(coords[:, 0] < 5.1)
+    assert np.all(coords[:, 1] >= 0.0)
+    assert np.all(coords[:, 1] < 7.14)
+    assert np.allclose(coords[:, 2], [0.2, 1.7])
+    assert report["max_abs_xy_strain"] <= 0.03
+    assert report["xy_wrapped_ok"] is True
 
 
 def test_xy_slab_wall_atomtype_falls_back_to_molecule_atoms(tmp_path: Path):

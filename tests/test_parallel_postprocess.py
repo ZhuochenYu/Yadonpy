@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from yadonpy.sim import analyzer as analyzer_mod
+from yadonpy.sim import parallel_postprocess as parallel_mod
 from yadonpy.sim.parallel_postprocess import InterfaceAnalysisTask, run_interface_analyses_parallel
 
 
@@ -79,3 +80,11 @@ def test_parallel_interface_postprocess_records_task_failures(monkeypatch, tmp_p
     assert result.ok is False
     assert result.results[0].ok is False
     assert "RuntimeError: boom" in str(result.results[0].error)
+
+
+def test_parallel_postprocess_auto_workers_caps_at_case_count(monkeypatch):
+    monkeypatch.setattr(parallel_mod.os, "cpu_count", lambda: 48)
+
+    assert parallel_mod._resolve_workers("auto", task_count=4) == 4
+    assert parallel_mod._resolve_workers(None, task_count=4) == 4
+    assert parallel_mod._resolve_workers("auto", task_count=20) == 12

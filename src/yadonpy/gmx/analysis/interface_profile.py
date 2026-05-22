@@ -19,6 +19,8 @@ _AVOGADRO = 6.02214076e23
 _AMU_PER_NM3_TO_G_CM3 = 1.66053906660e-3
 _ELEMENTARY_CHARGE_C = 1.602176634e-19
 _EPS0_F_M = 8.8541878128e-12
+_CKDTREE = None
+_CKDTREE_IMPORT_FAILED = False
 
 
 @dataclass(frozen=True)
@@ -1147,6 +1149,78 @@ def _write_charge_potential_timeseries(
     return _animation_result(path=mp4_path, extra=extra)
 
 
+def _load_ckdtree():
+    """Return SciPy cKDTree when available, otherwise cache a graceful fallback."""
+
+    global _CKDTREE, _CKDTREE_IMPORT_FAILED
+    if _CKDTREE is not None:
+        return _CKDTREE
+    if _CKDTREE_IMPORT_FAILED:
+        return None
+    try:
+        from scipy.spatial import cKDTree  # type: ignore
+
+        _CKDTREE = cKDTree
+        return _CKDTREE
+    except Exception:
+        _CKDTREE_IMPORT_FAILED = True
+        return None
+
+
+def _periodic_distances_within_cutoff(
+    *,
+    coords: np.ndarray,
+    center_indices: np.ndarray,
+    target_indices: np.ndarray,
+    box: Sequence[float],
+    cutoff_nm: float,
+) -> np.ndarray:
+    """Compute center-target distances within ``cutoff_nm`` using a KD-tree.
+
+    The previous implementation built a full ``n_center * n_target`` distance
+    matrix for every frame.  For interface RDF/CN this is wasteful because only
+    distances inside ``r_max`` are ever histogrammed.  ``cKDTree`` with
+    ``boxsize`` keeps the same orthorhombic periodic minimum-image semantics but
+    visits only nearby target sites.  If SciPy is unavailable or rejects the box,
+    callers can fall back to the dense path.
+    """
+
+    cKDTree = _load_ckdtree()
+    if cKDTree is None:
+        return np.asarray([], dtype=float)
+    center = np.asarray(center_indices, dtype=int)
+    target = np.asarray(target_indices, dtype=int)
+    if center.size == 0 or target.size == 0:
+        return np.asarray([], dtype=float)
+    box_arr = np.asarray(box, dtype=float)
+    if box_arr.size < 3 or np.any(box_arr[:3] <= 0.0):
+        return np.asarray([], dtype=float)
+    try:
+        c = np.mod(np.asarray(coords[center], dtype=float), box_arr[:3])
+        t = np.mod(np.asarray(coords[target], dtype=float), box_arr[:3])
+        c_tree = cKDTree(c, boxsize=box_arr[:3])
+        t_tree = cKDTree(t, boxsize=box_arr[:3])
+        neighbors = c_tree.query_ball_tree(t_tree, r=float(cutoff_nm))
+    except Exception:
+        return np.asarray([], dtype=float)
+    distances: list[np.ndarray] = []
+    for local_i, local_js in enumerate(neighbors):
+        if not local_js:
+            continue
+        js = np.asarray(local_js, dtype=int)
+        global_i = int(center[local_i])
+        keep = target[js] != global_i
+        if not np.any(keep):
+            continue
+        js = js[keep]
+        delta = c[local_i][None, :] - t[js]
+        delta -= box_arr[:3][None, :] * np.round(delta / box_arr[:3][None, :])
+        distances.append(np.linalg.norm(delta, axis=1))
+    if not distances:
+        return np.asarray([], dtype=float)
+    return np.concatenate(distances).astype(float, copy=False)
+
+
 def _rdf_curve_from_frames(
     *,
     frames: Sequence[tuple[float, np.ndarray, tuple[float, float, float]]],
@@ -1169,14 +1243,23 @@ def _rdf_curve_from_frames(
     pair_mask = center[:, None] != target[None, :]
     for _time_ps, coords, box in frames:
         volume_samples.append(float(box[0]) * float(box[1]) * float(box[2]))
-        c = np.asarray(coords[center], dtype=float)
-        t = np.asarray(coords[target], dtype=float)
-        delta = c[:, None, :] - t[None, :, :]
-        box_arr = np.asarray(box, dtype=float)
-        delta -= box_arr[None, None, :] * np.round(delta / np.maximum(box_arr[None, None, :], 1.0e-12))
-        if not np.any(pair_mask):
-            continue
-        dist = np.linalg.norm(delta[pair_mask], axis=1)
+        dist = _periodic_distances_within_cutoff(
+            coords=coords,
+            center_indices=center,
+            target_indices=target,
+            box=box,
+            cutoff_nm=float(r_max_nm),
+        )
+        if dist.size == 0:
+            c = np.asarray(coords[center], dtype=float)
+            t = np.asarray(coords[target], dtype=float)
+            delta = c[:, None, :] - t[None, :, :]
+            box_arr = np.asarray(box, dtype=float)
+            delta -= box_arr[None, None, :] * np.round(delta / np.maximum(box_arr[None, None, :], 1.0e-12))
+            if not np.any(pair_mask):
+                continue
+            dist = np.linalg.norm(delta[pair_mask], axis=1)
+            dist = dist[dist <= float(r_max_nm)]
         hist += np.histogram(dist, bins=edges)[0]
         effective_ref += float(center.size)
     rho_target = float(target.size) / max(float(np.mean(volume_samples)) if volume_samples else 0.0, 1.0e-12)
@@ -1374,15 +1457,24 @@ def _rdf_curve_from_dynamic_edl_frames(
         if center_indices.size == 0 or target_indices.size == 0:
             continue
         volume_samples.append(float(box[0]) * float(box[1]) * float(box[2]))
-        c = np.asarray(coords[center_indices], dtype=float)
-        t = np.asarray(coords[target_indices], dtype=float)
-        delta = c[:, None, :] - t[None, :, :]
-        box_arr = np.asarray(box, dtype=float)
-        delta -= box_arr[None, None, :] * np.round(delta / np.maximum(box_arr[None, None, :], 1.0e-12))
-        pair_mask = center_indices[:, None] != target_indices[None, :]
-        if not np.any(pair_mask):
-            continue
-        dist = np.linalg.norm(delta[pair_mask], axis=1)
+        dist = _periodic_distances_within_cutoff(
+            coords=coords,
+            center_indices=center_indices,
+            target_indices=target_indices,
+            box=box,
+            cutoff_nm=float(r_max_nm),
+        )
+        if dist.size == 0:
+            c = np.asarray(coords[center_indices], dtype=float)
+            t = np.asarray(coords[target_indices], dtype=float)
+            delta = c[:, None, :] - t[None, :, :]
+            box_arr = np.asarray(box, dtype=float)
+            delta -= box_arr[None, None, :] * np.round(delta / np.maximum(box_arr[None, None, :], 1.0e-12))
+            pair_mask = center_indices[:, None] != target_indices[None, :]
+            if not np.any(pair_mask):
+                continue
+            dist = np.linalg.norm(delta[pair_mask], axis=1)
+            dist = dist[dist <= float(r_max_nm)]
         hist += np.histogram(dist, bins=edges)[0]
         effective_ref += float(center_indices.size)
     if effective_ref <= 0.0:

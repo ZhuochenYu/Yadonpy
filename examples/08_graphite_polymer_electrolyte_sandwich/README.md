@@ -109,9 +109,12 @@ semantic aliases such as `GRAPHITE`, `ELECTROLYTE`, `CMCNA`, and `MOBILE`.
   membrane gates, and writes a box-annotated
   `cmcna_eq21_wall_compression.mp4` for visual inspection.
   The relaxed GRO box is then read back, and an electrolyte slab is prepared by
-  the same `periodicity="xy"` wall protocol at the same XY footprint.  Both
-  slabs are passed through `MolecularLayerSpec(prepared_slab_gro=...)`, so final
-  stack assembly only translates them in z and never laterally rescales or
+  the same `periodicity="xy"` wall protocol at the same XY footprint.  The
+  electrolyte active thickness is at least `15 nm` by default; EC/EMC/DEC/Li/PF6
+  counts are inferred from the fixed XY area, target liquid density, and the
+  reference composition, with a `<200k atoms` guard before production begins.
+  Both slabs are passed through `MolecularLayerSpec(prepared_slab_gro=...)`, so
+  final stack assembly only translates them in z and never laterally rescales or
   repacks the liquid.  The stack-facing `prepared_slab.gro` is exported as
   wrapped-XY/z-open coordinates: x/y are in the primary periodic image, z keeps
   the wall-confined open boundary, and `prepared_slab_whole.gro` is retained
@@ -154,7 +157,11 @@ semantic aliases such as `GRAPHITE`, `ELECTROLYTE`, `CMCNA`, and `MOBILE`.
 - The compact four-layer validation scripts use `constraints="none"` and `1 fs`
   throughout the relaxation workflow, which avoids an early constrained-settle
   minimization on a deliberately tight fresh interface. Larger production runs
-  can switch back to `h-bonds + 2 fs` after additional relaxation.
+  can switch back to `h-bonds + 2 fs` after additional relaxation.  Example
+  08-07 does this explicitly: early construction/pre-release stays at
+  `dt_ps=0.001` and `constraints="none"`, while final NVT uses
+  `final_dt_ps=0.002`, `final_constraints="h-bonds"`, and adaptive final output
+  intervals so a 100 ns sweep does not write excessive XTC/EDR/log data.
 - Constant-charge graphite is a fixed-charge model, not a constant-potential
   electrode model.  Example 08-05 uses `FixedChargeRegionSpec` on
   `LayerStackSpec.fixed_charge_regions` to charge only the two interior basal
@@ -223,7 +230,29 @@ semantic aliases such as `GRAPHITE`, `ELECTROLYTE`, `CMCNA`, and `MOBILE`.
   package root.  It runs independent case directories in separate processes and
   caps BLAS/OpenMP helper threads inside each worker, which is the safest way to
   speed up Eg08 post-processing without making matplotlib/ffmpeg share state
-  inside one trajectory analysis.
+  inside one trajectory analysis.  For the standard 0, -3, -9, -18 uC/cm2
+  CMC-facing charge sweep, run
+  `postprocess_charge_sweep_parallel.py` with `EG08_SWEEP_ROOT` pointing at the
+  remote sweep root and `EG08_POSTPROCESS_WORKERS=4`; do not analyze the four
+  charge folders with a serial Python loop.
+- For the full Eg08.07 finish workflow, run
+  `run_eg08_07_charge_sweep_and_report.py`.  It waits for all four standard
+  charge folders, runs case-level parallel post-processing with
+  `EG08_ANALYSIS_FRAME_STRIDE=auto` by default, builds the full sweep PPT, and
+  writes `99_report/charge_sweep_full_ppt_paths.json`.
+- The Eg08.07 charge-sweep PPT generator additionally computes a
+  depth-resolved Li solvation diagnostic.  Only Li atoms located inside the
+  CMCNA membrane interval are counted; their penetration depth is measured from
+  the electrolyte-side CMC boundary, and each depth bin reports the average
+  coordination to solvent representative O, CMC oxygen-like sites, and PF6 F.
+  This answers whether Li keeps a carbonate solvation shell, transfers
+  coordination to CMC oxygen sites, or forms Li-PF6 contact pairs as it enters
+  the membrane.  Source data are written to
+  `99_report/ppt_figures/li_solvation_by_cmc_depth.csv`.
+- `interface_fast` uses an adaptive frame budget for long trajectories and the
+  RDF/CN time-series code uses SciPy cutoff-neighbor search when available.  If
+  a forensic run needs denser statistics, set `MAX_INTERFACE_PROFILE_FRAMES`
+  explicitly before post-processing.
 - RDF time-series outputs are cation-centered when Li+/Na+ sites exist.  The
   same animation and CSV set includes CN(r) curves and first-shell CN values
   versus time, so RDF changes are interpreted together with coordination-number

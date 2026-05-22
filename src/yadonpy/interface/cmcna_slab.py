@@ -7,9 +7,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 from rdkit import Chem
 
 from ..core import poly
+from ..gmx.workflows._util import _GroAtomRecord, _GroFrameRecord, _read_gro_frame, _write_gro_frame
 from ..sim.preset import eq
 from ..sim.preset.eq import XYSlabEquilibrationSpec
 from .prep import make_orthorhombic_pack_cell
@@ -185,6 +187,96 @@ def _read_prepared_gro_xy_nm(path: Path, fallback: tuple[float, float]) -> tuple
     return fallback
 
 
+def retarget_prepared_slab_xy(
+    prepared_slab_gro: str | Path,
+    target_xy_nm: tuple[float, float],
+    *,
+    out_gro: str | Path | None = None,
+    max_abs_strain: float = 0.06,
+    write_report: bool = True,
+) -> dict[str, Any]:
+    """Affinely snap a wrapped-XY prepared slab to a target periodic footprint.
+
+    This is intended for CMC/electrolyte slabs that were compacted under
+    ``pbc=xy`` and then need to be placed against a discrete lattice such as
+    graphite.  The operation is deliberately conservative: x/y are wrapped into
+    the source primary box, scaled to the requested target x/y, and wrapped once
+    more.  z coordinates and z box length are left untouched.
+    """
+
+    src_path = Path(prepared_slab_gro).expanduser().resolve()
+    dst_path = Path(out_gro).expanduser().resolve() if out_gro is not None else src_path.with_name(f"{src_path.stem}_xy_retargeted.gro")
+    target = (float(target_xy_nm[0]), float(target_xy_nm[1]))
+    if target[0] <= 0.0 or target[1] <= 0.0:
+        raise ValueError("target_xy_nm must contain positive x/y lengths in nm.")
+    frame = _read_gro_frame(src_path)
+    box = tuple(float(v) for v in frame.box_nm)
+    if box[0] <= 0.0 or box[1] <= 0.0:
+        raise ValueError(f"Cannot retarget slab with non-positive XY box in {src_path}: {box[:2]}")
+    scale = (target[0] / float(box[0]), target[1] / float(box[1]))
+    strain = (scale[0] - 1.0, scale[1] - 1.0)
+    max_strain = max(abs(strain[0]), abs(strain[1]))
+    if max_strain > float(max_abs_strain) + 1.0e-12:
+        raise ValueError(
+            f"prepared slab XY retarget strain {max_strain:.4f} exceeds max_abs_strain={float(max_abs_strain):.4f}; "
+            f"source_xy={box[:2]}, target_xy={target}."
+        )
+    coords = np.asarray([atom.xyz_nm for atom in frame.atoms], dtype=float)
+    source_wrapped = np.array(coords, copy=True)
+    source_wrapped[:, 0] = np.mod(source_wrapped[:, 0], float(box[0]))
+    source_wrapped[:, 1] = np.mod(source_wrapped[:, 1], float(box[1]))
+    target_coords = np.array(source_wrapped, copy=True)
+    target_coords[:, 0] = np.mod(target_coords[:, 0] * scale[0], target[0])
+    target_coords[:, 1] = np.mod(target_coords[:, 1] * scale[1], target[1])
+    new_atoms: list[_GroAtomRecord] = []
+    for atom, xyz in zip(frame.atoms, target_coords):
+        new_atoms.append(
+            _GroAtomRecord(
+                resnr=atom.resnr,
+                resname=atom.resname,
+                atomname=atom.atomname,
+                atomnr=atom.atomnr,
+                xyz_nm=(float(xyz[0]), float(xyz[1]), float(xyz[2])),
+                vxyz_nm_ps=atom.vxyz_nm_ps,
+            )
+        )
+    dst_path.parent.mkdir(parents=True, exist_ok=True)
+    out_box = (target[0], target[1], float(box[2]))
+    _write_gro_frame(
+        dst_path,
+        _GroFrameRecord(
+            title=f"{frame.title[:54]} | yadonpy_xy_retargeted",
+            atoms=new_atoms,
+            box_nm=out_box,
+        ),
+    )
+    xy_wrapped_ok = bool(
+        np.all(target_coords[:, 0] >= -1.0e-6)
+        and np.all(target_coords[:, 0] < target[0] + 1.0e-6)
+        and np.all(target_coords[:, 1] >= -1.0e-6)
+        and np.all(target_coords[:, 1] < target[1] + 1.0e-6)
+    )
+    report: dict[str, Any] = {
+        "operation": "retarget_prepared_slab_xy",
+        "source_gro": str(src_path),
+        "retargeted_gro": str(dst_path),
+        "source_box_nm": [float(v) for v in box],
+        "target_box_nm": [float(v) for v in out_box],
+        "xy_scale": [float(v) for v in scale],
+        "xy_strain": [float(v) for v in strain],
+        "max_abs_xy_strain": float(max_strain),
+        "max_abs_strain_allowed": float(max_abs_strain),
+        "xy_wrapped_ok": bool(xy_wrapped_ok),
+        "coordinate_export_policy": "wrapped_xy_z_open_retargeted",
+        "lateral_occupancy_after_retarget": eq._lateral_occupancy_report(target_coords, out_box),
+    }
+    if write_report:
+        report_path = dst_path.with_name(f"{dst_path.stem}_xy_retarget_report.json")
+        report["report_path"] = str(report_path)
+        report_path.write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    return report
+
+
 def prepare_cmcna_xy_bulk_slab(
     *,
     cmc_chain_mol: Chem.Mol,
@@ -307,4 +399,5 @@ __all__ = [
     "CMCNAXYSlabRelaxationSpec",
     "prepare_cmcna_xy_membrane",
     "prepare_cmcna_xy_bulk_slab",
+    "retarget_prepared_slab_xy",
 ]

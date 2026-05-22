@@ -416,6 +416,13 @@ edge graphite can target a named edge slab, and amorphous layers can use
 relax = run_layer_stack_relaxation(
     result,
     time_ns=2.0,
+    dt_ps=0.001,
+    constraints="none",
+    final_dt_ps=0.002,
+    final_constraints="h-bonds",
+    final_traj_ps="auto",
+    final_energy_ps="auto",
+    final_log_ps="auto",
     pre_nvt_ns=0.05,
     z_npt_ns=0.50,
     relax_z=True,
@@ -480,7 +487,11 @@ For charge sweeps or repeated Eg08 runs, use process-level post-processing
 parallelism instead of launching one analyzer after another.  Each worker owns a
 separate case directory and YadonPy caps BLAS/OpenMP helper threads inside the
 worker, which avoids the common "many Python jobs times many BLAS threads"
-oversubscription problem:
+oversubscription problem.  The `interface_fast` profile also limits long
+trajectories to a conservative effective frame budget by default, and the
+interface RDF/CN time-series analyzer uses cutoff-neighbor search when SciPy is
+available, so 60-100 ns charge sweeps do not need to reprocess every saved frame
+for every plot:
 
 ```python
 from yadonpy import InterfaceAnalysisTask, run_interface_analyses_parallel
@@ -499,6 +510,29 @@ tasks = [
 ]
 batch = run_interface_analyses_parallel(tasks, workers="auto", thread_limit=1)
 ```
+
+For the Example 08 charge-sweep folder layout, the ready-to-run helper is:
+
+```bash
+export EG08_SWEEP_ROOT=/path/to/eg08_07_cmc_facing_charge_100ns_v1
+export EG08_POSTPROCESS_WORKERS=4
+export EG08_POSTPROCESS_THREAD_LIMIT=1
+python examples/08_graphite_polymer_electrolyte_sandwich/postprocess_charge_sweep_parallel.py
+```
+
+To wait for all four Eg08.07 charge cases, run concurrent post-processing, and
+then build the full PPT in one command, use the integrated helper:
+
+```bash
+export EG08_SWEEP_ROOT=/path/to/eg08_07_cmc_facing_charge_100ns_v2
+export EG08_POSTPROCESS_WORKERS=auto
+python examples/08_graphite_polymer_electrolyte_sandwich/run_eg08_07_charge_sweep_and_report.py
+```
+
+The Eg08.07 sweep report also includes Li solvation as a function of CMC
+penetration depth.  The statistic bins only Li+ ions that are already inside
+the CMC membrane and reports mean coordination to carbonate solvent O, CMC O,
+and PF6 F sites versus depth from the electrolyte-side CMC boundary.
 
 Future enhanced-sampling setup can start from the relaxed layer-stack artifacts.
 For a CMC-Na interface, `prepare_solvated_ion_pull(...)` selects a Li+ whose
@@ -539,6 +573,13 @@ umbrella_plan = prepare_solvated_ion_umbrella(
     ),
 )
 ```
+
+For long layer-stack production, keep the early stages conservative and move
+only the final NVT to `2 fs + h-bonds`.  The `final_*_ps="auto"` output policy
+uses the same storage-first idea as the bulk examples: a 100 ns final trajectory
+is written at about 20 ps XTC spacing, while energy/log output is about 10 ps.
+The resolved `nstxout`, `nstenergy`, `nstlog`, frame estimates, and policy notes
+are recorded in `relaxation_followup_summary.json`.
 
 ## Simulation And Analysis Notes
 

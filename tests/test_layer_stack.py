@@ -1203,3 +1203,51 @@ def test_density_profile_flags_low_cmc_density(tmp_path: Path):
     assert gate["primary_metric"] == "core_region_mean_g_cm3"
     assert gate["primary_density_g_cm3"] < 0.75
     assert summary["phase_density_g_cm3"]["CMCNA"]["core_region_total_density_g_cm3"] > 1.0
+
+
+def test_layer_stack_auto_output_policy_caps_long_final_nvt_frames():
+    params = layer_stack_mod._layer_stack_md_params(
+        time_ns=100.0,
+        dt_ps=0.002,
+        temp=318.15,
+        constraints="h-bonds",
+        pbc_mode="xyz",
+        gen_vel="yes",
+        continuation="no",
+        traj_ps="auto",
+        energy_ps="auto",
+        log_ps="auto",
+        trr_ps=None,
+        velocity_ps=None,
+    )
+    policy = layer_stack_mod._layer_stack_output_policy(params, time_ns=100.0, dt_ps=0.002)
+
+    assert params["nsteps"] == 50_000_000
+    assert params["nstxout"] == 10_000
+    assert params["nstenergy"] == 5_000
+    assert params["nstlog"] == 5_000
+    assert policy["xtc"]["interval_ps"] == 20.0
+    assert policy["energy"]["interval_ps"] == 10.0
+    assert policy["xtc"]["estimated_frames"] <= 5001
+    assert policy["energy"]["estimated_frames"] <= 10001
+
+
+def test_layer_stack_auto_output_policy_gets_sparser_for_very_long_runs():
+    params = layer_stack_mod._layer_stack_md_params(
+        time_ns=1000.0,
+        dt_ps=0.002,
+        temp=318.15,
+        constraints="h-bonds",
+        pbc_mode="xyz",
+        gen_vel="yes",
+        continuation="no",
+        traj_ps="auto",
+        energy_ps="auto",
+        log_ps="auto",
+        trr_ps=None,
+        velocity_ps=None,
+    )
+
+    assert params["nstxout"] == 100_000
+    assert params["nstenergy"] == 50_000
+    assert params["nstlog"] == 50_000

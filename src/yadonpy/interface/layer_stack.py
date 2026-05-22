@@ -2817,13 +2817,34 @@ def _ns_to_nsteps(time_ns: float, dt_ps: float) -> int:
     return max(1, int(round(float(time_ns) * 1000.0 / max(float(dt_ps), 1.0e-12))))
 
 
-def _interval_to_nst(value: float | str | None, *, dt_ps: float, default_ps: float, disabled_if_none: bool = False) -> int:
+def _auto_output_interval_ps(*, time_ns: float | None, default_ps: float, target_frames: int | None) -> float:
+    """Resolve an ``auto`` output interval that caps long-run frame counts."""
+
+    interval = float(default_ps)
+    if time_ns is not None and target_frames is not None and int(target_frames) > 0:
+        try:
+            total_ps = max(0.0, float(time_ns) * 1000.0)
+            interval = max(interval, total_ps / float(int(target_frames)))
+        except Exception:
+            interval = float(default_ps)
+    return float(interval)
+
+
+def _interval_to_nst(
+    value: float | str | None,
+    *,
+    dt_ps: float,
+    default_ps: float,
+    disabled_if_none: bool = False,
+    time_ns: float | None = None,
+    target_frames: int | None = None,
+) -> int:
     if value is None:
         return 0 if disabled_if_none else max(1, int(round(float(default_ps) / max(float(dt_ps), 1.0e-12))))
     if isinstance(value, str):
         token = value.strip().lower()
         if token in {"", "auto"}:
-            ps = float(default_ps)
+            ps = _auto_output_interval_ps(time_ns=time_ns, default_ps=float(default_ps), target_frames=target_frames)
         elif token in {"none", "off", "no", "false", "0"}:
             return 0
         else:
@@ -2849,6 +2870,9 @@ def _layer_stack_md_params(
     log_ps: float | str | None,
     trr_ps: float | str | None,
     velocity_ps: float | str | None,
+    traj_target_frames: int | None = 5000,
+    energy_target_frames: int | None = 10000,
+    log_target_frames: int | None = 10000,
 ) -> dict[str, object]:
     from ..gmx.mdp_templates import default_mdp_params
 
@@ -2864,14 +2888,41 @@ def _layer_stack_md_params(
             "periodic_molecules": "yes",
             "gen_vel": str(gen_vel),
             "continuation": str(continuation),
-            "nstxout": _interval_to_nst(traj_ps, dt_ps=dt_ps, default_ps=20.0),
-            "nstxout_trr": _interval_to_nst(trr_ps, dt_ps=dt_ps, default_ps=20.0, disabled_if_none=True),
-            "nstvout": _interval_to_nst(velocity_ps, dt_ps=dt_ps, default_ps=20.0, disabled_if_none=True),
-            "nstenergy": _interval_to_nst(energy_ps, dt_ps=dt_ps, default_ps=10.0),
-            "nstlog": _interval_to_nst(log_ps, dt_ps=dt_ps, default_ps=10.0),
+            "nstxout": _interval_to_nst(traj_ps, dt_ps=dt_ps, default_ps=20.0, time_ns=time_ns, target_frames=traj_target_frames),
+            "nstxout_trr": _interval_to_nst(trr_ps, dt_ps=dt_ps, default_ps=20.0, disabled_if_none=True, time_ns=time_ns, target_frames=traj_target_frames),
+            "nstvout": _interval_to_nst(velocity_ps, dt_ps=dt_ps, default_ps=20.0, disabled_if_none=True, time_ns=time_ns, target_frames=traj_target_frames),
+            "nstenergy": _interval_to_nst(energy_ps, dt_ps=dt_ps, default_ps=10.0, time_ns=time_ns, target_frames=energy_target_frames),
+            "nstlog": _interval_to_nst(log_ps, dt_ps=dt_ps, default_ps=10.0, time_ns=time_ns, target_frames=log_target_frames),
         }
     )
     return p
+
+
+def _layer_stack_output_policy(params: Mapping[str, object], *, time_ns: float, dt_ps: float) -> dict[str, Any]:
+    """Summarize trajectory/energy/log output cadence for a generated stage."""
+
+    nsteps = int(params.get("nsteps") or _ns_to_nsteps(time_ns, dt_ps))
+
+    def _stream(key: str, label: str) -> dict[str, Any]:
+        try:
+            nst = int(float(params.get(key) or 0))
+        except Exception:
+            nst = 0
+        interval_ps = float(dt_ps) * float(nst) if nst > 0 else None
+        frames = int(math.ceil(float(nsteps) / float(nst))) + 1 if nst > 0 else 0
+        return {"key": key, "label": label, "nst": int(nst), "interval_ps": interval_ps, "estimated_frames": int(frames)}
+
+    return {
+        "time_ns": float(time_ns),
+        "dt_ps": float(dt_ps),
+        "nsteps": int(nsteps),
+        "xtc": _stream("nstxout", "compressed trajectory"),
+        "trr": _stream("nstxout_trr", "full precision trajectory"),
+        "velocities": _stream("nstvout", "velocities"),
+        "energy": _stream("nstenergy", "energy"),
+        "log": _stream("nstlog", "log"),
+        "policy": "auto keeps final NVT near <=5000 XTC frames and <=10000 energy/log points unless explicit intervals are supplied",
+    }
 
 
 def _normalize_graphite_restraint_spec(
@@ -3541,6 +3592,13 @@ def run_layer_stack_relaxation(
     log_ps: float | str | None = "auto",
     trr_ps: float | str | None = None,
     velocity_ps: float | str | None = None,
+    final_dt_ps: float = 0.002,
+    final_constraints: str = "h-bonds",
+    final_traj_ps: float | str | None = "auto",
+    final_energy_ps: float | str | None = "auto",
+    final_log_ps: float | str | None = "auto",
+    final_trr_ps: float | str | None = None,
+    final_velocity_ps: float | str | None = None,
     gpu_offload_mode: str = "full",
     analysis_profile: str = "interface_fast",
     run_analysis: bool = True,
@@ -3548,6 +3606,7 @@ def run_layer_stack_relaxation(
     compression_anneal: bool | ZCompressionAnnealSpec = False,
     graphite_restraint: bool | GraphiteRestraintSpec | Literal["auto"] = "auto",
     interdiffusion_start: bool | InterdiffusionStartSpec = False,
+    pre_relaxation: bool = True,
 ) -> LayerStackRelaxationResult:
     """Relax an exported layer stack, optionally including fixed-XY z-NPT.
 
@@ -3557,7 +3616,10 @@ def run_layer_stack_relaxation(
     systems keep their constructed z spacing and go straight to final NVT.
     Large polymer/interface stacks can pass ``z_npt_tau_p_ps`` together with a
     reduced ``z_compressibility_bar_inv`` to make the final z-NPT barostat as
-    conservative as the compression-anneal z-NPT stages.
+    conservative as the compression-anneal z-NPT stages.  The early
+    minimization/pre-release stages use ``dt_ps`` and ``constraints``; the final
+    production NVT can independently use ``final_dt_ps`` and
+    ``final_constraints`` so long runs can switch to 2 fs + H-bond constraints.
     """
 
     from ..gmx.mdp_templates import (
@@ -3628,8 +3690,10 @@ def run_layer_stack_relaxation(
         ),
     )
     constraints_mode = str(constraints)
+    final_constraints_mode = str(final_constraints)
     dynamic_template_nvt = NVT_NO_CONSTRAINTS_MDP if constraints_mode.strip().lower() == "none" else NVT_MDP
     dynamic_template_npt = NPT_NO_CONSTRAINTS_MDP if constraints_mode.strip().lower() == "none" else NPT_MDP
+    final_template_nvt = NVT_NO_CONSTRAINTS_MDP if final_constraints_mode.strip().lower() == "none" else NVT_MDP
 
     minim = default_mdp_params()
     minim.update(
@@ -3690,19 +3754,24 @@ def run_layer_stack_relaxation(
 
     final_nvt = _layer_stack_md_params(
         time_ns=float(time_ns if final_nvt_ns is None else final_nvt_ns),
-        dt_ps=float(dt_ps),
+        dt_ps=float(final_dt_ps),
         temp=float(temp),
-        constraints=constraints_mode,
+        constraints=final_constraints_mode,
         pbc_mode=pbc_mode,
-        gen_vel="no",
-        continuation="yes",
-        traj_ps=traj_ps,
-        energy_ps=energy_ps,
-        log_ps=log_ps,
-        trr_ps=trr_ps,
-        velocity_ps=velocity_ps,
+        gen_vel=("no" if bool(pre_relaxation) else "yes"),
+        continuation=("yes" if bool(pre_relaxation) else "no"),
+        traj_ps=final_traj_ps,
+        energy_ps=final_energy_ps,
+        log_ps=final_log_ps,
+        trr_ps=final_trr_ps,
+        velocity_ps=final_velocity_ps,
     )
     final_nvt = _with_extra_mdp(final_nvt, final_restraint_extra)
+    final_output_policy = _layer_stack_output_policy(
+        final_nvt,
+        time_ns=float(time_ns if final_nvt_ns is None else final_nvt_ns),
+        dt_ps=float(final_dt_ps),
+    )
 
     use_gpu = bool(int(gpu))
     resources = RunResources(
@@ -3754,6 +3823,30 @@ def run_layer_stack_relaxation(
         )
         return _with_extra_mdp(params, extra_mdp)
 
+    def _make_final_nvt_params(
+        *,
+        time_ns_value: float,
+        temp_value: float,
+        gen_vel: str,
+        continuation: str,
+        extra_mdp: str = final_restraint_extra,
+    ) -> dict[str, object]:
+        params = _layer_stack_md_params(
+            time_ns=float(time_ns_value),
+            dt_ps=float(final_dt_ps),
+            temp=float(temp_value),
+            constraints=final_constraints_mode,
+            pbc_mode=pbc_mode,
+            gen_vel=gen_vel,
+            continuation=continuation,
+            traj_ps=final_traj_ps,
+            energy_ps=final_energy_ps,
+            log_ps=final_log_ps,
+            trr_ps=final_trr_ps,
+            velocity_ps=final_velocity_ps,
+        )
+        return _with_extra_mdp(params, extra_mdp)
+
     def _make_z_npt_params(
         *,
         time_ns_value: float,
@@ -3794,15 +3887,20 @@ def run_layer_stack_relaxation(
     z_stage_label = "pre_release_z_npt" if interdiffusion_spec.enabled else "z_npt"
 
     if not anneal_enabled:
-        stages = [
-            EqStage(name=f"01_{pre_label}_minimize", kind="minim", mdp=MdpSpec(MINIM_STEEP_MDP, minim)),
-            EqStage(name=f"02_{pre_label}_nvt", kind="nvt", mdp=MdpSpec(dynamic_template_nvt, pre_nvt)),
-        ]
-        final_stage_name = f"03_{final_label}"
-        if relax_z_enabled and z_npt is not None:
-            stages.append(EqStage(name=f"03_{z_stage_label}", kind="npt", mdp=MdpSpec(dynamic_template_npt, z_npt)))
-            final_stage_name = f"04_{final_label}"
-        stages.append(EqStage(name=final_stage_name, kind="nvt", mdp=MdpSpec(dynamic_template_nvt, final_nvt)))
+        stages = []
+        final_stage_name = f"01_{final_label}"
+        if bool(pre_relaxation):
+            stages.extend(
+                [
+                    EqStage(name=f"01_{pre_label}_minimize", kind="minim", mdp=MdpSpec(MINIM_STEEP_MDP, minim)),
+                    EqStage(name=f"02_{pre_label}_nvt", kind="nvt", mdp=MdpSpec(dynamic_template_nvt, pre_nvt)),
+                ]
+            )
+            final_stage_name = f"03_{final_label}"
+            if relax_z_enabled and z_npt is not None:
+                stages.append(EqStage(name=f"03_{z_stage_label}", kind="npt", mdp=MdpSpec(dynamic_template_npt, z_npt)))
+                final_stage_name = f"04_{final_label}"
+        stages.append(EqStage(name=final_stage_name, kind="nvt", mdp=MdpSpec(final_template_nvt, final_nvt)))
         stage_order = [stage.name for stage in stages]
         _run_segment(system_dir / "system.gro", stages)
     else:
@@ -4019,13 +4117,12 @@ def run_layer_stack_relaxation(
                 name=final_stage_name,
                 kind="nvt",
                 mdp=MdpSpec(
-                    dynamic_template_nvt,
-                    _make_nvt_params(
+                    final_template_nvt,
+                    _make_final_nvt_params(
                         time_ns_value=float(time_ns if final_nvt_ns is None else final_nvt_ns),
                         temp_value=normal_temp,
                         gen_vel="no",
                         continuation="yes",
-                        extra_mdp=final_restraint_extra,
                     ),
                 ),
             ),
@@ -4118,6 +4215,7 @@ def run_layer_stack_relaxation(
         "work_dir": str(run_dir),
         "source_layer_stack": str(result.work_dir),
         "stage_order": stage_order,
+        "pre_relaxation": bool(pre_relaxation),
         "time_ns": {
             "pre_nvt": float(pre_nvt_ns),
             "compression_anneal_hot_nvt_per_cycle": float(anneal_spec.hot_nvt_ns) if anneal_enabled else 0.0,
@@ -4139,6 +4237,27 @@ def run_layer_stack_relaxation(
         "z_npt_tau_p_ps": None if z_npt_tau_p_ps is None else float(z_npt_tau_p_ps),
         "dt_ps": float(dt_ps),
         "constraints": constraints_mode,
+        "early_dt_ps": float(dt_ps),
+        "early_constraints": constraints_mode,
+        "final_dt_ps": float(final_dt_ps),
+        "final_constraints": final_constraints_mode,
+        "output_policy": {
+            "early": {
+                "traj_ps": traj_ps,
+                "energy_ps": energy_ps,
+                "log_ps": log_ps,
+                "trr_ps": trr_ps,
+                "velocity_ps": velocity_ps,
+            },
+            "final_nvt": {
+                "traj_ps": final_traj_ps,
+                "energy_ps": final_energy_ps,
+                "log_ps": final_log_ps,
+                "trr_ps": final_trr_ps,
+                "velocity_ps": final_velocity_ps,
+                "resolved": final_output_policy,
+            },
+        },
         "z_npt_mdp_overrides": (
             {
                 "pcoupl": "C-rescale",

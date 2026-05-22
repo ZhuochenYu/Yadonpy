@@ -96,6 +96,13 @@ def prepare_cmcna_xy_membrane(*args, **kwargs):
     return _prepare_cmcna_xy_membrane(*args, **kwargs)
 
 
+def retarget_prepared_slab_xy(*args, **kwargs):
+    """Snap a wrapped-XY prepared slab to a requested periodic XY footprint."""
+    from .interface import retarget_prepared_slab_xy as _retarget_prepared_slab_xy
+
+    return _retarget_prepared_slab_xy(*args, **kwargs)
+
+
 def prepare_solvated_ion_pull(*args, **kwargs):
     """Prepare PLUMED inputs for pulling a solvated ion into an interface layer."""
     from .interface import prepare_solvated_ion_pull as _prepare_solvated_ion_pull
@@ -351,6 +358,7 @@ __all__ = [
     'print_mechanics_result_summary',
     'prepare_cmcna_xy_bulk_slab',
     'prepare_cmcna_xy_membrane',
+    'retarget_prepared_slab_xy',
     'prepare_solvated_ion_pull',
     'prepare_solvated_ion_umbrella',
     'resolve_prepared_system',

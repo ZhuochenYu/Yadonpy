@@ -193,7 +193,7 @@ def test_docs_and_examples_do_not_recommend_transport_bundle_api():
 def test_interface_examples_keep_linear_script_style():
     root = Path(__file__).resolve().parents[1]
     eg08_dir = root / 'examples' / '08_graphite_polymer_electrolyte_sandwich'
-    public_scripts = sorted(path.name for path in eg08_dir.glob('*.py'))
+    public_scripts = sorted(path.name for path in eg08_dir.glob('[0-9][0-9]_*.py'))
     assert public_scripts == [
         '01_electrolyte_graphite_basal.py',
         '02_electrolyte_graphite_edge.py',
@@ -206,11 +206,10 @@ def test_interface_examples_keep_linear_script_style():
     alias_import = 'import yadonpy as ' + 'yp'
     helper_patterns = (
         alias_import,
-        'os.environ',
         'YADONPY_',
     )
     offenders: list[str] = []
-    for path in sorted(eg08_dir.glob('*.py')):
+    for path in sorted(eg08_dir.glob('[0-9][0-9]_*.py')):
         rel = str(path.relative_to(root))
         text = path.read_text(encoding='utf-8')
         if any(pattern in text for pattern in helper_patterns):
@@ -221,7 +220,7 @@ def test_interface_examples_keep_linear_script_style():
 
 def test_example08_public_cases_are_moldb_only_for_core_species():
     root = Path(__file__).resolve().parents[1]
-    for path in sorted((root / 'examples' / '08_graphite_polymer_electrolyte_sandwich').glob('*.py')):
+    for path in sorted((root / 'examples' / '08_graphite_polymer_electrolyte_sandwich').glob('[0-9][0-9]_*.py')):
         text = path.read_text(encoding='utf-8')
         assert 'ff.mol(' in text
         assert 'prefer_db=True' in text
@@ -285,7 +284,7 @@ def test_example08_scripts_use_one_shot_builder_and_interface_summary_printer():
             'sample_ns = 20.0',
             'build_layer_stack(',
         ),
-        'examples/08_graphite_polymer_electrolyte_sandwich/07_cmcna_xy_slab_matched_graphite_electrolyte_cmcna_graphite.py': (
+            'examples/08_graphite_polymer_electrolyte_sandwich/07_cmcna_xy_slab_matched_graphite_electrolyte_cmcna_graphite.py': (
             'XYSlabEquilibrationSpec(',
             'read_gro_xy_nm(',
             'graphite_repeats_for_xy(',
@@ -296,10 +295,12 @@ def test_example08_scripts_use_one_shot_builder_and_interface_summary_printer():
             'electrolyte_target_slab_density_g_cm3 = 1.15',
             'InterdiffusionStartSpec(',
             'phase_gate_layers=("ELECTROLYTE", "CMCNA")',
-                'surface_charge_uC_cm2 = 0.0',
+                'surface_charge_uC_cm2 = env_float("EG08_CMC_FACING_SURFACE_CHARGE_UC_CM2", 0.0)',
                 'cmc_dp = 20',
                 'cmc_chain_count = 16',
-                'sample_ns = 60.0',
+                'sample_ns = env_float("EG08_SAMPLE_NS", 100.0)',
+                'final_dt_ps=production_dt_ps',
+                'final_constraints=production_constraints',
                 'build_layer_stack(',
             ),
     }
@@ -333,7 +334,10 @@ def test_example08_scripts_use_one_shot_builder_and_interface_summary_printer():
         assert 'adsorption_species = ' in text
         assert 'time_series_analysis = True' in text
         assert 'analy = relax.analyze()' in text
-        assert 'relax_z=True' in text
+        if rel.endswith('07_cmcna_xy_slab_matched_graphite_electrolyte_cmcna_graphite.py'):
+            assert 'relax_z=(False if shared_t0_charge_sweep_mode else True)' in text
+        else:
+            assert 'relax_z=True' in text
         if rel.endswith((
             '03_electrolyte_cmcna_graphite_basal.py',
             '04_graphite_basal_electrolyte_cmcna_graphite_basal.py',

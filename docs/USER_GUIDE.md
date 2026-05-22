@@ -526,6 +526,14 @@ gate: at the default grid, at least 85% of lateral cells and 80% of edge cells
 must be occupied.  A lower value means the slab is only a sparse periodic
 polymer aggregate, not a stack-ready rectangular membrane.
 
+Example 08-07 now treats the electrolyte layer as a real liquid reservoir rather
+than a thin spacer.  Its active slab thickness defaults to at least `15 nm`, and
+the script computes EC/EMC/DEC/Li/PF6 counts from the fixed XY area, the active
+thickness, and the target electrolyte density.  If the conservative atom-count
+estimate exceeds `EG08_MAX_TOTAL_ATOMS` (default `200000`), the script stops
+before launching MD and asks for a smaller XY footprint/thickness or an
+intentional limit increase.
+
 For electrolyte/CMCNA mutual-diffusion studies, use `run_layer_stack_relaxation`
 with `InterdiffusionStartSpec`.  The pre-release stages keep electrolyte and
 CMCNA under temporary z-only gates while density and contacts relax; the final
@@ -537,6 +545,13 @@ or high-DP CMC layers, keep the final z-NPT gentle with
 ```python
 relax = run_layer_stack_relaxation(
     result,
+    dt_ps=0.001,
+    constraints="none",
+    final_dt_ps=0.002,
+    final_constraints="h-bonds",
+    final_traj_ps="auto",
+    final_energy_ps="auto",
+    final_log_ps="auto",
     relax_z=True,
     z_compressibility_bar_inv=4.5e-6,
     z_npt_tau_p_ps=20.0,
@@ -548,6 +563,14 @@ relax = run_layer_stack_relaxation(
     ),
 )
 ```
+
+The early `dt_ps/constraints` pair applies to minimization, pre-release NVT,
+z-NPT, and compression-anneal stages.  The `final_*` controls apply only to the
+production NVT, so large charge sweeps can use `2 fs + h-bonds` after the
+conservative interface preparation.  With `final_traj_ps="auto"`, a 100 ns
+final NVT writes about 5000 XTC frames; energy and log output are similarly
+capped near 10000 points and the resolved values are written to
+`relaxation_followup_summary.json`.
 
 Interface analysis is not bulk analysis.  For a sampled layer stack, prefer the
 eg02-style facade:
@@ -665,7 +688,29 @@ batch = run_interface_analyses_parallel(tasks, workers="auto", thread_limit=1)
 
 This parallelizes independent cases with one Python process per trajectory.  It
 does not split a single trajectory's matplotlib/ffmpeg work across threads,
-which keeps output deterministic and avoids unsafe plotting concurrency.
+which keeps output deterministic and avoids unsafe plotting concurrency.  The
+Example 08 helper
+`examples/08_graphite_polymer_electrolyte_sandwich/postprocess_charge_sweep_parallel.py`
+wraps the same API for the standard four-charge CMC-facing sweep.  Use
+`EG08_POSTPROCESS_WORKERS=4` on a four-case sweep; otherwise MD can finish in
+parallel while post-processing quietly becomes an eight-hour serial queue.
+
+For the final Eg08.07 sweep PPT, run
+`examples/08_graphite_polymer_electrolyte_sandwich/make_charge_sweep_report_ppt.py`
+after all four cases finish.  Besides z profiles, membrane fractions,
+penetration events, EDL charge/potential, and RDF/CN panels, this report bins
+Li+ ions that have entered the CMCNA membrane by penetration depth and averages
+their coordination to solvent O, CMC O, and PF6 F sites.  The resulting
+`li_solvation_by_cmc_depth.csv` is the recommended table for judging whether
+Li+ desolvates from carbonate oxygen and transfers coordination to the CMC
+matrix as it penetrates.
+
+The convenience wrapper
+`examples/08_graphite_polymer_electrolyte_sandwich/run_eg08_07_charge_sweep_and_report.py`
+performs the usual remote finish sequence in one step: wait for
+`charge_case_done.json` in all four charge folders, run
+`postprocess_charge_sweep_parallel.py` with case-level concurrency, then build
+the PPT and write `99_report/charge_sweep_full_ppt_paths.json`.
 
 For future enhanced sampling, prepare the biased segment explicitly rather than
 editing PLUMED by hand.  The solvated-ion helper is designed for questions like

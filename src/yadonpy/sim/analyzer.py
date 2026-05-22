@@ -747,7 +747,14 @@ class AnalyzeResult:
             "POLYMER_METRICS": 2_000,
             "RG": 2_000,
             "DENSITY_DISTRIBUTION": 10_000,
-            "INTERFACE_PROFILE": 10_000,
+            # Interface analysis is multi-pass: z profiles, membrane events,
+            # charge/potential profiles, RDF/CN windows, and optional MP4 frames
+            # all reuse the same trajectory frames.  A 100 ns Eg08 trajectory at
+            # 10 ps output already has about 10k frames, which made charge-sweep
+            # reports spend hours per case without adding much statistical value.
+            # Keep the fast/default interface budget conservative; users can set
+            # MAX_INTERFACE_PROFILE_FRAMES for denser forensic analysis.
+            "INTERFACE_PROFILE": 2_500,
             "DIELECTRIC": 25_000,
             "MIGRATION": 10_000,
         }
@@ -821,6 +828,14 @@ class AnalyzeResult:
                     effective_stride = cap_stride
                     reasons.append(f"estimated_frames>{cap}")
                     warning = "dense_legacy_trajectory_downsampled"
+        elif resolved_profile != "full" and raw_frames is None:
+            section_key = str(section or "analysis").strip().upper()
+            if section_key == "INTERFACE_PROFILE" and requested <= 1:
+                unknown_stride = self._env_int("DEFAULT_INTERFACE_PROFILE_FRAME_STRIDE", 4)
+                if int(unknown_stride) > effective_stride:
+                    effective_stride = int(unknown_stride)
+                    reasons.append("estimated_frames_unknown")
+                    warning = "unknown_trajectory_length_default_downsampled"
         effective_frames = None
         if raw_frames is not None:
             try:

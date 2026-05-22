@@ -40,6 +40,7 @@ from .cmcna_slab import (
     CMCNAXYSlabRelaxationSpec,
     prepare_cmcna_xy_bulk_slab,
     prepare_cmcna_xy_membrane,
+    retarget_prepared_slab_xy,
 )
 from .enhanced_sampling import (
     EnhancedSamplingPlan,
@@ -143,6 +144,7 @@ __all__ = [
     "build_layer_stack",
     "prepare_cmcna_xy_bulk_slab",
     "prepare_cmcna_xy_membrane",
+    "retarget_prepared_slab_xy",
     "analyze_layer_stack_interface",
     "run_layer_stack_nvt",
     "run_layer_stack_relaxation",

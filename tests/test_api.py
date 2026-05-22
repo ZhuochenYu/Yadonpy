@@ -142,6 +142,7 @@ def test_top_level_api_exports_mechanics_helpers():
     assert hasattr(api, 'prepare_solvated_ion_umbrella')
     assert hasattr(api, 'prepare_cmcna_xy_bulk_slab')
     assert hasattr(api, 'prepare_cmcna_xy_membrane')
+    assert hasattr(api, 'retarget_prepared_slab_xy')
     assert hasattr(api, 'run_solvated_ion_umbrella')
     assert hasattr(api, 'analyze_umbrella_pmf')
     assert hasattr(yadonpy, 'ZCompressionAnnealSpec')
@@ -164,6 +165,7 @@ def test_top_level_api_exports_mechanics_helpers():
     assert hasattr(yadonpy, 'CMCNAXYBulkSlabResult')
     assert hasattr(yadonpy, 'prepare_cmcna_xy_bulk_slab')
     assert hasattr(yadonpy, 'prepare_cmcna_xy_membrane')
+    assert hasattr(yadonpy, 'retarget_prepared_slab_xy')
     assert hasattr(yadonpy, 'InterdiffusionStartSpec')
     assert hasattr(yadonpy, 'MolecularLayerSpec')
     assert hasattr(yadonpy, 'VacuumLayerSpec')
@@ -181,6 +183,7 @@ def test_top_level_api_exports_mechanics_helpers():
     assert 'prepare_solvated_ion_umbrella' in api.__all__
     assert 'prepare_cmcna_xy_bulk_slab' in api.__all__
     assert 'prepare_cmcna_xy_membrane' in api.__all__
+    assert 'retarget_prepared_slab_xy' in api.__all__
     assert 'run_solvated_ion_umbrella' in api.__all__
     assert 'analyze_umbrella_pmf' in api.__all__
     assert 'run_interface_analyses_parallel' in api.__all__
@@ -197,6 +200,7 @@ def test_top_level_api_exports_mechanics_helpers():
     assert 'CMCNAXYBulkSlabResult' in yadonpy.__all__
     assert 'prepare_cmcna_xy_bulk_slab' in yadonpy.__all__
     assert 'prepare_cmcna_xy_membrane' in yadonpy.__all__
+    assert 'retarget_prepared_slab_xy' in yadonpy.__all__
     assert 'InterdiffusionStartSpec' in yadonpy.__all__
     assert 'InterfaceAnalysisTask' in yadonpy.__all__
     assert 'InterfaceAnalysisTaskResult' in yadonpy.__all__
