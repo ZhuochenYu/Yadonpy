@@ -62,6 +62,35 @@ class CasePayload:
     relax_dir: Path
     summary: dict[str, Any]
     z0_nm: float
+    box_z_nm: float
+    z_axis_direction: str
+    z_axis_source: str
+    z_axis_surface_charge_uC_cm2: float | None
+
+
+@dataclass(frozen=True)
+class ZAxisReference:
+    z0_nm: float
+    box_z_nm: float
+    direction: str
+    source: str
+    surface_charge_uC_cm2: float | None
+    layer_name: str | None = None
+    region: str | None = None
+    z_window_nm: tuple[float, float] | None = None
+
+
+def _case_specs() -> tuple[tuple[str, str, float], ...]:
+    """Return report cases, optionally overridden by JSON in the environment."""
+
+    raw = os.environ.get("EG08_SWEEP_CASES_JSON")
+    if not raw:
+        return DEFAULT_CASES
+    payload = json.loads(raw)
+    cases: list[tuple[str, str, float]] = []
+    for item in payload:
+        cases.append((str(item["label"]), str(item["dir"]), float(item["charge_uC_cm2"])))
+    return tuple(cases)
 
 
 def _final_nvt_dir(item: CasePayload) -> Path:
@@ -122,6 +151,21 @@ def _safe_float(value: Any, default: float = np.nan) -> float:
         return float(value)
     except Exception:
         return float(default)
+
+
+def _optional_float(value: Any) -> float | None:
+    out = _safe_float(value, np.nan)
+    return float(out) if np.isfinite(out) else None
+
+
+def _box_from_gro(path: Path) -> tuple[float, float, float]:
+    try:
+        parts = path.read_text(encoding="utf-8", errors="replace").splitlines()[-1].split()
+        if len(parts) >= 3:
+            return float(parts[0]), float(parts[1]), float(parts[2])
+    except Exception:
+        pass
+    return (1.0, 1.0, 1.0)
 
 
 def _trapz(y: np.ndarray, x: np.ndarray) -> float:
@@ -215,12 +259,109 @@ def _infer_z0_nm(summary: dict[str, Any]) -> float:
     return 0.0
 
 
+def _z_axis_from_patch(case_dir: Path, summary: dict[str, Any]) -> ZAxisReference:
+    """Return the report z-axis reference.
+
+    The charge-sweep convention is intentionally orientation-aware: x=0 is the
+    CMC-facing graphite inner surface and +x points from that surface into the
+    CMC/electrolyte stack.  For the current Eg08.07 geometry that surface is
+    GRAPHITE_TOP/bottom, so the plotting direction is decreasing absolute z.
+    """
+
+    system_gro = case_dir / "02_system" / "system.gro"
+    box_z = _box_from_gro(system_gro)[2] if system_gro.is_file() else np.nan
+    patch = _read_json(case_dir / "02_system" / "charge_patch_report.json")
+    regions = patch.get("regions") or patch.get("fixed_charge_regions") or []
+    chosen: dict[str, Any] | None = None
+    for region in regions:
+        if str(region.get("label")) == "cmc_facing_graphite_inner_face":
+            chosen = dict(region)
+            break
+    if chosen is None:
+        for region in regions:
+            layer = str(region.get("layer_name") or region.get("layer") or "").upper()
+            face = str(region.get("region") or region.get("face") or "").lower()
+            if layer == "GRAPHITE_TOP" and face == "bottom":
+                chosen = dict(region)
+                break
+    if chosen is not None:
+        window_raw = chosen.get("z_window_nm") or chosen.get("z_window") or []
+        window = [_safe_float(v) for v in window_raw[:2]]
+        window = [v for v in window if np.isfinite(v)]
+        layer_name = str(chosen.get("layer_name") or chosen.get("layer") or "")
+        region_name = str(chosen.get("region") or chosen.get("face") or "").lower()
+        direction = "decreasing" if region_name == "bottom" else "increasing"
+        if len(window) >= 2:
+            zlo, zhi = min(window), max(window)
+            z0 = zlo if direction == "decreasing" else zhi
+            z_window = (zlo, zhi)
+        elif len(window) == 1:
+            z0 = window[0]
+            z_window = (window[0], window[0])
+        else:
+            z0 = _infer_z0_nm(summary)
+            z_window = None
+        return ZAxisReference(
+            z0_nm=float(z0),
+            box_z_nm=float(box_z if np.isfinite(box_z) and box_z > 0 else 1.0),
+            direction=direction,
+            source="charge_patch_report:cmc_facing_graphite_inner_face",
+            surface_charge_uC_cm2=_optional_float(chosen.get("surface_charge_uC_cm2")),
+            layer_name=layer_name or None,
+            region=region_name or None,
+            z_window_nm=z_window,
+        )
+    return ZAxisReference(
+        z0_nm=float(_infer_z0_nm(summary)),
+        box_z_nm=float(box_z if np.isfinite(box_z) and box_z > 0 else 1.0),
+        direction="decreasing",
+        source="fallback:summary_phase_stats",
+        surface_charge_uC_cm2=None,
+    )
+
+
+def _z_plot_nm(item: CasePayload, z_abs_nm: Any) -> float:
+    z_abs = _safe_float(z_abs_nm)
+    if not np.isfinite(z_abs):
+        return float("nan")
+    lz = max(float(item.box_z_nm), 1.0e-12)
+    if item.z_axis_direction == "decreasing":
+        return float((float(item.z0_nm) - z_abs) % lz)
+    return float((z_abs - float(item.z0_nm)) % lz)
+
+
+def _write_z_axis_reference(payloads: list[CasePayload], out_dir: Path) -> None:
+    rows = []
+    for item in payloads:
+        rows.append(
+            {
+                "case": item.label,
+                "charge_uC_cm2": item.charge,
+                "z0_nm": item.z0_nm,
+                "box_z_nm": item.box_z_nm,
+                "direction": item.z_axis_direction,
+                "source": item.z_axis_source,
+                "surface_charge_uC_cm2_at_z0": item.z_axis_surface_charge_uC_cm2,
+                "definition": "z_plot_nm=0 at CMC-facing graphite inner surface; +z_plot points into CMC, then electrolyte, then opposite graphite.",
+            }
+        )
+    _write_rows(out_dir / "z_axis_reference.csv", rows)
+    _write_json(
+        out_dir / "z_axis_reference.json",
+        {
+            "definition": "z_plot_nm=0 at the negatively charged CMC-facing graphite inner surface; +z_plot points into CMC, then electrolyte, then opposite graphite, wrapped into one full periodic box.",
+            "cases": rows,
+        },
+    )
+
+
 def _load_payloads(root: Path, cases: tuple[tuple[str, str, float], ...]) -> list[CasePayload]:
     payloads: list[CasePayload] = []
     for label, dirname, charge in cases:
         relax_dir = root / dirname / "03_relaxation_sampling"
         analysis_dir = relax_dir / "06_analysis" / "layer_stack_interface"
         summary = _read_json(analysis_dir / "interface_profile_summary.json")
+        zref = _z_axis_from_patch(root / dirname, summary)
         payloads.append(
             CasePayload(
                 label=label,
@@ -229,7 +370,11 @@ def _load_payloads(root: Path, cases: tuple[tuple[str, str, float], ...]) -> lis
                 analysis_dir=analysis_dir,
                 relax_dir=relax_dir,
                 summary=summary,
-                z0_nm=_infer_z0_nm(summary),
+                z0_nm=zref.z0_nm,
+                box_z_nm=zref.box_z_nm,
+                z_axis_direction=zref.direction,
+                z_axis_source=zref.source,
+                z_axis_surface_charge_uC_cm2=zref.surface_charge_uC_cm2,
             )
         )
     return payloads
@@ -348,7 +493,7 @@ def _aggregate_z_profiles(payloads: list[CasePayload], out_dir: Path) -> dict[st
             z_abs = _safe_float(row.get("z_mid_nm"))
             if not np.isfinite(z_abs):
                 continue
-            z_rel = float(z_abs - item.z0_nm)
+            z_rel = _z_plot_nm(item, z_abs)
             species = _canonical_species(row.get("entity"))
             if str(row.get("entity_kind", "")).lower() == "phase":
                 species = _canonical_species(row.get("entity"))
@@ -356,7 +501,18 @@ def _aggregate_z_profiles(payloads: list[CasePayload], out_dir: Path) -> dict[st
                 continue
             density = _safe_float(row.get("mass_density_g_cm3"), 0.0)
             grouped.setdefault(species, {})[round(z_rel, 6)] = grouped.setdefault(species, {}).get(round(z_rel, 6), 0.0) + float(density)
-            out_rows.append({**row, "z_rel_nm": z_rel, "canonical_species": species})
+            out_rows.append(
+                {
+                    **row,
+                    "z_abs_nm": z_abs,
+                    "z_rel_nm": z_rel,
+                    "z_plot_nm": z_rel,
+                    "z_origin_nm": item.z0_nm,
+                    "z_axis_direction": item.z_axis_direction,
+                    "box_z_nm": item.box_z_nm,
+                    "canonical_species": species,
+                }
+            )
             all_x.append(z_rel)
         _write_rows(out_dir / "zrel_csv" / f"{item.dirname}_z_density_profiles_zrel.csv", out_rows)
         by_case[item.label] = grouped
@@ -392,6 +548,34 @@ def _common_limits(series: Iterable[np.ndarray], *, y_pad: float = 0.08) -> tupl
     return xlim, (max(0.0, ymin - pad), ymax + pad)
 
 
+def _adaptive_fraction_ylim(series: Iterable[np.ndarray], *, floor_upper: float = 0.05) -> tuple[float, float]:
+    """Return a readable y limit for membrane-fraction panels.
+
+    The membrane fraction is a number fraction.  Keeping every panel at 0-1 is
+    formally comparable, but it hides real sub-percent changes.  This helper
+    keeps ranges comparable within a plotted group while making small uptake
+    differences visible.
+    """
+
+    values: list[float] = []
+    for arr in series:
+        if arr.size == 0:
+            continue
+        col = np.asarray(arr[:, 1], dtype=float)
+        values.extend([float(v) for v in col[np.isfinite(col)]])
+    if not values:
+        return 0.0, float(floor_upper)
+    ymin, ymax = min(values), max(values)
+    if ymax <= 1.0e-12:
+        return 0.0, float(floor_upper)
+    span = max(ymax - ymin, ymax * 0.20, floor_upper * 0.20)
+    lo = max(0.0, ymin - 0.10 * span)
+    hi = min(1.0, max(float(floor_upper), ymax + 0.20 * span))
+    if hi <= lo:
+        hi = min(1.0, lo + float(floor_upper))
+    return float(lo), float(hi)
+
+
 def _plot_z_facets_by_charge(z_arrays: dict[str, dict[str, np.ndarray]], payloads: list[CasePayload], fig_dir: Path) -> dict[str, Path]:
     _configure_matplotlib()
     import matplotlib.pyplot as plt
@@ -411,11 +595,53 @@ def _plot_z_facets_by_charge(z_arrays: dict[str, dict[str, np.ndarray]], payload
         ax.set_ylim(*ylim)
         ax.grid(True, alpha=0.20)
     axes[0, 0].legend(ncol=4, frameon=False, fontsize=7)
-    fig.supxlabel("z_rel / nm (0 = CMC-facing graphite surface)")
+    fig.supxlabel("z_plot / nm (0 = negative CMC-facing graphite; +z enters CMC)")
     fig.supylabel("mass density / g cm$^{-3}$")
     fig.suptitle("z distribution by charge: species compared within each charge state")
     fig.tight_layout()
     out = _save_fig(fig, fig_dir / "z_distribution_by_charge_facets")
+    plt.close(fig)
+    return out
+
+
+def _plot_z_facets_by_charge_zoom(
+    z_arrays: dict[str, dict[str, np.ndarray]],
+    payloads: list[CasePayload],
+    fig_dir: Path,
+    *,
+    zoom_nm: float | None = None,
+) -> dict[str, Path]:
+    _configure_matplotlib()
+    import matplotlib.pyplot as plt
+
+    zoom_nm = float(zoom_nm if zoom_nm is not None else os.environ.get("EG08_ZOOM_CMC_INTERFACE_NM", "3.0"))
+    zoom_nm = max(0.2, zoom_nm)
+    fig, axes = plt.subplots(2, 2, figsize=(11.5, 6.6), sharex=True, sharey=True)
+    rows_out: list[dict[str, Any]] = []
+    for ax, item in zip(axes.flat, payloads):
+        for sp in SPECIES_ORDER:
+            arr = z_arrays[item.label].get(sp, np.empty((0, 2)))
+            if arr.size == 0:
+                continue
+            mask = np.isfinite(arr[:, 0]) & np.isfinite(arr[:, 1]) & (arr[:, 0] >= 0.0) & (arr[:, 0] <= zoom_nm)
+            if not np.any(mask):
+                continue
+            sub = arr[mask]
+            ax.fill_between(sub[:, 0], sub[:, 1], step="mid", alpha=0.16, color=_species_color(sp))
+            ax.step(sub[:, 0], sub[:, 1], where="mid", lw=1.25, color=_species_color(sp), label=sp)
+            for x, y in sub:
+                rows_out.append({"case": item.label, "charge_uC_cm2": item.charge, "species": sp, "z_plot_nm": float(x), "mass_density_g_cm3": float(y)})
+        ax.set_title(item.label)
+        ax.set_xlim(0.0, zoom_nm)
+        ax.set_ylim(0.0, 0.5)
+        ax.grid(True, alpha=0.20)
+    axes[0, 0].legend(ncol=4, frameon=False, fontsize=7)
+    fig.supxlabel("z_plot / nm (CMC-side graphite surface at 0)")
+    fig.supylabel("mass density / g cm$^{-3}$")
+    fig.suptitle(f"CMC-interface z distribution zoom (0-{zoom_nm:g} nm, y=0-0.5)")
+    fig.tight_layout()
+    _write_rows(fig_dir / "z_distribution_by_charge_facets_cmc_interface_zoom.csv", rows_out)
+    out = _save_fig(fig, fig_dir / "z_distribution_by_charge_facets_cmc_interface_zoom")
     plt.close(fig)
     return out
 
@@ -443,7 +669,7 @@ def _plot_z_facets_by_species(z_arrays: dict[str, dict[str, np.ndarray]], payloa
         ax.set_ylim(*ymax_by_species[sp])
         ax.grid(True, alpha=0.20)
     axes[0, 0].legend(ncol=2, frameon=False, fontsize=7)
-    fig.supxlabel("z_rel / nm (0 = CMC-facing graphite surface)")
+    fig.supxlabel("z_plot / nm (0 = negative CMC-facing graphite; +z enters CMC)")
     fig.supylabel("mass density / g cm$^{-3}$")
     fig.suptitle("z distribution by species: charge sweep compared within each species")
     fig.tight_layout()
@@ -510,13 +736,14 @@ def _plot_membrane_fraction(data: dict[str, dict[str, np.ndarray]], payloads: li
     by_species: dict[str, Path] = {}
     for sp in PERMEANT_SPECIES:
         fig, ax = plt.subplots(figsize=(7.0, 3.8))
+        ylim = _adaptive_fraction_ylim([data.get(item.label, {}).get(sp, np.empty((0, 5))) for item in payloads])
         for item in payloads:
             arr = data.get(item.label, {}).get(sp, np.empty((0, 5)))
             if arr.size:
                 ax.plot(arr[:, 0], arr[:, 1], lw=1.8, color=_charge_color(item.charge), label=item.label)
-        ax.set_ylim(0.0, 1.0)
+        ax.set_ylim(*ylim)
         ax.set_xlabel("time / ns")
-        ax.set_ylabel(f"f_mem({sp})")
+        ax.set_ylabel(f"f_mem({sp}) = N_mem / N_total")
         ax.set_title(f"{sp}: membrane fraction across charge states")
         ax.grid(True, alpha=0.25)
         ax.legend(frameon=False, ncol=2)
@@ -528,13 +755,14 @@ def _plot_membrane_fraction(data: dict[str, dict[str, np.ndarray]], payloads: li
     by_charge: dict[str, Path] = {}
     for item in payloads:
         fig, ax = plt.subplots(figsize=(7.0, 3.8))
+        ylim = _adaptive_fraction_ylim([data.get(item.label, {}).get(sp, np.empty((0, 5))) for sp in PERMEANT_SPECIES])
         for sp in PERMEANT_SPECIES:
             arr = data.get(item.label, {}).get(sp, np.empty((0, 5)))
             if arr.size:
                 ax.plot(arr[:, 0], arr[:, 1], lw=1.8, color=_species_color(sp), label=sp)
-        ax.set_ylim(0.0, 1.0)
+        ax.set_ylim(*ylim)
         ax.set_xlabel("time / ns")
-        ax.set_ylabel("f_mem")
+        ax.set_ylabel("f_mem = N_mem / N_total")
         ax.set_title(f"{item.label}: membrane fraction by species")
         ax.grid(True, alpha=0.25)
         ax.legend(frameon=False, ncol=5)
@@ -624,6 +852,174 @@ def _plot_penetration_metrics(metrics: list[dict[str, Any]], payloads: list[Case
         outputs[metric] = out["png"]
         plt.close(fig)
     return outputs
+
+
+def _draw_penetration_schematic(fig_dir: Path) -> dict[str, Path]:
+    _configure_matplotlib()
+    import matplotlib.pyplot as plt
+    from matplotlib.patches import FancyArrowPatch, Rectangle
+
+    fig, ax = plt.subplots(figsize=(9.8, 3.5))
+    ax.set_xlim(0.0, 10.0)
+    ax.set_ylim(0.0, 3.6)
+    ax.axis("off")
+    regions = [
+        (0.4, 0.95, 2.7, "#DCEBFA", "feed\n(electrolyte side)"),
+        (3.1, 0.95, 3.5, "#E9E1C9", "CMC membrane"),
+        (6.6, 0.95, 2.9, "#E8F3E8", "permeate side"),
+    ]
+    for x, y, w, color, label in regions:
+        ax.add_patch(Rectangle((x, y), w, 1.55, facecolor=color, edgecolor="#555555", lw=1.0))
+        ax.text(x + 0.5 * w, y + 0.78, label, ha="center", va="center", fontsize=11)
+    ax.add_patch(FancyArrowPatch((1.2, 2.85), (3.55, 2.85), arrowstyle="->", mutation_scale=14, lw=1.7, color="#2B5C8A"))
+    ax.text(2.1, 3.05, "entry event\nfeed -> membrane", ha="center", fontsize=9, color="#2B5C8A")
+    ax.add_patch(FancyArrowPatch((1.1, 0.55), (8.8, 0.55), arrowstyle="->", mutation_scale=14, lw=1.7, color="#7F3C8D"))
+    ax.text(5.0, 0.15, "translocation = feed -> membrane -> permeate", ha="center", fontsize=9, color="#7F3C8D")
+    ax.add_patch(FancyArrowPatch((3.1, 2.55), (4.65, 2.55), arrowstyle="<->", mutation_scale=12, lw=1.4, color="#E76F51"))
+    ax.text(3.88, 2.73, "penetration depth d", ha="center", fontsize=9, color="#E76F51")
+    ax.text(
+        0.55,
+        3.35,
+        "P_entry = entry_event_count / initial_feed_count;  D95 = 95th percentile of d;  AUC_depth = integral of normalized depth distribution",
+        ha="left",
+        va="center",
+        fontsize=9,
+    )
+    fig.tight_layout()
+    out = _save_fig(fig, fig_dir / "penetration_metric_schematic", dpi=220)
+    plt.close(fig)
+    return out
+
+
+def _orientation_rows(payloads: list[CasePayload], fig_dir: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Path]]:
+    """Collect EC/EMC/DEC carbonyl orientation in graphite EDL by charge state."""
+
+    _configure_matplotlib()
+    import matplotlib.pyplot as plt
+
+    solvents = ("EC", "EMC", "DEC")
+    angle_rows: list[dict[str, Any]] = []
+    summary_rows: list[dict[str, Any]] = []
+    for item in payloads:
+        rows = _read_rows(item.analysis_dir / "adsorbed_orientation.csv")
+        for sp in solvents:
+            selected = []
+            for row in rows:
+                if _canonical_species(row.get("moltype") or row.get("species")) != sp:
+                    continue
+                if str(row.get("adsorbed", "")).lower() not in {"true", "1", "yes"}:
+                    continue
+                if str(row.get("orientation_available", "")).lower() not in {"true", "1", "yes"}:
+                    continue
+                angle = _safe_float(row.get("carbonyl_angle_deg"))
+                if np.isfinite(angle):
+                    selected.append(angle)
+                    angle_rows.append(
+                        {
+                            "case": item.label,
+                            "charge_uC_cm2": item.charge,
+                            "species": sp,
+                            "carbonyl_angle_deg": float(angle),
+                            "nearest_graphite_phase": row.get("nearest_graphite_phase"),
+                            "nearest_graphite_side": row.get("nearest_graphite_side"),
+                        }
+                    )
+            arr = np.asarray(selected, dtype=float)
+            if arr.size:
+                q25, median, q75 = np.percentile(arr, [25, 50, 75])
+                summary_rows.append(
+                    {
+                        "case": item.label,
+                        "charge_uC_cm2": item.charge,
+                        "species": sp,
+                        "sample_count": int(arr.size),
+                        "mean_angle_deg": float(np.mean(arr)),
+                        "median_angle_deg": float(median),
+                        "q25_angle_deg": float(q25),
+                        "q75_angle_deg": float(q75),
+                        "low_sample": bool(arr.size < 30),
+                    }
+                )
+            else:
+                summary_rows.append(
+                    {
+                        "case": item.label,
+                        "charge_uC_cm2": item.charge,
+                        "species": sp,
+                        "sample_count": 0,
+                        "mean_angle_deg": np.nan,
+                        "median_angle_deg": np.nan,
+                        "q25_angle_deg": np.nan,
+                        "q75_angle_deg": np.nan,
+                        "low_sample": True,
+                    }
+                )
+    _write_rows(fig_dir / "carbonyl_orientation_samples.csv", angle_rows)
+    _write_rows(fig_dir / "carbonyl_orientation_summary.csv", summary_rows)
+
+    outputs: dict[str, Path] = {}
+    if angle_rows:
+        edges = np.linspace(0.0, 180.0, 19)
+        for sp in solvents:
+            fig, axes = plt.subplots(2, 2, figsize=(10.5, 6.2), sharex=True, sharey=True)
+            has_any = False
+            for ax, item in zip(axes.flat, payloads):
+                vals = np.asarray(
+                    [row["carbonyl_angle_deg"] for row in angle_rows if row["case"] == item.label and row["species"] == sp],
+                    dtype=float,
+                )
+                if vals.size:
+                    has_any = True
+                    hist, _ = np.histogram(vals, bins=edges)
+                    pct = 100.0 * hist.astype(float) / max(1, int(np.sum(hist)))
+                    mid = 0.5 * (edges[:-1] + edges[1:])
+                    ax.bar(mid, pct, width=np.diff(edges) * 0.88, color=_charge_color(item.charge), alpha=0.86)
+                    ax.text(0.03, 0.92, f"n={vals.size}", transform=ax.transAxes, fontsize=8)
+                else:
+                    ax.text(0.50, 0.50, "insufficient samples", transform=ax.transAxes, ha="center", va="center", fontsize=9)
+                ax.set_title(item.label)
+                ax.set_xlim(0.0, 180.0)
+                ax.grid(True, axis="y", alpha=0.22)
+            if has_any:
+                fig.supxlabel("C=O angle to graphite surface normal / deg")
+                fig.supylabel("adsorbed oriented-frame fraction / %")
+                fig.suptitle(f"{sp} carbonyl orientation in graphite EDL")
+                fig.tight_layout()
+                out = _save_fig(fig, fig_dir / f"carbonyl_orientation_distribution_{sp}")
+                outputs[f"distribution_{sp}"] = out["png"]
+            plt.close(fig)
+
+        fig, axes = plt.subplots(1, 3, figsize=(12.0, 3.8), sharey=True)
+        for ax, sp in zip(axes, solvents):
+            xs: list[float] = []
+            means: list[float] = []
+            errs_low: list[float] = []
+            errs_high: list[float] = []
+            colors: list[str] = []
+            for item in payloads:
+                row = next((r for r in summary_rows if r["case"] == item.label and r["species"] == sp), None)
+                if not row or not np.isfinite(_safe_float(row.get("mean_angle_deg"))):
+                    continue
+                xs.append(float(item.charge))
+                mean = _safe_float(row["mean_angle_deg"])
+                means.append(mean)
+                errs_low.append(max(0.0, mean - _safe_float(row.get("q25_angle_deg"), mean)))
+                errs_high.append(max(0.0, _safe_float(row.get("q75_angle_deg"), mean) - mean))
+                colors.append(_charge_color(item.charge))
+            if xs:
+                ax.errorbar(xs, means, yerr=[errs_low, errs_high], fmt="o-", lw=1.6, color="#303030", ecolor="#606060", capsize=3)
+                ax.scatter(xs, means, c=colors, s=48, zorder=3)
+            ax.set_title(sp)
+            ax.set_xlabel("CMC-facing charge / uC cm$^{-2}$")
+            ax.set_ylim(0.0, 180.0)
+            ax.grid(True, axis="y", alpha=0.24)
+        axes[0].set_ylabel("mean C=O angle / deg")
+        fig.suptitle("Graphite-EDL carbonyl orientation trend")
+        fig.tight_layout()
+        out = _save_fig(fig, fig_dir / "carbonyl_orientation_charge_trend")
+        outputs["trend"] = out["png"]
+        plt.close(fig)
+    return summary_rows, angle_rows, outputs
 
 
 def _find_topology_file(item: CasePayload, final_dir: Path) -> Path | None:
@@ -968,6 +1364,87 @@ def _plot_li_solvation_depth(rows: list[dict[str, Any]], payloads: list[CasePayl
     return outputs
 
 
+def _recompute_edl_on_plot_axis(rows: list[dict[str, str]], item: CasePayload) -> list[dict[str, Any]]:
+    points: list[tuple[float, float, dict[str, str]]] = []
+    for row in rows:
+        z_abs = _safe_float(row.get("z_nm"))
+        rho = _safe_float(row.get("charge_density_e_nm3"), 0.0)
+        if np.isfinite(z_abs):
+            points.append((_z_plot_nm(item, z_abs), rho, row))
+    points.sort(key=lambda item_: item_[0])
+    if not points:
+        return []
+    z = np.asarray([p[0] for p in points], dtype=float)
+    rho = np.asarray([p[1] for p in points], dtype=float)
+    dz_values = np.diff(z)
+    dz = float(np.nanmedian(dz_values[dz_values > 0])) if np.any(dz_values > 0) else 0.05
+    if not np.isfinite(dz) or dz <= 0:
+        dz = 0.05
+    integrated = np.cumsum(rho * dz)
+    elementary_charge = 1.602176634e-19
+    eps0 = 8.8541878128e-12
+    electric_field = integrated * elementary_charge / 1.0e-18 / eps0
+    phi_surface = -np.cumsum(electric_field * dz * 1.0e-9)
+    if phi_surface.size:
+        phi_surface -= phi_surface[0]
+    ref_hi = min(1.5, max(0.8 + 2.0 * dz, 0.45 * item.box_z_nm))
+    ref_mask = (z >= 0.8) & (z <= ref_hi)
+    ref_label = "local_interior_0.8_1.5_nm"
+    if np.count_nonzero(ref_mask) < 3:
+        ref_mask = (z >= 0.20 * item.box_z_nm) & (z <= 0.45 * item.box_z_nm)
+        ref_label = "periodic_interior_0.20_0.45_Lz"
+    if np.count_nonzero(ref_mask) < 3:
+        ref_mask = np.isfinite(phi_surface)
+        ref_label = "period_mean_fallback"
+    ref_value = float(np.nanmean(phi_surface[ref_mask])) if np.count_nonzero(ref_mask) else 0.0
+    phi = phi_surface - ref_value
+
+    out: list[dict[str, Any]] = []
+    if z.size and z[0] > 1.0e-9:
+        out.append(
+            {
+                "case": item.label,
+                "charge_uC_cm2": item.charge,
+                "z_abs_nm": "",
+                "z_rel_nm": 0.0,
+                "z_plot_nm": 0.0,
+                "z_origin_nm": item.z0_nm,
+                "z_axis_direction": item.z_axis_direction,
+                "box_z_nm": item.box_z_nm,
+                "charge_density_e_nm3": float(rho[0]),
+                "integrated_charge_e_nm2": 0.0,
+                "electric_field_V_m": 0.0,
+                "electrostatic_potential_V": float(-ref_value),
+                "electrostatic_potential_surface_ref_V": 0.0,
+                "potential_reference_V": ref_value,
+                "potential_reference_region": ref_label,
+            }
+        )
+    for idx, (_z_plot, _rho, raw) in enumerate(points):
+        z_abs = _safe_float(raw.get("z_nm"))
+        out.append(
+            {
+                **raw,
+                "case": item.label,
+                "charge_uC_cm2": item.charge,
+                "z_abs_nm": z_abs,
+                "z_rel_nm": float(z[idx]),
+                "z_plot_nm": float(z[idx]),
+                "z_origin_nm": item.z0_nm,
+                "z_axis_direction": item.z_axis_direction,
+                "box_z_nm": item.box_z_nm,
+                "charge_density_e_nm3": float(rho[idx]),
+                "integrated_charge_e_nm2": float(integrated[idx]),
+                "electric_field_V_m": float(electric_field[idx]),
+                "electrostatic_potential_V": float(phi[idx]),
+                "electrostatic_potential_surface_ref_V": float(phi_surface[idx]),
+                "potential_reference_V": ref_value,
+                "potential_reference_region": ref_label,
+            }
+        )
+    return out
+
+
 def _plot_edl_overlays(payloads: list[CasePayload], fig_dir: Path) -> dict[str, Path]:
     _configure_matplotlib()
     import matplotlib.pyplot as plt
@@ -978,25 +1455,20 @@ def _plot_edl_overlays(payloads: list[CasePayload], fig_dir: Path) -> dict[str, 
         ("electrostatic_potential_V", "potential / V", "edl_potential_zrel"),
     )
     outputs: dict[str, Path] = {}
-    all_x: list[float] = []
     series_by_col: dict[str, dict[str, tuple[np.ndarray, np.ndarray]]] = {col: {} for col, _yl, _name in columns}
+    all_corrected_rows: list[dict[str, Any]] = []
     for item in payloads:
         rows = _read_rows(item.analysis_dir / "electrostatic_potential.csv")
-        out_rows = []
-        for row in rows:
-            z = _safe_float(row.get("z_nm"))
-            if not np.isfinite(z):
-                continue
-            z_rel = z - item.z0_nm
-            all_x.append(float(z_rel))
-            out_rows.append({**row, "z_rel_nm": z_rel})
+        out_rows = _recompute_edl_on_plot_axis(rows, item)
+        all_corrected_rows.extend(out_rows)
         _write_rows(fig_dir / "zrel_csv" / f"{item.dirname}_electrostatic_potential_zrel.csv", out_rows)
         for col, _yl, _name in columns:
-            x = np.asarray([_safe_float(row.get("z_rel_nm")) for row in out_rows], dtype=float)
+            x = np.asarray([_safe_float(row.get("z_plot_nm")) for row in out_rows], dtype=float)
             y = np.asarray([_safe_float(row.get(col)) for row in out_rows], dtype=float)
             mask = np.isfinite(x) & np.isfinite(y)
             series_by_col[col][item.label] = (x[mask], y[mask])
-    xlim = (min(all_x), max(all_x)) if all_x else (0.0, 1.0)
+    _write_rows(fig_dir / "edl_profiles_zaxis_corrected.csv", all_corrected_rows)
+    xlim = (0.0, max((item.box_z_nm for item in payloads), default=1.0))
     for col, ylabel, name in columns:
         fig, ax = plt.subplots(figsize=(7.2, 4.0))
         ys = []
@@ -1009,7 +1481,7 @@ def _plot_edl_overlays(payloads: list[CasePayload], fig_dir: Path) -> dict[str, 
         if ys:
             pad = (max(ys) - min(ys)) * 0.08 or 1.0
             ax.set_ylim(min(ys) - pad, max(ys) + pad)
-        ax.set_xlabel("z_rel / nm (0 = CMC-facing graphite surface)")
+        ax.set_xlabel("z_plot / nm (0 = negative CMC-facing graphite; +z enters CMC)")
         ax.set_ylabel(ylabel)
         ax.set_title(name.replace("_", " "))
         ax.grid(True, alpha=0.25)
@@ -1180,6 +1652,137 @@ def _audit_ppt(path: Path, out_json: Path) -> dict[str, Any]:
     return payload
 
 
+def _audit_z_axis(payloads: list[CasePayload], fig_dir: Path, out_json: Path) -> dict[str, Any]:
+    checks: list[dict[str, Any]] = []
+    ok = True
+    for item in payloads:
+        case_checks = []
+        for path in (
+            fig_dir / "zrel_csv" / f"{item.dirname}_z_density_profiles_zrel.csv",
+            fig_dir / "zrel_csv" / f"{item.dirname}_electrostatic_potential_zrel.csv",
+        ):
+            rows = _read_rows(path)
+            values = np.asarray([_safe_float(row.get("z_plot_nm", row.get("z_rel_nm"))) for row in rows], dtype=float)
+            values = values[np.isfinite(values)]
+            file_ok = bool(values.size == 0 or (np.nanmin(values) >= -1.0e-9 and np.nanmax(values) <= item.box_z_nm + 1.0e-6))
+            ok = ok and file_ok
+            case_checks.append(
+                {
+                    "file": str(path),
+                    "row_count": int(values.size),
+                    "min_z_plot_nm": float(np.nanmin(values)) if values.size else None,
+                    "max_z_plot_nm": float(np.nanmax(values)) if values.size else None,
+                    "box_z_nm": item.box_z_nm,
+                    "ok": file_ok,
+                }
+            )
+        if item.charge < 0 and item.z_axis_surface_charge_uC_cm2 is not None:
+            charge_ok = item.z_axis_surface_charge_uC_cm2 < 0
+        else:
+            charge_ok = True
+        ok = ok and charge_ok
+        checks.append(
+            {
+                "case": item.label,
+                "z0_nm": item.z0_nm,
+                "direction": item.z_axis_direction,
+                "surface_charge_uC_cm2_at_z0": item.z_axis_surface_charge_uC_cm2,
+                "negative_surface_charge_ok": charge_ok,
+                "files": case_checks,
+            }
+        )
+    payload = {
+        "ok": bool(ok),
+        "definition": "z_plot_nm is constrained to [0, Lz); x=0 is the CMC-facing graphite surface and +x points into CMC.",
+        "cases": checks,
+    }
+    _write_json(out_json, payload)
+    return payload
+
+
+def _read_gro_coordinates(path: Path) -> tuple[list[str], np.ndarray, tuple[float, float, float]]:
+    if not path.is_file():
+        return [], np.empty((0, 3), dtype=float), (1.0, 1.0, 1.0)
+    lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    if len(lines) < 3:
+        return [], np.empty((0, 3), dtype=float), (1.0, 1.0, 1.0)
+    try:
+        n = int(lines[1].strip())
+    except Exception:
+        n = max(0, len(lines) - 3)
+    species: list[str] = []
+    coords: list[tuple[float, float, float]] = []
+    for line in lines[2 : 2 + n]:
+        resname = line[5:10].strip() if len(line) >= 10 else ""
+        atomname = line[10:15].strip() if len(line) >= 15 else ""
+        species.append(resname or atomname)
+        try:
+            coords.append((float(line[20:28]), float(line[28:36]), float(line[36:44])))
+        except Exception:
+            parts = line.split()
+            if len(parts) >= 3:
+                coords.append(tuple(float(x) for x in parts[-3:]))
+    box = _box_from_gro(path)
+    return species, np.asarray(coords, dtype=float), box
+
+
+def _plot_structure_snapshot(path: Path, item: CasePayload, out_png: Path, *, title: str) -> Path | None:
+    _configure_matplotlib()
+    import matplotlib.pyplot as plt
+
+    species, coords, box = _read_gro_coordinates(path)
+    if coords.size == 0:
+        return None
+    z_plot = np.asarray([_z_plot_nm(item, z) for z in coords[:, 2]], dtype=float)
+    y = coords[:, 1] % max(box[1], 1.0e-12)
+    fig, ax = plt.subplots(figsize=(7.8, 3.8))
+    draw_order = ("GRAPHITE", "CMCNA", "EC", "EMC", "DEC", "LI", "PF6", "NA")
+    for sp in draw_order:
+        if sp == "GRAPHITE":
+            mask = np.asarray(["GRAPH" in s or "GR" == s for s in species], dtype=bool)
+            color = "#333333"
+            size = 2.2
+            alpha = 0.25
+        else:
+            mask = np.asarray([_canonical_species(s) == sp for s in species], dtype=bool)
+            color = _species_color(sp)
+            size = 4.0 if sp in {"LI", "NA"} else 2.4
+            alpha = 0.55
+        if np.any(mask):
+            ax.scatter(z_plot[mask], y[mask], s=size, c=color, alpha=alpha, linewidths=0, label=sp)
+    ax.set_xlim(0.0, item.box_z_nm)
+    ax.set_ylim(0.0, max(box[1], 1.0))
+    ax.set_xlabel("z_plot / nm (CMC-facing graphite surface at 0)")
+    ax.set_ylabel("wrapped y / nm")
+    ax.set_title(title)
+    ax.grid(True, alpha=0.18)
+    ax.legend(loc="upper right", ncol=4, fontsize=6, frameon=False)
+    fig.tight_layout()
+    out_png.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_png, dpi=220, bbox_inches="tight")
+    plt.close(fig)
+    return out_png
+
+
+def _structure_assets(payloads: list[CasePayload], fig_dir: Path) -> dict[str, Path]:
+    assets: dict[str, Path] = {}
+    if not payloads:
+        return assets
+    first = payloads[0]
+    shared_gro = first.relax_dir.parent / "02_system" / "system.gro"
+    shared_png = fig_dir / "structure_overview" / "shared_t0_structure.png"
+    out = _plot_structure_snapshot(shared_gro, first, shared_png, title="Shared t=0 structure projection")
+    if out is not None:
+        assets["shared_t0"] = out
+    for item in payloads:
+        final_gro = _final_nvt_dir(item) / "md.gro"
+        final_png = fig_dir / "structure_overview" / f"{item.dirname}_final_structure.png"
+        out = _plot_structure_snapshot(final_gro, item, final_png, title=f"{item.label} final structure projection")
+        if out is not None:
+            assets[f"final_{item.dirname}"] = out
+    return assets
+
+
 def _trajectory_assets(item: CasePayload, fig_dir: Path) -> tuple[Path | None, Path | None]:
     movie_dir = fig_dir / "trajectory_overview"
     mp4 = movie_dir / f"{item.dirname}_trajectory_overview.mp4"
@@ -1199,17 +1802,22 @@ def main() -> None:
     fig_dir = out_dir / "ppt_figures"
     out_dir.mkdir(parents=True, exist_ok=True)
     fig_dir.mkdir(parents=True, exist_ok=True)
-    payloads = _load_payloads(root, DEFAULT_CASES)
+    payloads = _load_payloads(root, _case_specs())
+    _write_z_axis_reference(payloads, out_dir)
 
     t0_validation = _validate_t0(payloads, out_dir)
     z_arrays = _aggregate_z_profiles(payloads, fig_dir)
     z_by_charge = _plot_z_facets_by_charge(z_arrays, payloads, fig_dir)
+    z_by_charge_zoom = _plot_z_facets_by_charge_zoom(z_arrays, payloads, fig_dir)
     z_by_species = _plot_z_facets_by_species(z_arrays, payloads, fig_dir)
     edl = _plot_edl_overlays(payloads, fig_dir)
     mem_data = _membrane_timeseries(payloads, fig_dir)
     mem_by_species, mem_by_charge = _plot_membrane_fraction(mem_data, payloads, fig_dir)
     penetration_metrics = _penetration_metrics(payloads, fig_dir)
     penetration_plots = _plot_penetration_metrics(penetration_metrics, payloads, fig_dir)
+    penetration_schematic = _draw_penetration_schematic(fig_dir)
+    orientation_summary, orientation_samples, orientation_plots = _orientation_rows(payloads, fig_dir)
+    structure_plots = _structure_assets(payloads, fig_dir)
     li_solvation_summary, li_solvation_plots = _li_solvation_depth_profiles(payloads, fig_dir)
     rdf_plots = _plot_rdf_cn_last_window(payloads, fig_dir)
 
@@ -1241,6 +1849,34 @@ def main() -> None:
     else:
         traj_rows.append(["reason/note", traj.get("reason") or traj.get("note") or "not checked"])
     _add_table(slide, traj_rows, Inches(0.45), Inches(2.75), Inches(5.6), Inches(1.1), font_size=8)
+    _add_picture(slide, structure_plots.get("shared_t0"), Inches(6.25), Inches(2.72), width=Inches(6.6))
+
+    slide = prs.slides.add_slide(prs.slide_layouts[5])
+    slide.shapes.title.text = "Unified z-axis Reference"
+    z_rows = [["case", "z0/nm", "Lz/nm", "direction", "surface charge", "source"]]
+    for item in payloads:
+        z_rows.append(
+            [
+                item.label,
+                f"{item.z0_nm:.4f}",
+                f"{item.box_z_nm:.4f}",
+                item.z_axis_direction,
+                "" if item.z_axis_surface_charge_uC_cm2 is None else f"{item.z_axis_surface_charge_uC_cm2:.2f}",
+                item.z_axis_source,
+            ]
+        )
+    _add_table(slide, z_rows, Inches(0.45), Inches(0.85), Inches(12.4), Inches(1.85), font_size=7)
+    _add_textbox(
+        slide,
+        Inches(0.65),
+        Inches(3.05),
+        Inches(12.0),
+        Inches(2.8),
+        "Definition: z_plot = 0 is the CMC-facing graphite inner surface, i.e. the surface that carries the requested negative charge in the sweep.\n"
+        "Direction: +z_plot points from that graphite surface into CMC, then electrolyte, then the opposite graphite, and is wrapped into one complete periodic box [0, Lz).\n"
+        "Acceptance rule: all z distribution, EDL charge/potential, penetration, Li solvation-depth, and z time-series plots must use this z_plot coordinate and must not show negative z axes.",
+        font_size=14,
+    )
     status = "PASS" if t0_validation.get("ok") else "FAIL"
     _add_textbox(
         slide,
@@ -1258,21 +1894,21 @@ def main() -> None:
         prs,
         "EDL Charge Density Overlay",
         edl.get("edl_charge_density_zrel"),
-        "Observation: all charge states are plotted on the same z_rel axis.\nAnalysis: charge density localizes electrode and ionic charge relative to the CMC-facing graphite surface.\nConclusion: use sign and peak position to identify screening/overscreening.",
+        "Observation: all charge states are plotted on the same z_plot axis.\nAnalysis: charge density localizes electrode and ionic charge relative to the negatively charged CMC-facing graphite surface.\nConclusion: use sign and peak position to identify screening/overscreening; negative x coordinates indicate a failed report.",
         source_svg=(fig_dir / "edl_charge_density_zrel.svg"),
     )
     _result_slide(
         prs,
         "EDL Integrated Charge Overlay",
         edl.get("edl_integrated_charge_zrel"),
-        "Observation: integrated charge is the cumulative area charge from z_rel=0.\nAnalysis: plateaus and sign reversals show how the electrolyte/CMC compensates surface charge.\nConclusion: compare these curves only after t=0 validation passes.",
+        "Observation: integrated charge is recomputed cumulatively from z_plot=0.\nAnalysis: plateaus and sign reversals show how the CMC/electrolyte compensates the negative graphite surface charge.\nConclusion: compare these curves only after t=0 validation passes.",
         source_svg=(fig_dir / "edl_integrated_charge_zrel.svg"),
     )
     _result_slide(
         prs,
         "EDL Electrostatic Potential Overlay",
         edl.get("edl_potential_zrel"),
-        "Observation: potential is obtained by integrating the charge-derived electric field under the selected reference.\nAnalysis: the absolute zero is arbitrary; the gradient and charge-dependent differences are meaningful.\nConclusion: stronger CMC-facing negative charge should reshape the potential near the CMC-side EDL.",
+        "Observation: potential is obtained by integrating the reordered charge-derived electric field and then referencing to a local interior window.\nAnalysis: the absolute zero is arbitrary, but the negative surface should be read relative to the adjacent interior, not from a raw centered-z curve.\nConclusion: stronger CMC-facing negative charge should reshape the potential near the CMC-side EDL.",
         source_svg=(fig_dir / "edl_potential_zrel.svg"),
     )
 
@@ -1285,10 +1921,32 @@ def main() -> None:
     )
     _result_slide(
         prs,
+        "z Distribution: Charge Facets, CMC-interface Zoom",
+        z_by_charge_zoom["png"],
+        "Observation: this view magnifies the first few nanometers from the CMC-facing graphite surface with y fixed to 0-0.5 g cm-3.\n"
+        "Analysis: it is designed to reveal dilute penetration tails and near-interface depletion that are invisible on the full-density scale.\n"
+        "Conclusion: use this panel to judge early CMC-side infiltration and sparse species accumulation near the charged surface.",
+        source_svg=z_by_charge_zoom["svg"],
+    )
+    _result_slide(
+        prs,
         "z Distribution: Species Facets",
         z_by_species["png"],
-        "Observation: each subplot is one species and overlays all charge states.\nAnalysis: shared z_rel axis makes charge-induced redistribution easier to read.\nConclusion: this view answers whether a given species responds monotonically to surface charge.",
+        "Observation: each subplot is one species and overlays all charge states.\nAnalysis: shared z_plot axis makes charge-induced redistribution easier to read.\nConclusion: this view answers whether a given species responds monotonically to surface charge.",
         source_svg=z_by_species["svg"],
+    )
+
+    _result_slide(
+        prs,
+        "Membrane Permeation Metric Definitions",
+        penetration_schematic["png"],
+        "Definitions used throughout the report:\n"
+        "f_mem(species,t)=N_membrane/(N_feed+N_membrane+N_permeate), a molecule-count fraction.\n"
+        "P_entry=entry_event_count/initial_feed_count, a normalized entry-event index.\n"
+        "D95 is the 95th percentile of penetration depth for molecule-frames that have entered CMC.\n"
+        "AUC_depth integrates the normalized depth distribution and summarizes overall depth capability.\n"
+        "entry flux=Delta entry_events/(Delta t x interface area), a rate-like comparison.",
+        source_svg=penetration_schematic["svg"],
     )
 
     for sp, png in mem_by_species.items():
@@ -1317,10 +1975,63 @@ def main() -> None:
             f"Penetration Capability: {metric}",
             png,
             "Method: molecule COM is classified as feed, membrane, or permeate relative to the CMCNA membrane interval.\n"
-            "Entry event: feed -> membrane transition. Translocation: feed -> membrane -> permeate path.\n"
-            "AUC_depth integrates the normalized penetration-depth distribution and summarizes overall penetration ability.",
+            "Observation: bars compare EC/EMC/DEC/Li/PF6 within each surface charge.\n"
+            "Analysis: P_entry is event-normalized, D95 describes the deep tail, AUC_depth summarizes the full normalized depth distribution, and loading reports mean membrane occupancy per volume.\n"
+            "Conclusion: a species has stronger membrane-infiltration ability only when entry frequency and depth metrics increase together.",
             source_svg=png.with_suffix(".svg"),
         )
+
+    slide = prs.slides.add_slide(prs.slide_layouts[5])
+    slide.shapes.title.text = "Graphite EDL Carbonyl Orientation: Method And Samples"
+    rows = [["case", "species", "n", "mean/deg", "median/deg", "IQR/deg", "status"]]
+    for row in orientation_summary:
+        n = int(_safe_float(row.get("sample_count"), 0.0))
+        rows.append(
+            [
+                row.get("case"),
+                row.get("species"),
+                n,
+                "" if n == 0 else f"{_safe_float(row.get('mean_angle_deg')):.1f}",
+                "" if n == 0 else f"{_safe_float(row.get('median_angle_deg')):.1f}",
+                "" if n == 0 else f"{_safe_float(row.get('q25_angle_deg')):.1f}-{_safe_float(row.get('q75_angle_deg')):.1f}",
+                "low sample" if bool(row.get("low_sample")) else "ok",
+            ]
+        )
+    _add_table(slide, rows[:15], Inches(0.45), Inches(0.85), Inches(12.4), Inches(3.4), font_size=7)
+    _add_textbox(
+        slide,
+        Inches(0.6),
+        Inches(4.65),
+        Inches(12.0),
+        Inches(1.7),
+        "Only adsorbed EC/EMC/DEC molecules with orientation_available=True are included. "
+        "The angle is carbonyl C=O relative to the local graphite surface normal: 0/180 deg is normal-like, 90 deg is parallel to graphite. "
+        "Low-sample cells are diagnostic rather than physical trends.",
+        font_size=12,
+    )
+
+    if orientation_plots.get("trend"):
+        _result_slide(
+            prs,
+            "Graphite EDL Carbonyl Orientation vs Charge",
+            orientation_plots["trend"],
+            "Observation: EC/EMC/DEC mean carbonyl angle is plotted with IQR bars against CMC-facing surface charge.\n"
+            "Analysis: systematic shifts toward 90 deg indicate carbonyls becoming more parallel to graphite; shifts toward 0/180 deg indicate stronger normal alignment.\n"
+            "Conclusion: only interpret species/charges marked with sufficient oriented samples in the diagnostic table.",
+            source_svg=orientation_plots["trend"].with_suffix(".svg"),
+        )
+    for sp in ("EC", "EMC", "DEC"):
+        key = f"distribution_{sp}"
+        if orientation_plots.get(key):
+            _result_slide(
+                prs,
+                f"{sp} Carbonyl Orientation Distribution",
+                orientation_plots[key],
+                "Observation: each facet is one surface charge and the y-axis is the percent of adsorbed oriented frames.\n"
+                "Analysis: broad or bimodal distributions mean multiple adsorption geometries coexist in the EDL.\n"
+                "Conclusion: compare this distribution with the mean/IQR trend before making a charge-dependent orientation claim.",
+                source_svg=orientation_plots[key].with_suffix(".svg"),
+            )
 
     slide = prs.slides.add_slide(prs.slide_layouts[5])
     slide.shapes.title.text = "Li Solvation vs CMC Penetration Depth: Method"
@@ -1379,6 +2090,14 @@ def main() -> None:
         )
 
     slide = prs.slides.add_slide(prs.slide_layouts[5])
+    slide.shapes.title.text = "Structure Evolution Posters"
+    positions = [(Inches(0.45), Inches(0.85)), (Inches(6.85), Inches(0.85)), (Inches(0.45), Inches(4.05)), (Inches(6.85), Inches(4.05))]
+    for item, (left, top) in zip(payloads, positions):
+        png = structure_plots.get(f"final_{item.dirname}")
+        _add_picture(slide, png, left, top, width=Inches(5.85), height=Inches(2.48))
+        _add_textbox(slide, left, top + Inches(2.52), Inches(5.85), Inches(0.35), f"{item.label}: final projection, same z_plot convention", font_size=8)
+
+    slide = prs.slides.add_slide(prs.slide_layouts[5])
     slide.shapes.title.text = "Time-Series MP4 Panels"
     positions = [(Inches(0.45), Inches(0.85)), (Inches(6.85), Inches(0.85)), (Inches(0.45), Inches(4.05)), (Inches(6.85), Inches(4.05))]
     for item, (left, top) in zip(payloads, positions):
@@ -1393,11 +2112,15 @@ def main() -> None:
         slide,
         [
             ["artifact", "path"],
-            ["z_rel CSV", fig_dir / "zrel_csv"],
+            ["z_plot CSV", fig_dir / "zrel_csv"],
+            ["z-axis reference", out_dir / "z_axis_reference.json"],
             ["membrane fraction CSV", fig_dir / "membrane_fraction_1ns_3point_smooth.csv"],
             ["penetration metrics CSV", fig_dir / "penetration_capability_metrics.csv"],
             ["Li solvation-depth CSV", fig_dir / "li_solvation_by_cmc_depth.csv"],
+            ["z zoom CSV", fig_dir / "z_distribution_by_charge_facets_cmc_interface_zoom.csv"],
+            ["carbonyl orientation summary", fig_dir / "carbonyl_orientation_summary.csv"],
             ["t0 validation JSON", out_dir / "shared_t0_validation.json"],
+            ["z-axis audit JSON", out_dir / "z_axis_visual_audit.json"],
             ["visual audit JSON", out_dir / "ppt_visual_audit.json"],
         ],
         Inches(0.45),
@@ -1430,6 +2153,18 @@ def main() -> None:
     out_ppt = out_dir / "eg08_07_charge_sweep_full_report.pptx"
     prs.save(out_ppt)
     audit = _audit_ppt(out_ppt, out_dir / "ppt_visual_audit.json")
+    z_audit = _audit_z_axis(payloads, fig_dir, out_dir / "z_axis_visual_audit.json")
+    artifact_checks = {
+        "z_distribution_zoom_exists": (fig_dir / "z_distribution_by_charge_facets_cmc_interface_zoom.png").is_file(),
+        "membrane_fraction_adaptive_exists": any((fig_dir / f"membrane_fraction_species_{sp}.png").is_file() for sp in PERMEANT_SPECIES),
+        "penetration_schematic_exists": (fig_dir / "penetration_metric_schematic.png").is_file(),
+        "carbonyl_orientation_or_diagnostic_exists": (fig_dir / "carbonyl_orientation_summary.csv").is_file(),
+        "shared_t0_structure_exists": (fig_dir / "structure_overview" / "shared_t0_structure.png").is_file(),
+    }
+    audit["z_axis_ok"] = bool(z_audit["ok"])
+    audit["artifact_checks"] = artifact_checks
+    audit["ok"] = bool(audit["ok"] and z_audit["ok"] and all(artifact_checks.values()))
+    _write_json(out_dir / "ppt_visual_audit.json", audit)
     final = {
         "ppt": str(out_ppt),
         "figure_dir": str(fig_dir),
@@ -1438,7 +2173,11 @@ def main() -> None:
         "valid_shared_t0": bool(t0_validation.get("ok")),
         "ppt_size_mb": audit["size_mb"],
         "visual_audit_ok": bool(audit["ok"]),
+        "z_axis_audit_ok": bool(z_audit["ok"]),
         "li_solvation_depth_csv": str(fig_dir / "li_solvation_by_cmc_depth.csv"),
+        "z_distribution_zoom_csv": str(fig_dir / "z_distribution_by_charge_facets_cmc_interface_zoom.csv"),
+        "carbonyl_orientation_summary_csv": str(fig_dir / "carbonyl_orientation_summary.csv"),
+        "penetration_schematic_svg": str(fig_dir / "penetration_metric_schematic.svg"),
     }
     _write_json(out_dir / "charge_sweep_full_ppt_paths.json", final)
     print(json.dumps(final, indent=2, ensure_ascii=False))

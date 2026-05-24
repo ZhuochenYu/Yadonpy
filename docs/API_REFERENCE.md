@@ -520,6 +520,33 @@ Facade method semantics:
   cutoff, each target species contributes only its strongest opposite-charge
   polar site, CN is plotted as dashed curves on a fixed 0-6 axis, and the first
   RDF peak position is annotated.
+- Eg08.07 charge-sweep reports use a stricter plotting coordinate than the raw
+  trajectory z coordinate.  `z_plot_nm = 0` is the graphite inner surface facing
+  CMCNA, i.e. the surface that receives the requested negative charge in the
+  `0, -3, -9, -18 uC/cm2` sweep.  Positive `z_plot_nm` points from that surface
+  into CMCNA, then electrolyte, then the opposite graphite, and is wrapped into
+  one complete box period `[0, Lz)`.  The report generator reads
+  `charge_patch_report.json`, writes `z_axis_reference.json`, and redraws EDL
+  charge, integrated charge, potential, z distribution, penetration, and movie
+  frames on this coordinate; raw centered axes such as `-Lz/2..Lz/2` are not
+  valid for charge-sweep comparison plots.
+- The Eg08.07 PPT generator produces both full-range and CMC-interface zoom
+  z-density views.  The zoom view defaults to `0 <= z_plot_nm <= 3 nm` and a
+  fixed `0-0.5 g cm-3` y range so dilute near-interface tails are not hidden by
+  bulk-density peaks.  Membrane-fraction plots use adaptive y limits, but the
+  definition is fixed: `f_mem(species,t)=N_membrane/(N_feed+N_membrane+N_permeate)`.
+- Penetration-capability metrics in the report are defined as follows:
+  `P_entry=entry_event_count/initial_feed_count`; `D95` is the 95th percentile
+  of molecule-COM penetration depth among entered samples; `AUC_depth` is the
+  integral of the normalized penetration-depth distribution; `entry_flux` is
+  `Delta entry_events/(Delta t * interface area)`.  The report writes a
+  schematic slide and the source table
+  `99_report/ppt_figures/penetration_capability_metrics.csv`.
+- Graphite-EDL carbonyl orientation is reported for adsorbed EC/EMC/DEC frames
+  with `orientation_available=True`.  The angle is the carbonyl C=O vector
+  relative to the local graphite surface normal: `0/180 deg` is normal-like and
+  `90 deg` is parallel to graphite.  Low-sample cells are reported as
+  diagnostics rather than plotted as physical trends.
 - `coordination_by_region()` partitions cation donor states by z region using
   fallback O/F contact cutoffs.
 - `region_transport()` returns anisotropic MSD summaries when transport is

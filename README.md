@@ -644,6 +644,22 @@ are recorded in `relaxation_followup_summary.json`.
   MP4 encoding.  MP4 writing uses the pip-installed `imageio-ffmpeg` executable
   when available; CSV and PNG artifacts are still written if the movie writer is
   unavailable.
+- Eg08.07 charge-sweep reports define a single z axis before plotting: `z=0`
+  is the CMC-facing graphite inner surface carrying the requested negative
+  charge, and positive z points into CMCNA, then electrolyte, then the opposite
+  graphite within one wrapped box period `[0, Lz)`.  Report scripts read this
+  surface from `charge_patch_report.json`, write `z_axis_reference.json`, and
+  redraw EDL charge/potential, species distributions, penetration statistics,
+  and MP4 time-series panels on this axis.  A raw centered coordinate such as
+  `-Lz/2..Lz/2` is considered an invalid Eg08.07 sweep plot.
+- The Eg08.07 PPT also writes review-focused companion plots: a CMC-interface
+  z-distribution zoom (`0-3 nm`, y fixed to `0-0.5 g cm-3`), adaptive-scale
+  membrane-fraction panels, a penetration-event schematic, t=0/final structure
+  projection posters, and graphite-EDL carbonyl orientation statistics for
+  EC/EMC/DEC.  `f_mem` is always the molecule-count fraction
+  `N_membrane/(N_feed+N_membrane+N_permeate)`.  `P_entry` normalizes entry
+  events by the initial feed count, `D95` is the 95th percentile of penetration
+  depth, and `AUC_depth` integrates the normalized depth distribution.
 
 After all required analyses have completed, large trajectory streams can be
 removed while keeping auditable outputs:

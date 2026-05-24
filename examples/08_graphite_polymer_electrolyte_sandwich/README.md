@@ -110,7 +110,8 @@ semantic aliases such as `GRAPHITE`, `ELECTROLYTE`, `CMCNA`, and `MOBILE`.
   `cmcna_eq21_wall_compression.mp4` for visual inspection.
   The relaxed GRO box is then read back, and an electrolyte slab is prepared by
   the same `periodicity="xy"` wall protocol at the same XY footprint.  The
-  electrolyte active thickness is at least `15 nm` by default; EC/EMC/DEC/Li/PF6
+  electrolyte active thickness defaults to `10 nm` in the current production
+  script and can be changed with `EG08_ELECTROLYTE_ACTIVE_THICKNESS_NM`; EC/EMC/DEC/Li/PF6
   counts are inferred from the fixed XY area, target liquid density, and the
   reference composition, with a `<200k atoms` guard before production begins.
   Both slabs are passed through `MolecularLayerSpec(prepared_slab_gro=...)`, so
@@ -240,6 +241,40 @@ semantic aliases such as `GRAPHITE`, `ELECTROLYTE`, `CMCNA`, and `MOBILE`.
   charge folders, runs case-level parallel post-processing with
   `EG08_ANALYSIS_FRAME_STRIDE=auto` by default, builds the full sweep PPT, and
   writes `99_report/charge_sweep_full_ppt_paths.json`.
+- The Eg08.07 PPT uses a single orientation-aware z axis for every z-dependent
+  plot.  `z_plot_nm = 0` is the graphite inner surface on the CMCNA side, the
+  same surface assigned the requested negative charge.  Positive `z_plot_nm`
+  points from that surface into CMCNA, then electrolyte, then the opposite
+  graphite, wrapped into `[0, Lz)`.  The report writes
+  `z_axis_reference.json` and rejects negative/centered z plotting axes during
+  audit; EDL charge density, integrated charge, potential, species
+  distributions, penetration-depth views, and MP4 time-series panels must use
+  this coordinate.
+- The PPT includes two z-distribution views.  The full-range facets show the
+  entire periodic cell.  The CMC-interface zoom is fixed to the first
+  `EG08_ZOOM_CMC_INTERFACE_NM` nanometers (`3.0 nm` by default) and
+  `0-0.5 g cm-3` on the y axis, so low-density CMC-side infiltration tails are
+  visible.  Both views are exported as SVG/PNG/CSV under
+  `99_report/ppt_figures/`.
+- Membrane-fraction plots define
+  `f_mem(species,t)=N_membrane/(N_feed+N_membrane+N_permeate)`.  This is a
+  molecule-count fraction, not a mass fraction or flux.  The report uses
+  adaptive y-axis limits for readability but keeps all charges comparable within
+  the same species plot.
+- Penetration pages include a schematic.  `P_entry` is entry events divided by
+  the initial feed count; `D95` is the 95th percentile of penetration depth;
+  `AUC_depth` integrates the normalized depth distribution; and entry flux is
+  `Delta entry_events/(Delta t * area)`.  PF6 is included in the same metrics
+  as EC/EMC/DEC/Li.
+- The charge-sweep report also checks t=0 visually and numerically.  It inserts
+  a shared t=0 structure projection, final structure posters for each charge
+  state, and records their source paths in `charge_sweep_full_ppt_paths.json`.
+  Structure images use the same `z_plot_nm` axis as the statistical plots.
+- EC/EMC/DEC graphite-EDL carbonyl orientation is summarized when enough
+  adsorbed samples exist.  The carbonyl C=O angle is measured relative to the
+  graphite surface normal; 0/180 deg means normal-like and 90 deg means
+  parallel to graphite.  Low-sample charge/species cells are shown as
+  diagnostics rather than empty plots.
 - The Eg08.07 charge-sweep PPT generator additionally computes a
   depth-resolved Li solvation diagnostic.  Only Li atoms located inside the
   CMCNA membrane interval are counted; their penetration depth is measured from

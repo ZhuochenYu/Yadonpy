@@ -527,8 +527,9 @@ must be occupied.  A lower value means the slab is only a sparse periodic
 polymer aggregate, not a stack-ready rectangular membrane.
 
 Example 08-07 now treats the electrolyte layer as a real liquid reservoir rather
-than a thin spacer.  Its active slab thickness defaults to at least `15 nm`, and
-the script computes EC/EMC/DEC/Li/PF6 counts from the fixed XY area, the active
+than a thin spacer.  Its active slab thickness defaults to `10 nm` for the
+current charge-sweep workflow and can be changed through
+`EG08_ELECTROLYTE_ACTIVE_THICKNESS_NM`; the script computes EC/EMC/DEC/Li/PF6 counts from the fixed XY area, the active
 thickness, and the target electrolyte density.  If the conservative atom-count
 estimate exceeds `EG08_MAX_TOTAL_ATOMS` (default `200000`), the script stops
 before launching MD and asks for a smaller XY footprint/thickness or an
@@ -704,6 +705,17 @@ their coordination to solvent O, CMC O, and PF6 F sites.  The resulting
 `li_solvation_by_cmc_depth.csv` is the recommended table for judging whether
 Li+ desolvates from carbonate oxygen and transfers coordination to the CMC
 matrix as it penetrates.
+
+The same PPT generator now writes review-oriented checks around the main
+statistics.  Every z-dependent panel uses `z_plot_nm`, where `0` is the
+negatively charged CMC-facing graphite surface and positive z enters CMC.  A
+separate CMC-interface zoom plot uses `0-3 nm` and `0-0.5 g cm-3` by default.
+Membrane fraction is explicitly
+`N_membrane/(N_feed+N_membrane+N_permeate)` and is drawn with adaptive y limits
+so small uptake changes do not disappear at the bottom of a 0-1 axis.  The
+report also adds a feed/membrane/permeate schematic defining entry events,
+translocation, `P_entry`, `D95`, `AUC_depth`, and entry flux, plus EC/EMC/DEC
+carbonyl-orientation diagnostics and t=0/final structure posters.
 
 The convenience wrapper
 `examples/08_graphite_polymer_electrolyte_sandwich/run_eg08_07_charge_sweep_and_report.py`
