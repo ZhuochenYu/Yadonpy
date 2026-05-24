@@ -14,6 +14,8 @@ import hashlib
 import json
 import math
 import os
+import shutil
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
@@ -1528,7 +1530,11 @@ def _plot_rdf_cn_last_window(payloads: list[CasePayload], fig_dir: Path) -> dict
         ax_cn.set_ylim(0.0, 6.0)
         ax.set_title(f"Interface RDF/CN last window: {pair}")
         ax.grid(True, alpha=0.25)
-        ax.legend(frameon=False, fontsize=7, ncol=2)
+        handles, labels = ax.get_legend_handles_labels()
+        if handles:
+            ax.legend(handles, labels, frameon=False, fontsize=7, ncol=2)
+        else:
+            ax.text(0.5, 0.5, "No RDF/CN rows available for this pair", transform=ax.transAxes, ha="center", va="center", fontsize=10)
         fig.tight_layout()
         out = _save_fig(fig, fig_dir / f"rdf_cn_last_window_{pair.replace('-', '_')}")
         outputs[pair] = out["png"]
@@ -1764,6 +1770,59 @@ def _plot_structure_snapshot(path: Path, item: CasePayload, out_png: Path, *, ti
     return out_png
 
 
+def _plot_structure_frame(
+    *,
+    species: list[str],
+    coords: np.ndarray,
+    box: tuple[float, float, float],
+    item: CasePayload,
+    out_png: Path,
+    title: str,
+    time_ps: float | None = None,
+    max_points: int = 45000,
+) -> Path | None:
+    _configure_matplotlib()
+    import matplotlib.pyplot as plt
+
+    if coords.size == 0:
+        return None
+    z_plot = np.asarray([_z_plot_nm(item, z) for z in coords[:, 2]], dtype=float)
+    y = np.asarray(coords[:, 1], dtype=float) % max(float(box[1]), 1.0e-12)
+    fig, ax = plt.subplots(figsize=(7.8, 3.8))
+    draw_order = ("GRAPHITE", "CMCNA", "EC", "EMC", "DEC", "LI", "PF6", "NA")
+    for sp in draw_order:
+        if sp == "GRAPHITE":
+            mask = np.asarray(["GRAPH" in s or "GR" == s for s in species], dtype=bool)
+            color = "#333333"
+            size = 1.8
+            alpha = 0.22
+        else:
+            mask = np.asarray([_canonical_species(s) == sp for s in species], dtype=bool)
+            color = _species_color(sp)
+            size = 3.0 if sp in {"LI", "NA"} else 1.8
+            alpha = 0.50
+        indices = np.flatnonzero(mask)
+        if indices.size == 0:
+            continue
+        if indices.size > max_points // 4:
+            keep = np.linspace(0, indices.size - 1, max(1, max_points // 4), dtype=int)
+            indices = indices[keep]
+        ax.scatter(z_plot[indices], y[indices], s=size, c=color, alpha=alpha, linewidths=0, label=sp)
+    subtitle = "" if time_ps is None or not np.isfinite(time_ps) else f" | t={time_ps / 1000.0:.2f} ns"
+    ax.set_xlim(0.0, item.box_z_nm)
+    ax.set_ylim(0.0, max(float(box[1]), 1.0))
+    ax.set_xlabel("z_plot / nm")
+    ax.set_ylabel("wrapped y / nm")
+    ax.set_title(f"{title}{subtitle}\nLx={box[0]:.2f} nm, Ly={box[1]:.2f} nm, Lz={box[2]:.2f} nm")
+    ax.grid(True, alpha=0.18)
+    ax.legend(loc="upper right", ncol=4, fontsize=6, frameon=False)
+    fig.tight_layout()
+    out_png.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_png, dpi=170, bbox_inches="tight")
+    plt.close(fig)
+    return out_png
+
+
 def _structure_assets(payloads: list[CasePayload], fig_dir: Path) -> dict[str, Path]:
     assets: dict[str, Path] = {}
     if not payloads:
@@ -1789,7 +1848,129 @@ def _trajectory_assets(item: CasePayload, fig_dir: Path) -> tuple[Path | None, P
     poster = movie_dir / item.dirname / "frame_000.png"
     if mp4.is_file() and poster.is_file():
         return mp4, poster
-    return None, None
+    final_dir = _final_nvt_dir(item)
+    xtc = final_dir / "md.xtc"
+    gro = final_dir / "md.gro"
+    if not gro.is_file():
+        return None, None
+    species, gro_coords, gro_box = _read_gro_coordinates(gro)
+    if not species or gro_coords.size == 0:
+        return None, None
+    case_dir = movie_dir / item.dirname
+    case_dir.mkdir(parents=True, exist_ok=True)
+    max_frames = max(3, int(os.environ.get("EG08_TRAJECTORY_OVERVIEW_MAX_FRAMES", "12")))
+    candidate_stride = max(1, int(os.environ.get("EG08_TRAJECTORY_OVERVIEW_FRAME_STRIDE", "100")))
+    max_candidates = max(max_frames, int(os.environ.get("EG08_TRAJECTORY_OVERVIEW_MAX_CANDIDATES", "80")))
+    candidates: list[tuple[float, np.ndarray, tuple[float, float, float]]] = []
+    try:
+        if xtc.is_file():
+            import mdtraj as md
+
+            frame_index = 0
+            last: tuple[float, np.ndarray, tuple[float, float, float]] | None = None
+            for chunk in md.iterload(str(xtc), top=str(gro), chunk=25):
+                for local in range(chunk.n_frames):
+                    coords = np.asarray(chunk.xyz[local], dtype=float)
+                    box = tuple(float(x) for x in chunk.unitcell_lengths[local][:3])
+                    time_ps = float(chunk.time[local]) if chunk.time is not None and len(chunk.time) > local else float("nan")
+                    last = (time_ps, coords.copy(), box)
+                    if frame_index % candidate_stride == 0:
+                        candidates.append(last)
+                        if len(candidates) > max_candidates:
+                            candidates = candidates[::2]
+                            candidate_stride *= 2
+                    frame_index += 1
+            if last is not None and (not candidates or candidates[-1][0] != last[0]):
+                candidates.append(last)
+        if not candidates:
+            candidates = [(float("nan"), gro_coords, gro_box)]
+    except Exception:
+        candidates = [(float("nan"), gro_coords, gro_box)]
+    if len(candidates) > max_frames:
+        keep = np.unique(np.linspace(0, len(candidates) - 1, max_frames, dtype=int))
+        candidates = [candidates[int(i)] for i in keep]
+
+    frame_paths: list[Path] = []
+    for idx, (time_ps, coords, box) in enumerate(candidates):
+        frame = case_dir / f"frame_{idx:03d}.png"
+        out = _plot_structure_frame(
+            species=species,
+            coords=coords,
+            box=box,
+            item=item,
+            out_png=frame,
+            title=f"{item.label} trajectory overview",
+            time_ps=time_ps,
+        )
+        if out is not None:
+            frame_paths.append(out)
+    if not frame_paths:
+        return None, None
+    poster = frame_paths[0]
+    try:
+        import imageio.v2 as imageio
+
+        with imageio.get_writer(mp4, fps=2, codec="libx264", quality=6, macro_block_size=16) as writer:
+            for frame in frame_paths:
+                writer.append_data(imageio.imread(frame))
+    except Exception:
+        ffmpeg = shutil.which("ffmpeg")
+        if ffmpeg:
+            try:
+                # Keep the video small and broadly compatible.  The frame list
+                # is intentionally sparse; this movie is for visual t=0 ->
+                # final sanity, not quantitative analysis.
+                cmd = [
+                    ffmpeg,
+                    "-y",
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-framerate",
+                    "2",
+                    "-i",
+                    str(case_dir / "frame_%03d.png"),
+                    "-vf",
+                    "scale=trunc(iw/2)*2:trunc(ih/2)*2",
+                    "-c:v",
+                    "libx264",
+                    "-pix_fmt",
+                    "yuv420p",
+                    "-crf",
+                    "28",
+                    str(mp4),
+                ]
+                subprocess.run(cmd, check=True)
+            except Exception:
+                return None, poster
+        else:
+            return None, poster
+    return (mp4 if mp4.is_file() else None), poster
+
+
+def _data_availability_rows(payloads: list[CasePayload], fig_dir: Path) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for item in payloads:
+        orientation_rows = _read_rows(fig_dir / "carbonyl_orientation_summary.csv")
+        orientation_n = sum(int(_safe_float(row.get("sample_count"), 0.0)) for row in orientation_rows if row.get("case") == item.label)
+        rdf_rows = _read_rows(item.analysis_dir / "time_series" / "rdf_cn_curves_timeseries.csv")
+        ts_dir = item.analysis_dir / "time_series"
+        rows.append(
+            {
+                "case": item.label,
+                "charge_uC_cm2": item.charge,
+                "z_density_rows": len(_read_rows(fig_dir / "zrel_csv" / f"{item.dirname}_z_density_profiles_zrel.csv")),
+                "edl_rows": len(_read_rows(fig_dir / "zrel_csv" / f"{item.dirname}_electrostatic_potential_zrel.csv")),
+                "membrane_timeseries_rows": len([row for row in _read_rows(fig_dir / "membrane_fraction_1ns_3point_smooth.csv") if row.get("case") == item.label]),
+                "carbonyl_orientation_samples": orientation_n,
+                "rdf_cn_rows": len(rdf_rows),
+                "interface_rdf_cn_mp4": (ts_dir / "rdf_cn_timeseries.mp4").is_file(),
+                "trajectory_overview_mp4": (fig_dir / "trajectory_overview" / f"{item.dirname}_trajectory_overview.mp4").is_file(),
+                "final_xtc": (_final_nvt_dir(item) / "md.xtc").is_file(),
+            }
+        )
+    _write_rows(fig_dir / "report_data_availability.csv", rows)
+    return rows
 
 
 def main() -> None:
@@ -1818,6 +1999,8 @@ def main() -> None:
     penetration_schematic = _draw_penetration_schematic(fig_dir)
     orientation_summary, orientation_samples, orientation_plots = _orientation_rows(payloads, fig_dir)
     structure_plots = _structure_assets(payloads, fig_dir)
+    trajectory_overviews = {item.label: _trajectory_assets(item, fig_dir) for item in payloads}
+    availability_rows = _data_availability_rows(payloads, fig_dir)
     li_solvation_summary, li_solvation_plots = _li_solvation_depth_profiles(payloads, fig_dir)
     rdf_plots = _plot_rdf_cn_last_window(payloads, fig_dir)
 
@@ -1850,6 +2033,36 @@ def main() -> None:
         traj_rows.append(["reason/note", traj.get("reason") or traj.get("note") or "not checked"])
     _add_table(slide, traj_rows, Inches(0.45), Inches(2.75), Inches(5.6), Inches(1.1), font_size=8)
     _add_picture(slide, structure_plots.get("shared_t0"), Inches(6.25), Inches(2.72), width=Inches(6.6))
+
+    slide = prs.slides.add_slide(prs.slide_layouts[5])
+    slide.shapes.title.text = "Case Data Availability"
+    rows = [["case", "z rows", "EDL rows", "mem frac rows", "C=O samples", "RDF/CN rows", "traj MP4"]]
+    for row in availability_rows:
+        rows.append(
+            [
+                row.get("case"),
+                row.get("z_density_rows"),
+                row.get("edl_rows"),
+                row.get("membrane_timeseries_rows"),
+                row.get("carbonyl_orientation_samples"),
+                row.get("rdf_cn_rows"),
+                row.get("trajectory_overview_mp4"),
+            ]
+        )
+    _add_table(slide, rows, Inches(0.45), Inches(0.85), Inches(12.4), Inches(1.7), font_size=8)
+    _add_textbox(
+        slide,
+        Inches(0.65),
+        Inches(2.95),
+        Inches(12.0),
+        Inches(3.25),
+        "Purpose: this table separates missing data from real zero-valued trends. "
+        "If a case has nonzero source rows, the PPT is allowed to plot that case even if an earlier run/root did not have it.\n"
+        "Observation: the active report root and case list are shown on the title slide and in charge_sweep_full_ppt_paths.json.\n"
+        "Analysis: blank facets should only occur with an explicit low-sample or missing-data note. A silent blank panel means the report script should be fixed, not interpreted physically.\n"
+        "Conclusion: use this slide first when checking whether 0 or -9 uC/cm2 are absent, truly zero, or simply unavailable for one statistic.",
+        font_size=13,
+    )
 
     slide = prs.slides.add_slide(prs.slide_layouts[5])
     slide.shapes.title.text = "Unified z-axis Reference"
@@ -2098,6 +2311,13 @@ def main() -> None:
         _add_textbox(slide, left, top + Inches(2.52), Inches(5.85), Inches(0.35), f"{item.label}: final projection, same z_plot convention", font_size=8)
 
     slide = prs.slides.add_slide(prs.slide_layouts[5])
+    slide.shapes.title.text = "Trajectory Overview MP4: Same t=0, Same View"
+    for item, (left, top) in zip(payloads, positions):
+        mp4, poster = trajectory_overviews.get(item.label, (None, None))
+        _add_movie_tile(slide, mp4 or Path("missing.mp4"), poster, left, top, Inches(5.85), Inches(2.5))
+        _add_textbox(slide, left, top + Inches(2.55), Inches(5.85), Inches(0.32), f"{item.label}: z_plot-y projection, sampled trajectory frames", font_size=8)
+
+    slide = prs.slides.add_slide(prs.slide_layouts[5])
     slide.shapes.title.text = "Time-Series MP4 Panels"
     positions = [(Inches(0.45), Inches(0.85)), (Inches(6.85), Inches(0.85)), (Inches(0.45), Inches(4.05)), (Inches(6.85), Inches(4.05))]
     for item, (left, top) in zip(payloads, positions):
@@ -2119,6 +2339,8 @@ def main() -> None:
             ["Li solvation-depth CSV", fig_dir / "li_solvation_by_cmc_depth.csv"],
             ["z zoom CSV", fig_dir / "z_distribution_by_charge_facets_cmc_interface_zoom.csv"],
             ["carbonyl orientation summary", fig_dir / "carbonyl_orientation_summary.csv"],
+            ["data availability CSV", fig_dir / "report_data_availability.csv"],
+            ["trajectory overview MP4 directory", fig_dir / "trajectory_overview"],
             ["t0 validation JSON", out_dir / "shared_t0_validation.json"],
             ["z-axis audit JSON", out_dir / "z_axis_visual_audit.json"],
             ["visual audit JSON", out_dir / "ppt_visual_audit.json"],
